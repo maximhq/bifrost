@@ -1,0 +1,4 @@
+github.com/maximhq/bifrost/core v1.0.1 h1:B0u6o13faUexA+V0EUU0bsLW2dHg9+R2TZKQzPzCxlY=
+github.com/maximhq/bifrost/core v1.0.1/go.mod h1:4+Ept2EnX1EEjH/mBuSwK7eE56znI/BCoCbIrx25/x8=
+github.com/maximhq/maxim-go v0.1.1 h1:69uUQjjDPmUGcKg/M4/3AO0fbD+70Agt66pH/UCsI5M=
+github.com/maximhq/maxim-go v0.1.1/go.mod h1:0+UTWM7UZwNNE5VnljLtr/vpRGtYP8r/2q9WDwlLWFw=

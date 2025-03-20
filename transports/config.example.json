@@ -1,0 +1,117 @@
+{
+  "OpenAI": {
+    "keys": [
+      {
+        "value": "env.OPEN_AI_API_KEY",
+        "models": ["gpt-4o-mini", "gpt-4-turbo"],
+        "weight": 1.0
+      }
+    ],
+    "network_config": {
+      "default_request_timeout_in_seconds": 30,
+      "max_retries": 1,
+      "retry_backoff_initial_ms": 100,
+      "retry_backoff_max_ms": 2000
+    },
+    "concurrency_and_buffer_size": {
+      "concurrency": 3,
+      "buffer_size": 10
+    }
+  },
+  "Anthropic": {
+    "keys": [
+      {
+        "value": "env.ANTHROPIC_API_KEY",
+        "models": [
+          "claude-3-7-sonnet-20250219",
+          "claude-3-5-sonnet-20240620",
+          "claude-2.1"
+        ],
+        "weight": 1.0
+      }
+    ],
+    "network_config": {
+      "default_request_timeout_in_seconds": 30,
+      "max_retries": 1,
+      "retry_backoff_initial_ms": 100,
+      "retry_backoff_max_ms": 2000
+    },
+    "concurrency_and_buffer_size": {
+      "concurrency": 3,
+      "buffer_size": 10
+    }
+  },
+  "Bedrock": {
+    "keys": [
+      {
+        "value": "env.BEDROCK_API_KEY",
+        "models": [
+          "anthropic.claude-v2:1",
+          "mistral.mixtral-8x7b-instruct-v0:1",
+          "mistral.mistral-large-2402-v1:0",
+          "anthropic.claude-3-sonnet-20240229-v1:0"
+        ],
+        "weight": 1.0
+      }
+    ],
+    "network_config": {
+      "default_request_timeout_in_seconds": 30,
+      "max_retries": 1,
+      "retry_backoff_initial_ms": 100,
+      "retry_backoff_max_ms": 2000
+    },
+    "meta_config": {
+      "secret_access_key": "env.BEDROCK_ACCESS_KEY",
+      "region": "us-east-1"
+    },
+    "concurrency_and_buffer_size": {
+      "concurrency": 3,
+      "buffer_size": 10
+    }
+  },
+  "Cohere": {
+    "keys": [
+      {
+        "value": "env.COHERE_API_KEY",
+        "models": ["command-a-03-2025"],
+        "weight": 1.0
+      }
+    ],
+    "network_config": {
+      "default_request_timeout_in_seconds": 30,
+      "max_retries": 1,
+      "retry_backoff_initial_ms": 100,
+      "retry_backoff_max_ms": 2000
+    },
+    "concurrency_and_buffer_size": {
+      "concurrency": 3,
+      "buffer_size": 10
+    }
+  },
+  "Azure": {
+    "keys": [
+      {
+        "value": "env.AZURE_API_KEY",
+        "models": ["gpt-4o"],
+        "weight": 1.0
+      }
+    ],
+    "network_config": {
+      "default_request_timeout_in_seconds": 30,
+      "max_retries": 1,
+      "retry_backoff_initial_ms": 100,
+      "retry_backoff_max_ms": 2000
+    },
+    "meta_config": {
+      "endpoint": "env.AZURE_ENDPOINT",
+      "deployments": {
+        "gpt-4o": "gpt-4o-aug"
+      },
+      "api_version": "2024-08-01-preview"
+    },
+    "concurrency_and_buffer_size": {
+      "concurrency": 3,
+      "buffer_size": 10
+    }
+  }
+}
