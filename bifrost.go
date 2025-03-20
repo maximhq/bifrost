@@ -12,14 +12,22 @@ import (
 	"time"
 )
 
+type RequestType string
+
+const (
+	TextCompletionRequest RequestType = "text_completion"
+	ChatCompletionRequest RequestType = "chat_completion"
+)
+
 // Request represents a generic request for text or chat completion
 type Request struct {
-	Model    string
+	Model string
+	//* is this okay or should we do string | Message?
 	Input    interface{}
 	Params   *interfaces.ModelParameters
 	Response chan *interfaces.CompletionResult
 	Err      chan error
-	Type     string // "text" or "chat"
+	Type     RequestType
 }
 
 // Bifrost manages providers and maintains infinite open channels
@@ -147,10 +155,10 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 			continue
 		}
 
-		if req.Type == "text" {
+		if req.Type == TextCompletionRequest {
 			result, err = provider.TextCompletion(req.Model, key, req.Input.(string), req.Params)
-		} else if req.Type == "chat" {
-			result, err = provider.ChatCompletion(req.Model, key, req.Input.([]interface{}), req.Params)
+		} else if req.Type == ChatCompletionRequest {
+			result, err = provider.ChatCompletion(req.Model, key, req.Input.([]interfaces.Message), req.Params)
 		}
 
 		if err != nil {
@@ -208,7 +216,7 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 		Params:   params,
 		Response: responseChan,
 		Err:      errorChan,
-		Type:     "text",
+		Type:     TextCompletionRequest,
 	}
 
 	select {
@@ -219,7 +227,7 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 	}
 }
 
-func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, model string, messages []interface{}, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, model string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
 		return nil, err
@@ -234,7 +242,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 		Params:   params,
 		Response: responseChan,
 		Err:      errorChan,
-		Type:     "chat",
+		Type:     ChatCompletionRequest,
 	}
 
 	// Wait for response

@@ -12,7 +12,6 @@ import (
 
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API
 type AnthropicProvider struct {
-	Config map[string]string
 	client *http.Client
 }
 
@@ -27,29 +26,15 @@ func (provider *AnthropicProvider) GetProviderKey() interfaces.SupportedModelPro
 	return interfaces.Anthropic
 }
 
-func (provider *AnthropicProvider) GetConfig() interface{} {
-	return provider.Config
-}
-
-func (provider *AnthropicProvider) IsEnabled() bool {
-	return true
-}
-
 // TextCompletion implements text completion using Anthropic's API
 func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
-	// Create the request body with default config
-	requestBody := map[string]interface{}{
+	preparedParams := PrepareParams(params)
+
+	// Merge additional parameters
+	requestBody := MergeConfig(map[string]interface{}{
 		"model":  model,
 		"prompt": fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
-	}
-
-	if params != nil && params.ExtraParams != nil {
-		// Merge additional parameters
-		requestBody = MergeConfig(requestBody, params.ExtraParams)
-	}
-
-	// Print the request body with keys and values
-	fmt.Printf("Request Body: %v\n", requestBody)
+	}, preparedParams)
 
 	// Marshal the request body
 	jsonData, err := json.Marshal(requestBody)
@@ -137,65 +122,25 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 }
 
 // ChatCompletion implements chat completion using Anthropic's API
-func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []interface{}, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
 	startTime := time.Now()
 
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
-		if m, ok := msg.(map[string]interface{}); ok {
-			role, _ := m["role"].(string)
-			content, _ := m["content"].(string)
-			formattedMessages = append(formattedMessages, map[string]interface{}{
-				"role":    role,
-				"content": content,
-			})
-		}
+		formattedMessages = append(formattedMessages, map[string]interface{}{
+			"role":    msg.Role,
+			"content": msg.Content,
+		})
 	}
 
-	requestBody := map[string]interface{}{
+	preparedParams := PrepareParams(params)
+
+	// Merge additional parameters
+	requestBody := MergeConfig(map[string]interface{}{
 		"model":    model,
 		"messages": formattedMessages,
-	}
-
-	if params != nil {
-		// Add any extra parameters
-		if params.ExtraParams != nil {
-			requestBody = MergeConfig(requestBody, params.ExtraParams)
-		}
-
-		if params.TestRunEntryID != nil {
-			requestBody["test_run_entry_id"] = *params.TestRunEntryID
-		}
-
-		if params.ToolChoice != nil {
-			requestBody["tool_choice"] = *params.ToolChoice
-		}
-
-		if params.Tools != nil {
-			tools := make([]map[string]interface{}, len(*params.Tools))
-			for i, tool := range *params.Tools {
-				tools[i] = map[string]interface{}{
-					"name":         tool.Function.Name,
-					"description":  tool.Function.Description,
-					"input_schema": tool.Function.Parameters,
-				}
-			}
-			requestBody["tools"] = tools
-		}
-
-		if params.FunctionCall != nil {
-			requestBody["function_call"] = *params.FunctionCall
-		}
-
-		if params.Functions != nil {
-			requestBody["functions"] = params.Functions
-		}
-
-		if params.PromptTools != nil {
-			requestBody["prompt_tools"] = params.PromptTools
-		}
-	}
+	}, preparedParams)
 
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {

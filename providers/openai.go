@@ -11,7 +11,7 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI
 type OpenAIProvider struct {
-	Config map[string]string
+	//* Do we even need it?
 	client *http.Client
 }
 
@@ -24,14 +24,6 @@ func NewOpenAIProvider() *OpenAIProvider {
 
 func (provider *OpenAIProvider) GetProviderKey() interfaces.SupportedModelProvider {
 	return interfaces.OpenAI
-}
-
-func (provider *OpenAIProvider) GetConfig() interface{} {
-	return provider.Config
-}
-
-func (provider *OpenAIProvider) IsEnabled() bool {
-	return true
 }
 
 // TextCompletion performs text completion
@@ -57,61 +49,34 @@ func (provider *OpenAIProvider) sanitizeParameters(params *interfaces.ModelParam
 }
 
 // ChatCompletion implements chat completion using OpenAI's API
-func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interface{}, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
 	startTime := time.Now()
 
 	// Format messages for OpenAI API
 	var openAIMessages []map[string]interface{}
 	for _, msg := range messages {
-		if m, ok := msg.(map[string]interface{}); ok {
-			role, _ := m["role"].(string)
-			content := m["content"].(interface{})
 
-			openAIMessages = append(openAIMessages, map[string]interface{}{
-				"role":    role,
-				"content": content,
-			})
+		var content any
+		if msg.Content != nil {
+			content = msg.Content
+		} else {
+			content = msg.ImageContent
 		}
-	}
 
-	// Prepare request body with default config
-	requestBody := map[string]interface{}{
-		"model":    model,
-		"messages": openAIMessages,
+		openAIMessages = append(openAIMessages, map[string]interface{}{
+			"role":    msg.Role,
+			"content": content,
+		})
 	}
 
 	// Sanitize parameters
 	params = provider.sanitizeParameters(params)
+	preparedParams := PrepareParams(params)
 
-	if params != nil {
-		if params.ExtraParams != nil {
-			requestBody = MergeConfig(requestBody, params.ExtraParams)
-		}
-
-		if params.TestRunEntryID != nil {
-			requestBody["test_run_entry_id"] = *params.TestRunEntryID
-		}
-
-		if params.ToolChoice != nil {
-			requestBody["tool_choice"] = *params.ToolChoice
-		}
-
-		if params.Tools != nil {
-			requestBody["tools"] = params.Tools
-		}
-
-		if params.FunctionCall != nil {
-			requestBody["function_call"] = *params.FunctionCall
-		}
-
-		if params.Functions != nil {
-			requestBody["functions"] = params.Functions
-		}
-
-		if params.PromptTools != nil {
-			requestBody["prompt_tools"] = params.PromptTools
-		}
-	}
+	requestBody := MergeConfig(map[string]interface{}{
+		"model":    model,
+		"messages": openAIMessages,
+	}, preparedParams)
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {

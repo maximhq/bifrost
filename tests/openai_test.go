@@ -32,10 +32,10 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 		delay := time.Duration(100*(i+1)) * time.Millisecond
 		go func(msg string, delay time.Duration, index int) {
 			time.Sleep(delay)
-			messages := []interface{}{
-				map[string]interface{}{
-					"role":    "user",
-					"content": msg,
+			messages := []interfaces.Message{
+				{
+					Role:    interfaces.UserRole,
+					Content: &msg,
 				},
 			}
 			result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, "gpt-4o-mini", messages, nil)

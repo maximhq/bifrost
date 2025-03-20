@@ -150,10 +150,64 @@ const (
 	Lmstudio    SupportedModelProvider = "lmstudio"
 )
 
+type Role string
+
+const (
+	UserRole      Role = "user"
+	AssistantRole Role = "assistant"
+	SystemRole    Role = "system"
+)
+
+type Message struct {
+	//* strict check for roles
+	Role Role `json:"role"`
+	//* need to make sure either content or imagecontent is provided
+	Content      *string       `json:"content"`
+	ImageContent *ImageContent `json:"imageContent"`
+}
+
+type ImageContent struct {
+	Type     string `json:"type"`
+	ImageURL struct {
+		URL string `json:"url"`
+	} `json:"image_url"`
+}
+
+// type Content struct {
+// 	Content      *string       `json:"content"`
+// 	ImageContent *ImageContent `json:"imageContent"`
+// }
+
+// func (content *Content) MarshalJSON() ([]byte, error) {
+// 	if content.Content != nil {
+// 		return []byte(*content.Content), nil
+// 	} else if content.ImageContent != nil {
+// 		return json.Marshal(content.ImageContent)
+// 	}
+
+// 	return nil, fmt.Errorf("invalid content")
+// }
+
+// func (content *Content) UnmarshalJSON(val []byte) error {
+// 	var s any
+// 	json.Unmarshal(val, &s)
+
+// 	switch s := s.(type) {
+// 	case string:
+// 		content.Content = &s
+// 	case ImageContent:
+// 		content.ImageContent = &s
+
+// 	default:
+// 		return fmt.Errorf("invalid stop")
+// 	}
+
+// 	return nil
+// }
+
 // Provider defines the interface for AI model providers
 type Provider interface {
 	GetProviderKey() SupportedModelProvider
-	GetConfig() interface{}
 	TextCompletion(model, key, text string, params *ModelParameters) (*CompletionResult, error)
-	ChatCompletion(model, key string, messages []interface{}, params *ModelParameters) (*CompletionResult, error)
+	ChatCompletion(model, key string, messages []Message, params *ModelParameters) (*CompletionResult, error)
 }

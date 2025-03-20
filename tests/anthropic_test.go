@@ -42,10 +42,10 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 		delay := time.Duration(500+100*i) * time.Millisecond
 		go func(msg string, delay time.Duration, index int) {
 			time.Sleep(delay)
-			messages := []interface{}{
-				map[string]interface{}{
-					"role":    "user",
-					"content": msg,
+			messages := []interfaces.Message{
+				{
+					Role:    interfaces.UserRole,
+					Content: &msg,
 				},
 			}
 			result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, "claude-3-7-sonnet-20250219", messages, &config)
