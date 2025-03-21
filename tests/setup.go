@@ -1,12 +1,16 @@
 package tests
 
 import (
-	"bifrost"
-	"bifrost/interfaces"
+	"fmt"
 	"log"
 	"os"
 
+	"github.com/maximhq/bifrost"
+	"github.com/maximhq/bifrost/interfaces"
+
 	"github.com/joho/godotenv"
+	"github.com/maximhq/maxim-go"
+	"github.com/maximhq/maxim-go/logging"
 )
 
 func loadEnv() {
@@ -16,39 +20,33 @@ func loadEnv() {
 	}
 }
 
+func getPlugin() (interfaces.Plugin, error) {
+	loadEnv()
+
+	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: os.Getenv("MAXIM_API_KEY")})
+
+	logger, err := mx.GetLogger(&logging.LoggerConfig{Id: os.Getenv("MAXIM_LOGGER_ID")})
+	if err != nil {
+		return nil, err
+	}
+
+	plugin := &Plugin{logger}
+
+	return plugin, nil
+}
+
 func getBifrost() (*bifrost.Bifrost, error) {
 	loadEnv()
 
 	account := BaseAccount{}
-	if err := account.Init(
-		ProviderConfig{
-			"openai": {
-				Keys: []interfaces.Key{
-					{Value: os.Getenv("OPEN_AI_API_KEY"), Weight: 1.0, Models: []string{"gpt-4o-mini"}},
-				},
-				ConcurrencyConfig: interfaces.ConcurrencyAndBufferSize{
-					Concurrency: 3,
-					BufferSize:  10,
-				},
-			},
-			"anthropic": {
-				Keys: []interfaces.Key{
-					{Value: os.Getenv("ANTHROPIC_API_KEY"), Weight: 1.0, Models: []string{"claude-3-7-sonnet-20250219", "claude-2.1"}},
-				},
-				ConcurrencyConfig: interfaces.ConcurrencyAndBufferSize{
-					Concurrency: 3,
-					BufferSize:  10,
-				},
-			},
-		},
-	); err != nil {
-		log.Fatal("Error initializing account:", err)
+	plugin, err := getPlugin()
+	if err != nil {
+		fmt.Println("Error setting up the plugin:", err)
 		return nil, err
 	}
 
-	bifrost, err := bifrost.Init(&account)
+	bifrost, err := bifrost.Init(&account, []interfaces.Plugin{plugin})
 	if err != nil {
-		log.Fatal("Error initializing bifrost:", err)
 		return nil, err
 	}
 

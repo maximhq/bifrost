@@ -1,24 +1,38 @@
 package providers
 
 import (
-	"bifrost/interfaces"
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
+
+	"github.com/maximhq/bifrost/interfaces"
+	"github.com/valyala/fasthttp"
 )
+
+type OpenAIResponse struct {
+	ID                string                             `json:"id"`
+	Object            string                             `json:"object"` // text.completion or chat.completion
+	Choices           []interfaces.BifrostResponseChoice `json:"choices"`
+	Model             string                             `json:"model"`
+	Created           int                                `json:"created"` // The Unix timestamp (in seconds).
+	ServiceTier       *string                            `json:"service_tier"`
+	SystemFingerprint *string                            `json:"system_fingerprint"`
+	Usage             interfaces.LLMUsage                `json:"usage"`
+}
 
 // OpenAIProvider implements the Provider interface for OpenAI
 type OpenAIProvider struct {
-	//* Do we even need it?
-	client *http.Client
+	client *fasthttp.Client
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance
-func NewOpenAIProvider() *OpenAIProvider {
+func NewOpenAIProvider(config *interfaces.ProviderConfig) *OpenAIProvider {
 	return &OpenAIProvider{
-		client: &http.Client{Timeout: time.Second * 30},
+		client: &fasthttp.Client{
+			ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+			WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+			MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
+		},
 	}
 }
 
@@ -27,35 +41,14 @@ func (provider *OpenAIProvider) GetProviderKey() interfaces.SupportedModelProvid
 }
 
 // TextCompletion performs text completion
-func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	return nil, fmt.Errorf("text completion is not supported by OpenAI")
 }
 
-// sanitizeParameters cleans up the parameters for OpenAI
-func (provider *OpenAIProvider) sanitizeParameters(params *interfaces.ModelParameters) *interfaces.ModelParameters {
-	sanitized := params
-	if sanitized == nil {
-		return nil
-	}
-
-	if params.ExtraParams != nil {
-		// For logprobs, if it's disabled, we remove top_logprobs
-		if _, exists := params.ExtraParams["logprobs"]; !exists {
-			delete(sanitized.ExtraParams, "top_logprobs")
-		}
-	}
-
-	return sanitized
-}
-
-// ChatCompletion implements chat completion using OpenAI's API
-func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
-	startTime := time.Now()
-
+func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	// Format messages for OpenAI API
 	var openAIMessages []map[string]interface{}
 	for _, msg := range messages {
-
 		var content any
 		if msg.Content != nil {
 			content = msg.Content
@@ -69,8 +62,6 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 		})
 	}
 
-	// Sanitize parameters
-	params = provider.sanitizeParameters(params)
 	preparedParams := PrepareParams(params)
 
 	requestBody := MergeConfig(map[string]interface{}{
@@ -84,75 +75,55 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 	}
 
 	// Create request
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %v", err)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
 
-	// Add headers
-	req.Header.Set("Content-Type", "application/json")
+	req.SetRequestURI("https://api.openai.com/v1/chat/completions")
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
+	req.SetBody(jsonBody)
 
 	// Make request
-	resp, err := provider.client.Do(req)
-	if err != nil {
+	if err := provider.client.Do(req, resp); err != nil {
 		return nil, fmt.Errorf("error making request: %v", err)
 	}
-	defer resp.Body.Close()
-
-	latency := time.Since(startTime).Seconds()
 
 	// Handle error response
-	if resp.StatusCode != http.StatusOK {
-		var errorResp struct {
-			Error struct {
-				Message string `json:"message"`
-				Type    string `json:"type"`
-				Param   any    `json:"param"`
-				Code    string `json:"code"`
-			} `json:"error"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&errorResp); err != nil {
-			return nil, fmt.Errorf("error decoding error response: %v", err)
-		}
-		return nil, fmt.Errorf("OpenAI error: %s", errorResp.Error.Message)
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, fmt.Errorf("OpenAI error: %s", resp.Body())
 	}
 
-	// Decode response
-	var rawResult struct {
-		ID      string                              `json:"id"`
-		Choices []interfaces.CompletionResultChoice `json:"choices"`
-		Usage   interfaces.LLMUsage                 `json:"usage"`
-		Model   string                              `json:"model"`
-		Created interface{}                         `json:"created"`
+	body := resp.Body()
+
+	// Decode structured response
+	var response OpenAIResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("error decoding structured response: %v", err)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&rawResult); err != nil {
-		return nil, fmt.Errorf("error decoding response: %v", err)
+	// Decode raw response
+	var rawResponse interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("error decoding raw response: %v", err)
 	}
 
-	// Convert the raw result to CompletionResult
-	result := &interfaces.CompletionResult{
-		ID:      rawResult.ID,
-		Choices: rawResult.Choices,
-		Usage:   rawResult.Usage,
-		Model:   rawResult.Model,
+	result := &interfaces.BifrostResponse{
+		ID:                response.ID,
+		Choices:           response.Choices,
+		Object:            response.Object,
+		Usage:             response.Usage,
+		ServiceTier:       response.ServiceTier,
+		SystemFingerprint: response.SystemFingerprint,
+		Created:           response.Created,
+		Model:             response.Model,
+		ExtraFields: interfaces.BifrostResponseExtraFields{
+			Provider:    interfaces.OpenAI,
+			RawResponse: rawResponse,
+		},
 	}
-
-	// Handle the created field conversion
-	if rawResult.Created != nil {
-		switch v := rawResult.Created.(type) {
-		case float64:
-			// Convert Unix timestamp to string
-			result.Created = fmt.Sprintf("%d", int64(v))
-		case string:
-			result.Created = v
-		}
-	}
-
-	// Add provider-specific information
-	result.Provider = interfaces.OpenAI
-	result.Usage.Latency = latency
 
 	return result, nil
 }
