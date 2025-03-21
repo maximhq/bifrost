@@ -18,13 +18,20 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 	}
 
 	go func() {
-		config := interfaces.ModelParameters{
+		params := interfaces.ModelParameters{
 			ExtraParams: map[string]interface{}{
 				"max_tokens_to_sample": 4096,
 			},
 		}
+		text := "Hello world!"
 
-		result, err := bifrost.TextCompletionRequest(interfaces.Anthropic, "claude-2.1", "Hello world!", &config)
+		result, err := bifrost.TextCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
+			Model: "claude-2.1",
+			Input: interfaces.RequestInput{
+				StringInput: &text,
+			},
+			Params: &params,
+		})
 		if err != nil {
 			fmt.Println("Error:", err)
 		} else {
@@ -32,7 +39,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 		}
 	}()
 
-	config := interfaces.ModelParameters{
+	params := interfaces.ModelParameters{
 		ExtraParams: map[string]interface{}{
 			"max_tokens": 4096,
 		},
@@ -48,7 +55,14 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 					Content: &msg,
 				},
 			}
-			result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, "claude-3-7-sonnet-20250219", messages, &config)
+			result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
+				Model: "claude-3-7-sonnet-20250219",
+				Input: interfaces.RequestInput{
+					MessageInput: &messages,
+				},
+				Params: &params,
+			})
+
 			if err != nil {
 				fmt.Printf("Error in Anthropic request %d: %v\n", index+1, err)
 			} else {

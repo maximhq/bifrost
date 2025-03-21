@@ -19,26 +19,19 @@ const (
 	ChatCompletionRequest RequestType = "chat_completion"
 )
 
-// Request represents a generic request for text or chat completion
-type Request struct {
-	Model    string
-	Input    RequestInput
-	Params   *interfaces.ModelParameters
+type ChannelMessage struct {
+	interfaces.BifrostRequest
 	Response chan *interfaces.CompletionResult
 	Err      chan error
 	Type     RequestType
 }
 
-type RequestInput struct {
-	StringInput  *string
-	MessageInput *[]interfaces.Message
-}
-
 // Bifrost manages providers and maintains infinite open channels
 type Bifrost struct {
 	account       interfaces.Account
-	providers     []interfaces.Provider                              // list of processed providers
-	requestQueues map[interfaces.SupportedModelProvider]chan Request // provider request queues
+	providers     []interfaces.Provider // list of processed providers
+	plugins       []interfaces.Plugin
+	requestQueues map[interfaces.SupportedModelProvider]chan ChannelMessage // provider request queues
 	wg            map[interfaces.SupportedModelProvider]*sync.WaitGroup
 }
 
@@ -70,7 +63,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelPro
 		return fmt.Errorf("failed to get keys for provider: %v", err)
 	}
 
-	queue := make(chan Request, concurrencyAndBuffer.BufferSize) // Buffered channel per provider
+	queue := make(chan ChannelMessage, concurrencyAndBuffer.BufferSize) // Buffered channel per provider
 
 	bifrost.requestQueues[provider.GetProviderKey()] = queue
 
@@ -86,8 +79,8 @@ func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelPro
 }
 
 // Initializes infinite listening channels for each provider
-func Init(account interfaces.Account) (*Bifrost, error) {
-	bifrost := &Bifrost{account: account}
+func Init(account interfaces.Account, plugins []interfaces.Plugin) (*Bifrost, error) {
+	bifrost := &Bifrost{account: account, plugins: plugins}
 	bifrost.wg = make(map[interfaces.SupportedModelProvider]*sync.WaitGroup)
 
 	providerKeys, err := bifrost.account.GetInitiallyConfiguredProviderKeys()
@@ -95,7 +88,7 @@ func Init(account interfaces.Account) (*Bifrost, error) {
 		return nil, err
 	}
 
-	bifrost.requestQueues = make(map[interfaces.SupportedModelProvider]chan Request)
+	bifrost.requestQueues = make(map[interfaces.SupportedModelProvider]chan ChannelMessage)
 
 	// Create buffered channels for each provider and start workers
 	for _, providerKey := range providerKeys {
@@ -162,7 +155,7 @@ func (bifrost *Bifrost) SelectKeyFromProviderForModel(provider interfaces.Provid
 	return supportedKeys[len(supportedKeys)-1].Value, nil
 }
 
-func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan Request) {
+func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan ChannelMessage) {
 	defer bifrost.wg[provider.GetProviderKey()].Done()
 
 	for req := range queue {
@@ -201,8 +194,8 @@ func (bifrost *Bifrost) GetConfiguredProviderFromProviderKey(key interfaces.Supp
 	return nil, fmt.Errorf("no provider found for key: %s", key)
 }
 
-func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelProvider) (chan Request, error) {
-	var queue chan Request
+func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelProvider) (chan ChannelMessage, error) {
+	var queue chan ChannelMessage
 	var exists bool
 
 	if queue, exists = bifrost.requestQueues[providerKey]; !exists {
@@ -216,7 +209,7 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelPr
 	return queue, nil
 }
 
-func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, model, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest) (*interfaces.CompletionResult, error) {
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
 		return nil, err
@@ -225,24 +218,44 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 	responseChan := make(chan *interfaces.CompletionResult)
 	errorChan := make(chan error)
 
-	queue <- Request{
-		Model:    model,
-		Input:    RequestInput{StringInput: &text},
-		Params:   params,
-		Response: responseChan,
-		Err:      errorChan,
-		Type:     TextCompletionRequest,
+	for _, plugin := range bifrost.plugins {
+		if req.PluginParams == nil {
+			req.PluginParams = make(map[string]interface{})
+		}
+
+		req, err = plugin.PreHook(req)
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	queue <- ChannelMessage{
+		BifrostRequest: *req,
+		Response:       responseChan,
+		Err:            errorChan,
+		Type:           TextCompletionRequest,
 	}
 
 	select {
 	case result := <-responseChan:
+		result.PluginParams = req.PluginParams
+
+		for _, plugin := range bifrost.plugins {
+			result, err = plugin.PostHook(result)
+
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		return result, nil
 	case err := <-errorChan:
 		return nil, err
 	}
 }
 
-func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, model string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest) (*interfaces.CompletionResult, error) {
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
 		return nil, err
@@ -251,18 +264,38 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 	responseChan := make(chan *interfaces.CompletionResult)
 	errorChan := make(chan error)
 
-	queue <- Request{
-		Model:    model,
-		Input:    RequestInput{MessageInput: &messages},
-		Params:   params,
-		Response: responseChan,
-		Err:      errorChan,
-		Type:     ChatCompletionRequest,
+	for _, plugin := range bifrost.plugins {
+		if req.PluginParams == nil {
+			req.PluginParams = make(map[string]interface{})
+		}
+
+		req, err = plugin.PreHook(req)
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	queue <- ChannelMessage{
+		BifrostRequest: *req,
+		Response:       responseChan,
+		Err:            errorChan,
+		Type:           ChatCompletionRequest,
 	}
 
 	// Wait for response
 	select {
 	case result := <-responseChan:
+		result.PluginParams = req.PluginParams
+
+		for _, plugin := range bifrost.plugins {
+			result, err = plugin.PostHook(result)
+
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		return result, nil
 	case err := <-errorChan:
 		return nil, err

@@ -124,7 +124,8 @@ type CompletionResult struct {
 	Cost            *LLMInteractionCost      `json:"cost"`
 	Model           string                   `json:"model"`
 	Created         string                   `json:"created"`
-	ModelParams     *interface{}             `json:"modelParams"`
+	Params          *interface{}             `json:"modelParams"`
+	PluginParams    map[string]interface{}   `json:"-"`
 	Trace           *struct {
 		Input  interface{} `json:"input"`
 		Output interface{} `json:"output"`

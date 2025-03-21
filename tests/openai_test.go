@@ -10,9 +10,17 @@ import (
 
 // setupOpenAIRequests sends multiple test requests to OpenAI
 func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
+	text := "Hello world!"
+
 	// Text completion request
 	go func() {
-		result, err := bifrost.TextCompletionRequest(interfaces.OpenAI, "gpt-4o-mini", "Hello world!", nil)
+		result, err := bifrost.TextCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
+			Model: "gpt-4o-mini",
+			Input: interfaces.RequestInput{
+				StringInput: &text,
+			},
+			Params: nil,
+		})
 		if err != nil {
 			fmt.Println("Error:", err)
 		} else {
@@ -38,7 +46,13 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 					Content: &msg,
 				},
 			}
-			result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, "gpt-4o-mini", messages, nil)
+			result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
+				Model: "gpt-4o-mini",
+				Input: interfaces.RequestInput{
+					MessageInput: &messages,
+				},
+				Params: nil,
+			})
 			if err != nil {
 				fmt.Printf("Error in OpenAI request %d: %v\n", index+1, err)
 			} else {

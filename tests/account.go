@@ -10,12 +10,12 @@ import (
 type BaseAccount struct{}
 
 // GetInitiallyConfiguredProviderKeys returns all provider keys
-func (ba *BaseAccount) GetInitiallyConfiguredProviderKeys() ([]interfaces.SupportedModelProvider, error) {
+func (baseAccount *BaseAccount) GetInitiallyConfiguredProviderKeys() ([]interfaces.SupportedModelProvider, error) {
 	return []interfaces.SupportedModelProvider{interfaces.OpenAI, interfaces.Anthropic}, nil
 }
 
 // GetKeysForProvider returns all keys associated with a provider
-func (ba *BaseAccount) GetKeysForProvider(provider interfaces.Provider) ([]interfaces.Key, error) {
+func (baseAccount *BaseAccount) GetKeysForProvider(provider interfaces.Provider) ([]interfaces.Key, error) {
 	switch provider.GetProviderKey() {
 	case interfaces.OpenAI:
 		return []interfaces.Key{
@@ -39,7 +39,7 @@ func (ba *BaseAccount) GetKeysForProvider(provider interfaces.Provider) ([]inter
 }
 
 // GetConcurrencyAndBufferSizeForProvider returns the concurrency and buffer size settings for a provider
-func (ba *BaseAccount) GetConcurrencyAndBufferSizeForProvider(provider interfaces.Provider) (*interfaces.ConcurrencyAndBufferSize, error) {
+func (baseAccount *BaseAccount) GetConcurrencyAndBufferSizeForProvider(provider interfaces.Provider) (*interfaces.ConcurrencyAndBufferSize, error) {
 	switch provider.GetProviderKey() {
 	case interfaces.OpenAI:
 		return &interfaces.ConcurrencyAndBufferSize{
