@@ -2,8 +2,8 @@ package bifrost
 
 import (
 	"bifrost/interfaces"
+	"bifrost/providers"
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -21,43 +21,64 @@ const (
 
 // Request represents a generic request for text or chat completion
 type Request struct {
-	Model string
-	//* is this okay or should we do string | Message?
-	Input    interface{}
+	Model    string
+	Input    RequestInput
 	Params   *interfaces.ModelParameters
 	Response chan *interfaces.CompletionResult
 	Err      chan error
 	Type     RequestType
 }
 
+type RequestInput struct {
+	StringInput  *string
+	MessageInput *[]interfaces.Message
+}
+
 // Bifrost manages providers and maintains infinite open channels
 type Bifrost struct {
 	account       interfaces.Account
-	providers     []interfaces.Provider   // list of processed providers
-	requestQueues map[string]chan Request // provider request queues
-	wg            sync.WaitGroup
+	providers     []interfaces.Provider                              // list of processed providers
+	requestQueues map[interfaces.SupportedModelProvider]chan Request // provider request queues
+	wg            map[interfaces.SupportedModelProvider]*sync.WaitGroup
 }
 
-func (bifrost *Bifrost) prepareProvider(provider interfaces.Provider) error {
-	concurrency, err := bifrost.account.GetConcurrencyAndBufferSizeForProvider(provider)
+func createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider) (interfaces.Provider, error) {
+	switch providerKey {
+	case interfaces.OpenAI:
+		return providers.NewOpenAIProvider(), nil
+	case interfaces.Anthropic:
+		return providers.NewAnthropicProvider(), nil
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
+	}
+}
+
+func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelProvider) error {
+	provider, err := createProviderFromProviderKey(providerKey)
 	if err != nil {
-		log.Fatalf("Failed to get concurrency and buffer size for provider: %v", err)
-		return err
+		return fmt.Errorf("failed to get provider for the given key: %v", err)
+	}
+
+	concurrencyAndBuffer, err := bifrost.account.GetConcurrencyAndBufferSizeForProvider(provider)
+	if err != nil {
+		return fmt.Errorf("failed to get concurrency and buffer size for provider: %v", err)
 	}
 
 	// Check if the provider has any keys
 	keys, err := bifrost.account.GetKeysForProvider(provider)
 	if err != nil || len(keys) == 0 {
-		log.Fatalf("Failed to get keys for provider: %v", err)
-		return err
+		return fmt.Errorf("failed to get keys for provider: %v", err)
 	}
 
-	queue := make(chan Request, concurrency.BufferSize) // Buffered channel per provider
-	bifrost.requestQueues[string(provider.GetProviderKey())] = queue
+	queue := make(chan Request, concurrencyAndBuffer.BufferSize) // Buffered channel per provider
+
+	bifrost.requestQueues[provider.GetProviderKey()] = queue
 
 	// Start specified number of workers
-	for i := 0; i < concurrency.Concurrency; i++ {
-		bifrost.wg.Add(1)
+	bifrost.wg[provider.GetProviderKey()] = &sync.WaitGroup{}
+
+	for i := 0; i < concurrencyAndBuffer.Concurrency; i++ {
+		bifrost.wg[provider.GetProviderKey()].Add(1)
 		go bifrost.processRequests(provider, queue)
 	}
 
@@ -67,27 +88,26 @@ func (bifrost *Bifrost) prepareProvider(provider interfaces.Provider) error {
 // Initializes infinite listening channels for each provider
 func Init(account interfaces.Account) (*Bifrost, error) {
 	bifrost := &Bifrost{account: account}
+	bifrost.wg = make(map[interfaces.SupportedModelProvider]*sync.WaitGroup)
 
-	providers, err := bifrost.account.GetInitiallyConfiguredProviders()
+	providerKeys, err := bifrost.account.GetInitiallyConfiguredProviderKeys()
 	if err != nil {
-		log.Fatalf("Failed to get initially configured providers: %v", err)
 		return nil, err
 	}
 
-	bifrost.requestQueues = make(map[string]chan Request)
+	bifrost.requestQueues = make(map[interfaces.SupportedModelProvider]chan Request)
 
 	// Create buffered channels for each provider and start workers
-	for _, provider := range providers {
-		if err := bifrost.prepareProvider(provider); err != nil {
-			log.Fatalf("Failed to prepare provider: %v", err)
-			return nil, err
+	for _, providerKey := range providerKeys {
+		if err := bifrost.prepareProvider(providerKey); err != nil {
+			fmt.Printf("failed to prepare provider: %v", err)
 		}
 	}
 
 	return bifrost, nil
 }
 
-func (bifrost *Bifrost) SelectFromProviderKeys(provider interfaces.Provider, model string) (string, error) {
+func (bifrost *Bifrost) SelectKeyFromProviderForModel(provider interfaces.Provider, model string) (string, error) {
 	keys, err := bifrost.account.GetKeysForProvider(provider)
 	if err != nil {
 		return "", err
@@ -143,22 +163,22 @@ func (bifrost *Bifrost) SelectFromProviderKeys(provider interfaces.Provider, mod
 }
 
 func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan Request) {
-	defer bifrost.wg.Done()
+	defer bifrost.wg[provider.GetProviderKey()].Done()
 
 	for req := range queue {
 		var result *interfaces.CompletionResult
 		var err error
 
-		key, err := bifrost.SelectFromProviderKeys(provider, req.Model)
+		key, err := bifrost.SelectKeyFromProviderForModel(provider, req.Model)
 		if err != nil {
 			req.Err <- err
 			continue
 		}
 
 		if req.Type == TextCompletionRequest {
-			result, err = provider.TextCompletion(req.Model, key, req.Input.(string), req.Params)
+			result, err = provider.TextCompletion(req.Model, key, *req.Input.StringInput, req.Params)
 		} else if req.Type == ChatCompletionRequest {
-			result, err = provider.ChatCompletion(req.Model, key, req.Input.([]interfaces.Message), req.Params)
+			result, err = provider.ChatCompletion(req.Model, key, *req.Input.MessageInput, req.Params)
 		}
 
 		if err != nil {
@@ -171,7 +191,7 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 	fmt.Println("Worker for provider", provider.GetProviderKey(), "exiting...")
 }
 
-func (bifrost *Bifrost) GetProviderFromProviderKey(key interfaces.SupportedModelProvider) (interfaces.Provider, error) {
+func (bifrost *Bifrost) GetConfiguredProviderFromProviderKey(key interfaces.SupportedModelProvider) (interfaces.Provider, error) {
 	for _, provider := range bifrost.providers {
 		if provider.GetProviderKey() == key {
 			return provider, nil
@@ -185,17 +205,12 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelPr
 	var queue chan Request
 	var exists bool
 
-	if queue, exists = bifrost.requestQueues[string(providerKey)]; !exists {
-		provider, err := bifrost.GetProviderFromProviderKey(providerKey)
-		if err != nil {
+	if queue, exists = bifrost.requestQueues[providerKey]; !exists {
+		if err := bifrost.prepareProvider(providerKey); err != nil {
 			return nil, err
 		}
 
-		if err := bifrost.prepareProvider(provider); err != nil {
-			return nil, err
-		}
-
-		queue = bifrost.requestQueues[string(providerKey)]
+		queue = bifrost.requestQueues[providerKey]
 	}
 
 	return queue, nil
@@ -212,7 +227,7 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 
 	queue <- Request{
 		Model:    model,
-		Input:    text,
+		Input:    RequestInput{StringInput: &text},
 		Params:   params,
 		Response: responseChan,
 		Err:      errorChan,
@@ -238,7 +253,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 
 	queue <- Request{
 		Model:    model,
-		Input:    messages,
+		Input:    RequestInput{MessageInput: &messages},
 		Params:   params,
 		Response: responseChan,
 		Err:      errorChan,
@@ -264,7 +279,9 @@ func (bifrost *Bifrost) Shutdown() {
 	}
 
 	// Wait for all workers to exit
-	bifrost.wg.Wait()
+	for _, wg := range bifrost.wg {
+		wg.Wait()
+	}
 
 	fmt.Println("Bifrost has shut down gracefully.")
 }

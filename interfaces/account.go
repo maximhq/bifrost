@@ -12,7 +12,7 @@ type Key struct {
 }
 
 type Account interface {
-	GetInitiallyConfiguredProviders() ([]Provider, error)
+	GetInitiallyConfiguredProviderKeys() ([]SupportedModelProvider, error)
 	GetKeysForProvider(provider Provider) ([]Key, error)
-	GetConcurrencyAndBufferSizeForProvider(provider Provider) (ConcurrencyAndBufferSize, error)
+	GetConcurrencyAndBufferSizeForProvider(provider Provider) (*ConcurrencyAndBufferSize, error)
 }

@@ -10,6 +10,40 @@ import (
 	"time"
 )
 
+type AnthropicTextResponse struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Completion string `json:"completion"`
+	Model      string `json:"model"`
+	Usage      struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+type AnthropicChatResponse struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text,omitempty"`
+		Thinking string `json:"thinking,omitempty"`
+		ToolUse  *struct {
+			ID    string                 `json:"id"`
+			Name  string                 `json:"name"`
+			Input map[string]interface{} `json:"input"`
+		} `json:"tool_use,omitempty"`
+	} `json:"content"`
+	Model        string  `json:"model"`
+	StopReason   string  `json:"stop_reason,omitempty"`
+	StopSequence *string `json:"stop_sequence,omitempty"`
+	Usage        struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API
 type AnthropicProvider struct {
 	client *http.Client
@@ -18,6 +52,7 @@ type AnthropicProvider struct {
 // NewAnthropicProvider creates a new AnthropicProvider instance
 func NewAnthropicProvider() *AnthropicProvider {
 	return &AnthropicProvider{
+		// @comment let us have this be controllable
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -82,39 +117,30 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 	}
 
 	// Parse the response
-	var result struct {
-		ID         string `json:"id"`
-		Type       string `json:"type"`
-		Completion string `json:"completion"`
-		Model      string `json:"model"`
-		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
+	var response AnthropicTextResponse
 
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("error parsing response: %v", err)
 	}
 
 	// Create the completion result
 	completionResult := &interfaces.CompletionResult{
-		ID: result.ID,
+		ID: response.ID,
 		Choices: []interfaces.CompletionResultChoice{
 			{
 				Index: 0,
 				Message: interfaces.CompletionResponseChoice{
 					Role:    interfaces.RoleAssistant,
-					Content: result.Completion,
+					Content: response.Completion,
 				},
 			},
 		},
 		Usage: interfaces.LLMUsage{
-			PromptTokens:     result.Usage.InputTokens,
-			CompletionTokens: result.Usage.OutputTokens,
-			TotalTokens:      result.Usage.InputTokens + result.Usage.OutputTokens,
+			PromptTokens:     response.Usage.InputTokens,
+			CompletionTokens: response.Usage.OutputTokens,
+			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
 		},
-		Model:    result.Model,
+		Model:    response.Model,
 		Provider: interfaces.Anthropic,
 	}
 
@@ -180,28 +206,7 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 	latency := time.Since(startTime).Seconds()
 
 	// Decode response
-	var anthropicResponse struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Role    string `json:"role"`
-		Content []struct {
-			Type     string `json:"type"`
-			Text     string `json:"text,omitempty"`
-			Thinking string `json:"thinking,omitempty"`
-			ToolUse  *struct {
-				ID    string                 `json:"id"`
-				Name  string                 `json:"name"`
-				Input map[string]interface{} `json:"input"`
-			} `json:"tool_use,omitempty"`
-		} `json:"content"`
-		Model        string  `json:"model"`
-		StopReason   string  `json:"stop_reason,omitempty"`
-		StopSequence *string `json:"stop_sequence,omitempty"`
-		Usage        struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
+	var anthropicResponse AnthropicChatResponse
 
 	if err := json.Unmarshal(body, &anthropicResponse); err != nil {
 		return nil, fmt.Errorf("error decoding response: %v", err)
@@ -245,16 +250,16 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 				Message: interfaces.CompletionResponseChoice{
 					Role:      interfaces.RoleAssistant,
 					Content:   content,
-					ToolCalls: toolCalls,
+					ToolCalls: &toolCalls,
 				},
-				FinishReason: finishReason,
+				FinishReason: &finishReason,
 			},
 		},
 		Usage: interfaces.LLMUsage{
 			PromptTokens:     anthropicResponse.Usage.InputTokens,
 			CompletionTokens: anthropicResponse.Usage.OutputTokens,
 			TotalTokens:      anthropicResponse.Usage.InputTokens + anthropicResponse.Usage.OutputTokens,
-			Latency:          latency,
+			Latency:          &latency,
 		},
 		Model:    anthropicResponse.Model,
 		Provider: interfaces.Anthropic,

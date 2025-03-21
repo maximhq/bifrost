@@ -2,10 +2,10 @@ package interfaces
 
 // LLMUsage represents token usage information
 type LLMUsage struct {
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	TotalTokens      int     `json:"total_tokens"`
-	Latency          float64 `json:"latency,omitempty"`
+	PromptTokens     int      `json:"prompt_tokens"`
+	CompletionTokens int      `json:"completion_tokens"`
+	TotalTokens      int      `json:"total_tokens"`
+	Latency          *float64 `json:"latency"`
 }
 
 // LLMInteractionCost represents cost information for LLM interactions
@@ -30,21 +30,21 @@ type Tool struct {
 
 // ModelParameters represents the parameters for model requests
 type ModelParameters struct {
-	TestRunEntryID *string     `json:"testRunEntryId,omitempty"`
-	PromptTools    *[]string   `json:"promptTools,omitempty"`
-	ToolChoice     *string     `json:"toolChoice,omitempty"`
-	Tools          *[]Tool     `json:"tools,omitempty"`
-	FunctionCall   *string     `json:"functionCall,omitempty"`
-	Functions      *[]Function `json:"functions,omitempty"`
+	TestRunEntryID *string     `json:"testRunEntryId"`
+	PromptTools    *[]string   `json:"promptTools"`
+	ToolChoice     *string     `json:"toolChoice"`
+	Tools          *[]Tool     `json:"tools"`
+	FunctionCall   *string     `json:"functionCall"`
+	Functions      *[]Function `json:"functions"`
 	// Dynamic parameters
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
 // RequestOptions represents options for model requests
 type RequestOptions struct {
-	UseCache       bool   `json:"useCache,omitempty"`
-	WaitForModel   bool   `json:"waitForModel,omitempty"`
-	CompletionType string `json:"CompletionType,omitempty"`
+	UseCache       *bool   `json:"useCache"`
+	WaitForModel   *bool   `json:"waitForModel"`
+	CompletionType *string `json:"CompletionType"`
 }
 
 // FunctionCall represents a function call in a tool call
@@ -68,7 +68,6 @@ const (
 	RoleUser      ModelChatMessageRole = "user"
 	RoleSystem    ModelChatMessageRole = "system"
 	RoleModel     ModelChatMessageRole = "model"
-	RoleChatbot   ModelChatMessageRole = "chatbot"
 	RoleTool      ModelChatMessageRole = "tool"
 )
 
@@ -76,16 +75,16 @@ const (
 type CompletionResponseChoice struct {
 	Role         ModelChatMessageRole `json:"role"`
 	Content      string               `json:"content"`
-	FunctionCall *FunctionCall        `json:"function_call,omitempty"`
-	ToolCalls    []ToolCall           `json:"tool_calls,omitempty"`
+	FunctionCall *FunctionCall        `json:"function_call"`
+	ToolCalls    *[]ToolCall          `json:"tool_calls"`
 }
 
 // CompletionResultChoice represents a choice in the completion result
 type CompletionResultChoice struct {
 	Index        int                      `json:"index"`
 	Message      CompletionResponseChoice `json:"message"`
-	FinishReason string                   `json:"finish_reason,omitempty"`
-	LogProbs     interface{}              `json:"logprobs,omitempty"`
+	FinishReason *string                  `json:"finish_reason"`
+	LogProbs     *interface{}             `json:"logprobs"`
 }
 
 // ToolResult represents the result of a tool call
@@ -115,23 +114,21 @@ type CompletionResult struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 		Type    string `json:"type"`
-	} `json:"error,omitempty"`
+	} `json:"error"`
 	ID              string                   `json:"id"`
 	Choices         []CompletionResultChoice `json:"choices"`
-	ToolCallResult  interface{}              `json:"tool_call_result,omitempty"`
-	ToolCallResults *ToolCallResults         `json:"toolCallResults,omitempty"`
-	Provider        SupportedModelProvider   `json:"provider,omitempty"`
+	ToolCallResult  *interface{}             `json:"tool_call_result"`
+	ToolCallResults *ToolCallResults         `json:"toolCallResults"`
+	Provider        SupportedModelProvider   `json:"provider"`
 	Usage           LLMUsage                 `json:"usage"`
-	Cost            *LLMInteractionCost      `json:"cost,omitempty"`
-	Model           string                   `json:"model,omitempty"`
-	Created         string                   `json:"created,omitempty"`
-	ModelParams     interface{}              `json:"modelParams,omitempty"`
+	Cost            *LLMInteractionCost      `json:"cost"`
+	Model           string                   `json:"model"`
+	Created         string                   `json:"created"`
+	ModelParams     *interface{}             `json:"modelParams"`
 	Trace           *struct {
 		Input  interface{} `json:"input"`
-		Output interface{} `json:"output,omitempty"`
-	} `json:"trace,omitempty"`
-	RetrievedContext        interface{}            `json:"retrievedContext,omitempty"`
-	VariableBoundRetrievals map[string]interface{} `json:"variableBoundRetrievals,omitempty"`
+		Output interface{} `json:"output"`
+	} `json:"trace"`
 }
 
 type SupportedModelProvider string

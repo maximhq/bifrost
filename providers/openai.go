@@ -9,9 +9,16 @@ import (
 	"time"
 )
 
+type OpenAIResponse struct {
+	ID      string                              `json:"id"`
+	Choices []interfaces.CompletionResultChoice `json:"choices"`
+	Usage   interfaces.LLMUsage                 `json:"usage"`
+	Model   string                              `json:"model"`
+	Created interface{}                         `json:"created"`
+}
+
 // OpenAIProvider implements the Provider interface for OpenAI
 type OpenAIProvider struct {
-	//* Do we even need it?
 	client *http.Client
 }
 
@@ -119,29 +126,23 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 	}
 
 	// Decode response
-	var rawResult struct {
-		ID      string                              `json:"id"`
-		Choices []interfaces.CompletionResultChoice `json:"choices"`
-		Usage   interfaces.LLMUsage                 `json:"usage"`
-		Model   string                              `json:"model"`
-		Created interface{}                         `json:"created"`
-	}
+	var response OpenAIResponse
 
-	if err := json.NewDecoder(resp.Body).Decode(&rawResult); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("error decoding response: %v", err)
 	}
 
 	// Convert the raw result to CompletionResult
 	result := &interfaces.CompletionResult{
-		ID:      rawResult.ID,
-		Choices: rawResult.Choices,
-		Usage:   rawResult.Usage,
-		Model:   rawResult.Model,
+		ID:      response.ID,
+		Choices: response.Choices,
+		Usage:   response.Usage,
+		Model:   response.Model,
 	}
 
 	// Handle the created field conversion
-	if rawResult.Created != nil {
-		switch v := rawResult.Created.(type) {
+	if response.Created != nil {
+		switch v := response.Created.(type) {
 		case float64:
 			// Convert Unix timestamp to string
 			result.Created = fmt.Sprintf("%d", int64(v))
@@ -152,7 +153,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 
 	// Add provider-specific information
 	result.Provider = interfaces.OpenAI
-	result.Usage.Latency = latency
+	result.Usage.Latency = &latency
 
 	return result, nil
 }
