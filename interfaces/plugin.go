@@ -1,18 +1,19 @@
 package interfaces
 
+import "context"
+
 type RequestInput struct {
 	StringInput  *string
 	MessageInput *[]Message
 }
 
 type BifrostRequest struct {
-	Model        string
-	Input        RequestInput
-	Params       *ModelParameters
-	PluginParams map[string]interface{}
+	Model  string
+	Input  RequestInput
+	Params *ModelParameters
 }
 
 type Plugin interface {
-	PreHook(req *BifrostRequest) (*BifrostRequest, error)
-	PostHook(result *CompletionResult) (*CompletionResult, error)
+	PreHook(ctx *context.Context, req *BifrostRequest) (*BifrostRequest, error)
+	PostHook(ctx *context.Context, result *CompletionResult) (*CompletionResult, error)
 }

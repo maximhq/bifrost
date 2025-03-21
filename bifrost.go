@@ -3,6 +3,7 @@ package bifrost
 import (
 	"bifrost/interfaces"
 	"bifrost/providers"
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -218,13 +219,12 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 	responseChan := make(chan *interfaces.CompletionResult)
 	errorChan := make(chan error)
 
+	// Create a context with timeout same as the provider/request config
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	for _, plugin := range bifrost.plugins {
-		if req.PluginParams == nil {
-			req.PluginParams = make(map[string]interface{})
-		}
-
-		req, err = plugin.PreHook(req)
-
+		req, err = plugin.PreHook(&ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -239,10 +239,8 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 
 	select {
 	case result := <-responseChan:
-		result.PluginParams = req.PluginParams
-
 		for _, plugin := range bifrost.plugins {
-			result, err = plugin.PostHook(result)
+			result, err = plugin.PostHook(&ctx, result)
 
 			if err != nil {
 				return nil, err
@@ -252,6 +250,8 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 		return result, nil
 	case err := <-errorChan:
 		return nil, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -264,13 +264,12 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 	responseChan := make(chan *interfaces.CompletionResult)
 	errorChan := make(chan error)
 
+	// Create a context with timeout same as the provider/request config
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	for _, plugin := range bifrost.plugins {
-		if req.PluginParams == nil {
-			req.PluginParams = make(map[string]interface{})
-		}
-
-		req, err = plugin.PreHook(req)
-
+		req, err = plugin.PreHook(&ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -283,13 +282,10 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 		Type:           ChatCompletionRequest,
 	}
 
-	// Wait for response
 	select {
 	case result := <-responseChan:
-		result.PluginParams = req.PluginParams
-
 		for _, plugin := range bifrost.plugins {
-			result, err = plugin.PostHook(result)
+			result, err = plugin.PostHook(&ctx, result)
 
 			if err != nil {
 				return nil, err
@@ -299,6 +295,8 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 		return result, nil
 	case err := <-errorChan:
 		return nil, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

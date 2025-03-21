@@ -125,7 +125,6 @@ type CompletionResult struct {
 	Model           string                   `json:"model"`
 	Created         string                   `json:"created"`
 	Params          *interface{}             `json:"modelParams"`
-	PluginParams    map[string]interface{}   `json:"-"`
 	Trace           *struct {
 		Input  interface{} `json:"input"`
 		Output interface{} `json:"output"`
