@@ -14,6 +14,6 @@ type BifrostRequest struct {
 }
 
 type Plugin interface {
-	PreHook(ctx *context.Context, req *BifrostRequest) (*BifrostRequest, error)
-	PostHook(ctx *context.Context, result *CompletionResult) (*CompletionResult, error)
+	PreHook(ctx context.Context, req *BifrostRequest) (context.Context, *BifrostRequest, error)
+	PostHook(ctx context.Context, result *CompletionResult) (*CompletionResult, error)
 }

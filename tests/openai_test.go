@@ -3,6 +3,7 @@ package tests
 import (
 	"bifrost"
 	"bifrost/interfaces"
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 	text := "Hello world!"
 
+	ctx := context.Background()
+
 	// Text completion request
 	go func() {
 		result, err := bifrost.TextCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
@@ -20,7 +23,7 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 				StringInput: &text,
 			},
 			Params: nil,
-		})
+		}, ctx)
 		if err != nil {
 			fmt.Println("Error:", err)
 		} else {
@@ -52,7 +55,7 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 					MessageInput: &messages,
 				},
 				Params: nil,
-			})
+			}, ctx)
 			if err != nil {
 				fmt.Printf("Error in OpenAI request %d: %v\n", index+1, err)
 			} else {

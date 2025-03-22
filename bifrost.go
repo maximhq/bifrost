@@ -210,7 +210,7 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelPr
 	return queue, nil
 }
 
-func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest) (*interfaces.CompletionResult, error) {
+func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.CompletionResult, error) {
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
 		return nil, err
@@ -219,12 +219,8 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 	responseChan := make(chan *interfaces.CompletionResult)
 	errorChan := make(chan error)
 
-	// Create a context with timeout same as the provider/request config
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	for _, plugin := range bifrost.plugins {
-		req, err = plugin.PreHook(&ctx, req)
+		ctx, req, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -240,7 +236,7 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 	select {
 	case result := <-responseChan:
 		for _, plugin := range bifrost.plugins {
-			result, err = plugin.PostHook(&ctx, result)
+			result, err = plugin.PostHook(ctx, result)
 
 			if err != nil {
 				return nil, err
@@ -250,12 +246,10 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 		return result, nil
 	case err := <-errorChan:
 		return nil, err
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
 }
 
-func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest) (*interfaces.CompletionResult, error) {
+func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.CompletionResult, error) {
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
 		return nil, err
@@ -264,12 +258,8 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 	responseChan := make(chan *interfaces.CompletionResult)
 	errorChan := make(chan error)
 
-	// Create a context with timeout same as the provider/request config
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	for _, plugin := range bifrost.plugins {
-		req, err = plugin.PreHook(&ctx, req)
+		ctx, req, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -285,7 +275,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 	select {
 	case result := <-responseChan:
 		for _, plugin := range bifrost.plugins {
-			result, err = plugin.PostHook(&ctx, result)
+			result, err = plugin.PostHook(ctx, result)
 
 			if err != nil {
 				return nil, err
@@ -295,8 +285,6 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 		return result, nil
 	case err := <-errorChan:
 		return nil, err
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
 }
 

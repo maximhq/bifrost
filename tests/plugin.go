@@ -21,7 +21,7 @@ type Plugin struct {
 	logger *logging.Logger
 }
 
-func (plugin *Plugin) PreHook(ctx *context.Context, req *interfaces.BifrostRequest) (*interfaces.BifrostRequest, error) {
+func (plugin *Plugin) PreHook(ctx context.Context, req *interfaces.BifrostRequest) (context.Context, *interfaces.BifrostRequest, error) {
 	traceID := time.Now().Format("20060102_150405000")
 
 	trace := plugin.logger.Trace(&logging.TraceConfig{
@@ -32,14 +32,14 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *interfaces.BifrostReque
 	trace.SetInput(fmt.Sprintf("New Request Incoming: %v", req))
 
 	// Store traceID in context
-	*ctx = context.WithValue(*ctx, traceIDKey, traceID)
+	ctx = context.WithValue(ctx, traceIDKey, traceID)
 
-	return req, nil
+	return ctx, req, nil
 }
 
-func (plugin *Plugin) PostHook(ctx *context.Context, res *interfaces.CompletionResult) (*interfaces.CompletionResult, error) {
+func (plugin *Plugin) PostHook(ctx context.Context, res *interfaces.CompletionResult) (*interfaces.CompletionResult, error) {
 	// Get traceID from context
-	traceID, ok := (*ctx).Value(traceIDKey).(string)
+	traceID, ok := ctx.Value(traceIDKey).(string)
 	if !ok {
 		return res, fmt.Errorf("traceID not found in context")
 	}

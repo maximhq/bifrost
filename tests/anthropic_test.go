@@ -3,6 +3,7 @@ package tests
 import (
 	"bifrost"
 	"bifrost/interfaces"
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -16,6 +17,8 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 		"What's the best way to learn programming?",
 		"Tell me about artificial intelligence.",
 	}
+
+	ctx := context.Background()
 
 	go func() {
 		params := interfaces.ModelParameters{
@@ -31,7 +34,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 				StringInput: &text,
 			},
 			Params: &params,
-		})
+		}, ctx)
 		if err != nil {
 			fmt.Println("Error:", err)
 		} else {
@@ -61,7 +64,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 					MessageInput: &messages,
 				},
 				Params: &params,
-			})
+			}, ctx)
 
 			if err != nil {
 				fmt.Printf("Error in Anthropic request %d: %v\n", index+1, err)
