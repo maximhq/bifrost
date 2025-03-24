@@ -44,7 +44,20 @@ func getBifrost() (*bifrost.Bifrost, error) {
 		return nil, err
 	}
 
-	bifrost, err := bifrost.Init(&account, []interfaces.Plugin{plugin})
+	configs := map[interfaces.SupportedModelProvider]interfaces.ProviderConfig{
+		interfaces.OpenAI: {
+			NetworkConfig: interfaces.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+			},
+		},
+		interfaces.Anthropic: {
+			NetworkConfig: interfaces.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+			},
+		},
+	}
+
+	bifrost, err := bifrost.Init(&account, []interfaces.Plugin{plugin}, configs)
 	if err != nil {
 		return nil, err
 	}

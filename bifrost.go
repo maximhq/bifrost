@@ -32,23 +32,32 @@ type Bifrost struct {
 	account       interfaces.Account
 	providers     []interfaces.Provider // list of processed providers
 	plugins       []interfaces.Plugin
+	configs       map[interfaces.SupportedModelProvider]interfaces.ProviderConfig
 	requestQueues map[interfaces.SupportedModelProvider]chan ChannelMessage // provider request queues
 	wg            map[interfaces.SupportedModelProvider]*sync.WaitGroup
 }
 
-func createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider) (interfaces.Provider, error) {
+func createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider, config *interfaces.ProviderConfig) (interfaces.Provider, error) {
 	switch providerKey {
 	case interfaces.OpenAI:
-		return providers.NewOpenAIProvider(), nil
+		return providers.NewOpenAIProvider(config), nil
 	case interfaces.Anthropic:
-		return providers.NewAnthropicProvider(), nil
+		return providers.NewAnthropicProvider(config), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
 }
 
-func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelProvider) error {
-	provider, err := createProviderFromProviderKey(providerKey)
+func getConfigForProvider(providerKey interfaces.SupportedModelProvider, configs map[interfaces.SupportedModelProvider]interfaces.ProviderConfig) (*interfaces.ProviderConfig, error) {
+	if config, ok := configs[providerKey]; ok {
+		return &config, nil
+	}
+
+	return nil, fmt.Errorf("no config found for provider: %s", providerKey)
+}
+
+func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelProvider, config *interfaces.ProviderConfig) error {
+	provider, err := createProviderFromProviderKey(providerKey, config)
 	if err != nil {
 		return fmt.Errorf("failed to get provider for the given key: %v", err)
 	}
@@ -80,7 +89,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelPro
 }
 
 // Initializes infinite listening channels for each provider
-func Init(account interfaces.Account, plugins []interfaces.Plugin) (*Bifrost, error) {
+func Init(account interfaces.Account, plugins []interfaces.Plugin, configs map[interfaces.SupportedModelProvider]interfaces.ProviderConfig) (*Bifrost, error) {
 	bifrost := &Bifrost{account: account, plugins: plugins}
 	bifrost.wg = make(map[interfaces.SupportedModelProvider]*sync.WaitGroup)
 
@@ -93,7 +102,12 @@ func Init(account interfaces.Account, plugins []interfaces.Plugin) (*Bifrost, er
 
 	// Create buffered channels for each provider and start workers
 	for _, providerKey := range providerKeys {
-		if err := bifrost.prepareProvider(providerKey); err != nil {
+		config, err := getConfigForProvider(providerKey, configs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get config for provider: %v", err)
+		}
+
+		if err := bifrost.prepareProvider(providerKey, config); err != nil {
 			fmt.Printf("failed to prepare provider: %v", err)
 		}
 	}
@@ -200,7 +214,12 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelPr
 	var exists bool
 
 	if queue, exists = bifrost.requestQueues[providerKey]; !exists {
-		if err := bifrost.prepareProvider(providerKey); err != nil {
+		config, err := getConfigForProvider(providerKey, bifrost.configs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get config for provider: %v", err)
+		}
+
+		if err := bifrost.prepareProvider(providerKey, config); err != nil {
 			return nil, err
 		}
 

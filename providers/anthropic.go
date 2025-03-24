@@ -50,10 +50,9 @@ type AnthropicProvider struct {
 }
 
 // NewAnthropicProvider creates a new AnthropicProvider instance
-func NewAnthropicProvider() *AnthropicProvider {
+func NewAnthropicProvider(config *interfaces.ProviderConfig) *AnthropicProvider {
 	return &AnthropicProvider{
-		// @comment let us have this be controllable
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)},
 	}
 }
 

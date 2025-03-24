@@ -202,6 +202,27 @@ type ImageContent struct {
 // 	return nil
 // }
 
+type NetworkConfig struct {
+	DefaultRequestTimeoutInSeconds int `json:"defaultRequestTimeoutInSeconds"`
+}
+
+type MetaConfig struct {
+	BedrockMetaConfig *BedrockMetaConfig `json:"bedrockMetaConfig"`
+}
+
+type ProviderConfig struct {
+	NetworkConfig NetworkConfig `json:"networkConfig"`
+	MetaConfig    *MetaConfig   `json:"metaConfig"`
+}
+
+type BedrockMetaConfig struct {
+	SecretAccessKey   string            `json:"secretAccessKey"`
+	Region            *string           `json:"region"`
+	SessionToken      *string           `json:"sessionToken"`
+	ARN               *string           `json:"arn"`
+	InferenceProfiles map[string]string `json:"inferenceProfiles"`
+}
+
 // Provider defines the interface for AI model providers
 type Provider interface {
 	GetProviderKey() SupportedModelProvider
