@@ -2,7 +2,19 @@ package providers
 
 import (
 	"bifrost/interfaces"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
 	"reflect"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/config"
 )
 
 // MergeConfig merges default config with custom parameters
@@ -62,4 +74,61 @@ func PrepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	}
 
 	return flatParams
+}
+
+func SignAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) error {
+	// Set required headers before signing
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Calculate SHA256 hash of the request body
+	var bodyHash string
+	if req.Body != nil {
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read request body: %v", err)
+		}
+		// Restore the body for subsequent reads
+		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		hash := sha256.Sum256(bodyBytes)
+		bodyHash = hex.EncodeToString(hash[:])
+	} else {
+		// For empty body, use the hash of an empty string
+		hash := sha256.Sum256([]byte{})
+		bodyHash = hex.EncodeToString(hash[:])
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithRegion(region),
+		config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			creds := aws.Credentials{
+				AccessKeyID:     accessKey,
+				SecretAccessKey: secretKey,
+			}
+			if sessionToken != nil {
+				creds.SessionToken = *sessionToken
+			}
+			return creds, nil
+		})),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load AWS config: %v", err)
+	}
+
+	// Create the AWS signer
+	signer := v4.NewSigner()
+
+	// Get credentials
+	creds, err := cfg.Credentials.Retrieve(context.TODO())
+	if err != nil {
+		return fmt.Errorf("failed to retrieve credentials: %v", err)
+	}
+
+	// Sign the request with AWS Signature V4
+	if err := signer.SignHTTP(context.TODO(), creds, req, bodyHash, service, region, time.Now()); err != nil {
+		return fmt.Errorf("failed to sign request: %v", err)
+	}
+
+	return nil
 }

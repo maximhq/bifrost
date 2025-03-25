@@ -3,8 +3,8 @@ package interfaces
 import "context"
 
 type RequestInput struct {
-	StringInput  *string
-	MessageInput *[]Message
+	TextInput *string
+	ChatInput *[]Message
 }
 
 type BifrostRequest struct {

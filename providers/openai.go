@@ -62,7 +62,6 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 	// Format messages for OpenAI API
 	var openAIMessages []map[string]interface{}
 	for _, msg := range messages {
-
 		var content any
 		if msg.Content != nil {
 			content = msg.Content

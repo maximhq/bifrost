@@ -55,6 +55,17 @@ func getBifrost() (*bifrost.Bifrost, error) {
 				DefaultRequestTimeoutInSeconds: 30,
 			},
 		},
+		interfaces.Bedrock: {
+			NetworkConfig: interfaces.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+			},
+			MetaConfig: &interfaces.MetaConfig{
+				BedrockMetaConfig: &interfaces.BedrockMetaConfig{
+					SecretAccessKey: "AMpq95pNadM2fD1GlcNvjbMiGhizwYaGKJxv+nti",
+					Region:          maxim.StrPtr("us-east-1"),
+				},
+			},
+		},
 	}
 
 	bifrost, err := bifrost.Init(&account, []interfaces.Plugin{plugin}, configs)

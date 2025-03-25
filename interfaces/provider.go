@@ -1,5 +1,7 @@
 package interfaces
 
+import "encoding/json"
+
 // LLMUsage represents token usage information
 type LLMUsage struct {
 	PromptTokens     int      `json:"prompt_tokens"`
@@ -55,9 +57,11 @@ type FunctionCall struct {
 
 // ToolCall represents a tool call in a message
 type ToolCall struct {
-	Type     string       `json:"type"`
-	ID       string       `json:"id"`
-	Function FunctionCall `json:"function"`
+	Type     *string         `json:"type"`
+	ID       string          `json:"id"`
+	Name     *string         `json:"name"`
+	Input    json.RawMessage `json:"input"`
+	Function *FunctionCall   `json:"function"`
 }
 
 // ModelChatMessageRole represents the role of a chat message
@@ -73,18 +77,19 @@ const (
 
 // CompletionResponseChoice represents a choice in the completion response
 type CompletionResponseChoice struct {
-	Role         ModelChatMessageRole `json:"role"`
-	Content      string               `json:"content"`
-	FunctionCall *FunctionCall        `json:"function_call"`
-	ToolCalls    *[]ToolCall          `json:"tool_calls"`
+	Role      ModelChatMessageRole `json:"role"`
+	Content   string               `json:"content"`
+	Image     json.RawMessage      `json:"image"`
+	ToolCalls *[]ToolCall          `json:"tool_calls"`
 }
 
 // CompletionResultChoice represents a choice in the completion result
 type CompletionResultChoice struct {
-	Index        int                      `json:"index"`
-	Message      CompletionResponseChoice `json:"message"`
-	FinishReason *string                  `json:"finish_reason"`
-	LogProbs     *interface{}             `json:"logprobs"`
+	Index      int                      `json:"index"`
+	Message    CompletionResponseChoice `json:"message"`
+	StopReason *string                  `json:"stop_reason"`
+	Stop       *string                  `json:"stop"`
+	LogProbs   *interface{}             `json:"logprobs"`
 }
 
 // ToolResult represents the result of a tool call
@@ -147,27 +152,19 @@ const (
 	Lmstudio    SupportedModelProvider = "lmstudio"
 )
 
-type Role string
-
-const (
-	UserRole      Role = "user"
-	AssistantRole Role = "assistant"
-	SystemRole    Role = "system"
-)
-
 type Message struct {
 	//* strict check for roles
-	Role Role `json:"role"`
+	Role ModelChatMessageRole `json:"role"`
 	//* need to make sure either content or imagecontent is provided
 	Content      *string       `json:"content"`
 	ImageContent *ImageContent `json:"imageContent"`
+	ToolCalls    *[]ToolCall   `json:"toolCall"`
 }
 
 type ImageContent struct {
-	Type     string `json:"type"`
-	ImageURL struct {
-		URL string `json:"url"`
-	} `json:"image_url"`
+	Type      string `json:"type"`
+	URL       string `json:"url"`
+	MediaType string `json:"media_type"`
 }
 
 // type Content struct {

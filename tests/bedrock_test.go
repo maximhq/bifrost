@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// setupAnthropicRequests sends multiple test requests to Anthropic
-func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
-	anthropicMessages := []string{
+// setupBedrockRequests sends multiple test requests to Bedrock
+func setupBedrockRequests(bifrost *bifrost.Bifrost) {
+	bedrockMessages := []string{
 		"What's your favorite programming language?",
 		"Can you help me write a Go function?",
 		"What's the best way to learn programming?",
@@ -26,10 +26,10 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 				"max_tokens_to_sample": 4096,
 			},
 		}
-		text := "Hello world!"
+		text := "\n\nHuman:<prompt>\n\nAssistant:"
 
-		result, err := bifrost.TextCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
-			Model: "claude-2.1",
+		result, err := bifrost.TextCompletionRequest(interfaces.Bedrock, &interfaces.BifrostRequest{
+			Model: "anthropic.claude-v2:1",
 			Input: interfaces.RequestInput{
 				TextInput: &text,
 			},
@@ -48,7 +48,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 		},
 	}
 
-	for i, message := range anthropicMessages {
+	for i, message := range bedrockMessages {
 		delay := time.Duration(500+100*i) * time.Millisecond
 		go func(msg string, delay time.Duration, index int) {
 			time.Sleep(delay)
@@ -58,8 +58,8 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 					Content: &msg,
 				},
 			}
-			result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
-				Model: "claude-3-7-sonnet-20250219",
+			result, err := bifrost.ChatCompletionRequest(interfaces.Bedrock, &interfaces.BifrostRequest{
+				Model: "anthropic.claude-3-sonnet-20240229-v1:0",
 				Input: interfaces.RequestInput{
 					ChatInput: &messages,
 				},
@@ -67,7 +67,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 			}, ctx)
 
 			if err != nil {
-				fmt.Printf("Error in Anthropic request %d: %v\n", index+1, err)
+				fmt.Printf("Error in Bedrock request %d: %v\n", index+1, err)
 			} else {
 				fmt.Printf("🤖 Chat Completion Result %d: %s\n", index+1, result.Choices[0].Message.Content)
 			}
@@ -75,14 +75,14 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 	}
 }
 
-func TestAnthropic(t *testing.T) {
+func TestBedrock(t *testing.T) {
 	bifrost, err := getBifrost()
 	if err != nil {
 		t.Fatalf("Error initializing bifrost: %v", err)
 		return
 	}
 
-	setupAnthropicRequests(bifrost)
+	setupBedrockRequests(bifrost)
 
 	bifrost.Cleanup()
 }

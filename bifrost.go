@@ -43,6 +43,8 @@ func createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider
 		return providers.NewOpenAIProvider(config), nil
 	case interfaces.Anthropic:
 		return providers.NewAnthropicProvider(config), nil
+	case interfaces.Bedrock:
+		return providers.NewBedrockProvider(config), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -99,6 +101,7 @@ func Init(account interfaces.Account, plugins []interfaces.Plugin, configs map[i
 	}
 
 	bifrost.requestQueues = make(map[interfaces.SupportedModelProvider]chan ChannelMessage)
+	bifrost.configs = configs
 
 	// Create buffered channels for each provider and start workers
 	for _, providerKey := range providerKeys {
@@ -184,9 +187,9 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 		}
 
 		if req.Type == TextCompletionRequest {
-			result, err = provider.TextCompletion(req.Model, key, *req.Input.StringInput, req.Params)
+			result, err = provider.TextCompletion(req.Model, key, *req.Input.TextInput, req.Params)
 		} else if req.Type == ChatCompletionRequest {
-			result, err = provider.ChatCompletion(req.Model, key, *req.Input.MessageInput, req.Params)
+			result, err = provider.ChatCompletion(req.Model, key, *req.Input.ChatInput, req.Params)
 		}
 
 		if err != nil {

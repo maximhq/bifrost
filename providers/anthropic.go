@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/maximhq/maxim-go"
 )
 
 type AnthropicTextResponse struct {
@@ -62,6 +64,8 @@ func (provider *AnthropicProvider) GetProviderKey() interfaces.SupportedModelPro
 
 // TextCompletion implements text completion using Anthropic's API
 func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+	startTime := time.Now()
+
 	preparedParams := PrepareParams(params)
 
 	// Merge additional parameters
@@ -122,6 +126,9 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 		return nil, fmt.Errorf("error parsing response: %v", err)
 	}
 
+	// Calculate latency
+	latency := time.Since(startTime).Seconds()
+
 	// Create the completion result
 	completionResult := &interfaces.CompletionResult{
 		ID: response.ID,
@@ -138,6 +145,7 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
+			Latency:          &latency,
 		},
 		Model:    response.Model,
 		Provider: interfaces.Anthropic,
@@ -214,7 +222,7 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 	// Process the response into our CompletionResult format
 	var content string
 	var toolCalls []interfaces.ToolCall
-	var finishReason string
+	var stopReason string
 
 	// Process content and tool calls
 	for _, c := range anthropicResponse.Content {
@@ -228,14 +236,14 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		case "tool_use":
 			if c.ToolUse != nil {
 				toolCalls = append(toolCalls, interfaces.ToolCall{
-					Type: "function",
+					Type: maxim.StrPtr("function"),
 					ID:   c.ToolUse.ID,
-					Function: interfaces.FunctionCall{
+					Function: &interfaces.FunctionCall{
 						Name:      c.ToolUse.Name,
 						Arguments: string(must(json.Marshal(c.ToolUse.Input))),
 					},
 				})
-				finishReason = "tool_calls"
+				stopReason = "tool_calls"
 			}
 		}
 	}
@@ -251,7 +259,7 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 					Content:   content,
 					ToolCalls: &toolCalls,
 				},
-				FinishReason: &finishReason,
+				StopReason: &stopReason,
 			},
 		},
 		Usage: interfaces.LLMUsage{

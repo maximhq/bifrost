@@ -20,7 +20,7 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 		result, err := bifrost.TextCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
 			Model: "gpt-4o-mini",
 			Input: interfaces.RequestInput{
-				StringInput: &text,
+				TextInput: &text,
 			},
 			Params: nil,
 		}, ctx)
@@ -45,14 +45,14 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 			time.Sleep(delay)
 			messages := []interfaces.Message{
 				{
-					Role:    interfaces.UserRole,
+					Role:    interfaces.RoleUser,
 					Content: &msg,
 				},
 			}
 			result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
 				Model: "gpt-4o-mini",
 				Input: interfaces.RequestInput{
-					MessageInput: &messages,
+					ChatInput: &messages,
 				},
 				Params: nil,
 			}, ctx)
