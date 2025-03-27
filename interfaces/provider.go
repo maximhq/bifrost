@@ -10,6 +10,13 @@ type LLMUsage struct {
 	Latency          *float64 `json:"latency"`
 }
 
+type BilledLLMUsage struct {
+	PromptTokens     *float64 `json:"prompt_tokens"`
+	CompletionTokens *float64 `json:"completion_tokens"`
+	SearchUnits      *float64 `json:"search_units"`
+	Classifications  *float64 `json:"classifications"`
+}
+
 // LLMInteractionCost represents cost information for LLM interactions
 type LLMInteractionCost struct {
 	Input  float64 `json:"input"`
@@ -64,6 +71,14 @@ type ToolCall struct {
 	Function *FunctionCall   `json:"function"`
 }
 
+type Citation struct {
+	Start   *int         `json:"start"`
+	End     *int         `json:"end"`
+	Text    *string      `json:"text"`
+	Sources *interface{} `json:"sources"`
+	Type    *string      `json:"type"`
+}
+
 // ModelChatMessageRole represents the role of a chat message
 type ModelChatMessageRole string
 
@@ -81,6 +96,7 @@ type CompletionResponseChoice struct {
 	Content   string               `json:"content"`
 	Image     json.RawMessage      `json:"image"`
 	ToolCalls *[]ToolCall          `json:"tool_calls"`
+	Citations *[]Citation          `json:"citation"`
 }
 
 // CompletionResultChoice represents a choice in the completion result
@@ -120,16 +136,18 @@ type CompletionResult struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
-	ID              string                   `json:"id"`
-	Choices         []CompletionResultChoice `json:"choices"`
-	ToolCallResult  *interface{}             `json:"tool_call_result"`
-	ToolCallResults *ToolCallResults         `json:"toolCallResults"`
-	Provider        SupportedModelProvider   `json:"provider"`
-	Usage           LLMUsage                 `json:"usage"`
-	Cost            *LLMInteractionCost      `json:"cost"`
-	Model           string                   `json:"model"`
-	Created         string                   `json:"created"`
-	Params          *interface{}             `json:"modelParams"`
+	ID              string                      `json:"id"`
+	Choices         []CompletionResultChoice    `json:"choices"`
+	ChatHistory     *[]CompletionResponseChoice `json:"chat_history"`
+	ToolCallResult  *interface{}                `json:"tool_call_result"`
+	ToolCallResults *ToolCallResults            `json:"toolCallResults"`
+	Provider        SupportedModelProvider      `json:"provider"`
+	Usage           LLMUsage                    `json:"usage"`
+	BilledUsage     *BilledLLMUsage             `json:"billed_usage"`
+	Cost            *LLMInteractionCost         `json:"cost"`
+	Model           string                      `json:"model"`
+	Created         string                      `json:"created"`
+	Params          *interface{}                `json:"modelParams"`
 	Trace           *struct {
 		Input  interface{} `json:"input"`
 		Output interface{} `json:"output"`

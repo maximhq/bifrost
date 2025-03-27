@@ -45,6 +45,8 @@ func createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider
 		return providers.NewAnthropicProvider(config), nil
 	case interfaces.Bedrock:
 		return providers.NewBedrockProvider(config), nil
+	case interfaces.Cohere:
+		return providers.NewCohereProvider(config), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}

@@ -41,6 +41,14 @@ func (baseAccount *BaseAccount) GetKeysForProvider(provider interfaces.Provider)
 				Weight: 1.0,
 			},
 		}, nil
+	case interfaces.Cohere:
+		return []interfaces.Key{
+			{
+				Value:  os.Getenv("COHERE_API_KEY"),
+				Models: []string{"command-a-03-2025"},
+				Weight: 1.0,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider.GetProviderKey())
 	}
@@ -60,6 +68,11 @@ func (baseAccount *BaseAccount) GetConcurrencyAndBufferSizeForProvider(provider 
 			BufferSize:  10,
 		}, nil
 	case interfaces.Bedrock:
+		return &interfaces.ConcurrencyAndBufferSize{
+			Concurrency: 3,
+			BufferSize:  10,
+		}, nil
+	case interfaces.Cohere:
 		return &interfaces.ConcurrencyAndBufferSize{
 			Concurrency: 3,
 			BufferSize:  10,
