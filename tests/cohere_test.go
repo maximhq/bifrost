@@ -12,7 +12,6 @@ import (
 // setupCohereRequests sends multiple test requests to Cohere
 func setupCohereRequests(bifrost *bifrost.Bifrost) {
 	text := "Hello world!"
-
 	ctx := context.Background()
 
 	// Text completion request
@@ -31,15 +30,14 @@ func setupCohereRequests(bifrost *bifrost.Bifrost) {
 		}
 	}()
 
-	// Chat completion requests with different messages and delays
-	CohereMessages := []string{
+	// Regular chat completion requests
+	cohereMessages := []string{
 		"Hello! How are you today?",
-		"What's the weather like?",
 		"Tell me a joke!",
 		"What's your favorite programming language?",
 	}
 
-	for i, message := range CohereMessages {
+	for i, message := range cohereMessages {
 		delay := time.Duration(100*(i+1)) * time.Millisecond
 		go func(msg string, delay time.Duration, index int) {
 			time.Sleep(delay)
@@ -60,6 +58,66 @@ func setupCohereRequests(bifrost *bifrost.Bifrost) {
 				fmt.Printf("Error in Cohere request %d: %v\n", index+1, err)
 			} else {
 				fmt.Printf("🐒 Chat Completion Result %d: %s\n", index+1, result.Choices[0].Message.Content)
+			}
+		}(message, delay, i)
+	}
+
+	// Tool calls test
+	setupCohereToolCalls(bifrost, ctx)
+}
+
+// setupCohereToolCalls tests Cohere's function calling capability
+func setupCohereToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
+	cohereMessages := []string{
+		"What's the weather like in Mumbai?",
+	}
+
+	params := interfaces.ModelParameters{
+		Tools: &[]interfaces.Tool{{
+			Type: "function",
+			Function: interfaces.Function{
+				Name:        "get_weather",
+				Description: "Get the current weather in a given location",
+				Parameters: interfaces.FunctionParameters{
+					Type: "object",
+					Properties: map[string]interface{}{
+						"location": map[string]interface{}{
+							"type":        "string",
+							"description": "The city and state, e.g. San Francisco, CA",
+						},
+						"unit": map[string]interface{}{
+							"type": "string",
+							"enum": []string{"celsius", "fahrenheit"},
+						},
+					},
+					Required: []string{"location"},
+				},
+			},
+		}},
+	}
+
+	for i, message := range cohereMessages {
+		delay := time.Duration(100*(i+1)) * time.Millisecond
+		go func(msg string, delay time.Duration, index int) {
+			time.Sleep(delay)
+			messages := []interfaces.Message{
+				{
+					Role:    interfaces.RoleUser,
+					Content: &msg,
+				},
+			}
+			result, err := bifrost.ChatCompletionRequest(interfaces.Cohere, &interfaces.BifrostRequest{
+				Model: "command-a-03-2025",
+				Input: interfaces.RequestInput{
+					ChatInput: &messages,
+				},
+				Params: &params,
+			}, ctx)
+			if err != nil {
+				fmt.Printf("Error in Cohere tool call request %d: %v\n", index+1, err)
+			} else {
+				toolCall := *result.Choices[0].Message.ToolCalls
+				fmt.Printf("🐒 Tool Call Result %d: %s\n", index+1, toolCall[0].Arguments)
 			}
 		}(message, delay, i)
 	}

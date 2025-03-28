@@ -11,6 +11,7 @@ type Key struct {
 	Weight float64  `json:"weight"`
 }
 
+// TODO one get config method
 type Account interface {
 	GetInitiallyConfiguredProviderKeys() ([]SupportedModelProvider, error)
 	GetKeysForProvider(provider Provider) ([]Key, error)

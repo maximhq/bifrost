@@ -28,14 +28,12 @@ type AnthropicChatResponse struct {
 	Type    string `json:"type"`
 	Role    string `json:"role"`
 	Content []struct {
-		Type     string `json:"type"`
-		Text     string `json:"text,omitempty"`
-		Thinking string `json:"thinking,omitempty"`
-		ToolUse  *struct {
-			ID    string                 `json:"id"`
-			Name  string                 `json:"name"`
-			Input map[string]interface{} `json:"input"`
-		} `json:"tool_use,omitempty"`
+		Type     string                 `json:"type"`
+		Text     string                 `json:"text,omitempty"`
+		Thinking string                 `json:"thinking,omitempty"`
+		ID       string                 `json:"id"`
+		Name     string                 `json:"name"`
+		Input    map[string]interface{} `json:"input"`
 	} `json:"content"`
 	Model        string  `json:"model"`
 	StopReason   string  `json:"stop_reason,omitempty"`
@@ -62,11 +60,25 @@ func (provider *AnthropicProvider) GetProviderKey() interfaces.SupportedModelPro
 	return interfaces.Anthropic
 }
 
+func (provider *AnthropicProvider) PrepareTextCompletionParams(params map[string]interface{}) map[string]interface{} {
+	// Check if there is a key entry for max_tokens
+	if maxTokens, exists := params["max_tokens"]; exists {
+		// Check if max_tokens_to_sample is already present
+		if _, exists := params["max_tokens_to_sample"]; !exists {
+			// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+			params["max_tokens_to_sample"] = maxTokens
+		}
+		delete(params, "max_tokens")
+	}
+	return params
+
+}
+
 // TextCompletion implements text completion using Anthropic's API
-func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	startTime := time.Now()
 
-	preparedParams := PrepareParams(params)
+	preparedParams := provider.PrepareTextCompletionParams(PrepareParams(params))
 
 	// Merge additional parameters
 	requestBody := MergeConfig(map[string]interface{}{
@@ -98,6 +110,9 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 	}
 	defer resp.Body.Close()
 
+	// Calculate latency
+	latency := time.Since(startTime).Seconds()
+
 	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -106,36 +121,28 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 
 	// Check for error response
 	if resp.StatusCode != http.StatusOK {
-		var errorResp struct {
-			Type  string `json:"type"`
-			Error struct {
-				Type    string `json:"type"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(body, &errorResp); err != nil {
-			return nil, fmt.Errorf("error response: %s", string(body))
-		}
-		return nil, fmt.Errorf("anthropic error: %s", errorResp.Error.Message)
+		return nil, fmt.Errorf("anthropic error: %s", string(body))
 	}
 
 	// Parse the response
 	var response AnthropicTextResponse
-
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("error parsing response: %v", err)
 	}
 
-	// Calculate latency
-	latency := time.Since(startTime).Seconds()
+	// Parse raw response
+	var rawResponse interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("error parsing raw response: %v", err)
+	}
 
 	// Create the completion result
-	completionResult := &interfaces.CompletionResult{
+	completionResult := &interfaces.BifrostResponse{
 		ID: response.ID,
-		Choices: []interfaces.CompletionResultChoice{
+		Choices: []interfaces.BifrostResponseChoice{
 			{
 				Index: 0,
-				Message: interfaces.CompletionResponseChoice{
+				Message: interfaces.BifrostResponseChoiceMessage{
 					Role:    interfaces.RoleAssistant,
 					Content: response.Completion,
 				},
@@ -147,17 +154,16 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
 			Latency:          &latency,
 		},
-		Model:    response.Model,
-		Provider: interfaces.Anthropic,
+		Model:       response.Model,
+		Provider:    interfaces.Anthropic,
+		RawResponse: rawResponse,
 	}
 
 	return completionResult, nil
 }
 
 // ChatCompletion implements chat completion using Anthropic's API
-func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
-	startTime := time.Now()
-
+func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
@@ -168,6 +174,20 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 	}
 
 	preparedParams := PrepareParams(params)
+
+	// Transform tools if present
+	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+		var tools []map[string]interface{}
+		for _, tool := range *params.Tools {
+			tools = append(tools, map[string]interface{}{
+				"name":         tool.Function.Name,
+				"description":  tool.Function.Description,
+				"input_schema": tool.Function.Parameters,
+			})
+		}
+
+		preparedParams["tools"] = tools
+	}
 
 	// Merge additional parameters
 	requestBody := MergeConfig(map[string]interface{}{
@@ -209,67 +229,64 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		return nil, fmt.Errorf("API error: %s", string(body))
 	}
 
-	// Calculate latency
-	latency := time.Since(startTime).Seconds()
-
 	// Decode response
 	var anthropicResponse AnthropicChatResponse
-
 	if err := json.Unmarshal(body, &anthropicResponse); err != nil {
 		return nil, fmt.Errorf("error decoding response: %v", err)
 	}
 
-	// Process the response into our CompletionResult format
-	var content string
-	var toolCalls []interfaces.ToolCall
-	var stopReason string
+	// Parse raw response
+	var rawResponse interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("error parsing raw response: %v", err)
+	}
+
+	// Process the response into our BifrostResponse format
+	var choices []interfaces.BifrostResponseChoice
 
 	// Process content and tool calls
-	for _, c := range anthropicResponse.Content {
+	for i, c := range anthropicResponse.Content {
+		var content string
+		var toolCalls []interfaces.ToolCall
+
 		switch c.Type {
 		case "thinking":
-			if content == "" {
-				content = fmt.Sprintf("<think>\n%s\n</think>\n\n", c.Thinking)
-			}
+			content = c.Thinking
 		case "text":
-			content += c.Text
+			content = c.Text
 		case "tool_use":
-			if c.ToolUse != nil {
-				toolCalls = append(toolCalls, interfaces.ToolCall{
-					Type: maxim.StrPtr("function"),
-					ID:   c.ToolUse.ID,
-					Function: &interfaces.FunctionCall{
-						Name:      c.ToolUse.Name,
-						Arguments: string(must(json.Marshal(c.ToolUse.Input))),
-					},
-				})
-				stopReason = "tool_calls"
-			}
+			toolCalls = append(toolCalls, interfaces.ToolCall{
+				Type:      maxim.StrPtr("function"),
+				ID:        &c.ID,
+				Name:      &c.Name,
+				Arguments: json.RawMessage(must(json.Marshal(c.Input))),
+			})
 		}
+
+		choices = append(choices, interfaces.BifrostResponseChoice{
+			Index: i,
+			Message: interfaces.BifrostResponseChoiceMessage{
+				Role:      interfaces.RoleAssistant,
+				Content:   content,
+				ToolCalls: &toolCalls,
+			},
+			StopReason: &anthropicResponse.StopReason,
+			Stop:       anthropicResponse.StopSequence,
+		})
 	}
 
 	// Create the completion result
-	result := &interfaces.CompletionResult{
-		ID: anthropicResponse.ID,
-		Choices: []interfaces.CompletionResultChoice{
-			{
-				Index: 0,
-				Message: interfaces.CompletionResponseChoice{
-					Role:      interfaces.RoleAssistant,
-					Content:   content,
-					ToolCalls: &toolCalls,
-				},
-				StopReason: &stopReason,
-			},
-		},
+	result := &interfaces.BifrostResponse{
+		ID:      anthropicResponse.ID,
+		Choices: choices,
 		Usage: interfaces.LLMUsage{
 			PromptTokens:     anthropicResponse.Usage.InputTokens,
 			CompletionTokens: anthropicResponse.Usage.OutputTokens,
 			TotalTokens:      anthropicResponse.Usage.InputTokens + anthropicResponse.Usage.OutputTokens,
-			Latency:          &latency,
 		},
-		Model:    anthropicResponse.Model,
-		Provider: interfaces.Anthropic,
+		Model:       anthropicResponse.Model,
+		Provider:    interfaces.Anthropic,
+		RawResponse: rawResponse,
 	}
 
 	return result, nil

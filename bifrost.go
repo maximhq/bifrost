@@ -22,7 +22,7 @@ const (
 
 type ChannelMessage struct {
 	interfaces.BifrostRequest
-	Response chan *interfaces.CompletionResult
+	Response chan *interfaces.BifrostResponse
 	Err      chan error
 	Type     RequestType
 }
@@ -179,7 +179,7 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 	defer bifrost.wg[provider.GetProviderKey()].Done()
 
 	for req := range queue {
-		var result *interfaces.CompletionResult
+		var result *interfaces.BifrostResponse
 		var err error
 
 		key, err := bifrost.SelectKeyFromProviderForModel(provider, req.Model)
@@ -234,13 +234,13 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelPr
 	return queue, nil
 }
 
-func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.CompletionResult, error) {
+func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, error) {
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
 		return nil, err
 	}
 
-	responseChan := make(chan *interfaces.CompletionResult)
+	responseChan := make(chan *interfaces.BifrostResponse)
 	errorChan := make(chan error)
 
 	for _, plugin := range bifrost.plugins {
@@ -273,13 +273,13 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 	}
 }
 
-func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.CompletionResult, error) {
+func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, error) {
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
 		return nil, err
 	}
 
-	responseChan := make(chan *interfaces.CompletionResult)
+	responseChan := make(chan *interfaces.BifrostResponse)
 	errorChan := make(chan error)
 
 	for _, plugin := range bifrost.plugins {

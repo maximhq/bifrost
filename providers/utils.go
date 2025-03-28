@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"time"
 
+	"maps"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -47,7 +49,7 @@ func PrepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	typ := val.Type()
 
 	// Iterate through all fields
-	for i := 0; i < val.NumField(); i++ {
+	for i := range val.NumField() {
 		field := val.Field(i)
 		fieldType := typ.Field(i)
 
@@ -69,9 +71,7 @@ func PrepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	}
 
 	// Handle ExtraParams
-	for k, v := range params.ExtraParams {
-		flatParams[k] = v
-	}
+	maps.Copy(flatParams, params.ExtraParams)
 
 	return flatParams
 }

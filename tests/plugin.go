@@ -37,7 +37,7 @@ func (plugin *Plugin) PreHook(ctx context.Context, req *interfaces.BifrostReques
 	return ctx, req, nil
 }
 
-func (plugin *Plugin) PostHook(ctx context.Context, res *interfaces.CompletionResult) (*interfaces.CompletionResult, error) {
+func (plugin *Plugin) PostHook(ctx context.Context, res *interfaces.BifrostResponse) (*interfaces.BifrostResponse, error) {
 	// Get traceID from context
 	traceID, ok := ctx.Value(traceIDKey).(string)
 	if !ok {

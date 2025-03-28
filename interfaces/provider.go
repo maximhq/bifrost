@@ -2,6 +2,109 @@ package interfaces
 
 import "encoding/json"
 
+// ModelChatMessageRole represents the role of a chat message
+type ModelChatMessageRole string
+
+const (
+	RoleAssistant ModelChatMessageRole = "assistant"
+	RoleUser      ModelChatMessageRole = "user"
+	RoleSystem    ModelChatMessageRole = "system"
+	RoleChatbot   ModelChatMessageRole = "chatbot"
+	RoleTool      ModelChatMessageRole = "tool"
+)
+
+type SupportedModelProvider string
+
+const (
+	OpenAI      SupportedModelProvider = "openai"
+	Azure       SupportedModelProvider = "azure"
+	HuggingFace SupportedModelProvider = "huggingface"
+	Anthropic   SupportedModelProvider = "anthropic"
+	Google      SupportedModelProvider = "google"
+	Groq        SupportedModelProvider = "groq"
+	Bedrock     SupportedModelProvider = "bedrock"
+	Maxim       SupportedModelProvider = "maxim"
+	Cohere      SupportedModelProvider = "cohere"
+	Ollama      SupportedModelProvider = "ollama"
+	Lmstudio    SupportedModelProvider = "lmstudio"
+)
+
+//* Request Structs
+
+// ModelParameters represents the parameters for model requests
+type ModelParameters struct {
+	TestRunEntryID *string   `json:"test_run_entry_id"`
+	PromptTools    *[]string `json:"prompt_tools"`
+	ToolChoice     *string   `json:"tool_choice"`
+	Tools          *[]Tool   `json:"tools"`
+
+	// Common model parameters
+	Temperature      *float64  `json:"temperature"`
+	TopP             *float64  `json:"top_p"`
+	TopK             *int      `json:"top_k"`
+	MaxTokens        *int      `json:"max_tokens"`
+	StopSequences    *[]string `json:"stop_sequences"`
+	PresencePenalty  *float64  `json:"presence_penalty"`
+	FrequencyPenalty *float64  `json:"frequency_penalty"`
+
+	// Dynamic parameters
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+type FunctionParameters struct {
+	Type       string                 `json:"type"`
+	Required   []string               `json:"required"`
+	Properties map[string]interface{} `json:"properties"`
+}
+
+// Function represents a function definition for tool calls
+type Function struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Parameters  FunctionParameters `json:"parameters"`
+}
+
+// Tool represents a tool that can be used with the model
+type Tool struct {
+	ID       *string  `json:"id"`
+	Type     string   `json:"type"`
+	Function Function `json:"function"`
+}
+
+type Message struct {
+	//* strict check for roles
+	Role ModelChatMessageRole `json:"role"`
+	//* need to make sure either content or imagecontent is provided
+	Content      *string       `json:"content"`
+	ImageContent *ImageContent `json:"image_content"`
+	ToolCalls    *[]Tool       `json:"tool_calls"`
+}
+
+type ImageContent struct {
+	Type      string `json:"type"`
+	URL       string `json:"url"`
+	MediaType string `json:"media_type"`
+}
+
+type NetworkConfig struct {
+	DefaultRequestTimeoutInSeconds int `json:"default_request_timeout_in_seconds"`
+}
+
+type MetaConfig struct {
+	SecretAccessKey   string            `json:"secret_access_key"`
+	Region            *string           `json:"region"`
+	SessionToken      *string           `json:"session_token"`
+	ARN               *string           `json:"arn"`
+	InferenceProfiles map[string]string `json:"inference_profiles"`
+}
+
+type ProviderConfig struct {
+	NetworkConfig NetworkConfig `json:"network_config"`
+	MetaConfig    *MetaConfig   `json:"meta_config"`
+}
+
+//* Response Structs
+
 // LLMUsage represents token usage information
 type LLMUsage struct {
 	PromptTokens     int      `json:"prompt_tokens"`
@@ -24,51 +127,12 @@ type LLMInteractionCost struct {
 	Total  float64 `json:"total"`
 }
 
-// Function represents a function definition for tool calls
-type Function struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Parameters  interface{} `json:"parameters"`
-}
-
-// Tool represents a tool that can be used with the model
-type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
-}
-
-// ModelParameters represents the parameters for model requests
-type ModelParameters struct {
-	TestRunEntryID *string     `json:"testRunEntryId"`
-	PromptTools    *[]string   `json:"promptTools"`
-	ToolChoice     *string     `json:"toolChoice"`
-	Tools          *[]Tool     `json:"tools"`
-	FunctionCall   *string     `json:"functionCall"`
-	Functions      *[]Function `json:"functions"`
-	// Dynamic parameters
-	ExtraParams map[string]interface{} `json:"-"`
-}
-
-// RequestOptions represents options for model requests
-type RequestOptions struct {
-	UseCache       *bool   `json:"useCache"`
-	WaitForModel   *bool   `json:"waitForModel"`
-	CompletionType *string `json:"CompletionType"`
-}
-
-// FunctionCall represents a function call in a tool call
-type FunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
 // ToolCall represents a tool call in a message
 type ToolCall struct {
-	Type     *string         `json:"type"`
-	ID       string          `json:"id"`
-	Name     *string         `json:"name"`
-	Input    json.RawMessage `json:"input"`
-	Function *FunctionCall   `json:"function"`
+	Type      *string         `json:"type"`
+	ID        *string         `json:"id"`
+	Name      *string         `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 type Citation struct {
@@ -79,168 +143,43 @@ type Citation struct {
 	Type    *string      `json:"type"`
 }
 
-// ModelChatMessageRole represents the role of a chat message
-type ModelChatMessageRole string
-
-const (
-	RoleAssistant ModelChatMessageRole = "assistant"
-	RoleUser      ModelChatMessageRole = "user"
-	RoleSystem    ModelChatMessageRole = "system"
-	RoleModel     ModelChatMessageRole = "model"
-	RoleTool      ModelChatMessageRole = "tool"
-)
-
-// CompletionResponseChoice represents a choice in the completion response
-type CompletionResponseChoice struct {
+// BifrostResponseChoiceMessage represents a choice in the completion response
+type BifrostResponseChoiceMessage struct {
 	Role      ModelChatMessageRole `json:"role"`
 	Content   string               `json:"content"`
 	Image     json.RawMessage      `json:"image"`
 	ToolCalls *[]ToolCall          `json:"tool_calls"`
-	Citations *[]Citation          `json:"citation"`
+	Citations *[]Citation          `json:"citations"`
 }
 
-// CompletionResultChoice represents a choice in the completion result
-type CompletionResultChoice struct {
-	Index      int                      `json:"index"`
-	Message    CompletionResponseChoice `json:"message"`
-	StopReason *string                  `json:"stop_reason"`
-	Stop       *string                  `json:"stop"`
-	LogProbs   *interface{}             `json:"logprobs"`
+// BifrostResponseChoice represents a choice in the completion result
+type BifrostResponseChoice struct {
+	Index      int                          `json:"index"`
+	Message    BifrostResponseChoiceMessage `json:"message"`
+	StopReason *string                      `json:"stop_reason"`
+	Stop       *string                      `json:"stop"`
+	LogProbs   *interface{}                 `json:"log_probs"`
 }
 
-// ToolResult represents the result of a tool call
-type ToolResult struct {
-	Role       ModelChatMessageRole `json:"role"`
-	Content    string               `json:"content"`
-	ToolCallID string               `json:"tool_call_id"`
+// BifrostResponse represents the complete result from a model completion
+type BifrostResponse struct {
+	ID          string                          `json:"id"`
+	Choices     []BifrostResponseChoice         `json:"choices"`
+	ChatHistory *[]BifrostResponseChoiceMessage `json:"chat_history"`
+	Provider    SupportedModelProvider          `json:"provider"`
+	Usage       LLMUsage                        `json:"usage"`
+	BilledUsage *BilledLLMUsage                 `json:"billed_usage"`
+	Cost        *LLMInteractionCost             `json:"cost"`
+	Model       string                          `json:"model"`
+	Created     string                          `json:"created"`
+	Params      *interface{}                    `json:"model_params"`
+	RawResponse interface{}                     `json:"raw_response"`
 }
 
-// ToolCallResult represents a single tool call result
-type ToolCallResult struct {
-	Name   string      `json:"name"`
-	Result interface{} `json:"result"`
-	Type   string      `json:"type"`
-	ID     string      `json:"id"`
-}
-
-// ToolCallResults represents a collection of tool call results
-type ToolCallResults struct {
-	Version int              `json:"version"`
-	Results []ToolCallResult `json:"results"`
-}
-
-// CompletionResult represents the complete result from a model completion
-type CompletionResult struct {
-	Error *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error"`
-	ID              string                      `json:"id"`
-	Choices         []CompletionResultChoice    `json:"choices"`
-	ChatHistory     *[]CompletionResponseChoice `json:"chat_history"`
-	ToolCallResult  *interface{}                `json:"tool_call_result"`
-	ToolCallResults *ToolCallResults            `json:"toolCallResults"`
-	Provider        SupportedModelProvider      `json:"provider"`
-	Usage           LLMUsage                    `json:"usage"`
-	BilledUsage     *BilledLLMUsage             `json:"billed_usage"`
-	Cost            *LLMInteractionCost         `json:"cost"`
-	Model           string                      `json:"model"`
-	Created         string                      `json:"created"`
-	Params          *interface{}                `json:"modelParams"`
-	Trace           *struct {
-		Input  interface{} `json:"input"`
-		Output interface{} `json:"output"`
-	} `json:"trace"`
-}
-
-type SupportedModelProvider string
-
-const (
-	OpenAI      SupportedModelProvider = "openai"
-	Azure       SupportedModelProvider = "azure"
-	HuggingFace SupportedModelProvider = "huggingface"
-	Anthropic   SupportedModelProvider = "anthropic"
-	Google      SupportedModelProvider = "google"
-	Groq        SupportedModelProvider = "groq"
-	Bedrock     SupportedModelProvider = "bedrock"
-	Maxim       SupportedModelProvider = "maxim"
-	Cohere      SupportedModelProvider = "cohere"
-	Ollama      SupportedModelProvider = "ollama"
-	Lmstudio    SupportedModelProvider = "lmstudio"
-)
-
-type Message struct {
-	//* strict check for roles
-	Role ModelChatMessageRole `json:"role"`
-	//* need to make sure either content or imagecontent is provided
-	Content      *string       `json:"content"`
-	ImageContent *ImageContent `json:"imageContent"`
-	ToolCalls    *[]ToolCall   `json:"toolCall"`
-}
-
-type ImageContent struct {
-	Type      string `json:"type"`
-	URL       string `json:"url"`
-	MediaType string `json:"media_type"`
-}
-
-// type Content struct {
-// 	Content      *string       `json:"content"`
-// 	ImageContent *ImageContent `json:"imageContent"`
-// }
-
-// func (content *Content) MarshalJSON() ([]byte, error) {
-// 	if content.Content != nil {
-// 		return []byte(*content.Content), nil
-// 	} else if content.ImageContent != nil {
-// 		return json.Marshal(content.ImageContent)
-// 	}
-
-// 	return nil, fmt.Errorf("invalid content")
-// }
-
-// func (content *Content) UnmarshalJSON(val []byte) error {
-// 	var s any
-// 	json.Unmarshal(val, &s)
-
-// 	switch s := s.(type) {
-// 	case string:
-// 		content.Content = &s
-// 	case ImageContent:
-// 		content.ImageContent = &s
-
-// 	default:
-// 		return fmt.Errorf("invalid stop")
-// 	}
-
-// 	return nil
-// }
-
-type NetworkConfig struct {
-	DefaultRequestTimeoutInSeconds int `json:"defaultRequestTimeoutInSeconds"`
-}
-
-type MetaConfig struct {
-	BedrockMetaConfig *BedrockMetaConfig `json:"bedrockMetaConfig"`
-}
-
-type ProviderConfig struct {
-	NetworkConfig NetworkConfig `json:"networkConfig"`
-	MetaConfig    *MetaConfig   `json:"metaConfig"`
-}
-
-type BedrockMetaConfig struct {
-	SecretAccessKey   string            `json:"secretAccessKey"`
-	Region            *string           `json:"region"`
-	SessionToken      *string           `json:"sessionToken"`
-	ARN               *string           `json:"arn"`
-	InferenceProfiles map[string]string `json:"inferenceProfiles"`
-}
-
+// TODO third party providers
 // Provider defines the interface for AI model providers
 type Provider interface {
 	GetProviderKey() SupportedModelProvider
-	TextCompletion(model, key, text string, params *ModelParameters) (*CompletionResult, error)
-	ChatCompletion(model, key string, messages []Message, params *ModelParameters) (*CompletionResult, error)
+	TextCompletion(model, key, text string, params *ModelParameters) (*BifrostResponse, error)
+	ChatCompletion(model, key string, messages []Message, params *ModelParameters) (*BifrostResponse, error)
 }

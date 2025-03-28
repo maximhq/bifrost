@@ -5,16 +5,57 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
 
+type OpenAIToolCall struct {
+	Type     *string `json:"type"`
+	ID       *string `json:"id"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type OpenAIMessage struct {
+	Role      interfaces.ModelChatMessageRole `json:"role"`
+	Content   string                          `json:"content"`
+	ToolCalls *[]OpenAIToolCall               `json:"tool_calls,omitempty"`
+}
+
+type OpenAIChoice struct {
+	Index        int           `json:"index"`
+	Message      OpenAIMessage `json:"message"`
+	FinishReason *string       `json:"finish_reason"`
+	LogProbs     *interface{}  `json:"logprobs"`
+}
+
 type OpenAIResponse struct {
-	ID      string                              `json:"id"`
-	Choices []interfaces.CompletionResultChoice `json:"choices"`
-	Usage   interfaces.LLMUsage                 `json:"usage"`
-	Model   string                              `json:"model"`
-	Created interface{}                         `json:"created"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Choices []OpenAIChoice `json:"choices"`
+	Usage   struct {
+		PromptTokens       int `json:"prompt_tokens"`
+		CompletionTokens   int `json:"completion_tokens"`
+		TotalTokens        int `json:"total_tokens"`
+		PromptTokenDetails struct {
+			CachedToken int `json:"cached_tokens"`
+			AudioToken  int `json:"audio_tokens"`
+		} `json:"prompt_tokens_details"`
+		CompletionTokenDetails struct {
+			ReasoningTokens          int `json:"reasoning_tokens"`
+			AudioTokens              int `json:"audio_tokens"`
+			AcceptedPredictionTokens int `json:"accepted_prediction_tokens"`
+			RejectedPredictionTokens int `json:"rejected_prediction_tokens"`
+		} `json:"completion_tokens_details"`
+		Latency float64 `json:"latency"`
+	} `json:"usage"`
+	Model             string      `json:"model"`
+	Created           interface{} `json:"created"`
+	ServiceTier       string      `json:"service_tier"`
+	SystemFingerprint string      `json:"system_fingerprint"`
 }
 
 // OpenAIProvider implements the Provider interface for OpenAI
@@ -34,7 +75,7 @@ func (provider *OpenAIProvider) GetProviderKey() interfaces.SupportedModelProvid
 }
 
 // TextCompletion performs text completion
-func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	return nil, fmt.Errorf("text completion is not supported by OpenAI")
 }
 
@@ -55,8 +96,7 @@ func (provider *OpenAIProvider) sanitizeParameters(params *interfaces.ModelParam
 	return sanitized
 }
 
-// ChatCompletion implements chat completion using OpenAI's API
-func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	startTime := time.Now()
 
 	// Format messages for OpenAI API
@@ -108,35 +148,69 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 
 	latency := time.Since(startTime).Seconds()
 
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %v", err)
+	}
+
 	// Handle error response
 	if resp.StatusCode != http.StatusOK {
-		var errorResp struct {
-			Error struct {
-				Message string `json:"message"`
-				Type    string `json:"type"`
-				Param   any    `json:"param"`
-				Code    string `json:"code"`
-			} `json:"error"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&errorResp); err != nil {
-			return nil, fmt.Errorf("error decoding error response: %v", err)
-		}
-		return nil, fmt.Errorf("OpenAI error: %s", errorResp.Error.Message)
+		return nil, fmt.Errorf("OpenAI error: %s", string(body))
 	}
 
-	// Decode response
+	// Decode structured response
 	var response OpenAIResponse
-
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("error decoding response: %v", err)
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("error decoding structured response: %v", err)
 	}
 
-	// Convert the raw result to CompletionResult
-	result := &interfaces.CompletionResult{
+	// Decode raw response
+	var rawResponse interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("error decoding raw response: %v", err)
+	}
+
+	// Transform choices to include tool calls
+	var choices []interfaces.BifrostResponseChoice
+	for i, c := range response.Choices {
+		// Transform tool calls if present
+		var toolCalls []interfaces.ToolCall
+		if c.Message.ToolCalls != nil {
+			for _, tool := range *c.Message.ToolCalls {
+				toolCalls = append(toolCalls, interfaces.ToolCall{
+					ID:        tool.ID,
+					Type:      tool.Type,
+					Name:      &tool.Function.Name,
+					Arguments: json.RawMessage(tool.Function.Arguments),
+				})
+			}
+		}
+
+		choices = append(choices, interfaces.BifrostResponseChoice{
+			Index: i,
+			Message: interfaces.BifrostResponseChoiceMessage{
+				Role:      c.Message.Role,
+				Content:   c.Message.Content,
+				ToolCalls: &toolCalls,
+			},
+			StopReason: c.FinishReason,
+			LogProbs:   c.LogProbs,
+		})
+	}
+
+	result := &interfaces.BifrostResponse{
 		ID:      response.ID,
-		Choices: response.Choices,
-		Usage:   response.Usage,
-		Model:   response.Model,
+		Choices: choices,
+		Usage: interfaces.LLMUsage{
+			PromptTokens:     response.Usage.PromptTokens,
+			CompletionTokens: response.Usage.CompletionTokens,
+			TotalTokens:      response.Usage.TotalTokens,
+			Latency:          &latency,
+		},
+		Model:       response.Model,
+		Provider:    interfaces.OpenAI,
+		RawResponse: rawResponse,
 	}
 
 	// Handle the created field conversion
@@ -149,10 +223,6 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 			result.Created = v
 		}
 	}
-
-	// Add provider-specific information
-	result.Provider = interfaces.OpenAI
-	result.Usage.Latency = &latency
 
 	return result, nil
 }

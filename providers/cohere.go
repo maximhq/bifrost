@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"time"
@@ -24,14 +25,20 @@ type CohereTool struct {
 	ParameterDefinitions map[string]CohereParameterDefinition `json:"parameter_definitions"`
 }
 
+type CohereToolCall struct {
+	Name       string      `json:"name"`
+	Parameters interface{} `json:"parameters"`
+}
+
 // CohereChatResponse represents the response from Cohere's chat API
 type CohereChatResponse struct {
 	ResponseID   string `json:"response_id"`
 	Text         string `json:"text"`
 	GenerationID string `json:"generation_id"`
 	ChatHistory  []struct {
-		Role    interfaces.ModelChatMessageRole `json:"role"`
-		Message string                          `json:"message"`
+		Role      interfaces.ModelChatMessageRole `json:"role"`
+		Message   string                          `json:"message"`
+		ToolCalls []CohereToolCall                `json:"tool_calls"`
 	} `json:"chat_history"`
 	FinishReason string `json:"finish_reason"`
 	Meta         struct {
@@ -47,6 +54,7 @@ type CohereChatResponse struct {
 			OutputTokens float64 `json:"output_tokens"`
 		} `json:"tokens"`
 	} `json:"meta"`
+	ToolCalls []CohereToolCall `json:"tool_calls"`
 }
 
 // OpenAIProvider implements the Provider interface for OpenAI
@@ -65,13 +73,11 @@ func (provider *CohereProvider) GetProviderKey() interfaces.SupportedModelProvid
 	return interfaces.Cohere
 }
 
-func (provider *CohereProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
+func (provider *CohereProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	return nil, fmt.Errorf("text completion is not supported by Cohere")
 }
 
-func (provider *CohereProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
-	startTime := time.Now()
-
+func (provider *CohereProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	// Get the last message and chat history
 	lastMessage := messages[len(messages)-1]
 	chatHistory := messages[:len(messages)-1]
@@ -99,29 +105,23 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 		var tools []CohereTool
 		for _, tool := range *params.Tools {
 			parameterDefinitions := make(map[string]CohereParameterDefinition)
-			if tool.Function.Parameters != nil {
-				paramsMap, ok := tool.Function.Parameters.(map[string]interface{})
+			params := tool.Function.Parameters
+			for name, prop := range tool.Function.Parameters.Properties {
+				propMap, ok := prop.(map[string]interface{})
 				if ok {
-					if properties, ok := paramsMap["properties"].(map[string]interface{}); ok {
-						for name, prop := range properties {
-							propMap, ok := prop.(map[string]interface{})
-							if ok {
-								paramDef := CohereParameterDefinition{
-									Required: slices.Contains(paramsMap["required"].([]string), name),
-								}
-
-								if typeStr, ok := propMap["type"].(string); ok {
-									paramDef.Type = typeStr
-								}
-
-								if desc, ok := propMap["description"].(string); ok {
-									paramDef.Description = &desc
-								}
-
-								parameterDefinitions[name] = paramDef
-							}
-						}
+					paramDef := CohereParameterDefinition{
+						Required: slices.Contains(params.Required, name),
 					}
+
+					if typeStr, ok := propMap["type"].(string); ok {
+						paramDef.Type = typeStr
+					}
+
+					if desc, ok := propMap["description"].(string); ok {
+						paramDef.Description = &desc
+					}
+
+					parameterDefinitions[name] = paramDef
 				}
 			}
 
@@ -157,28 +157,40 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 	}
 	defer resp.Body.Close()
 
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
 	// Handle error response
 	if resp.StatusCode != http.StatusOK {
-		var errorResp struct {
-			Message string `json:"message"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&errorResp); err != nil {
-			return nil, fmt.Errorf("error decoding error response: %v", err)
-		}
-		return nil, fmt.Errorf("cohere error: %s", errorResp.Message)
+		return nil, fmt.Errorf("cohere error: %s", string(body))
 	}
 
 	// Decode response
 	var response CohereChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("error decoding response: %v", err)
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse Bedrock response: %v", err)
+	}
+
+	// Parse raw response
+	var rawResponse interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse raw response: %v", err)
 	}
 
 	// Transform tool calls if present
-	var toolCalls *[]interfaces.ToolCall
-
-	// Calculate latency
-	latency := time.Since(startTime).Seconds()
+	var toolCalls []interfaces.ToolCall
+	if response.ToolCalls != nil {
+		for _, tool := range response.ToolCalls {
+			args := json.RawMessage(must(json.Marshal(tool.Parameters)))
+			toolCalls = append(toolCalls, interfaces.ToolCall{
+				Name:      &tool.Name,
+				Arguments: args,
+			})
+		}
+	}
 
 	// Get role and content from the last message in chat history
 	var role interfaces.ModelChatMessageRole
@@ -188,20 +200,20 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 		role = lastMsg.Role
 		content = lastMsg.Message
 	} else {
-		role = interfaces.ModelChatMessageRole("assistant")
+		role = interfaces.RoleChatbot
 		content = response.Text
 	}
 
 	// Create completion result
-	result := &interfaces.CompletionResult{
+	result := &interfaces.BifrostResponse{
 		ID: response.ResponseID,
-		Choices: []interfaces.CompletionResultChoice{
+		Choices: []interfaces.BifrostResponseChoice{
 			{
 				Index: 0,
-				Message: interfaces.CompletionResponseChoice{
+				Message: interfaces.BifrostResponseChoiceMessage{
 					Role:      role,
 					Content:   content,
-					ToolCalls: toolCalls,
+					ToolCalls: &toolCalls,
 				},
 				StopReason: &response.FinishReason,
 			},
@@ -211,14 +223,14 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 			PromptTokens:     int(response.Meta.Tokens.InputTokens),
 			CompletionTokens: int(response.Meta.Tokens.OutputTokens),
 			TotalTokens:      int(response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens),
-			Latency:          &latency,
 		},
 		BilledUsage: &interfaces.BilledLLMUsage{
 			PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
 			CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
 		},
-		Model:    model,
-		Provider: interfaces.Cohere,
+		Model:       model,
+		Provider:    interfaces.Cohere,
+		RawResponse: rawResponse,
 	}
 
 	return result, nil
@@ -226,14 +238,26 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 
 // Helper function to convert chat history to the correct type
 func convertChatHistory(history []struct {
-	Role    interfaces.ModelChatMessageRole `json:"role"`
-	Message string                          `json:"message"`
-}) *[]interfaces.CompletionResponseChoice {
-	converted := make([]interfaces.CompletionResponseChoice, len(history))
+	Role      interfaces.ModelChatMessageRole `json:"role"`
+	Message   string                          `json:"message"`
+	ToolCalls []CohereToolCall                `json:"tool_calls"`
+}) *[]interfaces.BifrostResponseChoiceMessage {
+	converted := make([]interfaces.BifrostResponseChoiceMessage, len(history))
 	for i, msg := range history {
-		converted[i] = interfaces.CompletionResponseChoice{
-			Role:    msg.Role,
-			Content: msg.Message,
+		var toolCalls []interfaces.ToolCall
+		if msg.ToolCalls != nil {
+			for _, tool := range msg.ToolCalls {
+				args := json.RawMessage(must(json.Marshal(tool.Parameters)))
+				toolCalls = append(toolCalls, interfaces.ToolCall{
+					Name:      &tool.Name,
+					Arguments: args,
+				})
+			}
+		}
+		converted[i] = interfaces.BifrostResponseChoiceMessage{
+			Role:      msg.Role,
+			Content:   msg.Message,
+			ToolCalls: &toolCalls,
 		}
 	}
 	return &converted

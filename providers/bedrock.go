@@ -78,34 +78,46 @@ type BedrockAnthropicImageSource struct {
 }
 
 type BedrockMistralToolCall struct {
-	ID       string                  `json:"id"`
-	Function interfaces.FunctionCall `json:"function"`
+	ID       string              `json:"id"`
+	Function interfaces.Function `json:"function"`
+}
+
+type BedrockAnthropicToolCall struct {
+	ToolSpec BedrockAnthropicToolSpec `json:"toolSpec"`
+}
+
+type BedrockAnthropicToolSpec struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	InputSchema struct {
+		Json interface{} `json:"json"`
+	} `json:"inputSchema"`
 }
 
 type BedrockProvider struct {
 	client *http.Client
-	meta   *interfaces.BedrockMetaConfig
+	meta   *interfaces.MetaConfig
 }
 
 func NewBedrockProvider(config *interfaces.ProviderConfig) *BedrockProvider {
 	return &BedrockProvider{
 		client: &http.Client{Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)},
-		meta:   config.MetaConfig.BedrockMetaConfig,
+		meta:   config.MetaConfig,
 	}
 }
 
-func (p *BedrockProvider) GetProviderKey() interfaces.SupportedModelProvider {
+func (provider *BedrockProvider) GetProviderKey() interfaces.SupportedModelProvider {
 	return interfaces.Bedrock
 }
 
-func (p *BedrockProvider) PrepareReq(path string, jsonData []byte, accessKey string) (*http.Request, error) {
-	if p.meta == nil {
+func (provider *BedrockProvider) PrepareReq(path string, jsonData []byte, accessKey string) (*http.Request, error) {
+	if provider.meta == nil {
 		return nil, errors.New("meta config for bedrock is not provided")
 	}
 
 	region := "us-east-1"
-	if p.meta.Region != nil {
-		region = *p.meta.Region
+	if provider.meta.Region != nil {
+		region = *provider.meta.Region
 	}
 
 	// Create the request with the JSON body
@@ -114,14 +126,14 @@ func (p *BedrockProvider) PrepareReq(path string, jsonData []byte, accessKey str
 		return nil, fmt.Errorf("error creating request: %v", err)
 	}
 
-	if err := SignAWSRequest(req, accessKey, p.meta.SecretAccessKey, p.meta.SessionToken, region, "bedrock"); err != nil {
+	if err := SignAWSRequest(req, accessKey, provider.meta.SecretAccessKey, provider.meta.SessionToken, region, "bedrock"); err != nil {
 		return nil, err
 	}
 
 	return req, nil
 }
 
-func (p *BedrockProvider) GetTextCompletionResult(result []byte, model string) (*interfaces.CompletionResult, error) {
+func (provider *BedrockProvider) GetTextCompletionResult(result []byte, model string) (*interfaces.BifrostResponse, error) {
 	switch model {
 	case "anthropic.claude-instant-v1:2":
 		fallthrough
@@ -133,11 +145,11 @@ func (p *BedrockProvider) GetTextCompletionResult(result []byte, model string) (
 			return nil, fmt.Errorf("failed to parse Bedrock response: %v", err)
 		}
 
-		return &interfaces.CompletionResult{
-			Choices: []interfaces.CompletionResultChoice{
+		return &interfaces.BifrostResponse{
+			Choices: []interfaces.BifrostResponseChoice{
 				{
 					Index: 0,
-					Message: interfaces.CompletionResponseChoice{
+					Message: interfaces.BifrostResponseChoiceMessage{
 						Role:    interfaces.RoleAssistant,
 						Content: response.Completion,
 					},
@@ -161,11 +173,11 @@ func (p *BedrockProvider) GetTextCompletionResult(result []byte, model string) (
 			return nil, fmt.Errorf("failed to parse Bedrock response: %v", err)
 		}
 
-		var choices []interfaces.CompletionResultChoice
+		var choices []interfaces.BifrostResponseChoice
 		for i, output := range response.Outputs {
-			choices = append(choices, interfaces.CompletionResultChoice{
+			choices = append(choices, interfaces.BifrostResponseChoice{
 				Index: i,
-				Message: interfaces.CompletionResponseChoice{
+				Message: interfaces.BifrostResponseChoiceMessage{
 					Role:    interfaces.RoleAssistant,
 					Content: output.Text,
 				},
@@ -173,7 +185,7 @@ func (p *BedrockProvider) GetTextCompletionResult(result []byte, model string) (
 			})
 		}
 
-		return &interfaces.CompletionResult{
+		return &interfaces.BifrostResponse{
 			Choices: choices,
 		}, nil
 	}
@@ -181,7 +193,7 @@ func (p *BedrockProvider) GetTextCompletionResult(result []byte, model string) (
 	return nil, fmt.Errorf("invalid model choice: %s", model)
 }
 
-func (p *BedrockProvider) PrepareChatCompletionMessages(messages []interfaces.Message, model string) (map[string]interface{}, error) {
+func (provider *BedrockProvider) PrepareChatCompletionMessages(messages []interfaces.Message, model string) (map[string]interface{}, error) {
 	switch model {
 	case "anthropic.claude-instant-v1:2":
 		fallthrough
@@ -263,8 +275,8 @@ func (p *BedrockProvider) PrepareChatCompletionMessages(messages []interfaces.Me
 			if msg.ToolCalls != nil {
 				for _, toolCall := range *msg.ToolCalls {
 					filteredToolCalls = append(filteredToolCalls, BedrockMistralToolCall{
-						ID:       toolCall.ID,
-						Function: *toolCall.Function,
+						ID:       *toolCall.ID,
+						Function: toolCall.Function,
 					})
 				}
 			}
@@ -293,10 +305,67 @@ func (p *BedrockProvider) PrepareChatCompletionMessages(messages []interfaces.Me
 	return nil, fmt.Errorf("invalid model choice: %s", model)
 }
 
-func (p *BedrockProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
-	startTime := time.Now()
+func (provider *BedrockProvider) GetChatCompletionTools(params *interfaces.ModelParameters, model string) []BedrockAnthropicToolCall {
+	var tools []BedrockAnthropicToolCall
 
-	preparedParams := PrepareParams(params)
+	switch model {
+	case "anthropic.claude-instant-v1:2":
+		fallthrough
+	case "anthropic.claude-v2":
+		fallthrough
+	case "anthropic.claude-v2:1":
+		fallthrough
+	case "anthropic.claude-3-sonnet-20240229-v1:0":
+		fallthrough
+	case "anthropic.claude-3-5-sonnet-20240620-v1:0":
+		fallthrough
+	case "anthropic.claude-3-5-sonnet-20241022-v2:0":
+		fallthrough
+	case "anthropic.claude-3-5-haiku-20241022-v1:0":
+		fallthrough
+	case "anthropic.claude-3-opus-20240229-v1:0":
+		fallthrough
+	case "anthropic.claude-3-7-sonnet-20250219-v1:0":
+		for _, tool := range *params.Tools {
+			tools = append(tools, BedrockAnthropicToolCall{
+				ToolSpec: BedrockAnthropicToolSpec{
+					Name:        tool.Function.Name,
+					Description: tool.Function.Description,
+					InputSchema: struct {
+						Json interface{} `json:"json"`
+					}{
+						Json: tool.Function.Parameters,
+					},
+				},
+			})
+		}
+	}
+
+	return tools
+}
+
+func (provider *BedrockProvider) PrepareTextCompletionParams(params map[string]interface{}, model string) map[string]interface{} {
+	switch model {
+	case "anthropic.claude-instant-v1:2":
+		fallthrough
+	case "anthropic.claude-v2":
+		fallthrough
+	case "anthropic.claude-v2:1":
+		// Check if there is a key entry for max_tokens
+		if maxTokens, exists := params["max_tokens"]; exists {
+			// Check if max_tokens_to_sample is already present
+			if _, exists := params["max_tokens_to_sample"]; !exists {
+				// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+				params["max_tokens_to_sample"] = maxTokens
+			}
+			delete(params, "max_tokens")
+		}
+	}
+	return params
+}
+
+func (provider *BedrockProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
+	preparedParams := provider.PrepareTextCompletionParams(PrepareParams(params), model)
 
 	requestBody := MergeConfig(map[string]interface{}{
 		"prompt": text,
@@ -309,13 +378,13 @@ func (p *BedrockProvider) TextCompletion(model, key, text string, params *interf
 	}
 
 	// Create the signed request with correct operation name
-	req, err := p.PrepareReq(fmt.Sprintf("%s/invoke", model), jsonData, key)
+	req, err := provider.PrepareReq(fmt.Sprintf("%s/invoke", model), jsonData, key)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %v", err)
 	}
 
 	// Execute the request
-	resp, err := p.client.Do(req)
+	resp, err := provider.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %v", err)
 	}
@@ -331,24 +400,35 @@ func (p *BedrockProvider) TextCompletion(model, key, text string, params *interf
 		return nil, fmt.Errorf("bedrock API error: %s", string(body))
 	}
 
-	result, err := p.GetTextCompletionResult(body, model)
+	result, err := provider.GetTextCompletionResult(body, model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse response body: %v", err)
 	}
-	// Calculate latency
-	latency := time.Since(startTime).Seconds()
-	result.Usage.Latency = &latency
+
+	// Parse raw response
+	var rawResponse interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse raw response: %v", err)
+	}
+
+	result.RawResponse = rawResponse
 
 	return result, nil
 }
 
-func (p *BedrockProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.CompletionResult, error) {
-	messageBody, err := p.PrepareChatCompletionMessages(messages, model)
+func (provider *BedrockProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
+	messageBody, err := provider.PrepareChatCompletionMessages(messages, model)
 	if err != nil {
 		return nil, fmt.Errorf("error preparing messages: %v", err)
 	}
 
 	preparedParams := PrepareParams(params)
+
+	// Transform tools if present
+	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+		preparedParams["tools"] = provider.GetChatCompletionTools(params, model)
+	}
+
 	requestBody := MergeConfig(messageBody, preparedParams)
 
 	// Marshal the request body
@@ -360,23 +440,23 @@ func (p *BedrockProvider) ChatCompletion(model, key string, messages []interface
 	// Format the path with proper model identifier
 	path := fmt.Sprintf("%s/converse", model)
 
-	if p.meta != nil && p.meta.InferenceProfiles != nil {
-		if inferenceProfileId, ok := p.meta.InferenceProfiles[model]; ok {
-			if p.meta.ARN != nil {
-				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *p.meta.ARN, inferenceProfileId))
+	if provider.meta != nil && provider.meta.InferenceProfiles != nil {
+		if inferenceProfileId, ok := provider.meta.InferenceProfiles[model]; ok {
+			if provider.meta.ARN != nil {
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *provider.meta.ARN, inferenceProfileId))
 				path = fmt.Sprintf("%s/converse", encodedModelIdentifier)
 			}
 		}
 	}
 
 	// Create the signed request
-	req, err := p.PrepareReq(path, jsonData, key)
+	req, err := provider.PrepareReq(path, jsonData, key)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %v", err)
 	}
 
 	// Execute the request
-	resp, err := p.client.Do(req)
+	resp, err := provider.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %v", err)
 	}
@@ -397,11 +477,17 @@ func (p *BedrockProvider) ChatCompletion(model, key string, messages []interface
 		return nil, fmt.Errorf("failed to parse Bedrock response: %v", err)
 	}
 
-	var choices []interfaces.CompletionResultChoice
+	// Parse raw response
+	var rawResponse interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse raw response: %v", err)
+	}
+
+	var choices []interfaces.BifrostResponseChoice
 	for i, choice := range response.Output.Message.Content {
-		choices = append(choices, interfaces.CompletionResultChoice{
+		choices = append(choices, interfaces.BifrostResponseChoice{
 			Index: i,
-			Message: interfaces.CompletionResponseChoice{
+			Message: interfaces.BifrostResponseChoiceMessage{
 				Role:    interfaces.RoleAssistant,
 				Content: choice.Text,
 			},
@@ -411,7 +497,7 @@ func (p *BedrockProvider) ChatCompletion(model, key string, messages []interface
 
 	latency := float64(response.Metrics.Latency)
 
-	result := &interfaces.CompletionResult{
+	result := &interfaces.BifrostResponse{
 		Choices: choices,
 		Usage: interfaces.LLMUsage{
 			PromptTokens:     response.Usage.InputTokens,
@@ -419,8 +505,9 @@ func (p *BedrockProvider) ChatCompletion(model, key string, messages []interface
 			TotalTokens:      response.Usage.TotalTokens,
 			Latency:          &latency,
 		},
-		Model:    model,
-		Provider: interfaces.Bedrock,
+		Model:       model,
+		Provider:    interfaces.Bedrock,
+		RawResponse: rawResponse,
 	}
 
 	return result, nil
