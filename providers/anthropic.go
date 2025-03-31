@@ -200,10 +200,44 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
-		formattedMessages = append(formattedMessages, map[string]interface{}{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
+		if msg.ImageContent != nil {
+			var content []map[string]interface{}
+
+			imageContent := map[string]interface{}{
+				"type": "image",
+				"source": map[string]interface{}{
+					"type": msg.ImageContent.Type,
+				},
+			}
+
+			// Handle different image source types
+			if *msg.ImageContent.Type == "url" {
+				imageContent["source"].(map[string]interface{})["url"] = msg.ImageContent.URL
+			} else {
+				imageContent["source"].(map[string]interface{})["media_type"] = msg.ImageContent.MediaType
+				imageContent["source"].(map[string]interface{})["data"] = msg.ImageContent.URL
+			}
+
+			content = append(content, imageContent)
+
+			// Add text content if present
+			if msg.Content != nil {
+				content = append(content, map[string]interface{}{
+					"type": "text",
+					"text": msg.Content,
+				})
+			}
+
+			formattedMessages = append(formattedMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": content,
+			})
+		} else {
+			formattedMessages = append(formattedMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": msg.Content,
+			})
+		}
 	}
 
 	preparedParams := PrepareParams(params)

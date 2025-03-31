@@ -180,16 +180,16 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 		}
 
 		if req.Type == TextCompletionRequest {
-			if req.Input.TextInput == nil {
+			if req.Input.TextCompletionInput == nil {
 				err = fmt.Errorf("text not provided for text completion request")
 			} else {
-				result, err = provider.TextCompletion(req.Model, key, *req.Input.TextInput, req.Params)
+				result, err = provider.TextCompletion(req.Model, key, *req.Input.TextCompletionInput, req.Params)
 			}
 		} else if req.Type == ChatCompletionRequest {
-			if req.Input.ChatInput == nil {
+			if req.Input.ChatCompletionInput == nil {
 				err = fmt.Errorf("chats not provided for chat completion request")
 			} else {
-				result, err = provider.ChatCompletion(req.Model, key, *req.Input.ChatInput, req.Params)
+				result, err = provider.ChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
 			}
 		}
 

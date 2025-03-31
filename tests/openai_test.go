@@ -8,6 +8,8 @@ import (
 
 	"github.com/maximhq/bifrost"
 	"github.com/maximhq/bifrost/interfaces"
+
+	"github.com/maximhq/maxim-go"
 )
 
 // setupOpenAIRequests sends multiple test requests to OpenAI
@@ -20,7 +22,7 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 		result, err := bifrost.TextCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
 			Model: "gpt-4o-mini",
 			Input: interfaces.RequestInput{
-				TextInput: &text,
+				TextCompletionInput: &text,
 			},
 			Params: nil,
 		}, ctx)
@@ -51,7 +53,7 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
 				Model: "gpt-4o-mini",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: nil,
 			}, ctx)
@@ -63,8 +65,66 @@ func setupOpenAIRequests(bifrost *bifrost.Bifrost) {
 		}(message, delay, i)
 	}
 
+	// Image input tests
+	setupOpenAIImageTests(bifrost, ctx)
+
 	// Tool calls test
 	setupOpenAIToolCalls(bifrost, ctx)
+}
+
+// setupOpenAIImageTests tests OpenAI's image input capabilities
+func setupOpenAIImageTests(bifrost *bifrost.Bifrost, ctx context.Context) {
+	// Test with URL image
+	urlImageMessages := []interfaces.Message{
+		{
+			Role:    interfaces.RoleUser,
+			Content: maxim.StrPtr("What is Happening in this picture?"),
+			ImageContent: &interfaces.ImageContent{
+				URL: "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg",
+			},
+		},
+	}
+
+	go func() {
+		result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
+			Model: "gpt-4-turbo",
+			Input: interfaces.RequestInput{
+				ChatCompletionInput: &urlImageMessages,
+			},
+			Params: nil,
+		}, ctx)
+		if err != nil {
+			fmt.Printf("Error in OpenAI URL image request: %v\n", err)
+		} else {
+			fmt.Printf("🐒 URL Image Result: %s\n", result.Choices[0].Message.Content)
+		}
+	}()
+
+	// Test with base64 image
+	base64ImageMessages := []interfaces.Message{
+		{
+			Role:    interfaces.RoleUser,
+			Content: maxim.StrPtr("What is this image about?"),
+			ImageContent: &interfaces.ImageContent{
+				URL: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=",
+			},
+		},
+	}
+
+	go func() {
+		result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
+			Model: "gpt-4-turbo",
+			Input: interfaces.RequestInput{
+				ChatCompletionInput: &base64ImageMessages,
+			},
+			Params: nil,
+		}, ctx)
+		if err != nil {
+			fmt.Printf("Error in OpenAI base64 image request: %v\n", err)
+		} else {
+			fmt.Printf("🐒 Base64 Image Result: %s\n", result.Choices[0].Message.Content)
+		}
+	}()
 }
 
 // setupOpenAIToolCalls tests OpenAI's function calling capability
@@ -110,7 +170,7 @@ func setupOpenAIToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
 				Model: "gpt-4o-mini",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: &params,
 			}, ctx)

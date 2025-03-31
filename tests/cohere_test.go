@@ -20,7 +20,7 @@ func setupCohereRequests(bifrost *bifrost.Bifrost) {
 		result, err := bifrost.TextCompletionRequest(interfaces.Cohere, &interfaces.BifrostRequest{
 			Model: "command-a-03-2025",
 			Input: interfaces.RequestInput{
-				TextInput: &text,
+				TextCompletionInput: &text,
 			},
 			Params: nil,
 		}, ctx)
@@ -51,7 +51,7 @@ func setupCohereRequests(bifrost *bifrost.Bifrost) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.Cohere, &interfaces.BifrostRequest{
 				Model: "command-a-03-2025",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: nil,
 			}, ctx)
@@ -110,7 +110,7 @@ func setupCohereToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.Cohere, &interfaces.BifrostRequest{
 				Model: "command-a-03-2025",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: &params,
 			}, ctx)

@@ -8,6 +8,8 @@ import (
 
 	"github.com/maximhq/bifrost"
 	"github.com/maximhq/bifrost/interfaces"
+
+	"github.com/maximhq/maxim-go"
 )
 
 // setupBedrockRequests sends multiple test requests to Bedrock
@@ -27,7 +29,7 @@ func setupBedrockRequests(bifrost *bifrost.Bifrost) {
 		result, err := bifrost.TextCompletionRequest(interfaces.Bedrock, &interfaces.BifrostRequest{
 			Model: "anthropic.claude-v2:1",
 			Input: interfaces.RequestInput{
-				TextInput: &text,
+				TextCompletionInput: &text,
 			},
 			Params: &params,
 		}, ctx)
@@ -58,7 +60,7 @@ func setupBedrockRequests(bifrost *bifrost.Bifrost) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.Bedrock, &interfaces.BifrostRequest{
 				Model: "anthropic.claude-3-sonnet-20240229-v1:0",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: &params,
 			}, ctx)
@@ -71,8 +73,48 @@ func setupBedrockRequests(bifrost *bifrost.Bifrost) {
 		}(message, delay, i)
 	}
 
+	// Image input tests
+	setupBedrockImageTests(bifrost, ctx)
+
 	// Tool calls test
 	setupBedrockToolCalls(bifrost, ctx)
+}
+
+// setupAnthropicImageTests tests Bedrock's image input capabilities
+func setupBedrockImageTests(bifrost *bifrost.Bifrost, ctx context.Context) {
+	maxTokens := 4096
+
+	params := interfaces.ModelParameters{
+		MaxTokens: &maxTokens,
+	}
+
+	// Test with base64 image
+	base64ImageMessages := []interfaces.Message{
+		{
+			Role:    interfaces.RoleUser,
+			Content: maxim.StrPtr("What is this image about?"),
+			ImageContent: &interfaces.ImageContent{
+				Type:      maxim.StrPtr("base64"),
+				URL:       "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=",
+				MediaType: maxim.StrPtr("image/jpeg"),
+			},
+		},
+	}
+
+	go func() {
+		result, err := bifrost.ChatCompletionRequest(interfaces.Bedrock, &interfaces.BifrostRequest{
+			Model: "anthropic.claude-3-sonnet-20240229-v1:0",
+			Input: interfaces.RequestInput{
+				ChatCompletionInput: &base64ImageMessages,
+			},
+			Params: &params,
+		}, ctx)
+		if err != nil {
+			fmt.Printf("Error in Bedrock base64 image request: %v\n", err)
+		} else {
+			fmt.Printf("🐒 Base64 Image Result: %s\n", result.Choices[0].Message.Content)
+		}
+	}()
 }
 
 // setupBedrockToolCalls tests Bedrock's function calling capability
@@ -121,7 +163,7 @@ func setupBedrockToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.Bedrock, &interfaces.BifrostRequest{
 				Model: "anthropic.claude-3-sonnet-20240229-v1:0",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: &params,
 			}, ctx)

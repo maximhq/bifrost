@@ -47,26 +47,49 @@ func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *
 
 func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
 	// Format messages for OpenAI API
-	var openAIMessages []map[string]interface{}
+	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
-		var content any
-		if msg.Content != nil {
-			content = msg.Content
-		} else {
-			content = msg.ImageContent
-		}
+		if msg.ImageContent != nil {
+			var content []map[string]interface{}
 
-		openAIMessages = append(openAIMessages, map[string]interface{}{
-			"role":    msg.Role,
-			"content": content,
-		})
+			// Add text content if present
+			if msg.Content != nil {
+				content = append(content, map[string]interface{}{
+					"type": "text",
+					"text": msg.Content,
+				})
+			}
+
+			imageContent := map[string]interface{}{
+				"type": "image_url",
+				"image_url": map[string]interface{}{
+					"url": msg.ImageContent.URL,
+				},
+			}
+
+			if msg.ImageContent.Detail != nil {
+				imageContent["image_url"].(map[string]interface{})["detail"] = msg.ImageContent.Detail
+			}
+
+			content = append(content, imageContent)
+
+			formattedMessages = append(formattedMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": content,
+			})
+		} else {
+			formattedMessages = append(formattedMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": msg.Content,
+			})
+		}
 	}
 
 	preparedParams := PrepareParams(params)
 
 	requestBody := MergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": openAIMessages,
+		"messages": formattedMessages,
 	}, preparedParams)
 
 	jsonBody, err := json.Marshal(requestBody)

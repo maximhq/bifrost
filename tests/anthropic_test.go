@@ -8,6 +8,8 @@ import (
 
 	"github.com/maximhq/bifrost"
 	"github.com/maximhq/bifrost/interfaces"
+
+	"github.com/maximhq/maxim-go"
 )
 
 // setupAnthropicRequests sends multiple test requests to Anthropic
@@ -27,7 +29,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 		result, err := bifrost.TextCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
 			Model: "claude-2.1",
 			Input: interfaces.RequestInput{
-				TextInput: &text,
+				TextCompletionInput: &text,
 			},
 			Params: &params,
 		}, ctx)
@@ -58,7 +60,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
 				Model: "claude-3-7-sonnet-20250219",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: &params,
 			}, ctx)
@@ -71,8 +73,75 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 		}(message, delay, i)
 	}
 
+	// Image input tests
+	setupAnthropicImageTests(bifrost, ctx)
+
 	// Tool calls test
 	setupAnthropicToolCalls(bifrost, ctx)
+}
+
+// setupAnthropicImageTests tests Anthropic's image input capabilities
+func setupAnthropicImageTests(bifrost *bifrost.Bifrost, ctx context.Context) {
+	// Test with URL image
+	urlImageMessages := []interfaces.Message{
+		{
+			Role:    interfaces.RoleUser,
+			Content: maxim.StrPtr("What is Happening in this picture?"),
+			ImageContent: &interfaces.ImageContent{
+				Type: maxim.StrPtr("url"),
+				URL:  "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg",
+			},
+		},
+	}
+
+	maxTokens := 4096
+
+	params := interfaces.ModelParameters{
+		MaxTokens: &maxTokens,
+	}
+
+	go func() {
+		result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
+			Model: "claude-3-7-sonnet-20250219",
+			Input: interfaces.RequestInput{
+				ChatCompletionInput: &urlImageMessages,
+			},
+			Params: &params,
+		}, ctx)
+		if err != nil {
+			fmt.Printf("Error in Anthropic URL image request: %v\n", err)
+		} else {
+			fmt.Printf("🐒 URL Image Result: %s\n", result.Choices[0].Message.Content)
+		}
+	}()
+
+	// Test with base64 image
+	base64ImageMessages := []interfaces.Message{
+		{
+			Role:    interfaces.RoleUser,
+			Content: maxim.StrPtr("What is this image about?"),
+			ImageContent: &interfaces.ImageContent{
+				Type:      maxim.StrPtr("base64"),
+				URL:       "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=",
+				MediaType: maxim.StrPtr("image/jpeg"),
+			},
+		},
+	}
+
+	go func() {
+		result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
+			Model: "claude-3-7-sonnet-20250219",
+			Input: interfaces.RequestInput{
+				ChatCompletionInput: &base64ImageMessages,
+			},
+			Params: &params,
+		}, ctx)
+		if err != nil {
+			fmt.Printf("Error in Anthropic base64 image request: %v\n", err)
+		} else {
+			fmt.Printf("🐒 Base64 Image Result: %s\n", result.Choices[0].Message.Content)
+		}
+	}()
 }
 
 // setupAnthropicToolCalls tests Anthropic's function calling capability
@@ -121,7 +190,7 @@ func setupAnthropicToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 			result, err := bifrost.ChatCompletionRequest(interfaces.Anthropic, &interfaces.BifrostRequest{
 				Model: "claude-3-7-sonnet-20250219",
 				Input: interfaces.RequestInput{
-					ChatInput: &messages,
+					ChatCompletionInput: &messages,
 				},
 				Params: &params,
 			}, ctx)

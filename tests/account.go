@@ -24,7 +24,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(providerKey interfaces.Suppor
 		return []interfaces.Key{
 			{
 				Value:  os.Getenv("OPEN_AI_API_KEY"),
-				Models: []string{"gpt-4o-mini"},
+				Models: []string{"gpt-4o-mini", "gpt-4-turbo"},
 				Weight: 1.0,
 			},
 		}, nil

@@ -68,14 +68,17 @@ type BedrockMistralChatMessage struct {
 }
 
 type BedrockAnthropicImageMessage struct {
-	Type   string                      `json:"type"`
+	Type  string                `json:"type"`
+	Image BedrockAnthropicImage `json:"image"`
+}
+
+type BedrockAnthropicImage struct {
+	Format string                      `json:"string"`
 	Source BedrockAnthropicImageSource `json:"source"`
 }
 
 type BedrockAnthropicImageSource struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
+	Bytes string `json:"bytes"`
 }
 
 type BedrockMistralToolCall struct {
@@ -245,10 +248,11 @@ func (provider *BedrockProvider) PrepareChatCompletionMessages(messages []interf
 				} else if msg.ImageContent != nil {
 					content = BedrockAnthropicImageMessage{
 						Type: "image",
-						Source: BedrockAnthropicImageSource{
-							Type:      msg.ImageContent.Type,
-							MediaType: msg.ImageContent.MediaType,
-							Data:      msg.ImageContent.URL,
+						Image: BedrockAnthropicImage{
+							Format: *msg.ImageContent.Type,
+							Source: BedrockAnthropicImageSource{
+								Bytes: msg.ImageContent.URL,
+							},
 						},
 					}
 				}

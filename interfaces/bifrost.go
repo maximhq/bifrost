@@ -30,8 +30,8 @@ const (
 //* Request Structs
 
 type RequestInput struct {
-	TextInput *string
-	ChatInput *[]Message
+	TextCompletionInput *string
+	ChatCompletionInput *[]Message
 }
 
 type BifrostRequest struct {
@@ -109,9 +109,10 @@ type Message struct {
 }
 
 type ImageContent struct {
-	Type      string `json:"type"`
-	URL       string `json:"url"`
-	MediaType string `json:"media_type"`
+	Type      *string `json:"type"`
+	URL       string  `json:"url"`
+	MediaType *string `json:"media_type"`
+	Detail    *string `json:"detail"`
 }
 
 //* Response Structs
