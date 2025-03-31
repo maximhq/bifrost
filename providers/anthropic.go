@@ -51,12 +51,14 @@ type AnthropicChatResponse struct {
 
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API
 type AnthropicProvider struct {
+	logger interfaces.Logger
 	client *fasthttp.Client
 }
 
 // NewAnthropicProvider creates a new AnthropicProvider instance
-func NewAnthropicProvider(config *interfaces.ProviderConfig) *AnthropicProvider {
+func NewAnthropicProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *AnthropicProvider {
 	return &AnthropicProvider{
+		logger: logger,
 		client: &fasthttp.Client{
 			ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 			WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),

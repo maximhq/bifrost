@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -35,14 +36,15 @@ type Bifrost struct {
 	plugins       []interfaces.Plugin
 	requestQueues map[interfaces.SupportedModelProvider]chan ChannelMessage // provider request queues
 	waitGroups    map[interfaces.SupportedModelProvider]*sync.WaitGroup
+	logger        interfaces.Logger
 }
 
-func createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider, config *interfaces.ProviderConfig) (interfaces.Provider, error) {
+func (bifrost *Bifrost) createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider, config *interfaces.ProviderConfig) (interfaces.Provider, error) {
 	switch providerKey {
 	case interfaces.OpenAI:
-		return providers.NewOpenAIProvider(config), nil
+		return providers.NewOpenAIProvider(config, bifrost.logger), nil
 	case interfaces.Anthropic:
-		return providers.NewAnthropicProvider(config), nil
+		return providers.NewAnthropicProvider(config, bifrost.logger), nil
 	case interfaces.Bedrock:
 		return providers.NewBedrockProvider(config), nil
 	case interfaces.Cohere:
@@ -71,12 +73,12 @@ func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelPro
 	// Start specified number of workers
 	bifrost.waitGroups[providerKey] = &sync.WaitGroup{}
 
-	provider, err := createProviderFromProviderKey(providerKey, config)
+	provider, err := bifrost.createProviderFromProviderKey(providerKey, config)
 	if err != nil {
 		return fmt.Errorf("failed to get provider for the given key: %v", err)
 	}
 
-	for i := 0; i < providerConfig.ConcurrencyAndBufferSize.Concurrency; i++ {
+	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		bifrost.waitGroups[providerKey].Add(1)
 		go bifrost.processRequests(provider, queue)
 	}
@@ -85,7 +87,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelPro
 }
 
 // Initializes infinite listening channels for each provider
-func Init(account interfaces.Account, plugins []interfaces.Plugin) (*Bifrost, error) {
+func Init(account interfaces.Account, plugins []interfaces.Plugin, logger interfaces.Logger) (*Bifrost, error) {
 	bifrost := &Bifrost{account: account, plugins: plugins}
 	bifrost.waitGroups = make(map[interfaces.SupportedModelProvider]*sync.WaitGroup)
 
@@ -93,6 +95,11 @@ func Init(account interfaces.Account, plugins []interfaces.Plugin) (*Bifrost, er
 	if err != nil {
 		return nil, err
 	}
+
+	if logger == nil {
+		logger = NewDefaultLogger(interfaces.LogLevelInfo)
+	}
+	bifrost.logger = logger
 
 	bifrost.requestQueues = make(map[interfaces.SupportedModelProvider]chan ChannelMessage)
 
@@ -104,7 +111,7 @@ func Init(account interfaces.Account, plugins []interfaces.Plugin) (*Bifrost, er
 		}
 
 		if err := bifrost.prepareProvider(providerKey, config); err != nil {
-			fmt.Printf("failed to prepare provider: %v", err)
+			bifrost.logger.Warn(fmt.Sprintf("failed to prepare provider: %v", err))
 		}
 	}
 
@@ -124,11 +131,8 @@ func (bifrost *Bifrost) SelectKeyFromProviderForModel(providerKey interfaces.Sup
 	// filter out keys which dont support the model
 	var supportedKeys []interfaces.Key
 	for _, key := range keys {
-		for _, supportedModel := range key.Models {
-			if supportedModel == model {
-				supportedKeys = append(supportedKeys, key)
-				break
-			}
+		if slices.Contains(key.Models, model) {
+			supportedKeys = append(supportedKeys, key)
 		}
 	}
 
@@ -200,7 +204,7 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 		}
 	}
 
-	fmt.Println("Worker for provider", provider.GetProviderKey(), "exiting...")
+	bifrost.logger.Debug(fmt.Sprintf("Worker for provider %s exiting...", provider.GetProviderKey()))
 }
 
 func (bifrost *Bifrost) GetConfiguredProviderFromProviderKey(key interfaces.SupportedModelProvider) (interfaces.Provider, error) {
@@ -331,7 +335,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 
 // Shutdown gracefully stops all workers when triggered
 func (bifrost *Bifrost) Shutdown() {
-	fmt.Println("\n[BIFROST] Graceful Shutdown Initiated - Closing all request channels...")
+	bifrost.logger.Info("[BIFROST] Graceful Shutdown Initiated - Closing all request channels...")
 
 	// Close all provider queues to signal workers to stop
 	for _, queue := range bifrost.requestQueues {

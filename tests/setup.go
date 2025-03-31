@@ -45,7 +45,7 @@ func getBifrost() (*bifrost.Bifrost, error) {
 		return nil, err
 	}
 
-	bifrost, err := bifrost.Init(&account, []interfaces.Plugin{plugin})
+	bifrost, err := bifrost.Init(&account, []interfaces.Plugin{plugin}, nil)
 	if err != nil {
 		return nil, err
 	}

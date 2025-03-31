@@ -22,12 +22,14 @@ type OpenAIResponse struct {
 
 // OpenAIProvider implements the Provider interface for OpenAI
 type OpenAIProvider struct {
+	logger interfaces.Logger
 	client *fasthttp.Client
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance
-func NewOpenAIProvider(config *interfaces.ProviderConfig) *OpenAIProvider {
+func NewOpenAIProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *OpenAIProvider {
 	return &OpenAIProvider{
+		logger: logger,
 		client: &fasthttp.Client{
 			ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 			WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
