@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -81,7 +80,7 @@ func PrepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	return flatParams
 }
 
-func SignAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) error {
+func SignAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) *interfaces.BifrostError {
 	// Set required headers before signing
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -91,7 +90,13 @@ func SignAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 	if req.Body != nil {
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
-			return fmt.Errorf("failed to read request body: %v", err)
+			return &interfaces.BifrostError{
+				IsBifrostError: true,
+				Error: interfaces.ErrorField{
+					Message: "error reading request body",
+					Error:   err,
+				},
+			}
 		}
 		// Restore the body for subsequent reads
 		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -118,7 +123,13 @@ func SignAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 		})),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to load AWS config: %v", err)
+		return &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "failed to load aws config",
+				Error:   err,
+			},
+		}
 	}
 
 	// Create the AWS signer
@@ -127,12 +138,24 @@ func SignAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 	// Get credentials
 	creds, err := cfg.Credentials.Retrieve(context.TODO())
 	if err != nil {
-		return fmt.Errorf("failed to retrieve credentials: %v", err)
+		return &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "failed to retrieve aws credentials",
+				Error:   err,
+			},
+		}
 	}
 
 	// Sign the request with AWS Signature V4
 	if err := signer.SignHTTP(context.TODO(), creds, req, bodyHash, service, region, time.Now()); err != nil {
-		return fmt.Errorf("failed to sign request: %v", err)
+		return &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "failed to sign request",
+				Error:   err,
+			},
+		}
 	}
 
 	return nil

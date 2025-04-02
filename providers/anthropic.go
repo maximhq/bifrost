@@ -49,6 +49,14 @@ type AnthropicChatResponse struct {
 	} `json:"usage"`
 }
 
+type AnthropicError struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API
 type AnthropicProvider struct {
 	logger interfaces.Logger
@@ -116,20 +124,17 @@ func (provider *AnthropicProvider) PrepareToolChoices(params map[string]interfac
 	return params
 }
 
-// TextCompletion implements text completion using Anthropic's API
-func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
-	preparedParams := provider.PrepareTextCompletionParams(PrepareParams(params))
-
-	// Merge additional parameters
-	requestBody := MergeConfig(map[string]interface{}{
-		"model":  model,
-		"prompt": fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
-	}, preparedParams)
-
+func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interface{}, url string, key string) ([]byte, *interfaces.BifrostError) {
 	// Marshal the request body
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, fmt.Errorf("error marshaling request: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error marshaling request",
+				Error:   err,
+			},
+		}
 	}
 
 	// Create the request with the JSON body
@@ -147,27 +152,84 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 
 	// Send the request
 	if err := provider.client.Do(req, resp); err != nil {
-		return nil, fmt.Errorf("error sending request: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error sending request",
+				Error:   err,
+			},
+		}
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("anthropic error: %s", resp.Body())
+		var errorResp AnthropicError
+		if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
+			return nil, &interfaces.BifrostError{
+				IsBifrostError: true,
+				Error: interfaces.ErrorField{
+					Message: "error parsing error response",
+					Error:   err,
+				},
+			}
+		}
+
+		statusCode := resp.StatusCode()
+
+		return nil, &interfaces.BifrostError{
+			Type:           &errorResp.Type,
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: interfaces.ErrorField{
+				Type:    &errorResp.Error.Type,
+				Message: errorResp.Error.Message,
+			},
+		}
 	}
 
 	// Read the response body
 	body := resp.Body()
 
+	return body, nil
+}
+
+// TextCompletion implements text completion using Anthropic's API
+func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
+	preparedParams := provider.PrepareTextCompletionParams(PrepareParams(params))
+
+	// Merge additional parameters
+	requestBody := MergeConfig(map[string]interface{}{
+		"model":  model,
+		"prompt": fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
+	}, preparedParams)
+
+	body, err := provider.CompleteRequest(requestBody, "https://api.anthropic.com/v1/complete", key)
+	if err != nil {
+		return nil, err
+	}
+
 	// Parse the response
 	var response AnthropicTextResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("error parsing response: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error parsing response",
+				Error:   err,
+			},
+		}
 	}
 
 	// Parse raw response
 	var rawResponse interface{}
 	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, fmt.Errorf("error parsing raw response: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error parsing raw response",
+				Error:   err,
+			},
+		}
 	}
 
 	// Create the completion result
@@ -198,7 +260,7 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 }
 
 // ChatCompletion implements chat completion using Anthropic's API
-func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
+func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
@@ -264,44 +326,33 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	jsonBody, err := json.Marshal(requestBody)
+	body, err := provider.CompleteRequest(requestBody, "https://api.anthropic.com/v1/messages", key)
 	if err != nil {
-		return nil, fmt.Errorf("error marshaling request: %v", err)
+		return nil, err
 	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	req.SetRequestURI("https://api.anthropic.com/v1/messages")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	req.Header.Set("x-api-key", key)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.SetBody(jsonBody)
-
-	// Make request
-	if err := provider.client.Do(req, resp); err != nil {
-		return nil, fmt.Errorf("error making request: %v", err)
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("anthropic error: %s", resp.Body())
-	}
-
-	// Decode structured response
+	// Decode response
 	var response AnthropicChatResponse
-	if err := json.Unmarshal(resp.Body(), &response); err != nil {
-		return nil, fmt.Errorf("error decoding structured response: %v", err)
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error decoding response",
+				Error:   err,
+			},
+		}
 	}
 
 	// Decode raw response
 	var rawResponse interface{}
-	if err := json.Unmarshal(resp.Body(), &rawResponse); err != nil {
-		return nil, fmt.Errorf("error decoding raw response: %v", err)
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error parsing raw response",
+				Error:   err,
+			},
+		}
 	}
 
 	// Process the response into our BifrostResponse format

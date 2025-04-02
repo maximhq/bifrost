@@ -56,6 +56,10 @@ type CohereChatResponse struct {
 	ToolCalls []CohereToolCall `json:"tool_calls"`
 }
 
+type CohereError struct {
+	Message string `json:"message"`
+}
+
 // OpenAIProvider implements the Provider interface for OpenAI
 type CohereProvider struct {
 	client *fasthttp.Client
@@ -76,11 +80,16 @@ func (provider *CohereProvider) GetProviderKey() interfaces.SupportedModelProvid
 	return interfaces.Cohere
 }
 
-func (provider *CohereProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
-	return nil, fmt.Errorf("text completion is not supported by Cohere")
+func (provider *CohereProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
+	return nil, &interfaces.BifrostError{
+		IsBifrostError: false,
+		Error: interfaces.ErrorField{
+			Message: "text completion is not supported by cohere provider",
+		},
+	}
 }
 
-func (provider *CohereProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
+func (provider *CohereProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	// Get the last message and chat history
 	lastMessage := messages[len(messages)-1]
 	chatHistory := messages[:len(messages)-1]
@@ -140,7 +149,13 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 	// Marshal request body
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, fmt.Errorf("error marshaling request: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error marshaling request",
+				Error:   err,
+			},
+		}
 	}
 
 	// Create request
@@ -157,12 +172,37 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 
 	// Make request
 	if err := provider.client.Do(req, resp); err != nil {
-		return nil, fmt.Errorf("error making request: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error sending request",
+				Error:   err,
+			},
+		}
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("cohere error: %s", resp.Body())
+		var errorResp CohereError
+		if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
+			return nil, &interfaces.BifrostError{
+				IsBifrostError: true,
+				Error: interfaces.ErrorField{
+					Message: "error parsing error response",
+					Error:   err,
+				},
+			}
+		}
+
+		statusCode := resp.StatusCode()
+
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: interfaces.ErrorField{
+				Message: errorResp.Message,
+			},
+		}
 	}
 
 	// Read response body
@@ -171,13 +211,25 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 	// Decode response
 	var response CohereChatResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse Bedrock response: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error parsing response",
+				Error:   err,
+			},
+		}
 	}
 
 	// Parse raw response
 	var rawResponse interface{}
 	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse raw response: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error parsing raw response",
+				Error:   err,
+			},
+		}
 	}
 
 	// Transform tool calls if present

@@ -2,14 +2,14 @@ package providers
 
 import (
 	"encoding/json"
-	"fmt"
+
 	"time"
 
 	"github.com/maximhq/bifrost/interfaces"
 	"github.com/valyala/fasthttp"
 )
 
-type OpenAIResponse struct {
+type OpenAIChatResponse struct {
 	ID                string                             `json:"id"`
 	Object            string                             `json:"object"` // text.completion or chat.completion
 	Choices           []interfaces.BifrostResponseChoice `json:"choices"`
@@ -18,6 +18,18 @@ type OpenAIResponse struct {
 	ServiceTier       *string                            `json:"service_tier"`
 	SystemFingerprint *string                            `json:"system_fingerprint"`
 	Usage             interfaces.LLMUsage                `json:"usage"`
+}
+
+type OpenAIError struct {
+	EventID string `json:"event_id"`
+	Type    string `json:"type"`
+	Error   struct {
+		Type    string      `json:"type"`
+		Code    string      `json:"code"`
+		Message string      `json:"message"`
+		Param   interface{} `json:"param"`
+		EventID string      `json:"event_id"`
+	} `json:"error"`
 }
 
 // OpenAIProvider implements the Provider interface for OpenAI
@@ -43,11 +55,16 @@ func (provider *OpenAIProvider) GetProviderKey() interfaces.SupportedModelProvid
 }
 
 // TextCompletion performs text completion
-func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
-	return nil, fmt.Errorf("text completion is not supported by OpenAI")
+func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
+	return nil, &interfaces.BifrostError{
+		IsBifrostError: false,
+		Error: interfaces.ErrorField{
+			Message: "text completion is not supported by openai provider",
+		},
+	}
 }
 
-func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, error) {
+func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	// Format messages for OpenAI API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
@@ -96,7 +113,13 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, fmt.Errorf("error marshaling request: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error marshaling request",
+				Error:   err,
+			},
+		}
 	}
 
 	// Create request
@@ -113,26 +136,68 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 
 	// Make request
 	if err := provider.client.Do(req, resp); err != nil {
-		return nil, fmt.Errorf("error making request: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error sending request",
+				Error:   err,
+			},
+		}
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("OpenAI error: %s", resp.Body())
+		var errorResp OpenAIError
+		if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
+			return nil, &interfaces.BifrostError{
+				IsBifrostError: true,
+				Error: interfaces.ErrorField{
+					Message: "error parsing error response",
+					Error:   err,
+				},
+			}
+		}
+
+		statusCode := resp.StatusCode()
+
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			EventID:        &errorResp.EventID,
+			StatusCode:     &statusCode,
+			Error: interfaces.ErrorField{
+				Type:    &errorResp.Error.Type,
+				Code:    &errorResp.Error.Code,
+				Message: errorResp.Error.Message,
+				Param:   errorResp.Error.Param,
+				EventID: &errorResp.Error.EventID,
+			},
+		}
 	}
 
 	body := resp.Body()
 
 	// Decode structured response
-	var response OpenAIResponse
+	var response OpenAIChatResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("error decoding structured response: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error parsing response",
+				Error:   err,
+			},
+		}
 	}
 
 	// Decode raw response
 	var rawResponse interface{}
 	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, fmt.Errorf("error decoding raw response: %v", err)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: "error parsing raw response",
+				Error:   err,
+			},
+		}
 	}
 
 	result := &interfaces.BifrostResponse{

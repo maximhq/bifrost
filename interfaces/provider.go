@@ -23,11 +23,12 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`
 	MetaConfig               *MetaConfig              `json:"meta_config,omitempty"`
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
+	Logger                   Logger                   `json:"logger"`
 }
 
 // Provider defines the interface for AI model providers
 type Provider interface {
 	GetProviderKey() SupportedModelProvider
-	TextCompletion(model, key, text string, params *ModelParameters) (*BifrostResponse, error)
-	ChatCompletion(model, key string, messages []Message, params *ModelParameters) (*BifrostResponse, error)
+	TextCompletion(model, key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	ChatCompletion(model, key string, messages []Message, params *ModelParameters) (*BifrostResponse, *BifrostError)
 }

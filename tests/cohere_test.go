@@ -25,7 +25,7 @@ func setupCohereRequests(bifrost *bifrost.Bifrost) {
 			Params: nil,
 		}, ctx)
 		if err != nil {
-			fmt.Println("Error:", err)
+			fmt.Println("Error:", err.Error.Message)
 		} else {
 			fmt.Println("🐒 Text Completion Result:", result.Choices[0].Message.Content)
 		}
@@ -56,7 +56,7 @@ func setupCohereRequests(bifrost *bifrost.Bifrost) {
 				Params: nil,
 			}, ctx)
 			if err != nil {
-				fmt.Printf("Error in Cohere request %d: %v\n", index+1, err)
+				fmt.Printf("Error in Cohere request %d: %v\n", index+1, err.Error.Message)
 			} else {
 				fmt.Printf("🐒 Chat Completion Result %d: %s\n", index+1, *result.Choices[0].Message.Content)
 			}
@@ -115,7 +115,7 @@ func setupCohereToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 				Params: &params,
 			}, ctx)
 			if err != nil {
-				fmt.Printf("Error in Cohere tool call request %d: %v\n", index+1, err)
+				fmt.Printf("Error in Cohere tool call request %d: %v\n", index+1, err.Error.Message)
 			} else {
 				toolCall := *result.Choices[0].Message.ToolCalls
 				fmt.Printf("🐒 Tool Call Result %d: %s\n", index+1, toolCall[0].Function.Arguments)

@@ -34,7 +34,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 			Params: &params,
 		}, ctx)
 		if err != nil {
-			fmt.Println("Error:", err)
+			fmt.Println("Error:", err.Error.Message)
 		} else {
 			fmt.Println("🤖 Text Completion Result:", *result.Choices[0].Message.Content)
 		}
@@ -66,7 +66,7 @@ func setupAnthropicRequests(bifrost *bifrost.Bifrost) {
 			}, ctx)
 
 			if err != nil {
-				fmt.Printf("Error in Anthropic request %d: %v\n", index+1, err)
+				fmt.Printf("Error in Anthropic request %d: %v\n", index+1, err.Error.Message)
 			} else {
 				fmt.Printf("🤖 Chat Completion Result %d: %s\n", index+1, *result.Choices[0].Message.Content)
 			}
@@ -109,9 +109,9 @@ func setupAnthropicImageTests(bifrost *bifrost.Bifrost, ctx context.Context) {
 			Params: &params,
 		}, ctx)
 		if err != nil {
-			fmt.Printf("Error in Anthropic URL image request: %v\n", err)
+			fmt.Printf("Error in Anthropic URL image request: %v\n", err.Error.Message)
 		} else {
-			fmt.Printf("🐒 URL Image Result: %s\n", result.Choices[0].Message.Content)
+			fmt.Printf("🐒 URL Image Result: %s\n", *result.Choices[0].Message.Content)
 		}
 	}()
 
@@ -137,9 +137,9 @@ func setupAnthropicImageTests(bifrost *bifrost.Bifrost, ctx context.Context) {
 			Params: &params,
 		}, ctx)
 		if err != nil {
-			fmt.Printf("Error in Anthropic base64 image request: %v\n", err)
+			fmt.Printf("Error in Anthropic base64 image request: %v\n", err.Error.Message)
 		} else {
-			fmt.Printf("🐒 Base64 Image Result: %s\n", result.Choices[0].Message.Content)
+			fmt.Printf("🐒 Base64 Image Result: %s\n", *result.Choices[0].Message.Content)
 		}
 	}()
 }
@@ -196,7 +196,7 @@ func setupAnthropicToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 			}, ctx)
 
 			if err != nil {
-				fmt.Printf("Error in Anthropic tool call request %d: %v\n", index+1, err)
+				fmt.Printf("Error in Anthropic tool call request %d: %v\n", index+1, err.Error.Message)
 			} else {
 				toolCall := *result.Choices[1].Message.ToolCalls
 				fmt.Printf("🤖 Tool Call Result %d: %s\n", index+1, toolCall[0].Function.Arguments)

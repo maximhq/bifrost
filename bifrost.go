@@ -25,7 +25,7 @@ const (
 type ChannelMessage struct {
 	interfaces.BifrostRequest
 	Response chan *interfaces.BifrostResponse
-	Err      chan error
+	Err      chan interfaces.BifrostError
 	Type     RequestType
 }
 
@@ -107,7 +107,8 @@ func Init(account interfaces.Account, plugins []interfaces.Plugin, logger interf
 	for _, providerKey := range providerKeys {
 		config, err := bifrost.account.GetConfigForProvider(providerKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get config for provider: %v", err)
+			bifrost.logger.Warn(fmt.Sprintf("failed to get config for provider, skipping init: %v", err))
+			continue
 		}
 
 		if err := bifrost.prepareProvider(providerKey, config); err != nil {
@@ -176,29 +177,47 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 	for req := range queue {
 		var result *interfaces.BifrostResponse
 		var err error
+		var bifrostError *interfaces.BifrostError
 
 		key, err := bifrost.SelectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
 		if err != nil {
-			req.Err <- err
+			req.Err <- interfaces.BifrostError{
+				IsBifrostError: false,
+				Error: interfaces.ErrorField{
+					Message: err.Error(),
+					Error:   err,
+				},
+			}
+
 			continue
 		}
 
 		if req.Type == TextCompletionRequest {
 			if req.Input.TextCompletionInput == nil {
-				err = fmt.Errorf("text not provided for text completion request")
+				bifrostError = &interfaces.BifrostError{
+					IsBifrostError: false,
+					Error: interfaces.ErrorField{
+						Message: "text not provided for text completion request",
+					},
+				}
 			} else {
-				result, err = provider.TextCompletion(req.Model, key, *req.Input.TextCompletionInput, req.Params)
+				result, bifrostError = provider.TextCompletion(req.Model, key, *req.Input.TextCompletionInput, req.Params)
 			}
 		} else if req.Type == ChatCompletionRequest {
 			if req.Input.ChatCompletionInput == nil {
-				err = fmt.Errorf("chats not provided for chat completion request")
+				bifrostError = &interfaces.BifrostError{
+					IsBifrostError: false,
+					Error: interfaces.ErrorField{
+						Message: "chats not provided for chat completion request",
+					},
+				}
 			} else {
-				result, err = provider.ChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+				result, bifrostError = provider.ChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
 			}
 		}
 
-		if err != nil {
-			req.Err <- err
+		if bifrostError != nil {
+			req.Err <- *bifrostError
 		} else {
 			req.Response <- result
 		}
@@ -237,28 +256,48 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelPr
 	return queue, nil
 }
 
-func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, error) {
+func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	if req == nil {
-		return nil, fmt.Errorf("bifrost request cannot be nil")
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			Error: interfaces.ErrorField{
+				Message: "bifrost request cannot be nil",
+			},
+		}
 	}
 
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
-		return nil, err
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			Error: interfaces.ErrorField{
+				Message: err.Error(),
+			},
+		}
 	}
 
 	responseChan := make(chan *interfaces.BifrostResponse)
-	errorChan := make(chan error)
+	errorChan := make(chan interfaces.BifrostError)
 
 	for _, plugin := range bifrost.plugins {
 		req, err = plugin.PreHook(&ctx, req)
 		if err != nil {
-			return nil, err
+			return nil, &interfaces.BifrostError{
+				IsBifrostError: false,
+				Error: interfaces.ErrorField{
+					Message: err.Error(),
+				},
+			}
 		}
 	}
 
 	if req == nil {
-		return nil, fmt.Errorf("bifrost request after plugin hooks cannot be nil")
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			Error: interfaces.ErrorField{
+				Message: "bifrost request after plugin hooks cannot be nil",
+			},
+		}
 	}
 
 	queue <- ChannelMessage{
@@ -275,38 +314,63 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 			result, err = bifrost.plugins[i].PostHook(&ctx, result)
 
 			if err != nil {
-				return nil, err
+				return nil, &interfaces.BifrostError{
+					IsBifrostError: false,
+					Error: interfaces.ErrorField{
+						Message: err.Error(),
+					},
+				}
 			}
 		}
 
 		return result, nil
 	case err := <-errorChan:
-		return nil, err
+		return nil, &err
 	}
 }
 
-func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, error) {
+func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	if req == nil {
-		return nil, fmt.Errorf("bifrost request cannot be nil")
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			Error: interfaces.ErrorField{
+				Message: "bifrost request cannot be nil",
+			},
+		}
 	}
 
 	queue, err := bifrost.GetProviderQueue(providerKey)
 	if err != nil {
-		return nil, err
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			Error: interfaces.ErrorField{
+				Message: err.Error(),
+			},
+		}
 	}
 
 	responseChan := make(chan *interfaces.BifrostResponse)
-	errorChan := make(chan error)
+	errorChan := make(chan interfaces.BifrostError)
 
 	for _, plugin := range bifrost.plugins {
 		req, err = plugin.PreHook(&ctx, req)
 		if err != nil {
-			return nil, err
+			return nil, &interfaces.BifrostError{
+				IsBifrostError: false,
+				Error: interfaces.ErrorField{
+					Message: err.Error(),
+				},
+			}
 		}
 	}
 
 	if req == nil {
-		return nil, fmt.Errorf("bifrost request after pre plugin hooks cannot be nil")
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: false,
+			Error: interfaces.ErrorField{
+				Message: "bifrost request after plugin hooks cannot be nil",
+			},
+		}
 	}
 
 	queue <- ChannelMessage{
@@ -323,13 +387,18 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 			result, err = bifrost.plugins[i].PostHook(&ctx, result)
 
 			if err != nil {
-				return nil, err
+				return nil, &interfaces.BifrostError{
+					IsBifrostError: false,
+					Error: interfaces.ErrorField{
+						Message: err.Error(),
+					},
+				}
 			}
 		}
 
 		return result, nil
 	case err := <-errorChan:
-		return nil, err
+		return nil, &err
 	}
 }
 

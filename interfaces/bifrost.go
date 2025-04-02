@@ -228,3 +228,20 @@ type BifrostResponse struct {
 	Usage             LLMUsage                   `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 }
+
+type BifrostError struct {
+	EventID        *string    `json:"event_id"`
+	Type           *string    `json:"type"`
+	IsBifrostError bool       `json:"is_bifrost_error"`
+	StatusCode     *int       `json:"status_code"`
+	Error          ErrorField `json:"error"`
+}
+
+type ErrorField struct {
+	Type    *string     `json:"type"`
+	Code    *string     `json:"code"`
+	Message string      `json:"message"`
+	Error   error       `json:"error"`
+	Param   interface{} `json:"param"`
+	EventID *string     `json:"event_id"`
+}
