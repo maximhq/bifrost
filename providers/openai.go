@@ -2,14 +2,68 @@ package providers
 
 import (
 	"encoding/json"
-
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/interfaces"
 	"github.com/valyala/fasthttp"
 )
 
-type OpenAIChatResponse struct {
+// Pre-defined errors to reduce allocations in error paths
+var (
+	ErrOpenAIRequest          = fmt.Errorf("error making OpenAI request")
+	ErrOpenAIResponse         = fmt.Errorf("OpenAI error response")
+	ErrOpenAIJSONMarshaling   = fmt.Errorf("error marshaling OpenAI request")
+	ErrOpenAIDecodeStructured = fmt.Errorf("error decoding OpenAI structured response")
+	ErrOpenAIDecodeRaw        = fmt.Errorf("error decoding OpenAI raw response")
+	ErrOpenAIDecompress       = fmt.Errorf("error decompressing OpenAI response")
+	ErrOpenAIProxyConfig      = fmt.Errorf("invalid proxy configuration")
+)
+
+// OpenAIResponsePool provides a pool for OpenAI response objects
+var openAIResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &OpenAIResponse{}
+	},
+}
+
+// BifrostResponsePool provides a pool for Bifrost response objects
+var bifrostResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &interfaces.BifrostResponse{}
+	},
+}
+
+// AcquireOpenAIResponse gets an OpenAI response from the pool
+func AcquireOpenAIResponse() *OpenAIResponse {
+	resp := openAIResponsePool.Get().(*OpenAIResponse)
+	*resp = OpenAIResponse{} // Reset the struct
+	return resp
+}
+
+// ReleaseOpenAIResponse returns an OpenAI response to the pool
+func ReleaseOpenAIResponse(resp *OpenAIResponse) {
+	if resp != nil {
+		openAIResponsePool.Put(resp)
+	}
+}
+
+// AcquireBifrostResponse gets a Bifrost response from the pool
+func AcquireBifrostResponse() *interfaces.BifrostResponse {
+	resp := bifrostResponsePool.Get().(*interfaces.BifrostResponse)
+	*resp = interfaces.BifrostResponse{} // Reset the struct
+	return resp
+}
+
+// ReleaseBifrostResponse returns a Bifrost response to the pool
+func ReleaseBifrostResponse(resp *interfaces.BifrostResponse) {
+	if resp != nil {
+		bifrostResponsePool.Put(resp)
+	}
+}
+
+type OpenAIResponse struct {
 	ID                string                             `json:"id"`
 	Object            string                             `json:"object"` // text.completion or chat.completion
 	Choices           []interfaces.BifrostResponseChoice `json:"choices"`
@@ -40,13 +94,22 @@ type OpenAIProvider struct {
 
 // NewOpenAIProvider creates a new OpenAI provider instance
 func NewOpenAIProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *OpenAIProvider {
+	// Create the client
+	client := &fasthttp.Client{
+		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
+	}
+
+	for range config.ConcurrencyAndBufferSize.Concurrency {
+		// Create and put new objects directly into pools
+		openAIResponsePool.Put(&OpenAIResponse{})
+		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
+	}
+
 	return &OpenAIProvider{
 		logger: logger,
-		client: &fasthttp.Client{
-			ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-			WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-			MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
-		},
+		client: client,
 	}
 }
 
@@ -116,7 +179,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 		return nil, &interfaces.BifrostError{
 			IsBifrostError: true,
 			Error: interfaces.ErrorField{
-				Message: "error marshaling request",
+				Message: ErrOpenAIJSONMarshaling.Error(),
 				Error:   err,
 			},
 		}
@@ -139,7 +202,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 		return nil, &interfaces.BifrostError{
 			IsBifrostError: true,
 			Error: interfaces.ErrorField{
-				Message: "error sending request",
+				Message: ErrOpenAIRequest.Error(),
 				Error:   err,
 			},
 		}
@@ -152,7 +215,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 			return nil, &interfaces.BifrostError{
 				IsBifrostError: true,
 				Error: interfaces.ErrorField{
-					Message: "error parsing error response",
+					Message: ErrOpenAIResponse.Error(),
 					Error:   err,
 				},
 			}
@@ -174,45 +237,64 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 		}
 	}
 
-	body := resp.Body()
+	responseBody := resp.Body()
 
-	// Decode structured response
-	var response OpenAIChatResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing response",
-				Error:   err,
-			},
-		}
-	}
+	// Pre-allocate response structs from pools
+	openAIResponse := AcquireOpenAIResponse()
+	defer ReleaseOpenAIResponse(openAIResponse)
 
-	// Decode raw response
+	result := AcquireBifrostResponse()
+
+	// Parallel Unmarshaling of response
+	var wg sync.WaitGroup
+	var structuredErr, rawErr error
 	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		structuredErr = json.Unmarshal(responseBody, openAIResponse)
+	}()
+	go func() {
+		defer wg.Done()
+		rawErr = json.Unmarshal(responseBody, &rawResponse)
+	}()
+	wg.Wait()
+
+	// Check for unmarshaling errors
+	if structuredErr != nil {
+		ReleaseBifrostResponse(result)
 		return nil, &interfaces.BifrostError{
 			IsBifrostError: true,
 			Error: interfaces.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
+				Message: ErrOpenAIDecodeStructured.Error(),
+				Error:   structuredErr,
+			},
+		}
+	}
+	if rawErr != nil {
+		ReleaseBifrostResponse(result)
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: ErrOpenAIDecodeRaw.Error(),
+				Error:   rawErr,
 			},
 		}
 	}
 
-	result := &interfaces.BifrostResponse{
-		ID:                response.ID,
-		Choices:           response.Choices,
-		Object:            response.Object,
-		Usage:             response.Usage,
-		ServiceTier:       response.ServiceTier,
-		SystemFingerprint: response.SystemFingerprint,
-		Created:           response.Created,
-		Model:             response.Model,
-		ExtraFields: interfaces.BifrostResponseExtraFields{
-			Provider:    interfaces.OpenAI,
-			RawResponse: rawResponse,
-		},
+	// Populate result from response
+	result.ID = openAIResponse.ID
+	result.Choices = openAIResponse.Choices
+	result.Object = openAIResponse.Object
+	result.Usage = openAIResponse.Usage
+	result.ServiceTier = openAIResponse.ServiceTier
+	result.SystemFingerprint = openAIResponse.SystemFingerprint
+	result.Created = openAIResponse.Created
+	result.Model = openAIResponse.Model
+	result.ExtraFields = interfaces.BifrostResponseExtraFields{
+		Provider:    interfaces.OpenAI,
+		RawResponse: rawResponse,
 	}
 
 	return result, nil

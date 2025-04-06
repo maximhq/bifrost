@@ -19,6 +19,16 @@ type ConcurrencyAndBufferSize struct {
 	BufferSize  int `json:"buffer_size"`
 }
 
+// ProxyType defines the type of proxy to use
+type ProxyType string
+
+const (
+	NoProxy     ProxyType = "none"
+	HttpProxy   ProxyType = "http"
+	Socks5Proxy ProxyType = "socks5"
+	EnvProxy    ProxyType = "environment"
+)
+
 type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`
 	MetaConfig               *MetaConfig              `json:"meta_config,omitempty"`
