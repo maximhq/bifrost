@@ -18,7 +18,6 @@ var (
 	ErrOpenAIDecodeStructured = fmt.Errorf("error decoding OpenAI structured response")
 	ErrOpenAIDecodeRaw        = fmt.Errorf("error decoding OpenAI raw response")
 	ErrOpenAIDecompress       = fmt.Errorf("error decompressing OpenAI response")
-	ErrOpenAIProxyConfig      = fmt.Errorf("invalid proxy configuration")
 )
 
 // OpenAIResponsePool provides a pool for OpenAI response objects
@@ -106,6 +105,9 @@ func NewOpenAIProvider(config *interfaces.ProviderConfig, logger interfaces.Logg
 		openAIResponsePool.Put(&OpenAIResponse{})
 		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
 	}
+
+	// Configure proxy if provided
+	client = configureProxy(client, config.ProxyConfig, logger)
 
 	return &OpenAIProvider{
 		logger: logger,

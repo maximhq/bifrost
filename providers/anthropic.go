@@ -65,13 +65,18 @@ type AnthropicProvider struct {
 
 // NewAnthropicProvider creates a new AnthropicProvider instance
 func NewAnthropicProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *AnthropicProvider {
+	client := &fasthttp.Client{
+		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
+	}
+
+	// Configure proxy if provided
+	client = configureProxy(client, config.ProxyConfig, logger)
+
 	return &AnthropicProvider{
 		logger: logger,
-		client: &fasthttp.Client{
-			ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-			WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-			MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
-		},
+		client: client,
 	}
 }
 

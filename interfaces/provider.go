@@ -29,11 +29,20 @@ const (
 	EnvProxy    ProxyType = "environment"
 )
 
+// ProxyConfig holds proxy configuration
+type ProxyConfig struct {
+	Type     ProxyType `json:"type"`     // Type of proxy (none, http, socks5, environment)
+	URL      string    `json:"url"`      // Proxy URL (for http and socks5)
+	Username string    `json:"username"` // Optional username for proxy authentication
+	Password string    `json:"password"` // Optional password for proxy authentication
+}
+
 type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`
 	MetaConfig               *MetaConfig              `json:"meta_config,omitempty"`
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
 	Logger                   Logger                   `json:"logger"`
+	ProxyConfig              *ProxyConfig             `json:"proxy_config,omitempty"`
 }
 
 // Provider defines the interface for AI model providers

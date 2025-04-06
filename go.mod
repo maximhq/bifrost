@@ -28,4 +28,6 @@ require (
 	github.com/aws/smithy-go v1.22.2 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	golang.org/x/net v0.31.0 // indirect
+	golang.org/x/text v0.20.0 // indirect
 )
