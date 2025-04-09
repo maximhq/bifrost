@@ -70,8 +70,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 				RetryBackoffMax:                2 * time.Second,
 			},
 			ConcurrencyAndBufferSize: interfaces.ConcurrencyAndBufferSize{
-				Concurrency: 3,
-				BufferSize:  10,
+				Concurrency: 1000,
+				BufferSize:  1000,
 			},
 		}, nil
 	case interfaces.Anthropic:

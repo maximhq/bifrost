@@ -160,7 +160,7 @@ func setupOpenAIToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 	for i, message := range openAIMessages {
 		delay := time.Duration(100*(i+1)) * time.Millisecond
 		go func(msg string, delay time.Duration, index int) {
-			time.Sleep(delay)
+			// time.Sleep(delay)
 			messages := []interfaces.Message{
 				{
 					Role:    interfaces.RoleUser,
@@ -177,8 +177,12 @@ func setupOpenAIToolCalls(bifrost *bifrost.Bifrost, ctx context.Context) {
 			if err != nil {
 				fmt.Printf("Error in OpenAI tool call request %d: %v\n", index+1, err.Error.Message)
 			} else {
-				toolCall := *result.Choices[0].Message.ToolCalls
-				fmt.Printf("🐒 Tool Call Result %d: %s\n", index+1, toolCall[0].Function.Arguments)
+				toolCall := result.Choices[0].Message.ToolCalls
+				if toolCall != nil && len(*toolCall) > 0 {
+					fmt.Printf("🐒 Tool Call Result %d: %s\n", index+1, (*toolCall)[0].Function.Arguments)
+				} else {
+					fmt.Printf("🐒 Tool Call Result %d: No tool call found\n", index+1)
+				}
 			}
 		}(message, delay, i)
 	}
@@ -192,6 +196,87 @@ func TestOpenAI(t *testing.T) {
 	}
 
 	setupOpenAIRequests(bifrost)
+
+	bifrost.Cleanup()
+}
+
+// TestOpenAILoadTest simulates 10,000 requests with round-robin distribution
+func TestOpenAILoadTest(t *testing.T) {
+	bifrost, err := getBifrost()
+	if err != nil {
+		t.Fatalf("Error initializing bifrost: %v", err)
+		return
+	}
+
+	// Sample messages for round-robin distribution
+	openAIMessages := []string{
+		"Hello! How are you today?",
+		"Tell me a joke!",
+		"What's your favorite programming language?",
+		"Explain quantum computing in simple terms.",
+		"What are the best practices for writing clean code?",
+	}
+
+	// Channel to track completion of all requests
+	done := make(chan bool)
+	ctx := context.Background()
+	totalRequests := 25
+	completedRequests := 0
+	droppedRequests := 0
+
+	// Start time tracking
+	startTime := time.Now()
+
+	// Launch 100,000 requests
+	for i := 0; i < totalRequests; i++ {
+		// Round-robin message selection
+		message := openAIMessages[i%len(openAIMessages)]
+
+		go func(msg string, index int) {
+			messages := []interfaces.Message{
+				{
+					Role:    interfaces.RoleUser,
+					Content: &msg,
+				},
+			}
+
+			_, err := bifrost.ChatCompletionRequest(interfaces.OpenAI, &interfaces.BifrostRequest{
+				Model: "gpt-4o-mini",
+				Input: interfaces.RequestInput{
+					ChatCompletionInput: &messages,
+				},
+				Params: nil,
+			}, ctx)
+
+			if err != nil {
+				fmt.Printf("Error in OpenAI request %d: %v\n", index+1, err.Error.Message)
+				droppedRequests++
+			} else {
+				t.Logf("Request %d completed successfully", index+1)
+			}
+
+			// Track completion
+			completedRequests++
+			if completedRequests == totalRequests {
+				done <- true
+			}
+
+			if completedRequests%10 == 0 {
+				fmt.Printf("Completed %d requests, dropped %d requests\n", completedRequests, droppedRequests)
+			}
+
+		}(message, i)
+	}
+
+	// Wait for all requests to complete or timeout after 5 minutes
+	select {
+	case <-done:
+		elapsed := time.Since(startTime)
+		t.Logf("All %d requests completed in %v", totalRequests, elapsed)
+		t.Logf("Average request time: %v", elapsed/time.Duration(totalRequests))
+	case <-time.After(5 * time.Minute):
+		t.Errorf("Test timed out after 5 minutes. Completed %d/%d requests", completedRequests, totalRequests)
+	}
 
 	bifrost.Cleanup()
 }
