@@ -45,10 +45,15 @@ func getBifrost() (*bifrost.Bifrost, error) {
 		return nil, err
 	}
 
-	bifrost, err := bifrost.Init(&account, []interfaces.Plugin{plugin}, nil)
+	// Initialize Bifrost
+	b, err := bifrost.Init(interfaces.BifrostConfig{
+		Account: &account,
+		Plugins: []interfaces.Plugin{plugin},
+		Logger:  bifrost.NewDefaultLogger(interfaces.LogLevelInfo),
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	return bifrost, nil
+	return b, nil
 }

@@ -89,11 +89,15 @@ func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelPro
 	return nil
 }
 
-// Initializes infinite listening channels for each provider
-func Init(account interfaces.Account, plugins []interfaces.Plugin, logger interfaces.Logger) (*Bifrost, error) {
+// Init initializes a new Bifrost instance with the given account
+func Init(config interfaces.BifrostConfig) (*Bifrost, error) {
+	if config.Account == nil {
+		return nil, fmt.Errorf("account is required to initialize Bifrost")
+	}
+
 	bifrost := &Bifrost{
-		account:       account,
-		plugins:       plugins,
+		account:       config.Account,
+		plugins:       config.Plugins,
 		waitGroups:    make(map[interfaces.SupportedModelProvider]*sync.WaitGroup),
 		requestQueues: make(map[interfaces.SupportedModelProvider]chan ChannelMessage),
 	}
@@ -116,7 +120,7 @@ func Init(account interfaces.Account, plugins []interfaces.Plugin, logger interf
 	}
 
 	// Prewarm pools with multiple objects
-	for range 2500 {
+	for range config.InitialPoolSize {
 		// Create and put new objects directly into pools
 		bifrost.channelMessagePool.Put(&ChannelMessage{})
 		bifrost.responseChannelPool.Put(make(chan *interfaces.BifrostResponse, 1))
@@ -128,10 +132,10 @@ func Init(account interfaces.Account, plugins []interfaces.Plugin, logger interf
 		return nil, err
 	}
 
-	if logger == nil {
-		logger = NewDefaultLogger(interfaces.LogLevelInfo)
+	if config.Logger == nil {
+		config.Logger = NewDefaultLogger(interfaces.LogLevelInfo)
 	}
-	bifrost.logger = logger
+	bifrost.logger = config.Logger
 
 	// Create buffered channels for each provider and start workers
 	for _, providerKey := range providerKeys {

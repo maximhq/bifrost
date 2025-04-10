@@ -1,5 +1,12 @@
 package interfaces
 
+type BifrostConfig struct {
+	Account         Account
+	Plugins         []Plugin
+	Logger          Logger
+	InitialPoolSize int
+}
+
 // ModelChatMessageRole represents the role of a chat message
 type ModelChatMessageRole string
 

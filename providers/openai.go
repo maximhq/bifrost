@@ -299,5 +299,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 		RawResponse: rawResponse,
 	}
 
+	ReleaseBifrostResponse(result)
+
 	return result, nil
 }
