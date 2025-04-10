@@ -236,12 +236,25 @@ func (bifrost *Bifrost) SelectKeyFromProviderForModel(providerKey interfaces.Sup
 	return supportedKeys[0].Value, nil
 }
 
+// calculateBackoff implements exponential backoff with jitter
+func (bifrost *Bifrost) calculateBackoff(attempt int, config *interfaces.ProviderConfig) time.Duration {
+	// Calculate an exponential backoff: initial * 2^attempt
+	backoff := config.NetworkConfig.RetryBackoffInitial * time.Duration(1<<uint(attempt))
+	if backoff > config.NetworkConfig.RetryBackoffMax {
+		backoff = config.NetworkConfig.RetryBackoffMax
+	}
+
+	// Add jitter (±20%)
+	jitter := float64(backoff) * (0.8 + 0.4*rand.Float64())
+
+	return time.Duration(jitter)
+}
+
 func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan ChannelMessage) {
 	defer bifrost.waitGroups[provider.GetProviderKey()].Done()
 
 	for req := range queue {
 		var result *interfaces.BifrostResponse
-		var err error
 		var bifrostError *interfaces.BifrostError
 
 		key, err := bifrost.SelectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
@@ -253,35 +266,82 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 					Error:   err,
 				},
 			}
-
 			continue
 		}
 
-		if req.Type == TextCompletionRequest {
-			if req.Input.TextCompletionInput == nil {
-				bifrostError = &interfaces.BifrostError{
-					IsBifrostError: false,
-					Error: interfaces.ErrorField{
-						Message: "text not provided for text completion request",
-					},
-				}
-			} else {
-				result, bifrostError = provider.TextCompletion(req.Model, key, *req.Input.TextCompletionInput, req.Params)
+		config, err := bifrost.account.GetConfigForProvider(provider.GetProviderKey())
+		if err != nil {
+			req.Err <- interfaces.BifrostError{
+				IsBifrostError: false,
+				Error: interfaces.ErrorField{
+					Message: err.Error(),
+					Error:   err,
+				},
 			}
-		} else if req.Type == ChatCompletionRequest {
-			if req.Input.ChatCompletionInput == nil {
-				bifrostError = &interfaces.BifrostError{
-					IsBifrostError: false,
-					Error: interfaces.ErrorField{
-						Message: "chats not provided for chat completion request",
-					},
+			continue
+		}
+
+		// Track attempts
+		var attempts int
+
+		// Execute request with retries
+		for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
+			if attempts > 0 {
+				// Log retry attempt
+				bifrost.logger.Info(fmt.Sprintf(
+					"Retrying request (attempt %d/%d) for model %s: %s",
+					attempts, config.NetworkConfig.MaxRetries, req.Model,
+					bifrostError.Error.Message,
+				))
+
+				// Calculate and apply backoff
+				backoff := bifrost.calculateBackoff(attempts-1, config)
+				time.Sleep(backoff)
+			}
+
+			// Attempt the request
+			if req.Type == TextCompletionRequest {
+				if req.Input.TextCompletionInput == nil {
+					bifrostError = &interfaces.BifrostError{
+						IsBifrostError: false,
+						Error: interfaces.ErrorField{
+							Message: "text not provided for text completion request",
+						},
+					}
+					break // Don't retry client errors
+				} else {
+					result, bifrostError = provider.TextCompletion(req.Model, key, *req.Input.TextCompletionInput, req.Params)
 				}
-			} else {
-				result, bifrostError = provider.ChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+			} else if req.Type == ChatCompletionRequest {
+				if req.Input.ChatCompletionInput == nil {
+					bifrostError = &interfaces.BifrostError{
+						IsBifrostError: false,
+						Error: interfaces.ErrorField{
+							Message: "chats not provided for chat completion request",
+						},
+					}
+					break // Don't retry client errors
+				} else {
+					result, bifrostError = provider.ChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+				}
+			}
+
+			// Check if successful or if we should retry
+			if bifrostError == nil ||
+				//TODO should have a better way to check for only network errors
+				bifrostError.IsBifrostError || // Only retry non-bifrost errors
+				attempts == config.NetworkConfig.MaxRetries {
+				break
 			}
 		}
 
 		if bifrostError != nil {
+			// Add retry information to error
+			if attempts > 0 {
+				bifrost.logger.Warn(fmt.Sprintf("Request failed after %d %s",
+					attempts,
+					map[bool]string{true: "retries", false: "retry"}[attempts > 1]))
+			}
 			req.Err <- *bifrostError
 		} else {
 			req.Response <- result

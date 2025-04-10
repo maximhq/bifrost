@@ -1,9 +1,14 @@
 package interfaces
 
+import "time"
+
 // TODO third party providers
 
 type NetworkConfig struct {
-	DefaultRequestTimeoutInSeconds int `json:"default_request_timeout_in_seconds"`
+	DefaultRequestTimeoutInSeconds int           `json:"default_request_timeout_in_seconds"`
+	MaxRetries                     int           `json:"max_retries"`
+	RetryBackoffInitial            time.Duration `json:"retry_backoff_initial"`
+	RetryBackoffMax                time.Duration `json:"retry_backoff_max"`
 }
 
 type MetaConfig struct {

@@ -202,7 +202,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []int
 	// Make request
 	if err := provider.client.Do(req, resp); err != nil {
 		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
+			IsBifrostError: false,
 			Error: interfaces.ErrorField{
 				Message: ErrOpenAIRequest.Error(),
 				Error:   err,

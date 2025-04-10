@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/maximhq/bifrost/interfaces"
 
@@ -64,6 +65,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     3,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
 			},
 			ConcurrencyAndBufferSize: interfaces.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -74,6 +78,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     3,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
 			},
 			ConcurrencyAndBufferSize: interfaces.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -84,6 +91,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     3,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
 			},
 			MetaConfig: &interfaces.MetaConfig{
 				SecretAccessKey: maxim.StrPtr(os.Getenv("BEDROCK_ACCESS_KEY")),
@@ -98,6 +108,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     3,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
 			},
 			ConcurrencyAndBufferSize: interfaces.ConcurrencyAndBufferSize{
 				Concurrency: 3,
