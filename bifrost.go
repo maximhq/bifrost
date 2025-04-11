@@ -52,6 +52,8 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey interfaces.Sup
 		return providers.NewBedrockProvider(config), nil
 	case interfaces.Cohere:
 		return providers.NewCohereProvider(config), nil
+	case interfaces.Azure:
+		return providers.NewAzureProvider(config, bifrost.logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}

@@ -67,9 +67,10 @@ type ModelParameters struct {
 }
 
 type FunctionParameters struct {
-	Type       string                 `json:"type,"`
-	Required   []string               `json:"required"`
-	Properties map[string]interface{} `json:"properties"`
+	Type        string                 `json:"type,"`
+	Description *string                `json:"description,omitempty"`
+	Required    []string               `json:"required"`
+	Properties  map[string]interface{} `json:"properties"`
 }
 
 // Function represents a function definition for tool calls
@@ -165,9 +166,17 @@ type ContentLogProb struct {
 	TopLogProbs []LogProb `json:"top_logprobs"`
 }
 
+type TextCompletionLogProb struct {
+	TextOffset    []int                `json:"text_offset"`
+	TokenLogProbs []float64            `json:"token_logprobs"`
+	Tokens        []string             `json:"tokens"`
+	TopLogProbs   []map[string]float64 `json:"top_logprobs"`
+}
+
 type LogProbs struct {
-	Content []ContentLogProb `json:"content"`
-	Refusal []LogProb        `json:"refusal"`
+	Content []ContentLogProb      `json:"content,omitempty"`
+	Refusal []LogProb             `json:"refusal,omitempty"`
+	Text    TextCompletionLogProb `json:"text,omitempty"`
 }
 
 type FunctionCall struct {

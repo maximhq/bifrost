@@ -27,3 +27,15 @@ func (c *BedrockMetaConfig) GetARN() *string {
 func (c *BedrockMetaConfig) GetInferenceProfiles() map[string]string {
 	return c.InferenceProfiles
 }
+
+func (c *BedrockMetaConfig) GetEndpoint() *string {
+	return nil
+}
+
+func (c *BedrockMetaConfig) GetDeployments() map[string]string {
+	return nil
+}
+
+func (c *BedrockMetaConfig) GetAPIVersion() *string {
+	return nil
+}

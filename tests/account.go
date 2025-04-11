@@ -54,6 +54,15 @@ func (baseAccount *BaseAccount) GetKeysForProvider(providerKey interfaces.Suppor
 				Weight: 1.0,
 			},
 		}, nil
+	case interfaces.Azure:
+		return []interfaces.Key{
+			{
+				Value:  os.Getenv("AZURE_API_KEY"),
+				Models: []string{"gpt-4o"},
+				Weight: 1.0,
+			},
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -112,6 +121,26 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 				MaxRetries:                     3,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
+			},
+			ConcurrencyAndBufferSize: interfaces.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
+		}, nil
+	case interfaces.Azure:
+		return &interfaces.ProviderConfig{
+			NetworkConfig: interfaces.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			MetaConfig: &meta.AzureMetaConfig{
+				Endpoint: os.Getenv("AZURE_ENDPOINT"),
+				Deployments: map[string]string{
+					"gpt-4o": "gpt-4o-aug",
+				},
+				APIVersion: maxim.StrPtr("2024-08-01-preview"),
 			},
 			ConcurrencyAndBufferSize: interfaces.ConcurrencyAndBufferSize{
 				Concurrency: 3,

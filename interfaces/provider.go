@@ -17,6 +17,9 @@ type MetaConfig interface {
 	GetSessionToken() *string
 	GetARN() *string
 	GetInferenceProfiles() map[string]string
+	GetEndpoint() *string
+	GetDeployments() map[string]string
+	GetAPIVersion() *string
 }
 
 type ConcurrencyAndBufferSize struct {
