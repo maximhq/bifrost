@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/interfaces"
+	"github.com/maximhq/bifrost/interfaces/meta"
 
 	"github.com/maximhq/maxim-go"
 )
@@ -95,7 +96,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
 			},
-			MetaConfig: &interfaces.MetaConfig{
+			MetaConfig: &meta.BedrockMetaConfig{
 				SecretAccessKey: maxim.StrPtr(os.Getenv("BEDROCK_ACCESS_KEY")),
 				Region:          maxim.StrPtr("us-east-1"),
 			},

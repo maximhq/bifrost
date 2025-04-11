@@ -103,7 +103,7 @@ type BedrockError struct {
 
 type BedrockProvider struct {
 	client *http.Client
-	meta   *interfaces.MetaConfig
+	meta   interfaces.MetaConfig
 }
 
 func NewBedrockProvider(config *interfaces.ProviderConfig) *BedrockProvider {
@@ -128,8 +128,8 @@ func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interfac
 	}
 
 	region := "us-east-1"
-	if provider.meta.Region != nil {
-		region = *provider.meta.Region
+	if provider.meta.GetRegion() != nil {
+		region = *provider.meta.GetRegion()
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
@@ -155,7 +155,7 @@ func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interfac
 		}
 	}
 
-	if err := SignAWSRequest(req, accessKey, *provider.meta.SecretAccessKey, provider.meta.SessionToken, region, "bedrock"); err != nil {
+	if err := SignAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); err != nil {
 		return nil, err
 	}
 
@@ -521,10 +521,10 @@ func (provider *BedrockProvider) ChatCompletion(model, key string, messages []in
 	// Format the path with proper model identifier
 	path := fmt.Sprintf("%s/converse", model)
 
-	if provider.meta != nil && provider.meta.InferenceProfiles != nil {
-		if inferenceProfileId, ok := provider.meta.InferenceProfiles[model]; ok {
-			if provider.meta.ARN != nil {
-				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *provider.meta.ARN, inferenceProfileId))
+	if provider.meta != nil && provider.meta.GetInferenceProfiles() != nil {
+		if inferenceProfileId, ok := provider.meta.GetInferenceProfiles()[model]; ok {
+			if provider.meta.GetARN() != nil {
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *provider.meta.GetARN(), inferenceProfileId))
 				path = fmt.Sprintf("%s/converse", encodedModelIdentifier)
 			}
 		}

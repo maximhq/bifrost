@@ -11,12 +11,12 @@ type NetworkConfig struct {
 	RetryBackoffMax                time.Duration `json:"retry_backoff_max"`
 }
 
-type MetaConfig struct {
-	SecretAccessKey   *string           `json:"secret_access_key,omitempty"`
-	Region            *string           `json:"region,omitempty"`
-	SessionToken      *string           `json:"session_token,omitempty"`
-	ARN               *string           `json:"arn,omitempty"`
-	InferenceProfiles map[string]string `json:"inference_profiles,omitempty"`
+type MetaConfig interface {
+	GetSecretAccessKey() *string
+	GetRegion() *string
+	GetSessionToken() *string
+	GetARN() *string
+	GetInferenceProfiles() map[string]string
 }
 
 type ConcurrencyAndBufferSize struct {
@@ -44,7 +44,7 @@ type ProxyConfig struct {
 
 type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`
-	MetaConfig               *MetaConfig              `json:"meta_config,omitempty"`
+	MetaConfig               MetaConfig               `json:"meta_config,omitempty"`
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
 	Logger                   Logger                   `json:"logger"`
 	ProxyConfig              *ProxyConfig             `json:"proxy_config,omitempty"`
