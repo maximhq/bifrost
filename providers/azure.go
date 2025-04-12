@@ -58,6 +58,13 @@ func NewAzureProvider(config *interfaces.ProviderConfig, logger interfaces.Logge
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
 	}
 
+	for range config.ConcurrencyAndBufferSize.Concurrency {
+		// Create and put new objects directly into pools
+		azureChatResponsePool.Put(&AzureChatResponse{})
+		azureTextCompletionResponsePool.Put(&AzureTextResponse{})
+		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
+	}
+
 	// Configure proxy if provided
 	client = configureProxy(client, config.ProxyConfig, logger)
 
@@ -111,7 +118,7 @@ func (provider *AzureProvider) CompleteRequest(requestBody map[string]interface{
 		return nil, &interfaces.BifrostError{
 			IsBifrostError: true,
 			Error: interfaces.ErrorField{
-				Message: "error marshaling request",
+				Message: interfaces.ErrProviderJSONMarshaling,
 				Error:   err,
 			},
 		}
@@ -169,9 +176,9 @@ func (provider *AzureProvider) CompleteRequest(requestBody map[string]interface{
 	// Send the request
 	if err := provider.client.Do(req, resp); err != nil {
 		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
+			IsBifrostError: false,
 			Error: interfaces.ErrorField{
-				Message: "error sending request",
+				Message: interfaces.ErrProviderRequest,
 				Error:   err,
 			},
 		}
@@ -180,26 +187,12 @@ func (provider *AzureProvider) CompleteRequest(requestBody map[string]interface{
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		var errorResp AzureError
-		if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
-			return nil, &interfaces.BifrostError{
-				IsBifrostError: true,
-				Error: interfaces.ErrorField{
-					Message: "error parsing error response",
-					Error:   err,
-				},
-			}
-		}
 
-		statusCode := resp.StatusCode()
+		bifrostErr := handleProviderAPIError(resp, errorResp)
+		bifrostErr.Error.Type = &errorResp.Error.Code
+		bifrostErr.Error.Message = errorResp.Error.Message
 
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: interfaces.ErrorField{
-				Type:    &errorResp.Error.Code,
-				Message: errorResp.Error.Message,
-			},
-		}
+		return nil, bifrostErr
 	}
 
 	// Read the response body
@@ -210,41 +203,30 @@ func (provider *AzureProvider) CompleteRequest(requestBody map[string]interface{
 
 // TextCompletion implements text completion using Anthropic's API
 func (provider *AzureProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
-	preparedParams := PrepareParams(params)
+	preparedParams := prepareParams(params)
 
 	// Merge additional parameters
-	requestBody := MergeConfig(map[string]interface{}{
+	requestBody := mergeConfig(map[string]interface{}{
 		"model":  model,
 		"prompt": text,
 	}, preparedParams)
 
-	body, err := provider.CompleteRequest(requestBody, "completions", key, model)
+	responseBody, err := provider.CompleteRequest(requestBody, "completions", key, model)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse the response
-	var response AzureTextResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing response",
-				Error:   err,
-			},
-		}
-	}
+	// Create response object from pool
+	response := acquireAzureTextResponse()
+	defer releaseAzureTextResponse(response)
 
-	// Parse raw response
-	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
-			},
-		}
+	// Create Bifrost response from pool
+	bifrostResponse := acquireBifrostResponse()
+	defer releaseBifrostResponse(bifrostResponse)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	choices := []interfaces.BifrostResponseChoice{}
@@ -264,18 +246,18 @@ func (provider *AzureProvider) TextCompletion(model, key, text string, params *i
 		})
 	}
 
-	completionResult := &interfaces.BifrostResponse{
-		ID:      response.ID,
-		Choices: choices,
-		Usage:   response.Usage,
-		Model:   response.Model,
-		ExtraFields: interfaces.BifrostResponseExtraFields{
-			Provider:    interfaces.Azure,
-			RawResponse: rawResponse,
-		},
+	bifrostResponse.ID = response.ID
+	bifrostResponse.Choices = choices
+	bifrostResponse.Usage = response.Usage
+	bifrostResponse.Model = response.Model
+	bifrostResponse.Created = response.Created
+	bifrostResponse.SystemFingerprint = response.SystemFingerprint
+	bifrostResponse.ExtraFields = interfaces.BifrostResponseExtraFields{
+		Provider:    interfaces.Azure,
+		RawResponse: rawResponse,
 	}
 
-	return completionResult, nil
+	return bifrostResponse, nil
 }
 
 // ChatCompletion implements chat completion using Azure's API
@@ -313,57 +295,45 @@ func (provider *AzureProvider) ChatCompletion(model, key string, messages []inte
 		}
 	}
 
-	preparedParams := PrepareParams(params)
+	preparedParams := prepareParams(params)
 
 	// Merge additional parameters
-	requestBody := MergeConfig(map[string]interface{}{
+	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	body, err := provider.CompleteRequest(requestBody, "chat/completions", key, model)
+	responseBody, err := provider.CompleteRequest(requestBody, "chat/completions", key, model)
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode response
-	var response AzureChatResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error decoding response",
-				Error:   err,
-			},
-		}
+	// Create response object from pool
+	response := acquireAzureChatResponse()
+	defer releaseAzureChatResponse(response)
+
+	// Create Bifrost response from pool
+	bifrostResponse := acquireBifrostResponse()
+	defer releaseBifrostResponse(bifrostResponse)
+
+	// Use enhanced response handler
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
-	// Decode raw response
-	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
-			},
-		}
+	// Set response fields
+	bifrostResponse.ID = response.ID
+	bifrostResponse.Choices = response.Choices
+	bifrostResponse.Object = response.Object
+	bifrostResponse.Model = response.Model
+	bifrostResponse.Created = response.Created
+	bifrostResponse.SystemFingerprint = response.SystemFingerprint
+	bifrostResponse.Usage = response.Usage
+	bifrostResponse.ExtraFields = interfaces.BifrostResponseExtraFields{
+		Provider:    interfaces.Azure,
+		RawResponse: rawResponse,
 	}
 
-	// Create the completion result
-	result := &interfaces.BifrostResponse{
-		ID:                response.ID,
-		Object:            response.Object,
-		Choices:           response.Choices,
-		Model:             response.Model,
-		Created:           response.Created,
-		SystemFingerprint: response.SystemFingerprint,
-		Usage:             response.Usage,
-		ExtraFields: interfaces.BifrostResponseExtraFields{
-			Provider:    interfaces.Azure,
-			RawResponse: rawResponse,
-		},
-	}
-
-	return result, nil
+	return bifrostResponse, nil
 }

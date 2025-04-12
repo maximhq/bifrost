@@ -62,12 +62,19 @@ type CohereError struct {
 
 // OpenAIProvider implements the Provider interface for OpenAI
 type CohereProvider struct {
+	logger interfaces.Logger
 	client *fasthttp.Client
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance
-func NewCohereProvider(config *interfaces.ProviderConfig) *CohereProvider {
+func NewCohereProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *CohereProvider {
+	for range config.ConcurrencyAndBufferSize.Concurrency {
+		cohereResponsePool.Put(&CohereChatResponse{})
+		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
+	}
+
 	return &CohereProvider{
+		logger: logger,
 		client: &fasthttp.Client{
 			ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 			WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
@@ -103,10 +110,10 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 		})
 	}
 
-	preparedParams := PrepareParams(params)
+	preparedParams := prepareParams(params)
 
 	// Prepare request body
-	requestBody := MergeConfig(map[string]interface{}{
+	requestBody := mergeConfig(map[string]interface{}{
 		"message":      lastMessage.Content,
 		"chat_history": cohereHistory,
 		"model":        model,
@@ -152,7 +159,7 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 		return nil, &interfaces.BifrostError{
 			IsBifrostError: true,
 			Error: interfaces.ErrorField{
-				Message: "error marshaling request",
+				Message: interfaces.ErrProviderJSONMarshaling,
 				Error:   err,
 			},
 		}
@@ -173,9 +180,9 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 	// Make request
 	if err := provider.client.Do(req, resp); err != nil {
 		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
+			IsBifrostError: false,
 			Error: interfaces.ErrorField{
-				Message: "error sending request",
+				Message: interfaces.ErrProviderRequest,
 				Error:   err,
 			},
 		}
@@ -184,52 +191,27 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		var errorResp CohereError
-		if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
-			return nil, &interfaces.BifrostError{
-				IsBifrostError: true,
-				Error: interfaces.ErrorField{
-					Message: "error parsing error response",
-					Error:   err,
-				},
-			}
-		}
 
-		statusCode := resp.StatusCode()
+		bifrostErr := handleProviderAPIError(resp, errorResp)
+		bifrostErr.Error.Message = errorResp.Message
 
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: interfaces.ErrorField{
-				Message: errorResp.Message,
-			},
-		}
+		return nil, bifrostErr
 	}
 
 	// Read response body
-	body := resp.Body()
+	responseBody := resp.Body()
 
-	// Decode response
-	var response CohereChatResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing response",
-				Error:   err,
-			},
-		}
-	}
+	// Create response object from pool
+	response := acquireCohereResponse()
+	defer releaseCohereResponse(response)
 
-	// Parse raw response
-	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
-			},
-		}
+	// Create Bifrost response from pool
+	bifrostResponse := acquireBifrostResponse()
+	defer releaseBifrostResponse(bifrostResponse)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Transform tool calls if present
@@ -265,39 +247,35 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 		content = response.Text
 	}
 
-	// Create completion result
-	result := &interfaces.BifrostResponse{
-		ID: response.ResponseID,
-		Choices: []interfaces.BifrostResponseChoice{
-			{
-				Index: 0,
-				Message: interfaces.BifrostResponseChoiceMessage{
-					Role:      role,
-					Content:   &content,
-					ToolCalls: &toolCalls,
-				},
-				FinishReason: &response.FinishReason,
+	bifrostResponse.ID = response.ResponseID
+	bifrostResponse.Choices = []interfaces.BifrostResponseChoice{
+		{
+			Index: 0,
+			Message: interfaces.BifrostResponseChoiceMessage{
+				Role:      role,
+				Content:   &content,
+				ToolCalls: &toolCalls,
 			},
+			FinishReason: &response.FinishReason,
 		},
-		Usage: interfaces.LLMUsage{
-			PromptTokens:     int(response.Meta.Tokens.InputTokens),
-			CompletionTokens: int(response.Meta.Tokens.OutputTokens),
-			TotalTokens:      int(response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens),
+	}
+	bifrostResponse.Usage = interfaces.LLMUsage{
+		PromptTokens:     int(response.Meta.Tokens.InputTokens),
+		CompletionTokens: int(response.Meta.Tokens.OutputTokens),
+		TotalTokens:      int(response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens),
+	}
+	bifrostResponse.Model = model
+	bifrostResponse.ExtraFields = interfaces.BifrostResponseExtraFields{
+		Provider: interfaces.Cohere,
+		BilledUsage: &interfaces.BilledLLMUsage{
+			PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
+			CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
 		},
-
-		ExtraFields: interfaces.BifrostResponseExtraFields{
-			Provider: interfaces.Cohere,
-			BilledUsage: &interfaces.BilledLLMUsage{
-				PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
-				CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
-			},
-			ChatHistory: convertChatHistory(response.ChatHistory),
-			RawResponse: rawResponse,
-		},
-		Model: model,
+		ChatHistory: convertChatHistory(response.ChatHistory),
+		RawResponse: rawResponse,
 	}
 
-	return result, nil
+	return bifrostResponse, nil
 }
 
 // Helper function to convert chat history to the correct type

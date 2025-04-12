@@ -34,7 +34,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(providerKey interfaces.Suppor
 		return []interfaces.Key{
 			{
 				Value:  os.Getenv("ANTHROPIC_API_KEY"),
-				Models: []string{"claude-3-7-sonnet-20250219", "claude-2.1"},
+				Models: []string{"claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20240620", "claude-2.1"},
 				Weight: 1.0,
 			},
 		}, nil
@@ -75,7 +75,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
-				MaxRetries:                     3,
+				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
 			},
@@ -88,7 +88,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
-				MaxRetries:                     3,
+				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
 			},
@@ -101,7 +101,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
-				MaxRetries:                     3,
+				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
 			},
@@ -118,7 +118,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.Supp
 		return &interfaces.ProviderConfig{
 			NetworkConfig: interfaces.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 30,
-				MaxRetries:                     3,
+				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
 			},

@@ -2,6 +2,16 @@ package interfaces
 
 import "time"
 
+// Pre-defined errors
+var (
+	ErrProviderRequest           = "failed to make HTTP request to provider API"
+	ErrProviderResponseUnmarshal = "failed to unmarshal response from provider API"
+	ErrProviderJSONMarshaling    = "failed to marshal request body to JSON"
+	ErrProviderDecodeStructured  = "failed to decode provider's structured response"
+	ErrProviderDecodeRaw         = "failed to decode provider's raw response"
+	ErrProviderDecompress        = "failed to decompress provider's response"
+)
+
 // TODO third party providers
 
 type NetworkConfig struct {

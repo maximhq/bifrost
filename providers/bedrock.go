@@ -102,12 +102,19 @@ type BedrockError struct {
 }
 
 type BedrockProvider struct {
+	logger interfaces.Logger
 	client *http.Client
 	meta   interfaces.MetaConfig
 }
 
-func NewBedrockProvider(config *interfaces.ProviderConfig) *BedrockProvider {
+func NewBedrockProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *BedrockProvider {
+	for range config.ConcurrencyAndBufferSize.Concurrency {
+		bedrockChatResponsePool.Put(&BedrockChatResponse{})
+		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
+	}
+
 	return &BedrockProvider{
+		logger: logger,
 		client: &http.Client{Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)},
 		meta:   config.MetaConfig,
 	}
@@ -137,7 +144,7 @@ func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interfac
 		return nil, &interfaces.BifrostError{
 			IsBifrostError: true,
 			Error: interfaces.ErrorField{
-				Message: "error marshaling request",
+				Message: interfaces.ErrProviderJSONMarshaling,
 				Error:   err,
 			},
 		}
@@ -155,7 +162,7 @@ func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interfac
 		}
 	}
 
-	if err := SignAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); err != nil {
+	if err := signAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); err != nil {
 		return nil, err
 	}
 
@@ -163,9 +170,9 @@ func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interfac
 	resp, err := provider.client.Do(req)
 	if err != nil {
 		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
+			IsBifrostError: false,
 			Error: interfaces.ErrorField{
-				Message: "error sending request",
+				Message: interfaces.ErrProviderRequest,
 				Error:   err,
 			},
 		}
@@ -186,11 +193,12 @@ func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interfac
 
 	if resp.StatusCode != http.StatusOK {
 		var errorResp BedrockError
+
 		if err := json.Unmarshal(body, &errorResp); err != nil {
 			return nil, &interfaces.BifrostError{
 				IsBifrostError: true,
 				Error: interfaces.ErrorField{
-					Message: "error parsing error response",
+					Message: interfaces.ErrProviderResponseUnmarshal,
 					Error:   err,
 				},
 			}
@@ -470,9 +478,9 @@ func (provider *BedrockProvider) PrepareTextCompletionParams(params map[string]i
 }
 
 func (provider *BedrockProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
-	preparedParams := provider.PrepareTextCompletionParams(PrepareParams(params), model)
+	preparedParams := provider.PrepareTextCompletionParams(prepareParams(params), model)
 
-	requestBody := MergeConfig(map[string]interface{}{
+	requestBody := mergeConfig(map[string]interface{}{
 		"prompt": text,
 	}, preparedParams)
 
@@ -509,14 +517,14 @@ func (provider *BedrockProvider) ChatCompletion(model, key string, messages []in
 		return nil, err
 	}
 
-	preparedParams := PrepareParams(params)
+	preparedParams := prepareParams(params)
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
 		preparedParams["tools"] = provider.GetChatCompletionTools(params, model)
 	}
 
-	requestBody := MergeConfig(messageBody, preparedParams)
+	requestBody := mergeConfig(messageBody, preparedParams)
 
 	// Format the path with proper model identifier
 	path := fmt.Sprintf("%s/converse", model)
@@ -531,32 +539,22 @@ func (provider *BedrockProvider) ChatCompletion(model, key string, messages []in
 	}
 
 	// Create the signed request
-	body, err := provider.CompleteRequest(requestBody, path, key)
+	responseBody, err := provider.CompleteRequest(requestBody, path, key)
 	if err != nil {
 		return nil, err
 	}
 
-	var response BedrockChatResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing response",
-				Error:   err,
-			},
-		}
-	}
+	// Create response object from pool
+	response := acquireBedrockChatResponse()
+	defer releaseBedrockChatResponse(response)
 
-	// Parse raw response
-	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
-			},
-		}
+	// Create Bifrost response from pool
+	bifrostResponse := acquireBifrostResponse()
+	defer releaseBifrostResponse(bifrostResponse)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	var choices []interfaces.BifrostResponseChoice
@@ -573,21 +571,18 @@ func (provider *BedrockProvider) ChatCompletion(model, key string, messages []in
 
 	latency := float64(response.Metrics.Latency)
 
-	result := &interfaces.BifrostResponse{
-		Choices: choices,
-		Usage: interfaces.LLMUsage{
-			PromptTokens:     response.Usage.InputTokens,
-			CompletionTokens: response.Usage.OutputTokens,
-			TotalTokens:      response.Usage.TotalTokens,
-		},
-		Model: model,
-
-		ExtraFields: interfaces.BifrostResponseExtraFields{
-			Latency:     &latency,
-			Provider:    interfaces.Bedrock,
-			RawResponse: rawResponse,
-		},
+	bifrostResponse.Choices = choices
+	bifrostResponse.Usage = interfaces.LLMUsage{
+		PromptTokens:     response.Usage.InputTokens,
+		CompletionTokens: response.Usage.OutputTokens,
+		TotalTokens:      response.Usage.TotalTokens,
+	}
+	bifrostResponse.Model = model
+	bifrostResponse.ExtraFields = interfaces.BifrostResponseExtraFields{
+		Latency:     &latency,
+		Provider:    interfaces.Bedrock,
+		RawResponse: rawResponse,
 	}
 
-	return result, nil
+	return bifrostResponse, nil
 }

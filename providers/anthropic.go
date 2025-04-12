@@ -71,6 +71,12 @@ func NewAnthropicProvider(config *interfaces.ProviderConfig, logger interfaces.L
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
 	}
 
+	for range config.ConcurrencyAndBufferSize.Concurrency {
+		anthropicTextResponsePool.Put(&AnthropicTextResponse{})
+		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
+		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
+	}
+
 	// Configure proxy if provided
 	client = configureProxy(client, config.ProxyConfig, logger)
 
@@ -136,7 +142,7 @@ func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interf
 		return nil, &interfaces.BifrostError{
 			IsBifrostError: true,
 			Error: interfaces.ErrorField{
-				Message: "error marshaling request",
+				Message: interfaces.ErrProviderJSONMarshaling,
 				Error:   err,
 			},
 		}
@@ -148,7 +154,7 @@ func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interf
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.SetRequestURI("https://api.anthropic.com/v1/complete")
+	req.SetRequestURI(url)
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("x-api-key", key)
@@ -158,9 +164,9 @@ func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interf
 	// Send the request
 	if err := provider.client.Do(req, resp); err != nil {
 		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
+			IsBifrostError: false,
 			Error: interfaces.ErrorField{
-				Message: "error sending request",
+				Message: interfaces.ErrProviderRequest,
 				Error:   err,
 			},
 		}
@@ -169,27 +175,12 @@ func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interf
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		var errorResp AnthropicError
-		if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
-			return nil, &interfaces.BifrostError{
-				IsBifrostError: true,
-				Error: interfaces.ErrorField{
-					Message: "error parsing error response",
-					Error:   err,
-				},
-			}
-		}
 
-		statusCode := resp.StatusCode()
+		bifrostErr := handleProviderAPIError(resp, errorResp)
+		bifrostErr.Error.Type = &errorResp.Error.Type
+		bifrostErr.Error.Message = errorResp.Error.Message
 
-		return nil, &interfaces.BifrostError{
-			Type:           &errorResp.Type,
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: interfaces.ErrorField{
-				Type:    &errorResp.Error.Type,
-				Message: errorResp.Error.Message,
-			},
-		}
+		return nil, bifrostErr
 	}
 
 	// Read the response body
@@ -200,68 +191,54 @@ func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interf
 
 // TextCompletion implements text completion using Anthropic's API
 func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
-	preparedParams := provider.PrepareTextCompletionParams(PrepareParams(params))
+	preparedParams := provider.PrepareTextCompletionParams(prepareParams(params))
 
 	// Merge additional parameters
-	requestBody := MergeConfig(map[string]interface{}{
+	requestBody := mergeConfig(map[string]interface{}{
 		"model":  model,
 		"prompt": fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
 	}, preparedParams)
 
-	body, err := provider.CompleteRequest(requestBody, "https://api.anthropic.com/v1/complete", key)
+	responseBody, err := provider.CompleteRequest(requestBody, "https://api.anthropic.com/v1/complete", key)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse the response
-	var response AnthropicTextResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing response",
-				Error:   err,
-			},
-		}
+	// Create response object from pool
+	response := acquireAnthropicTextResponse()
+	defer releaseAnthropicTextResponse(response)
+
+	// Create Bifrost response from pool
+	bifrostResponse := acquireBifrostResponse()
+	defer releaseBifrostResponse(bifrostResponse)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
-	// Parse raw response
-	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
-			},
-		}
-	}
-
-	// Create the completion result
-	completionResult := &interfaces.BifrostResponse{
-		ID: response.ID,
-		Choices: []interfaces.BifrostResponseChoice{
-			{
-				Index: 0,
-				Message: interfaces.BifrostResponseChoiceMessage{
-					Role:    interfaces.RoleAssistant,
-					Content: &response.Completion,
-				},
+	bifrostResponse.ID = response.ID
+	bifrostResponse.Choices = []interfaces.BifrostResponseChoice{
+		{
+			Index: 0,
+			Message: interfaces.BifrostResponseChoiceMessage{
+				Role:    interfaces.RoleAssistant,
+				Content: &response.Completion,
 			},
 		},
-		Usage: interfaces.LLMUsage{
-			PromptTokens:     response.Usage.InputTokens,
-			CompletionTokens: response.Usage.OutputTokens,
-			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
-		},
-		Model: response.Model,
-		ExtraFields: interfaces.BifrostResponseExtraFields{
-			Provider:    interfaces.Anthropic,
-			RawResponse: rawResponse,
-		},
+	}
+	bifrostResponse.Usage = interfaces.LLMUsage{
+		PromptTokens:     response.Usage.InputTokens,
+		CompletionTokens: response.Usage.OutputTokens,
+		TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
+	}
+	bifrostResponse.Model = response.Model
+	bifrostResponse.ExtraFields = interfaces.BifrostResponseExtraFields{
+		Provider:    interfaces.Anthropic,
+		RawResponse: rawResponse,
 	}
 
-	return completionResult, nil
+	return bifrostResponse, nil
 }
 
 // ChatCompletion implements chat completion using Anthropic's API
@@ -309,7 +286,7 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		}
 	}
 
-	preparedParams := PrepareParams(params)
+	preparedParams := prepareParams(params)
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
@@ -326,38 +303,27 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 	}
 
 	// Merge additional parameters
-	requestBody := MergeConfig(map[string]interface{}{
+	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	body, err := provider.CompleteRequest(requestBody, "https://api.anthropic.com/v1/messages", key)
+	responseBody, err := provider.CompleteRequest(requestBody, "https://api.anthropic.com/v1/messages", key)
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode response
-	var response AnthropicChatResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error decoding response",
-				Error:   err,
-			},
-		}
-	}
+	// Create response object from pool
+	response := acquireAnthropicChatResponse()
+	defer releaseAnthropicChatResponse(response)
 
-	// Decode raw response
-	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, &interfaces.BifrostError{
-			IsBifrostError: true,
-			Error: interfaces.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
-			},
-		}
+	// Create Bifrost response from pool
+	bifrostResponse := acquireBifrostResponse()
+	defer releaseBifrostResponse(bifrostResponse)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Process the response into our BifrostResponse format
@@ -404,21 +370,18 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		})
 	}
 
-	// Create the completion result
-	result := &interfaces.BifrostResponse{
-		ID:      response.ID,
-		Choices: choices,
-		Usage: interfaces.LLMUsage{
-			PromptTokens:     response.Usage.InputTokens,
-			CompletionTokens: response.Usage.OutputTokens,
-			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
-		},
-		Model: response.Model,
-		ExtraFields: interfaces.BifrostResponseExtraFields{
-			Provider:    interfaces.Anthropic,
-			RawResponse: rawResponse,
-		},
+	bifrostResponse.ID = response.ID
+	bifrostResponse.Choices = choices
+	bifrostResponse.Usage = interfaces.LLMUsage{
+		PromptTokens:     response.Usage.InputTokens,
+		CompletionTokens: response.Usage.OutputTokens,
+		TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
+	}
+	bifrostResponse.Model = response.Model
+	bifrostResponse.ExtraFields = interfaces.BifrostResponseExtraFields{
+		Provider:    interfaces.Anthropic,
+		RawResponse: rawResponse,
 	}
 
-	return result, nil
+	return bifrostResponse, nil
 }

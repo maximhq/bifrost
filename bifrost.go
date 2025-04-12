@@ -49,9 +49,9 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey interfaces.Sup
 	case interfaces.Anthropic:
 		return providers.NewAnthropicProvider(config, bifrost.logger), nil
 	case interfaces.Bedrock:
-		return providers.NewBedrockProvider(config), nil
+		return providers.NewBedrockProvider(config, bifrost.logger), nil
 	case interfaces.Cohere:
-		return providers.NewCohereProvider(config), nil
+		return providers.NewCohereProvider(config, bifrost.logger), nil
 	case interfaces.Azure:
 		return providers.NewAzureProvider(config, bifrost.logger), nil
 	default:

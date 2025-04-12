@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/interfaces"
@@ -24,8 +26,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 )
 
-// MergeConfig merges default config with custom parameters
-func MergeConfig(defaultConfig map[string]interface{}, customParams map[string]interface{}) map[string]interface{} {
+// mergeConfig merges default config with custom parameters
+func mergeConfig(defaultConfig map[string]interface{}, customParams map[string]interface{}) map[string]interface{} {
 	merged := make(map[string]interface{})
 
 	// Copy default config
@@ -41,7 +43,7 @@ func MergeConfig(defaultConfig map[string]interface{}, customParams map[string]i
 	return merged
 }
 
-func PrepareParams(params *interfaces.ModelParameters) map[string]interface{} {
+func prepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	flatParams := make(map[string]interface{})
 
 	// Return empty map if params is nil
@@ -84,7 +86,7 @@ func PrepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	return flatParams
 }
 
-func SignAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) *interfaces.BifrostError {
+func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) *interfaces.BifrostError {
 	// Set required headers before signing
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -214,4 +216,65 @@ func configureProxy(client *fasthttp.Client, proxyConfig *interfaces.ProxyConfig
 	}
 
 	return client
+}
+
+func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *interfaces.BifrostError {
+	if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
+		return &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: interfaces.ErrProviderResponseUnmarshal,
+				Error:   err,
+			},
+		}
+	}
+
+	statusCode := resp.StatusCode()
+
+	return &interfaces.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &statusCode,
+		Error:          interfaces.ErrorField{},
+	}
+}
+
+// handleProviderResponse handles common response parsing logic and returns Bifrost errors
+func handleProviderResponse[T any](responseBody []byte, response *T) (interface{}, *interfaces.BifrostError) {
+	var rawResponse interface{}
+
+	var wg sync.WaitGroup
+	var structuredErr, rawErr error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		structuredErr = json.Unmarshal(responseBody, response)
+	}()
+	go func() {
+		defer wg.Done()
+		rawErr = json.Unmarshal(responseBody, &rawResponse)
+	}()
+	wg.Wait()
+
+	if structuredErr != nil {
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: interfaces.ErrProviderDecodeStructured,
+				Error:   structuredErr,
+			},
+		}
+	}
+
+	if rawErr != nil {
+		return nil, &interfaces.BifrostError{
+			IsBifrostError: true,
+			Error: interfaces.ErrorField{
+				Message: interfaces.ErrProviderDecodeRaw,
+				Error:   rawErr,
+			},
+		}
+	}
+
+	return rawResponse, nil
 }
