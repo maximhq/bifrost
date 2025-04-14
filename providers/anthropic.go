@@ -1,3 +1,5 @@
+// Package providers implements various LLM providers and their utility functions.
+// This file contains the Anthropic provider implementation.
 package providers
 
 import (
@@ -11,59 +13,69 @@ import (
 	"github.com/maximhq/maxim-go"
 )
 
+// AnthropicToolChoice represents the tool choice configuration for Anthropic's API.
+// It specifies how tools should be used in the completion request.
 type AnthropicToolChoice struct {
-	Type                   interfaces.ToolChoiceType `json:"type"`
-	Name                   *string                   `json:"name"`
-	DisableParallelToolUse *bool                     `json:"disable_parallel_tool_use"`
+	Type                   interfaces.ToolChoiceType `json:"type"`                      // Type of tool choice
+	Name                   *string                   `json:"name"`                      // Name of the tool to use
+	DisableParallelToolUse *bool                     `json:"disable_parallel_tool_use"` // Whether to disable parallel tool use
 }
 
+// AnthropicTextResponse represents the response structure from Anthropic's text completion API.
+// It includes the completion text, model information, and token usage statistics.
 type AnthropicTextResponse struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Completion string `json:"completion"`
-	Model      string `json:"model"`
+	ID         string `json:"id"`         // Unique identifier for the completion
+	Type       string `json:"type"`       // Type of completion
+	Completion string `json:"completion"` // Generated completion text
+	Model      string `json:"model"`      // Model used for the completion
 	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+		InputTokens  int `json:"input_tokens"`  // Number of input tokens used
+		OutputTokens int `json:"output_tokens"` // Number of output tokens generated
+	} `json:"usage"` // Token usage statistics
 }
 
+// AnthropicChatResponse represents the response structure from Anthropic's chat completion API.
+// It includes message content, model information, and token usage statistics.
 type AnthropicChatResponse struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Role    string `json:"role"`
+	ID      string `json:"id"`   // Unique identifier for the completion
+	Type    string `json:"type"` // Type of completion
+	Role    string `json:"role"` // Role of the message sender
 	Content []struct {
-		Type     string                 `json:"type"`
-		Text     string                 `json:"text,omitempty"`
-		Thinking string                 `json:"thinking,omitempty"`
-		ID       string                 `json:"id"`
-		Name     string                 `json:"name"`
-		Input    map[string]interface{} `json:"input"`
-	} `json:"content"`
-	Model        string  `json:"model"`
-	StopReason   string  `json:"stop_reason,omitempty"`
-	StopSequence *string `json:"stop_sequence,omitempty"`
+		Type     string                 `json:"type"`               // Type of content
+		Text     string                 `json:"text,omitempty"`     // Text content
+		Thinking string                 `json:"thinking,omitempty"` // Thinking process
+		ID       string                 `json:"id"`                 // Content identifier
+		Name     string                 `json:"name"`               // Name of the content
+		Input    map[string]interface{} `json:"input"`              // Input parameters
+	} `json:"content"` // Array of content items
+	Model        string  `json:"model"`                   // Model used for the completion
+	StopReason   string  `json:"stop_reason,omitempty"`   // Reason for completion termination
+	StopSequence *string `json:"stop_sequence,omitempty"` // Sequence that caused completion to stop
 	Usage        struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+		InputTokens  int `json:"input_tokens"`  // Number of input tokens used
+		OutputTokens int `json:"output_tokens"` // Number of output tokens generated
+	} `json:"usage"` // Token usage statistics
 }
 
+// AnthropicError represents the error response structure from Anthropic's API.
+// It includes error type and message information.
 type AnthropicError struct {
-	Type  string `json:"type"`
+	Type  string `json:"type"` // Type of error
 	Error struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
+		Type    string `json:"type"`    // Error type
+		Message string `json:"message"` // Error message
+	} `json:"error"` // Error details
 }
 
-// AnthropicProvider implements the Provider interface for Anthropic's Claude API
+// AnthropicProvider implements the Provider interface for Anthropic's Claude API.
 type AnthropicProvider struct {
-	logger interfaces.Logger
-	client *fasthttp.Client
+	logger interfaces.Logger // Logger for provider operations
+	client *fasthttp.Client  // HTTP client for API requests
 }
 
-// NewAnthropicProvider creates a new AnthropicProvider instance
+// NewAnthropicProvider creates a new Anthropic provider instance.
+// It initializes the HTTP client with the provided configuration and sets up response pools.
+// The client is configured with timeouts, concurrency limits, and optional proxy settings.
 func NewAnthropicProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *AnthropicProvider {
 	client := &fasthttp.Client{
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
@@ -71,6 +83,7 @@ func NewAnthropicProvider(config *interfaces.ProviderConfig, logger interfaces.L
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
 	}
 
+	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		anthropicTextResponsePool.Put(&AnthropicTextResponse{})
 		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
@@ -86,10 +99,14 @@ func NewAnthropicProvider(config *interfaces.ProviderConfig, logger interfaces.L
 	}
 }
 
+// GetProviderKey returns the provider identifier for Anthropic.
 func (provider *AnthropicProvider) GetProviderKey() interfaces.SupportedModelProvider {
 	return interfaces.Anthropic
 }
 
+// PrepareTextCompletionParams prepares text completion parameters for Anthropic's API.
+// It handles parameter mapping and conversion to the format expected by Anthropic.
+// Returns the modified parameters map.
 func (provider *AnthropicProvider) PrepareTextCompletionParams(params map[string]interface{}) map[string]interface{} {
 	// Check if there is a key entry for max_tokens
 	if maxTokens, exists := params["max_tokens"]; exists {
@@ -103,6 +120,9 @@ func (provider *AnthropicProvider) PrepareTextCompletionParams(params map[string
 	return params
 }
 
+// PrepareToolChoices prepares tool choice parameters for Anthropic's API.
+// It handles conversion of tool choice parameters to the format expected by Anthropic.
+// Returns the modified parameters map.
 func (provider *AnthropicProvider) PrepareToolChoices(params map[string]interface{}) map[string]interface{} {
 	toolChoice, exists := params["tool_choice"]
 	if !exists {
@@ -135,6 +155,9 @@ func (provider *AnthropicProvider) PrepareToolChoices(params map[string]interfac
 	return params
 }
 
+// CompleteRequest sends a request to Anthropic's API and handles the response.
+// It constructs the API URL, sets up authentication, and processes the response.
+// Returns the response body or an error if the request fails.
 func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interface{}, url string, key string) ([]byte, *interfaces.BifrostError) {
 	// Marshal the request body
 	jsonData, err := json.Marshal(requestBody)
@@ -189,7 +212,9 @@ func (provider *AnthropicProvider) CompleteRequest(requestBody map[string]interf
 	return body, nil
 }
 
-// TextCompletion implements text completion using Anthropic's API
+// TextCompletion performs a text completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	preparedParams := provider.PrepareTextCompletionParams(prepareParams(params))
 
@@ -241,7 +266,9 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 	return bifrostResponse, nil
 }
 
-// ChatCompletion implements chat completion using Anthropic's API
+// ChatCompletion performs a chat completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}

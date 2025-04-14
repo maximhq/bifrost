@@ -1,3 +1,6 @@
+// Package bifrost provides the core implementation of the Bifrost system.
+// Bifrost is a unified interface for interacting with various AI model providers,
+// managing concurrent requests, and handling provider-specific configurations.
 package bifrost
 
 import (
@@ -15,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/providers"
 )
 
+// RequestType represents the type of request being made to a provider.
 type RequestType string
 
 const (
@@ -22,6 +26,8 @@ const (
 	ChatCompletionRequest RequestType = "chat_completion"
 )
 
+// ChannelMessage represents a message passed through the request channel.
+// It contains the request, response and error channels, and the request type.
 type ChannelMessage struct {
 	interfaces.BifrostRequest
 	Response chan *interfaces.BifrostResponse
@@ -29,19 +35,22 @@ type ChannelMessage struct {
 	Type     RequestType
 }
 
-// Bifrost manages providers and maintains infinite open channels
+// Bifrost manages providers and maintains sepcified open channels for concurrent processing.
+// It handles request routing, provider management, and response processing.
 type Bifrost struct {
-	account             interfaces.Account
-	providers           []interfaces.Provider // list of processed providers
-	plugins             []interfaces.Plugin
+	account             interfaces.Account                                        // account interface
+	providers           []interfaces.Provider                                     // list of processed providers
+	plugins             []interfaces.Plugin                                       // list of plugins
 	requestQueues       map[interfaces.SupportedModelProvider]chan ChannelMessage // provider request queues
-	waitGroups          map[interfaces.SupportedModelProvider]*sync.WaitGroup
-	channelMessagePool  sync.Pool // Pool for ChannelMessage objects
-	responseChannelPool sync.Pool // Pool for response channels
-	errorChannelPool    sync.Pool // Pool for error channels
-	logger              interfaces.Logger
+	waitGroups          map[interfaces.SupportedModelProvider]*sync.WaitGroup     // wait groups for each provider
+	channelMessagePool  sync.Pool                                                 // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool sync.Pool                                                 // Pool for response channels, initial pool size is set in Init
+	errorChannelPool    sync.Pool                                                 // Pool for error channels, initial pool size is set in Init
+	logger              interfaces.Logger                                         // logger instance, default logger is used if not provided
 }
 
+// createProviderFromProviderKey creates a new provider instance based on the provider key.
+// It returns an error if the provider is not supported.
 func (bifrost *Bifrost) createProviderFromProviderKey(providerKey interfaces.SupportedModelProvider, config *interfaces.ProviderConfig) (interfaces.Provider, error) {
 	switch providerKey {
 	case interfaces.OpenAI:
@@ -59,6 +68,8 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey interfaces.Sup
 	}
 }
 
+// prepareProvider sets up a provider with its configuration, keys, and worker channels.
+// It initializes the request queue and starts worker goroutines for processing requests.
 func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelProvider, config *interfaces.ProviderConfig) error {
 	providerConfig, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
@@ -91,7 +102,10 @@ func (bifrost *Bifrost) prepareProvider(providerKey interfaces.SupportedModelPro
 	return nil
 }
 
-// Init initializes a new Bifrost instance with the given account
+// Init initializes a new Bifrost instance with the given configuration.
+// It sets up the account, plugins, object pools, and initializes providers.
+// Returns an error if initialization fails.
+// Initial Memory Allocations happens here as per the initial pool size.
 func Init(config interfaces.BifrostConfig) (*Bifrost, error) {
 	if config.Account == nil {
 		return nil, fmt.Errorf("account is required to initialize Bifrost")
@@ -155,7 +169,8 @@ func Init(config interfaces.BifrostConfig) (*Bifrost, error) {
 	return bifrost, nil
 }
 
-// getChannelMessage gets a ChannelMessage from the pool
+// getChannelMessage gets a ChannelMessage from the pool and configures it with the request.
+// It also gets response and error channels from their respective pools.
 func (bifrost *Bifrost) getChannelMessage(req interfaces.BifrostRequest, reqType RequestType) *ChannelMessage {
 	// Get channels from pool
 	responseChan := bifrost.responseChannelPool.Get().(chan *interfaces.BifrostResponse)
@@ -181,7 +196,7 @@ func (bifrost *Bifrost) getChannelMessage(req interfaces.BifrostRequest, reqType
 	return msg
 }
 
-// releaseChannelMessage returns a ChannelMessage and its channels to the pool
+// releaseChannelMessage returns a ChannelMessage and its channels to their respective pools.
 func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	// Put channels back in pools
 	bifrost.responseChannelPool.Put(msg.Response)
@@ -193,6 +208,8 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	bifrost.channelMessagePool.Put(msg)
 }
 
+// SelectKeyFromProviderForModel selects an appropriate API key for a given provider and model.
+// It uses weighted random selection if multiple keys are available.
 func (bifrost *Bifrost) SelectKeyFromProviderForModel(providerKey interfaces.SupportedModelProvider, model string) (string, error) {
 	keys, err := bifrost.account.GetKeysForProvider(providerKey)
 	if err != nil {
@@ -242,7 +259,7 @@ func (bifrost *Bifrost) SelectKeyFromProviderForModel(providerKey interfaces.Sup
 	return supportedKeys[0].Value, nil
 }
 
-// calculateBackoff implements exponential backoff with jitter
+// calculateBackoff implements exponential backoff with jitter for retry attempts.
 func (bifrost *Bifrost) calculateBackoff(attempt int, config *interfaces.ProviderConfig) time.Duration {
 	// Calculate an exponential backoff: initial * 2^attempt
 	backoff := config.NetworkConfig.RetryBackoffInitial * time.Duration(1<<uint(attempt))
@@ -256,6 +273,8 @@ func (bifrost *Bifrost) calculateBackoff(attempt int, config *interfaces.Provide
 	return time.Duration(jitter)
 }
 
+// processRequests handles incoming requests from the queue for a specific provider.
+// It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan ChannelMessage) {
 	defer bifrost.waitGroups[provider.GetProviderKey()].Done()
 
@@ -357,6 +376,8 @@ func (bifrost *Bifrost) processRequests(provider interfaces.Provider, queue chan
 	bifrost.logger.Debug(fmt.Sprintf("Worker for provider %s exiting...", provider.GetProviderKey()))
 }
 
+// GetConfiguredProviderFromProviderKey returns the provider instance for a given provider key.
+// Uses the GetProviderKey method of the provider interface to find the provider.
 func (bifrost *Bifrost) GetConfiguredProviderFromProviderKey(key interfaces.SupportedModelProvider) (interfaces.Provider, error) {
 	for _, provider := range bifrost.providers {
 		if provider.GetProviderKey() == key {
@@ -367,6 +388,9 @@ func (bifrost *Bifrost) GetConfiguredProviderFromProviderKey(key interfaces.Supp
 	return nil, fmt.Errorf("no provider found for key: %s", key)
 }
 
+// GetProviderQueue returns the request queue for a given provider key.
+// If the queue doesn't exist, it creates one at runtime and initializes the provider,
+// given the provider config is provided in the account interface implementation.
 func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelProvider) (chan ChannelMessage, error) {
 	var queue chan ChannelMessage
 	var exists bool
@@ -387,6 +411,8 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey interfaces.SupportedModelPr
 	return queue, nil
 }
 
+// TextCompletionRequest sends a text completion request to the specified provider.
+// It handles plugin hooks, request validation, and response processing.
 func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	if req == nil {
 		return nil, &interfaces.BifrostError{
@@ -459,6 +485,8 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey interfaces.SupportedMo
 	return result, nil
 }
 
+// ChatCompletionRequest sends a chat completion request to the specified provider.
+// It handles plugin hooks, request validation, and response processing.
 func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedModelProvider, req *interfaces.BifrostRequest, ctx context.Context) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	if req == nil {
 		return nil, &interfaces.BifrostError{
@@ -532,7 +560,8 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey interfaces.SupportedMo
 	return result, nil
 }
 
-// Shutdown gracefully stops all workers when triggered
+// Shutdown gracefully stops all workers when triggered.
+// It closes all request channels and waits for workers to exit.
 func (bifrost *Bifrost) Shutdown() {
 	bifrost.logger.Info("[BIFROST] Graceful Shutdown Initiated - Closing all request channels...")
 
@@ -547,7 +576,8 @@ func (bifrost *Bifrost) Shutdown() {
 	}
 }
 
-// Cleanup handles SIGINT (Ctrl+C) to exit cleanly
+// Cleanup handles SIGINT (Ctrl+C) to exit cleanly.
+// It sets up signal handling and calls Shutdown when interrupted.
 func (bifrost *Bifrost) Cleanup() {
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)

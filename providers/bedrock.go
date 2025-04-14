@@ -1,3 +1,5 @@
+// Package providers implements various LLM providers and their utility functions.
+// This file contains the AWS Bedrock provider implementation.
 package providers
 
 import (
@@ -13,101 +15,125 @@ import (
 	"github.com/maximhq/bifrost/interfaces"
 )
 
+// BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.
+// It includes the completion text and stop reason information.
 type BedrockAnthropicTextResponse struct {
-	Completion string `json:"completion"`
-	StopReason string `json:"stop_reason"`
-	Stop       string `json:"stop"`
+	Completion string `json:"completion"`  // Generated completion text
+	StopReason string `json:"stop_reason"` // Reason for completion termination
+	Stop       string `json:"stop"`        // Stop sequence that caused completion to stop
 }
 
+// BedrockMistralTextResponse represents the response structure from Bedrock's Mistral text completion API.
+// It includes multiple output choices with their text and stop reasons.
 type BedrockMistralTextResponse struct {
 	Outputs []struct {
-		Text       string `json:"text"`
-		StopReason string `json:"stop_reason"`
-	} `json:"outputs"`
+		Text       string `json:"text"`        // Generated text
+		StopReason string `json:"stop_reason"` // Reason for completion termination
+	} `json:"outputs"` // Array of output choices
 }
 
+// BedrockChatResponse represents the response structure from Bedrock's chat completion API.
+// It includes message content, metrics, and token usage statistics.
 type BedrockChatResponse struct {
 	Metrics struct {
-		Latency int `json:"latencyMs"`
-	} `json:"metrics"`
+		Latency int `json:"latencyMs"` // Response latency in milliseconds
+	} `json:"metrics"` // Performance metrics
 	Output struct {
 		Message struct {
 			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-			Role string `json:"role"`
-		} `json:"message"`
-	} `json:"output"`
-	StopReason string `json:"stopReason"`
+				Text string `json:"text"` // Message content
+			} `json:"content"` // Array of message content
+			Role string `json:"role"` // Role of the message sender
+		} `json:"message"` // Message structure
+	} `json:"output"` // Output structure
+	StopReason string `json:"stopReason"` // Reason for completion termination
 	Usage      struct {
-		InputTokens  int `json:"inputTokens"`
-		OutputTokens int `json:"outputTokens"`
-		TotalTokens  int `json:"totalTokens"`
-	} `json:"usage"`
+		InputTokens  int `json:"inputTokens"`  // Number of input tokens used
+		OutputTokens int `json:"outputTokens"` // Number of output tokens generated
+		TotalTokens  int `json:"totalTokens"`  // Total number of tokens used
+	} `json:"usage"` // Token usage statistics
 }
 
+// BedrockAnthropicSystemMessage represents a system message for Anthropic models.
 type BedrockAnthropicSystemMessage struct {
-	Text string `json:"text"`
+	Text string `json:"text"` // System message text
 }
 
+// BedrockAnthropicTextMessage represents a text message for Anthropic models.
 type BedrockAnthropicTextMessage struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type string `json:"type"` // Type of message
+	Text string `json:"text"` // Message text
 }
 
+// BedrockMistralContent represents content for Mistral models.
 type BedrockMistralContent struct {
-	Text string `json:"text"`
+	Text string `json:"text"` // Content text
 }
 
+// BedrockMistralChatMessage represents a chat message for Mistral models.
 type BedrockMistralChatMessage struct {
-	Role       interfaces.ModelChatMessageRole `json:"role"`
-	Content    []BedrockMistralContent         `json:"content"`
-	ToolCalls  *[]BedrockMistralToolCall       `json:"tool_calls,omitempty"`
-	ToolCallID *string                         `json:"tool_call_id,omitempty"`
+	Role       interfaces.ModelChatMessageRole `json:"role"`                   // Role of the message sender
+	Content    []BedrockMistralContent         `json:"content"`                // Array of message content
+	ToolCalls  *[]BedrockMistralToolCall       `json:"tool_calls,omitempty"`   // Optional tool calls
+	ToolCallID *string                         `json:"tool_call_id,omitempty"` // Optional tool call ID
 }
 
+// BedrockAnthropicImageMessage represents an image message for Anthropic models.
 type BedrockAnthropicImageMessage struct {
-	Type  string                `json:"type"`
-	Image BedrockAnthropicImage `json:"image"`
+	Type  string                `json:"type"`  // Type of message
+	Image BedrockAnthropicImage `json:"image"` // Image data
 }
 
+// BedrockAnthropicImage represents image data for Anthropic models.
 type BedrockAnthropicImage struct {
-	Format string                      `json:"string"`
-	Source BedrockAnthropicImageSource `json:"source"`
+	Format string                      `json:"string"` // Image format
+	Source BedrockAnthropicImageSource `json:"source"` // Image source
 }
 
+// BedrockAnthropicImageSource represents the source of an image for Anthropic models.
 type BedrockAnthropicImageSource struct {
-	Bytes string `json:"bytes"`
+	Bytes string `json:"bytes"` // Base64 encoded image data
 }
 
+// BedrockMistralToolCall represents a tool call for Mistral models.
 type BedrockMistralToolCall struct {
-	ID       string              `json:"id"`
-	Function interfaces.Function `json:"function"`
+	ID       string              `json:"id"`       // Tool call ID
+	Function interfaces.Function `json:"function"` // Function to call
 }
 
+// BedrockAnthropicToolCall represents a tool call for Anthropic models.
 type BedrockAnthropicToolCall struct {
-	ToolSpec BedrockAnthropicToolSpec `json:"toolSpec"`
+	ToolSpec BedrockAnthropicToolSpec `json:"toolSpec"` // Tool specification
 }
 
+// BedrockAnthropicToolSpec represents a tool specification for Anthropic models.
 type BedrockAnthropicToolSpec struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string `json:"name"`        // Tool name
+	Description string `json:"description"` // Tool description
 	InputSchema struct {
-		Json interface{} `json:"json"`
-	} `json:"inputSchema"`
+		Json interface{} `json:"json"` // Input schema in JSON format
+	} `json:"inputSchema"` // Input schema structure
 }
 
+// BedrockError represents the error response structure from Bedrock's API.
 type BedrockError struct {
-	Message string `json:"message"`
+	Message string `json:"message"` // Error message
 }
 
+// BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
-	logger interfaces.Logger
-	client *http.Client
-	meta   interfaces.MetaConfig
+	logger interfaces.Logger     // Logger for provider operations
+	client *http.Client          // HTTP client for API requests
+	meta   interfaces.MetaConfig // AWS-specific configuration
 }
 
+// NewBedrockProvider creates a new Bedrock provider instance.
+// It initializes the HTTP client with the provided configuration and sets up response pools.
+// The client is configured with timeouts and AWS-specific settings.
 func NewBedrockProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *BedrockProvider {
+	client := &http.Client{Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)}
+
+	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		bedrockChatResponsePool.Put(&BedrockChatResponse{})
 		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
@@ -115,15 +141,19 @@ func NewBedrockProvider(config *interfaces.ProviderConfig, logger interfaces.Log
 
 	return &BedrockProvider{
 		logger: logger,
-		client: &http.Client{Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)},
+		client: client,
 		meta:   config.MetaConfig,
 	}
 }
 
+// GetProviderKey returns the provider identifier for Bedrock.
 func (provider *BedrockProvider) GetProviderKey() interfaces.SupportedModelProvider {
 	return interfaces.Bedrock
 }
 
+// CompleteRequest sends a request to Bedrock's API and handles the response.
+// It constructs the API URL, sets up AWS authentication, and processes the response.
+// Returns the response body or an error if the request fails.
 func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interface{}, path string, accessKey string) ([]byte, *interfaces.BifrostError) {
 	if provider.meta == nil {
 		return nil, &interfaces.BifrostError{
@@ -215,6 +245,9 @@ func (provider *BedrockProvider) CompleteRequest(requestBody map[string]interfac
 	return body, nil
 }
 
+// GetTextCompletionResult processes the text completion response from Bedrock.
+// It handles different model types (Anthropic and Mistral) and formats the response.
+// Returns a BifrostResponse containing the completion results or an error if processing fails.
 func (provider *BedrockProvider) GetTextCompletionResult(result []byte, model string) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	switch model {
 	case "anthropic.claude-instant-v1:2":
@@ -300,6 +333,9 @@ func (provider *BedrockProvider) GetTextCompletionResult(result []byte, model st
 	}
 }
 
+// PrepareChatCompletionMessages formats chat messages for Bedrock's API.
+// It handles different model types (Anthropic and Mistral) and formats messages accordingly.
+// Returns a map containing the formatted messages and any system messages, or an error if formatting fails.
 func (provider *BedrockProvider) PrepareChatCompletionMessages(messages []interfaces.Message, model string) (map[string]interface{}, *interfaces.BifrostError) {
 	switch model {
 	case "anthropic.claude-instant-v1:2":
@@ -418,6 +454,9 @@ func (provider *BedrockProvider) PrepareChatCompletionMessages(messages []interf
 	}
 }
 
+// GetChatCompletionTools prepares tool specifications for Bedrock's API.
+// It formats tool definitions for different model types (Anthropic and Mistral).
+// Returns an array of tool specifications for the given model.
 func (provider *BedrockProvider) GetChatCompletionTools(params *interfaces.ModelParameters, model string) []BedrockAnthropicToolCall {
 	var tools []BedrockAnthropicToolCall
 
@@ -457,6 +496,9 @@ func (provider *BedrockProvider) GetChatCompletionTools(params *interfaces.Model
 	return tools
 }
 
+// PrepareTextCompletionParams prepares text completion parameters for Bedrock's API.
+// It handles parameter mapping and conversion for different model types.
+// Returns the modified parameters map with model-specific adjustments.
 func (provider *BedrockProvider) PrepareTextCompletionParams(params map[string]interface{}, model string) map[string]interface{} {
 	switch model {
 	case "anthropic.claude-instant-v1:2":
@@ -477,6 +519,9 @@ func (provider *BedrockProvider) PrepareTextCompletionParams(params map[string]i
 	return params
 }
 
+// TextCompletion performs a text completion request to Bedrock's API.
+// It formats the request, sends it to Bedrock, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	preparedParams := provider.PrepareTextCompletionParams(prepareParams(params), model)
 
@@ -511,6 +556,9 @@ func (provider *BedrockProvider) TextCompletion(model, key, text string, params 
 	return result, nil
 }
 
+// ChatCompletion performs a chat completion request to Bedrock's API.
+// It formats the request, sends it to Bedrock, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	messageBody, err := provider.PrepareChatCompletionMessages(messages, model)
 	if err != nil {

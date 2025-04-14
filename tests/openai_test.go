@@ -1,3 +1,6 @@
+// Package tests provides test utilities and configurations for the Bifrost system.
+// It includes test implementations of interfaces, mock objects, and helper functions
+// for testing the Bifrost functionality with various AI providers.
 package tests
 
 import (
@@ -16,6 +19,7 @@ func TestOpenAI(t *testing.T) {
 	config := TestConfig{
 		Provider:       interfaces.OpenAI,
 		ChatModel:      "gpt-4o-mini",
+		SetupText:      false, // OpenAI does not support text completion
 		SetupToolCalls: true,
 		SetupImage:     true,
 		SetupBaseImage: false,

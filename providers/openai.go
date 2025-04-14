@@ -1,3 +1,5 @@
+// Package providers implements various LLM providers and their utility functions.
+// This file contains the OpenAI provider implementation.
 package providers
 
 import (
@@ -8,36 +10,42 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// OpenAIResponse represents the response structure from the OpenAI API.
+// It includes completion choices, model information, and usage statistics.
 type OpenAIResponse struct {
-	ID                string                             `json:"id"`
-	Object            string                             `json:"object"` // text.completion or chat.completion
-	Choices           []interfaces.BifrostResponseChoice `json:"choices"`
-	Model             string                             `json:"model"`
-	Created           int                                `json:"created"` // The Unix timestamp (in seconds).
-	ServiceTier       *string                            `json:"service_tier"`
-	SystemFingerprint *string                            `json:"system_fingerprint"`
-	Usage             interfaces.LLMUsage                `json:"usage"`
+	ID                string                             `json:"id"`                 // Unique identifier for the completion
+	Object            string                             `json:"object"`             // Type of completion (text.completion or chat.completion)
+	Choices           []interfaces.BifrostResponseChoice `json:"choices"`            // Array of completion choices
+	Model             string                             `json:"model"`              // Model used for the completion
+	Created           int                                `json:"created"`            // Unix timestamp of completion creation
+	ServiceTier       *string                            `json:"service_tier"`       // Service tier used for the request
+	SystemFingerprint *string                            `json:"system_fingerprint"` // System fingerprint for the request
+	Usage             interfaces.LLMUsage                `json:"usage"`              // Token usage statistics
 }
 
+// OpenAIError represents the error response structure from the OpenAI API.
+// It includes detailed error information and event tracking.
 type OpenAIError struct {
-	EventID string `json:"event_id"`
-	Type    string `json:"type"`
+	EventID string `json:"event_id"` // Unique identifier for the error event
+	Type    string `json:"type"`     // Type of error
 	Error   struct {
-		Type    string      `json:"type"`
-		Code    string      `json:"code"`
-		Message string      `json:"message"`
-		Param   interface{} `json:"param"`
-		EventID string      `json:"event_id"`
+		Type    string      `json:"type"`     // Error type
+		Code    string      `json:"code"`     // Error code
+		Message string      `json:"message"`  // Error message
+		Param   interface{} `json:"param"`    // Parameter that caused the error
+		EventID string      `json:"event_id"` // Event ID for tracking
 	} `json:"error"`
 }
 
-// OpenAIProvider implements the Provider interface for OpenAI
+// OpenAIProvider implements the Provider interface for OpenAI's API.
 type OpenAIProvider struct {
-	logger interfaces.Logger
-	client *fasthttp.Client
+	logger interfaces.Logger // Logger for provider operations
+	client *fasthttp.Client  // HTTP client for API requests
 }
 
-// NewOpenAIProvider creates a new OpenAI provider instance
+// NewOpenAIProvider creates a new OpenAI provider instance.
+// It initializes the HTTP client with the provided configuration and sets up response pools.
+// The client is configured with timeouts, concurrency limits, and optional proxy settings.
 func NewOpenAIProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *OpenAIProvider {
 	// Create the client
 	client := &fasthttp.Client{
@@ -46,8 +54,8 @@ func NewOpenAIProvider(config *interfaces.ProviderConfig, logger interfaces.Logg
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
 	}
 
+	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		// Create and put new objects directly into pools
 		openAIResponsePool.Put(&OpenAIResponse{})
 		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
 	}
@@ -61,11 +69,13 @@ func NewOpenAIProvider(config *interfaces.ProviderConfig, logger interfaces.Logg
 	}
 }
 
+// GetProviderKey returns the provider identifier for OpenAI.
 func (provider *OpenAIProvider) GetProviderKey() interfaces.SupportedModelProvider {
 	return interfaces.OpenAI
 }
 
-// TextCompletion performs text completion
+// TextCompletion is not supported by the OpenAI provider.
+// Returns an error indicating that text completion is not available.
 func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	return nil, &interfaces.BifrostError{
 		IsBifrostError: false,
@@ -75,6 +85,9 @@ func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *
 	}
 }
 
+// ChatCompletion performs a chat completion request to the OpenAI API.
+// It supports both text and image content in messages.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	// Format messages for OpenAI API
 	var formattedMessages []map[string]interface{}

@@ -1,3 +1,6 @@
+// Package tests provides test utilities and configurations for the Bifrost system.
+// It includes test implementations of interfaces, mock objects, and helper functions
+// for testing the Bifrost functionality with various AI providers.
 package tests
 
 import (
@@ -16,7 +19,7 @@ func TestAzure(t *testing.T) {
 	config := TestConfig{
 		Provider:       interfaces.Azure,
 		ChatModel:      "gpt-4o",
-		SetupText:      false,
+		SetupText:      false, // gpt-4o does not support text completion
 		SetupToolCalls: true,
 		SetupImage:     true,
 		SetupBaseImage: false,

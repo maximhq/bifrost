@@ -1,3 +1,6 @@
+// Package tests provides test utilities and configurations for the Bifrost system.
+// It includes test implementations of interfaces, mock objects, and helper functions
+// for testing the Bifrost functionality with various AI providers.
 package tests
 
 import (
@@ -10,7 +13,20 @@ import (
 	"github.com/maximhq/maxim-go"
 )
 
-// TestConfig holds configuration for test requests
+// TestConfig holds configuration for test requests across different AI providers.
+// It provides a flexible way to configure test scenarios for various provider capabilities.
+//
+// Fields:
+//   - Provider: The AI provider to test (e.g., OpenAI, Anthropic, etc.)
+//   - ChatModel: The model to use for chat completion tests
+//   - TextModel: The model to use for text completion tests
+//   - Messages: Custom messages to use in chat tests (optional)
+//   - SetupText: Whether to run text completion tests
+//   - SetupToolCalls: Whether to run function calling tests
+//   - SetupImage: Whether to run image input tests
+//   - SetupBaseImage: Whether to run base64 image tests
+//   - CustomTextCompletion: Custom text for completion tests (optional)
+//   - CustomParams: Custom model parameters for requests (optional)
 type TestConfig struct {
 	Provider             interfaces.SupportedModelProvider
 	ChatModel            string
@@ -24,14 +40,16 @@ type TestConfig struct {
 	CustomParams         *interfaces.ModelParameters
 }
 
-// Common test messages used across providers
+// CommonTestMessages contains default messages used across providers for testing.
+// These messages are used when no custom messages are provided in the test configuration.
 var CommonTestMessages = []string{
 	"Hello! How are you today?",
 	"Tell me a joke!",
 	"What's your favorite programming language?",
 }
 
-// Common weather tool parameters
+// WeatherToolParams defines the parameters for a weather function tool.
+// This is used to test function calling capabilities of AI providers.
 var WeatherToolParams = interfaces.ModelParameters{
 	Tools: &[]interfaces.Tool{{
 		Type: "function",
@@ -56,7 +74,13 @@ var WeatherToolParams = interfaces.ModelParameters{
 	}},
 }
 
-// setupTextCompletionRequest sets up a text completion request
+// setupTextCompletionRequest sets up and executes a text completion test request.
+// It runs asynchronously and prints the result or error to stdout.
+//
+// Parameters:
+//   - bifrost: The Bifrost instance to use for the request
+//   - config: Test configuration containing model and parameters
+//   - ctx: Context for the request
 func setupTextCompletionRequest(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Context) {
 	text := "Hello world!"
 	if config.CustomTextCompletion != nil {
@@ -84,7 +108,13 @@ func setupTextCompletionRequest(bifrost *bifrost.Bifrost, config TestConfig, ctx
 	}()
 }
 
-// setupChatCompletionRequests sets up multiple chat completion requests
+// setupChatCompletionRequests sets up and executes multiple chat completion test requests.
+// It runs requests asynchronously with staggered delays and prints results to stdout.
+//
+// Parameters:
+//   - bifrost: The Bifrost instance to use for the requests
+//   - config: Test configuration containing model and parameters
+//   - ctx: Context for the requests
 func setupChatCompletionRequests(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Context) {
 	messages := config.Messages
 	if len(messages) == 0 {
@@ -122,7 +152,13 @@ func setupChatCompletionRequests(bifrost *bifrost.Bifrost, config TestConfig, ct
 	}
 }
 
-// setupImageTests sets up image input tests
+// setupImageTests sets up and executes image input test requests.
+// It tests both URL and base64 image inputs (if enabled) and prints results to stdout.
+//
+// Parameters:
+//   - bifrost: The Bifrost instance to use for the requests
+//   - config: Test configuration containing model and parameters
+//   - ctx: Context for the requests
 func setupImageTests(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Context) {
 	params := interfaces.ModelParameters{}
 	if config.CustomParams != nil {
@@ -191,7 +227,13 @@ func setupImageTests(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Co
 	}
 }
 
-// setupToolCalls sets up function calling tests
+// setupToolCalls sets up and executes function calling test requests.
+// It tests the provider's ability to handle tool/function calls and prints results to stdout.
+//
+// Parameters:
+//   - bifrost: The Bifrost instance to use for the requests
+//   - config: Test configuration containing model and parameters
+//   - ctx: Context for the requests
 func setupToolCalls(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Context) {
 	messages := []string{"What's the weather like in Mumbai?"}
 
@@ -240,7 +282,13 @@ func setupToolCalls(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Con
 	}
 }
 
-// setupAllRequests sets up all test requests for a provider
+// SetupAllRequests sets up and executes all configured test requests for a provider.
+// It coordinates the execution of text completion, chat completion, image, and tool call tests
+// based on the provided configuration.
+//
+// Parameters:
+//   - bifrost: The Bifrost instance to use for the requests
+//   - config: Test configuration specifying which tests to run
 func SetupAllRequests(bifrost *bifrost.Bifrost, config TestConfig) {
 	ctx := context.Background()
 

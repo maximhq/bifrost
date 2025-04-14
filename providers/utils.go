@@ -1,3 +1,5 @@
+// Package providers implements various LLM providers and their utility functions.
+// This file contains common utility functions used across different provider implementations.
 package providers
 
 import (
@@ -26,7 +28,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 )
 
-// mergeConfig merges default config with custom parameters
+// mergeConfig merges a default configuration map with custom parameters.
+// It creates a new map containing all default values, then overrides them with any custom values.
+// Returns a new map containing the merged configuration.
 func mergeConfig(defaultConfig map[string]interface{}, customParams map[string]interface{}) map[string]interface{} {
 	merged := make(map[string]interface{})
 
@@ -43,6 +47,10 @@ func mergeConfig(defaultConfig map[string]interface{}, customParams map[string]i
 	return merged
 }
 
+// prepareParams converts ModelParameters into a flat map of parameters.
+// It handles both standard fields and extra parameters, using reflection to process
+// the struct fields and their JSON tags.
+// Returns a map containing all parameters ready for use in API requests.
 func prepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	flatParams := make(map[string]interface{})
 
@@ -86,6 +94,11 @@ func prepareParams(params *interfaces.ModelParameters) map[string]interface{} {
 	return flatParams
 }
 
+// signAWSRequest signs an HTTP request using AWS Signature Version 4.
+// It is used in providers like Bedrock.
+// It sets required headers, calculates the request body hash, and signs the request
+// using the provided AWS credentials.
+// Returns a BifrostError if signing fails.
 func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) *interfaces.BifrostError {
 	// Set required headers before signing
 	req.Header.Set("Content-Type", "application/json")
@@ -167,7 +180,9 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 	return nil
 }
 
-// configureProxy sets up the proxy for the fasthttp client
+// configureProxy sets up a proxy for the fasthttp client based on the provided configuration.
+// It supports HTTP, SOCKS5, and environment-based proxy configurations.
+// Returns the configured client or the original client if proxy configuration is invalid.
 func configureProxy(client *fasthttp.Client, proxyConfig *interfaces.ProxyConfig, logger interfaces.Logger) *fasthttp.Client {
 	if proxyConfig == nil {
 		return client
@@ -218,6 +233,9 @@ func configureProxy(client *fasthttp.Client, proxyConfig *interfaces.ProxyConfig
 	return client
 }
 
+// handleProviderAPIError processes error responses from provider APIs.
+// It attempts to unmarshal the error response and returns a BifrostError
+// with the appropriate status code and error information.
 func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *interfaces.BifrostError {
 	if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
 		return &interfaces.BifrostError{
@@ -238,7 +256,9 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *interfaces.
 	}
 }
 
-// handleProviderResponse handles common response parsing logic and returns Bifrost errors
+// handleProviderResponse handles common response parsing logic for provider responses.
+// It attempts to parse the response body into the provided response type
+// and returns either the parsed response or a BifrostError if parsing fails.
 func handleProviderResponse[T any](responseBody []byte, response *T) (interface{}, *interfaces.BifrostError) {
 	var rawResponse interface{}
 
@@ -277,4 +297,10 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 	}
 
 	return rawResponse, nil
+}
+
+// float64Ptr creates a pointer to a float64 value.
+// This is a helper function for creating pointers to float64 values.
+func float64Ptr(f float64) *float64 {
+	return &f
 }

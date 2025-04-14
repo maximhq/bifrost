@@ -1,3 +1,6 @@
+// Package tests provides test utilities and configurations for the Bifrost system.
+// It includes test implementations of interfaces, mock objects, and helper functions
+// for testing the Bifrost functionality with various AI providers.
 package tests
 
 import (
@@ -11,15 +14,40 @@ import (
 	"github.com/maximhq/maxim-go"
 )
 
-// BaseAccount provides a basic implementation of the Account interface for Anthropic and OpenAI providers
+// BaseAccount provides a test implementation of the Account interface.
+// It implements basic account functionality for testing purposes, supporting
+// multiple AI providers including OpenAI, Anthropic, Bedrock, Cohere, and Azure.
+// The implementation uses environment variables from the .env file for API keys and provides
+// default configurations suitable for testing.
 type BaseAccount struct{}
 
-// GetInitiallyConfiguredProviderKeys returns all provider keys
+// GetInitiallyConfiguredProviders returns the list of initially supported providers.
+// This implementation returns OpenAI, Anthropic, and Bedrock as the default providers.
+//
+// Returns:
+//   - []interfaces.SupportedModelProvider: A slice containing the supported provider identifiers
+//   - error: Always returns nil as this implementation doesn't produce errors
 func (baseAccount *BaseAccount) GetInitiallyConfiguredProviders() ([]interfaces.SupportedModelProvider, error) {
-	return []interfaces.SupportedModelProvider{interfaces.OpenAI, interfaces.Anthropic, interfaces.Bedrock}, nil
+	return []interfaces.SupportedModelProvider{interfaces.OpenAI, interfaces.Anthropic, interfaces.Bedrock, interfaces.Cohere, interfaces.Azure}, nil
 }
 
-// GetKeysForProvider returns all keys associated with a provider
+// GetKeysForProvider returns the API keys and associated models for a given provider.
+// It retrieves API keys from environment variables and maps them to their supported models.
+// Each key includes a weight value for load balancing purposes.
+//
+// Parameters:
+//   - providerKey: The identifier of the provider to get keys for
+//
+// Returns:
+//   - []interfaces.Key: A slice of Key objects containing API keys and their configurations
+//   - error: An error if the provider is not supported
+//
+// Environment Variables Used:
+//   - OPEN_AI_API_KEY: API key for OpenAI
+//   - ANTHROPIC_API_KEY: API key for Anthropic
+//   - BEDROCK_API_KEY: API key for AWS Bedrock
+//   - COHERE_API_KEY: API key for Cohere
+//   - AZURE_API_KEY: API key for Azure OpenAI
 func (baseAccount *BaseAccount) GetKeysForProvider(providerKey interfaces.SupportedModelProvider) ([]interfaces.Key, error) {
 	switch providerKey {
 	case interfaces.OpenAI:
@@ -62,13 +90,36 @@ func (baseAccount *BaseAccount) GetKeysForProvider(providerKey interfaces.Suppor
 				Weight: 1.0,
 			},
 		}, nil
-
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
 }
 
-// GetConcurrencyAndBufferSizeForProvider returns the concurrency and buffer size settings for a provider
+// GetConfigForProvider returns the configuration settings for a given provider.
+// It provides standardized configuration settings for network operations,
+// concurrency, and provider-specific metadata.
+//
+// Parameters:
+//   - providerKey: The identifier of the provider to get configuration for
+//
+// Returns:
+//   - *interfaces.ProviderConfig: Configuration settings for the provider, including:
+//   - Network settings (timeouts, retries, backoff)
+//   - Concurrency and buffer size settings
+//   - Provider-specific metadata (for Bedrock and Azure)
+//   - error: An error if the provider is not supported
+//
+// Environment Variables Used:
+//   - BEDROCK_ACCESS_KEY: AWS access key for Bedrock configuration
+//   - AZURE_ENDPOINT: Azure endpoint for Azure OpenAI configuration
+//
+// Default Settings:
+//   - Request Timeout: 30 seconds
+//   - Max Retries: 1
+//   - Initial Backoff: 100ms
+//   - Max Backoff: 2s
+//   - Concurrency: 3
+//   - Buffer Size: 10
 func (baseAccount *BaseAccount) GetConfigForProvider(providerKey interfaces.SupportedModelProvider) (*interfaces.ProviderConfig, error) {
 	switch providerKey {
 	case interfaces.OpenAI:

@@ -1,3 +1,5 @@
+// Package providers implements various LLM providers and their utility functions.
+// This file contains the Cohere provider implementation.
 package providers
 
 import (
@@ -10,64 +12,79 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// CohereParameterDefinition represents a parameter definition for a Cohere tool
+// CohereParameterDefinition represents a parameter definition for a Cohere tool.
+// It defines the type, description, and whether the parameter is required.
 type CohereParameterDefinition struct {
-	Type        string  `json:"type"`
-	Description *string `json:"description,omitempty"`
-	Required    bool    `json:"required"`
+	Type        string  `json:"type"`                  // Type of the parameter
+	Description *string `json:"description,omitempty"` // Optional description of the parameter
+	Required    bool    `json:"required"`              // Whether the parameter is required
 }
 
-// CohereTool represents a tool definition for Cohere API
+// CohereTool represents a tool definition for the Cohere API.
+// It includes the tool's name, description, and parameter definitions.
 type CohereTool struct {
-	Name                 string                               `json:"name"`
-	Description          string                               `json:"description"`
-	ParameterDefinitions map[string]CohereParameterDefinition `json:"parameter_definitions"`
+	Name                 string                               `json:"name"`                  // Name of the tool
+	Description          string                               `json:"description"`           // Description of the tool
+	ParameterDefinitions map[string]CohereParameterDefinition `json:"parameter_definitions"` // Definitions of the tool's parameters
 }
 
+// CohereToolCall represents a tool call made by the Cohere API.
+// It includes the name of the tool and its parameters.
 type CohereToolCall struct {
-	Name       string      `json:"name"`
-	Parameters interface{} `json:"parameters"`
+	Name       string      `json:"name"`       // Name of the tool being called
+	Parameters interface{} `json:"parameters"` // Parameters passed to the tool
 }
 
-// CohereChatResponse represents the response from Cohere's chat API
+// CohereChatResponse represents the response from Cohere's chat API.
+// It includes the response ID, generated text, chat history, and usage statistics.
 type CohereChatResponse struct {
-	ResponseID   string `json:"response_id"`
-	Text         string `json:"text"`
-	GenerationID string `json:"generation_id"`
+	ResponseID   string `json:"response_id"`   // Unique identifier for the response
+	Text         string `json:"text"`          // Generated text response
+	GenerationID string `json:"generation_id"` // ID of the generation
 	ChatHistory  []struct {
-		Role      interfaces.ModelChatMessageRole `json:"role"`
-		Message   string                          `json:"message"`
-		ToolCalls []CohereToolCall                `json:"tool_calls"`
-	} `json:"chat_history"`
-	FinishReason string `json:"finish_reason"`
+		Role      interfaces.ModelChatMessageRole `json:"role"`       // Role of the message sender
+		Message   string                          `json:"message"`    // Content of the message
+		ToolCalls []CohereToolCall                `json:"tool_calls"` // Tool calls made in the message
+	} `json:"chat_history"` // History of the chat conversation
+	FinishReason string `json:"finish_reason"` // Reason for completion termination
 	Meta         struct {
 		APIVersion struct {
-			Version string `json:"version"`
-		} `json:"api_version"`
+			Version string `json:"version"` // Version of the API used
+		} `json:"api_version"` // API version information
 		BilledUnits struct {
-			InputTokens  float64 `json:"input_tokens"`
-			OutputTokens float64 `json:"output_tokens"`
-		} `json:"billed_units"`
+			InputTokens  float64 `json:"input_tokens"`  // Number of input tokens billed
+			OutputTokens float64 `json:"output_tokens"` // Number of output tokens billed
+		} `json:"billed_units"` // Token usage billing information
 		Tokens struct {
-			InputTokens  float64 `json:"input_tokens"`
-			OutputTokens float64 `json:"output_tokens"`
-		} `json:"tokens"`
-	} `json:"meta"`
-	ToolCalls []CohereToolCall `json:"tool_calls"`
+			InputTokens  float64 `json:"input_tokens"`  // Number of input tokens used
+			OutputTokens float64 `json:"output_tokens"` // Number of output tokens generated
+		} `json:"tokens"` // Token usage statistics
+	} `json:"meta"` // Metadata about the response
+	ToolCalls []CohereToolCall `json:"tool_calls"` // Tool calls made in the response
 }
 
+// CohereError represents an error response from the Cohere API.
 type CohereError struct {
-	Message string `json:"message"`
+	Message string `json:"message"` // Error message
 }
 
-// OpenAIProvider implements the Provider interface for OpenAI
+// CohereProvider implements the Provider interface for Cohere.
 type CohereProvider struct {
-	logger interfaces.Logger
-	client *fasthttp.Client
+	logger interfaces.Logger // Logger for provider operations
+	client *fasthttp.Client  // HTTP client for API requests
 }
 
-// NewOpenAIProvider creates a new OpenAI provider instance
+// NewCohereProvider creates a new Cohere provider instance.
+// It initializes the HTTP client with the provided configuration and sets up response pools.
+// The client is configured with timeouts and connection limits.
 func NewCohereProvider(config *interfaces.ProviderConfig, logger interfaces.Logger) *CohereProvider {
+	client := &fasthttp.Client{
+		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
+	}
+
+	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		cohereResponsePool.Put(&CohereChatResponse{})
 		bifrostResponsePool.Put(&interfaces.BifrostResponse{})
@@ -75,18 +92,17 @@ func NewCohereProvider(config *interfaces.ProviderConfig, logger interfaces.Logg
 
 	return &CohereProvider{
 		logger: logger,
-		client: &fasthttp.Client{
-			ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-			WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-			MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
-		},
+		client: client,
 	}
 }
 
+// GetProviderKey returns the provider identifier for Cohere.
 func (provider *CohereProvider) GetProviderKey() interfaces.SupportedModelProvider {
 	return interfaces.Cohere
 }
 
+// TextCompletion is not supported by the Cohere provider.
+// Returns an error indicating that text completion is not supported.
 func (provider *CohereProvider) TextCompletion(model, key, text string, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	return nil, &interfaces.BifrostError{
 		IsBifrostError: false,
@@ -96,6 +112,9 @@ func (provider *CohereProvider) TextCompletion(model, key, text string, params *
 	}
 }
 
+// ChatCompletion performs a chat completion request to the Cohere API.
+// It formats the request, sends it to Cohere, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *CohereProvider) ChatCompletion(model, key string, messages []interfaces.Message, params *interfaces.ModelParameters) (*interfaces.BifrostResponse, *interfaces.BifrostError) {
 	// Get the last message and chat history
 	lastMessage := messages[len(messages)-1]
@@ -278,7 +297,8 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []int
 	return bifrostResponse, nil
 }
 
-// Helper function to convert chat history to the correct type
+// convertChatHistory converts Cohere's chat history format to Bifrost's format for standardization.
+// It transforms the chat history messages and their tool calls.
 func convertChatHistory(history []struct {
 	Role      interfaces.ModelChatMessageRole `json:"role"`
 	Message   string                          `json:"message"`
@@ -312,9 +332,4 @@ func convertChatHistory(history []struct {
 		}
 	}
 	return &converted
-}
-
-// Helper function to create a pointer to a float64
-func float64Ptr(f float64) *float64 {
-	return &f
 }

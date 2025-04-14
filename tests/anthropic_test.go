@@ -1,3 +1,6 @@
+// Package tests provides test utilities and configurations for the Bifrost system.
+// It includes test implementations of interfaces, mock objects, and helper functions
+// for testing the Bifrost functionality with various AI providers.
 package tests
 
 import (
