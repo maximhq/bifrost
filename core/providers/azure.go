@@ -10,8 +10,6 @@ import (
 
 	schemas "github.com/maximhq/bifrost/schemas"
 	"github.com/valyala/fasthttp"
-
-	"github.com/maximhq/maxim-go"
 )
 
 // AzureTextResponse represents the response structure from Azure's text completion API.
@@ -175,7 +173,7 @@ func (provider *AzureProvider) completeRequest(requestBody map[string]interface{
 
 		apiVersion := provider.meta.GetAPIVersion()
 		if apiVersion == nil {
-			apiVersion = maxim.StrPtr("2024-02-01")
+			apiVersion = StrPtr("2024-02-01")
 		}
 
 		url = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", url, deployment, path, *apiVersion)

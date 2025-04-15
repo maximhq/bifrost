@@ -10,7 +10,6 @@ import (
 
 	"github.com/maximhq/bifrost"
 	schemas "github.com/maximhq/bifrost/schemas"
-	"github.com/maximhq/maxim-go"
 )
 
 // TestConfig holds configuration for test requests across different AI providers.
@@ -173,16 +172,16 @@ func setupImageTests(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Co
 	urlImageMessages := []schemas.Message{
 		{
 			Role:    schemas.RoleUser,
-			Content: maxim.StrPtr("What is Happening in this picture?"),
+			Content: StrPtr("What is Happening in this picture?"),
 			ImageContent: &schemas.ImageContent{
-				Type: maxim.StrPtr("url"),
+				Type: StrPtr("url"),
 				URL:  "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg",
 			},
 		},
 	}
 
 	if config.Provider == schemas.Anthropic {
-		urlImageMessages[0].ImageContent.Type = maxim.StrPtr("url")
+		urlImageMessages[0].ImageContent.Type = StrPtr("url")
 	}
 
 	go func() {
@@ -206,11 +205,11 @@ func setupImageTests(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Co
 		base64ImageMessages := []schemas.Message{
 			{
 				Role:    schemas.RoleUser,
-				Content: maxim.StrPtr("What is this image about?"),
+				Content: StrPtr("What is this image about?"),
 				ImageContent: &schemas.ImageContent{
-					Type:      maxim.StrPtr("base64"),
+					Type:      StrPtr("base64"),
 					URL:       "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=",
-					MediaType: maxim.StrPtr("image/jpeg"),
+					MediaType: StrPtr("image/jpeg"),
 				},
 			},
 		}
@@ -303,7 +302,7 @@ func SetupAllRequests(bifrost *bifrost.Bifrost, config TestConfig) {
 		setupTextCompletionRequest(bifrost, config, ctx)
 	}
 
-	// setupChatCompletionRequests(bifrost, config, ctx)
+	setupChatCompletionRequests(bifrost, config, ctx)
 
 	if config.SetupImage {
 		setupImageTests(bifrost, config, ctx)
