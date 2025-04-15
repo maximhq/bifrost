@@ -4,12 +4,39 @@ package providers
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/maxim-go"
 	"github.com/valyala/fasthttp"
 )
+
+// Counters for pool usage
+var (
+	openAIPoolGets      atomic.Int64
+	openAIPoolPuts      atomic.Int64
+	openAIPoolCreations atomic.Int64
+
+	bifrostPoolGets      atomic.Int64
+	bifrostPoolPuts      atomic.Int64
+	bifrostPoolCreations atomic.Int64
+)
+
+// GetPoolStats returns the current pool usage statistics
+func GetPoolStats() map[string]int64 {
+	return map[string]int64{
+		"openai_pool_gets":       openAIPoolGets.Load(),
+		"openai_pool_puts":       openAIPoolPuts.Load(),
+		"openai_pool_creations":  openAIPoolCreations.Load(),
+		"bifrost_pool_gets":      bifrostPoolGets.Load(),
+		"bifrost_pool_puts":      bifrostPoolPuts.Load(),
+		"bifrost_pool_creations": bifrostPoolCreations.Load(),
+	}
+}
 
 // OpenAIResponse represents the response structure from the OpenAI API.
 // It includes completion choices, model information, and usage statistics.
@@ -41,12 +68,14 @@ type OpenAIError struct {
 // openAIResponsePool provides a pool for OpenAI response objects.
 var openAIResponsePool = sync.Pool{
 	New: func() interface{} {
+		openAIPoolCreations.Add(1)
 		return &OpenAIResponse{}
 	},
 }
 
 // acquireOpenAIResponse gets an OpenAI response from the pool and resets it.
 func acquireOpenAIResponse() *OpenAIResponse {
+	openAIPoolGets.Add(1)
 	resp := openAIResponsePool.Get().(*OpenAIResponse)
 	*resp = OpenAIResponse{} // Reset the struct
 	return resp
@@ -55,14 +84,16 @@ func acquireOpenAIResponse() *OpenAIResponse {
 // releaseOpenAIResponse returns an OpenAI response to the pool.
 func releaseOpenAIResponse(resp *OpenAIResponse) {
 	if resp != nil {
+		openAIPoolPuts.Add(1)
 		openAIResponsePool.Put(resp)
 	}
 }
 
 // OpenAIProvider implements the Provider interface for OpenAI's API.
 type OpenAIProvider struct {
-	logger schemas.Logger   // Logger for provider operations
-	client *fasthttp.Client // HTTP client for API requests
+	MockResponse bool
+	logger       schemas.Logger   // Logger for provider operations
+	client       *fasthttp.Client // HTTP client for API requests
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -87,8 +118,9 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	client = configureProxy(client, config.ProxyConfig, logger)
 
 	return &OpenAIProvider{
-		logger: logger,
-		client: client,
+		MockResponse: true,
+		logger:       logger,
+		client:       client,
 	}
 }
 
@@ -112,6 +144,11 @@ func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	timings := make(map[string]time.Duration)
+
+	// Track message formatting time
+	formatStart := time.Now()
+
 	// Format messages for OpenAI API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
@@ -151,13 +188,20 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 		}
 	}
 
+	timings["message_formatting"] = time.Since(formatStart)
+	paramsStart := time.Now()
 	preparedParams := prepareParams(params)
+	timings["params_preparation"] = time.Since(paramsStart)
 
+	bodyStart := time.Now()
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
 		"messages": formattedMessages,
 	}, preparedParams)
+	timings["request_body_preparation"] = time.Since(bodyStart)
 
+	// Track JSON marshaling time
+	marshalStart := time.Now()
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, &schemas.BifrostError{
@@ -168,8 +212,10 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 			},
 		}
 	}
+	timings["json_marshaling"] = time.Since(marshalStart)
 
 	// Create request
+	setupStart := time.Now()
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -181,16 +227,44 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.SetBody(jsonBody)
 
-	// Make request
-	if err := provider.client.Do(req, resp); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
+	timings["request_setup"] = time.Since(setupStart)
+
+	// Track HTTP request time
+	httpStart := time.Now()
+
+	var shouldMakeRealCall bool = true
+	if provider.MockResponse {
+		// Try mock response first
+		if mockResponse := mockOpenAIChatCompletionResponse(req, model); mockResponse != nil {
+			// Copy the mock response body to the real response
+			resp.SetBody(mockResponse)
+			// Simulate network delay
+			jitter := time.Duration(float64(1500*time.Millisecond) * (0.6 + 0.8*rand.Float64()))
+			time.Sleep(jitter)
+			shouldMakeRealCall = false
+		} else {
+			// Log that we're falling back to real API call due to mock failure
+			provider.logger.Debug("Mock response generation failed, falling back to real API call")
 		}
 	}
+
+	if shouldMakeRealCall {
+		// Make the real API call
+		if err := provider.client.Do(req, resp); err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: schemas.ErrorField{
+					Message: schemas.ErrProviderRequest,
+					Error:   err,
+				},
+			}
+		}
+	}
+
+	timings["http_request"] = time.Since(httpStart)
+
+	// Track error handling time
+	errorStart := time.Now()
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
@@ -207,8 +281,11 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 
 		return nil, bifrostErr
 	}
+	timings["error_handling"] = time.Since(errorStart)
 
 	responseBody := resp.Body()
+
+	parseStart := time.Now()
 
 	// Pre-allocate response structs from pools
 	response := acquireOpenAIResponse()
@@ -223,6 +300,8 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 		return nil, bifrostErr
 	}
 
+	timings["response_parsing"] = time.Since(parseStart)
+
 	// Populate result from response
 	result.ID = response.ID
 	result.Choices = response.Choices
@@ -233,9 +312,46 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 	result.Model = response.Model
 	result.Created = response.Created
 	result.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.OpenAI,
-		RawResponse: rawResponse,
+		Provider: schemas.OpenAI,
+		RawResponse: map[string]interface{}{
+			"response": rawResponse,
+			"timings":  timings,
+		},
 	}
 
 	return result, nil
+}
+
+// mockOpenAIResponse creates a mock response for OpenAI API calls
+func mockOpenAIChatCompletionResponse(req *fasthttp.Request, model string) []byte {
+	// Create a mock response that mimics OpenAI's format
+	mockResp := &OpenAIResponse{
+		ID:      "mock-" + model + "-" + fmt.Sprintf("%d", time.Now().Unix()),
+		Object:  "chat.completion",
+		Model:   model,
+		Created: int(time.Now().Unix()),
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				Message: schemas.BifrostResponseChoiceMessage{
+					Role:    schemas.RoleAssistant,
+					Content: maxim.StrPtr("This is a mock response from the Bifrost API gateway. The actual API was not called."),
+				},
+				FinishReason: maxim.StrPtr("stop"),
+			},
+		},
+		Usage: schemas.LLMUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+		},
+	}
+
+	// Convert to JSON
+	mockJSON, err := json.Marshal(mockResp)
+	if err != nil {
+		return nil
+	}
+
+	return mockJSON
 }

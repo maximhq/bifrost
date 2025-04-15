@@ -20,12 +20,14 @@ import (
 // bifrostResponsePool provides a pool for Bifrost response objects.
 var bifrostResponsePool = sync.Pool{
 	New: func() interface{} {
+		bifrostPoolCreations.Add(1)
 		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireBifrostResponse gets a Bifrost response from the pool and resets it.
 func acquireBifrostResponse() *schemas.BifrostResponse {
+	bifrostPoolGets.Add(1)
 	resp := bifrostResponsePool.Get().(*schemas.BifrostResponse)
 	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
@@ -34,6 +36,7 @@ func acquireBifrostResponse() *schemas.BifrostResponse {
 // releaseBifrostResponse returns a Bifrost response to the pool.
 func releaseBifrostResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
+		bifrostPoolPuts.Add(1)
 		bifrostResponsePool.Put(resp)
 	}
 }
