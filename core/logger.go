@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	schemas "github.com/maximhq/bifrost/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // DefaultLogger implements the Logger interface with stdout/stderr printing.

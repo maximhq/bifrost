@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	schemas "github.com/maximhq/bifrost/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 

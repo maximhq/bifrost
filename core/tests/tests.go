@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/maximhq/bifrost"
-	schemas "github.com/maximhq/bifrost/schemas"
+	bifrost "github.com/maximhq/bifrost/core"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestConfig holds configuration for test requests across different AI providers.

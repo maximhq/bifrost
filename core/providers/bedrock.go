@@ -19,7 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
-	schemas "github.com/maximhq/bifrost/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.

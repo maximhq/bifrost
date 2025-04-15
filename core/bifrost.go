@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/maximhq/bifrost/providers"
-	schemas "github.com/maximhq/bifrost/schemas"
+	"github.com/maximhq/bifrost/core/providers"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // RequestType represents the type of request being made to a provider.
