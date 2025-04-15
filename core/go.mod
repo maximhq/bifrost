@@ -4,8 +4,6 @@ go 1.24.1
 
 require github.com/joho/godotenv v1.5.1
 
-replace github.com/maximhq/bifrost/plugins => ../plugins
-
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.14

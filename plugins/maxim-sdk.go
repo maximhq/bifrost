@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/maximhq/bifrost/schemas"
+	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/maxim-go"
 	"github.com/maximhq/maxim-go/logging"

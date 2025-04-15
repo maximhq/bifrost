@@ -2,8 +2,6 @@ module github.com/maximhq/bifrost/transports
 
 go 1.24.1
 
-replace github.com/maximhq/bifrost/core => ../core
-
 require (
 	github.com/fasthttp/router v1.5.4
 	github.com/joho/godotenv v1.5.1

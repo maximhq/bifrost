@@ -1,6 +1,4 @@
-module bifrost/plugins
-
-replace github.com/maximhq/bifrost => ../core
+module github.com/maximhq/bifrost/plugins
 
 go 1.24.1
 
