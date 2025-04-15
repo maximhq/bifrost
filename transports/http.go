@@ -348,6 +348,12 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 		return
 	}
 
+	if req.Provider == "" {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetBodyString("Provider is required")
+		return
+	}
+
 	bifrostReq := &schemas.BifrostRequest{
 		Model:     req.Model,
 		Params:    req.Params,

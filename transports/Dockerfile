@@ -1,33 +1,58 @@
-# Use Go 1.24 as the base image
-FROM golang:1.24
-
-# Set the working directory
+# --- First Stage: Builder image ---
+FROM golang:1.24 AS builder
 WORKDIR /app
 
-# Create a new module and get the bifrost/transports package
-RUN go mod init bifrost-transports && \
-    go get github.com/bifrost/transports
+# Set environment for static build
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+ENV GOARCH=amd64
 
-# Create directories for config files
+# Initialize Go module and fetch the bifrost transport package
+RUN go mod init bifrost-transports && \
+    go get github.com/maximhq/bifrost/transports@v1.0.1
+
+# Build the binary from the fetched package with static linking
+RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports && \
+    test -f /app/main || (echo "Build failed: /app/main not found" && exit 1) && \
+    ls -lh /app/main
+
+# --- Second Stage: Runtime image ---
+FROM alpine:latest
+WORKDIR /app
+
+# Copy the compiled binary from the builder stage
+COPY --from=builder /app/main .
+
+# Ensure the binary is executable
+RUN chmod +x /app/main
+
+# Create a directory to store configuration files
 RUN mkdir -p /app/config
 
-# Build the application
-RUN go build -o main github.com/bifrost/transports/http.go
-
-# Expose the port the application runs on
-EXPOSE 8080
-
-# Define required arguments for config and env file paths
+# Define build-time variables for config file paths
 ARG CONFIG_PATH
 ARG ENV_PATH
+ARG PORT
+ARG POOL_SIZE
 
-# Validate that required arguments are provided
-RUN test -n "$CONFIG_PATH" || (echo "CONFIG_PATH argument is required" && exit 1) && \
-    test -n "$ENV_PATH" || (echo "ENV_PATH argument is required" && exit 1)
+# Set default values if args are not provided
+ENV APP_PORT=${PORT:-8080}
+ENV APP_POOL_SIZE=${POOL_SIZE:-300}
 
-# Copy the config files (will fail if files don't exist)
+# Copy the config and environment files into the image
 COPY ${CONFIG_PATH} /app/config/config.json
 COPY ${ENV_PATH} /app/config/.env
 
-# Command to run the application with the provided config paths
-CMD ["./main", "-config", "/app/config/config.json", "-env", "/app/config/.env", "-port", "8080", "-pool-size", "300"]
+# Write a small script to validate config presence and run the app
+RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
+    echo 'if [ ! -f /app/config/config.json ]; then echo "Missing config.json"; exit 1; fi' >> /app/entrypoint.sh && \
+    echo 'if [ ! -f /app/config/.env ]; then echo "Missing .env"; exit 1; fi' >> /app/entrypoint.sh && \
+    echo 'if [ ! -f /app/main ]; then echo "Missing main binary"; exit 1; fi' >> /app/entrypoint.sh && \
+    echo 'exec /app/main -config /app/config/config.json -env /app/config/.env -port "$APP_PORT" -pool-size "$APP_POOL_SIZE"' >> /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
+
+# Expose the port defined by argument
+EXPOSE ${PORT:-8080}
+
+# Use the script as the entry point
+ENTRYPOINT ["/app/entrypoint.sh"]
