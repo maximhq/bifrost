@@ -7,6 +7,7 @@ require github.com/joho/godotenv v1.5.1
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.14
+	github.com/maximhq/bifrost/plugins v1.0.0 
 	github.com/valyala/fasthttp v1.60.0
 )
 
