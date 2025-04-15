@@ -10,8 +10,6 @@ import (
 
 	schemas "github.com/maximhq/bifrost/schemas"
 	"github.com/maximhq/bifrost/schemas/meta"
-
-	"github.com/maximhq/maxim-go"
 )
 
 // BaseAccount provides a test implementation of the Account interface.
@@ -158,7 +156,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 			},
 			MetaConfig: &meta.BedrockMetaConfig{
 				SecretAccessKey: os.Getenv("BEDROCK_ACCESS_KEY"),
-				Region:          maxim.StrPtr("us-east-1"),
+				Region:          StrPtr("us-east-1"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -191,7 +189,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 				Deployments: map[string]string{
 					"gpt-4o": "gpt-4o-aug",
 				},
-				APIVersion: maxim.StrPtr("2024-08-01-preview"),
+				APIVersion: StrPtr("2024-08-01-preview"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,

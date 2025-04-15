@@ -10,8 +10,6 @@ import (
 
 	schemas "github.com/maximhq/bifrost/schemas"
 	"github.com/valyala/fasthttp"
-
-	"github.com/maximhq/maxim-go"
 )
 
 // AnthropicToolChoice represents the tool choice configuration for Anthropic's API.
@@ -389,7 +387,7 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 			}
 
 			toolCalls = append(toolCalls, schemas.ToolCall{
-				Type:     maxim.StrPtr("function"),
+				Type:     StrPtr("function"),
 				ID:       &c.ID,
 				Function: function,
 			})

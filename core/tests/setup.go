@@ -9,11 +9,10 @@ import (
 	"os"
 
 	"github.com/maximhq/bifrost"
+	"github.com/maximhq/bifrost/plugins"
 	schemas "github.com/maximhq/bifrost/schemas"
 
 	"github.com/joho/godotenv"
-	"github.com/maximhq/maxim-go"
-	"github.com/maximhq/maxim-go/logging"
 )
 
 // loadEnv loads environment variables from a .env file into the process environment.
@@ -53,14 +52,10 @@ func getPlugin() (schemas.Plugin, error) {
 		return nil, fmt.Errorf("MAXIM_LOGGER_ID is not set, please set it in your .env file or pass nil in the Plugins field when initializing Bifrost")
 	}
 
-	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: os.Getenv("MAXIM_API_KEY")})
-
-	logger, err := mx.GetLogger(&logging.LoggerConfig{Id: os.Getenv("MAXIM_LOGGER_ID")})
+	plugin, err := plugins.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOGGER_ID"))
 	if err != nil {
 		return nil, err
 	}
-
-	plugin := &Plugin{logger}
 
 	return plugin, nil
 }
@@ -104,4 +99,8 @@ func getBifrost() (*bifrost.Bifrost, error) {
 	}
 
 	return b, nil
+}
+
+func StrPtr(s string) *string {
+	return &s
 }

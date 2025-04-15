@@ -1,21 +1,48 @@
-// Package tests provides test utilities and configurations for the Bifrost system.
-// It includes test implementations of schemas, mock objects, and helper functions
-// for testing the Bifrost functionality with various AI providers.
-package tests
+// Package plugins provides plugins for the Bifrost system.
+// This file contains the Plugin implementation using maxim's logger plugin for bifrost.
+package plugins
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	schemas "github.com/maximhq/bifrost/schemas"
+	"github.com/maximhq/bifrost/schemas"
 
 	"github.com/maximhq/maxim-go"
 	"github.com/maximhq/maxim-go/logging"
 )
 
-// This file contains the Plugin implementation using maxim's logger for testing purposes.
-// If you wish to not use maxim's logger, you pass nil in the Plugins field when initializing Bifrost in tests/setup.go, or implement your own Plugin.
+// NewMaximLogger initializes and returns a Plugin instance for Maxim's logger.
+//
+// Parameters:
+//   - apiKey: API key for Maxim SDK authentication
+//   - loggerId: ID for the Maxim logger instance
+//
+// Returns:
+//   - schemas.Plugin: A configured plugin instance for request/response tracing
+//   - error: Any error that occurred during plugin initialization
+func NewMaximLoggerPlugin(apiKey string, loggerId string) (schemas.Plugin, error) {
+	// check if Maxim Logger variables are set
+	if apiKey == "" {
+		return nil, fmt.Errorf("apiKey is not set")
+	}
+
+	if loggerId == "" {
+		return nil, fmt.Errorf("loggerId is not set")
+	}
+
+	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: apiKey})
+
+	logger, err := mx.GetLogger(&logging.LoggerConfig{Id: loggerId})
+	if err != nil {
+		return nil, err
+	}
+
+	plugin := &Plugin{logger}
+
+	return plugin, nil
+}
 
 // contextKey is a custom type for context keys to prevent key collisions in the context.
 // It provides type safety for context values and ensures that context keys are unique
@@ -29,9 +56,9 @@ const (
 	traceIDKey contextKey = "traceID"
 )
 
-// Plugin implements the schemas.Plugin interface for testing purposes.
+// Plugin implements the schemas.Plugin interface for Maxim's logger.
 // It provides request and response tracing functionality using the Maxim logger,
-// allowing detailed tracking of requests and responses during testing.
+// allowing detailed tracking of requests and responses.
 //
 // Fields:
 //   - logger: A Maxim logger instance used for tracing requests and responses

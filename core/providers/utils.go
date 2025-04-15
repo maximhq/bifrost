@@ -254,3 +254,7 @@ func setConfigDefaults(config *schemas.ProviderConfig) {
 		config.NetworkConfig.RetryBackoffMax = schemas.DefaultRetryBackoffMax
 	}
 }
+
+func StrPtr(s string) *string {
+	return &s
+}
