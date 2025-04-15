@@ -12,7 +12,7 @@ ARG TRANSPORT_TYPE=http
 
 # Initialize Go module and fetch the bifrost transport package
 RUN go mod init bifrost-transports && \
-    go get github.com/maximhq/bifrost/transports/${TRANSPORT_TYPE}@v1.0.2
+    go get github.com/maximhq/bifrost/transports/${TRANSPORT_TYPE}@latest
 
 # Build the binary from the fetched package with static linking
 RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports/${TRANSPORT_TYPE} && \

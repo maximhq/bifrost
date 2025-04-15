@@ -6,8 +6,8 @@
 //   - /v1/chat/completions: For chat completion requests
 
 // Configuration is handled through a JSON config file and environment variables:
-//   - Use -config flag to specify the config file location (default: config.json)
-//   - Use -env flag to specify the .env file location (default: .env)
+//   - Use -config flag to specify the config file location
+//   - Use -env flag to specify the .env file location
 //   - Use -port flag to specify the server port (default: 8080)
 //   - Use -pool-size flag to specify the initial connection pool size (default: 300)
 
@@ -47,8 +47,8 @@ var (
 // init initializes command line flags with default values.
 // It also checks for environment variables that might override the defaults.
 func init() {
-	flag.IntVar(&initialPoolSize, "pool-size", 0, "Initial pool size for Bifrost")
-	flag.StringVar(&port, "port", "", "Port to run the server on")
+	flag.IntVar(&initialPoolSize, "pool-size", 300, "Initial pool size for Bifrost")
+	flag.StringVar(&port, "port", "8080", "Port to run the server on")
 	flag.StringVar(&configPath, "config", "", "Path to the config file")
 	flag.StringVar(&envPath, "env", "", "Path to the .env file")
 	flag.Parse()
@@ -59,14 +59,6 @@ func init() {
 
 	if envPath == "" {
 		log.Fatalf("env path is required")
-	}
-
-	if initialPoolSize == 0 {
-		log.Fatalf("initial pool size is required")
-	}
-
-	if port == "" {
-		log.Fatalf("port is required")
 	}
 }
 
