@@ -1,6 +1,7 @@
 # --- First Stage: Builder image ---
 FROM golang:1.24 AS builder
 WORKDIR /app
+
 # Set environment for static build
 ENV CGO_ENABLED=0
 ENV GOOS=linux
@@ -11,9 +12,7 @@ ARG TRANSPORT_TYPE=http
 
 # Initialize Go module and fetch the bifrost transport package
 RUN go mod init bifrost-transports && \
-    go get github.com/maximhq/bifrost/transports@v1.0.1
-
-RUN echo "TRANSPORT_TYPE: ${TRANSPORT_TYPE}"
+    go get github.com/maximhq/bifrost/transports/${TRANSPORT_TYPE}@v1.0.2
 
 # Build the binary from the fetched package with static linking
 RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports/${TRANSPORT_TYPE} && \
@@ -23,6 +22,7 @@ RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports
 # --- Second Stage: Runtime image ---
 FROM alpine:latest
 WORKDIR /app
+
 # Copy the compiled binary from the builder stage
 COPY --from=builder /app/main .
 # Ensure the binary is executable
@@ -35,12 +35,10 @@ ARG CONFIG_PATH
 ARG ENV_PATH
 ARG PORT
 ARG POOL_SIZE
-ARG TRANSPORT_TYPE=http
 
 # Set default values if args are not provided
 ENV APP_PORT=${PORT:-8080}
 ENV APP_POOL_SIZE=${POOL_SIZE:-300}
-ENV APP_TRANSPORT=${TRANSPORT_TYPE}
 
 # Copy the config and environment files into the image
 COPY ${CONFIG_PATH} /app/config/config.json
@@ -51,7 +49,6 @@ RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
     echo 'if [ ! -f /app/config/config.json ]; then echo "Missing config.json"; exit 1; fi' >> /app/entrypoint.sh && \
     echo 'if [ ! -f /app/config/.env ]; then echo "Missing .env"; exit 1; fi' >> /app/entrypoint.sh && \
     echo 'if [ ! -f /app/main ]; then echo "Missing main binary"; exit 1; fi' >> /app/entrypoint.sh && \
-    echo 'echo "Starting bifrost ${APP_TRANSPORT} transport on port ${APP_PORT} with pool size ${APP_POOL_SIZE}"' >> /app/entrypoint.sh && \
     echo 'exec /app/main -config /app/config/config.json -env /app/config/.env -port "$APP_PORT" -pool-size "$APP_POOL_SIZE"' >> /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
 
