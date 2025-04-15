@@ -1,4 +1,4 @@
-module github.com/maximhq/bifrost
+module github.com/maximhq/bifrost/core
 
 go 1.24.1
 
@@ -9,7 +9,6 @@ replace github.com/maximhq/bifrost/plugins => ../plugins
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.14
-	github.com/maximhq/bifrost/plugins v0.0.0-00010101000000-000000000000
 	github.com/valyala/fasthttp v1.60.0
 )
 

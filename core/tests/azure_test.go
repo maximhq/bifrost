@@ -6,7 +6,7 @@ package tests
 import (
 	"testing"
 
-	schemas "github.com/maximhq/bifrost/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestAzure(t *testing.T) {

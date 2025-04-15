@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	schemas "github.com/maximhq/bifrost/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
 

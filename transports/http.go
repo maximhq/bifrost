@@ -31,9 +31,9 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/joho/godotenv"
-	"github.com/maximhq/bifrost"
-	schemas "github.com/maximhq/bifrost/schemas"
-	"github.com/maximhq/bifrost/schemas/meta"
+	bifrost "github.com/maximhq/bifrost/core"
+	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/meta"
 	"github.com/valyala/fasthttp"
 )
 

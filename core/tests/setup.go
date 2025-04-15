@@ -8,9 +8,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/maximhq/bifrost"
+	bifrost "github.com/maximhq/bifrost/core"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins"
-	schemas "github.com/maximhq/bifrost/schemas"
 
 	"github.com/joho/godotenv"
 )

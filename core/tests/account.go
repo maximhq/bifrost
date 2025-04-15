@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	schemas "github.com/maximhq/bifrost/schemas"
-	"github.com/maximhq/bifrost/schemas/meta"
+	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/meta"
 )
 
 // BaseAccount provides a test implementation of the Account interface.
