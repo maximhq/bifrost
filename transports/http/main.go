@@ -1,5 +1,4 @@
-// Package transports provides various transport layer implementations for the Bifrost service.
-// This file  implements an HTTP service using FastHTTP that exposes endpoints
+// Package http provides an HTTP service using FastHTTP that exposes endpoints
 // for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, etc.).
 
 // The HTTP service provides two main endpoints:

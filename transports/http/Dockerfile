@@ -12,7 +12,7 @@ RUN go mod init bifrost-transports && \
     go get github.com/maximhq/bifrost/transports@v1.0.1
 
 # Build the binary from the fetched package with static linking
-RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports && \
+RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports/http && \
     test -f /app/main || (echo "Build failed: /app/main not found" && exit 1) && \
     ls -lh /app/main
 
