@@ -65,6 +65,23 @@ type OpenAIError struct {
 	} `json:"error"`
 }
 
+// RequestMetrics contains timing and size metrics for API requests
+type RequestMetrics struct {
+	// Timing metrics
+	MessageFormatting      time.Duration `json:"message_formatting"`
+	ParamsPreparation      time.Duration `json:"params_preparation"`
+	RequestBodyPreparation time.Duration `json:"request_body_preparation"`
+	JSONMarshaling         time.Duration `json:"json_marshaling"`
+	RequestSetup           time.Duration `json:"request_setup"`
+	HTTPRequest            time.Duration `json:"http_request"`
+	ErrorHandling          time.Duration `json:"error_handling"`
+	ResponseParsing        time.Duration `json:"response_parsing"`
+
+	// Size metrics
+	RequestSizeInBytes  int `json:"request_size_in_bytes"`
+	ResponseSizeInBytes int `json:"response_size_in_bytes"`
+}
+
 // openAIResponsePool provides a pool for OpenAI response objects.
 var openAIResponsePool = sync.Pool{
 	New: func() interface{} {
@@ -144,7 +161,7 @@ func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	timings := make(map[string]time.Duration)
+	metrics := RequestMetrics{}
 
 	// Track message formatting time
 	formatStart := time.Now()
@@ -188,17 +205,17 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 		}
 	}
 
-	timings["message_formatting"] = time.Since(formatStart)
+	metrics.MessageFormatting = time.Since(formatStart)
 	paramsStart := time.Now()
 	preparedParams := prepareParams(params)
-	timings["params_preparation"] = time.Since(paramsStart)
+	metrics.ParamsPreparation = time.Since(paramsStart)
 
 	bodyStart := time.Now()
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
 		"messages": formattedMessages,
 	}, preparedParams)
-	timings["request_body_preparation"] = time.Since(bodyStart)
+	metrics.RequestBodyPreparation = time.Since(bodyStart)
 
 	// Track JSON marshaling time
 	marshalStart := time.Now()
@@ -212,7 +229,10 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 			},
 		}
 	}
-	timings["json_marshaling"] = time.Since(marshalStart)
+	metrics.JSONMarshaling = time.Since(marshalStart)
+
+	// Track request size in bytes
+	metrics.RequestSizeInBytes = len(jsonBody)
 
 	// Create request
 	setupStart := time.Now()
@@ -227,7 +247,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.SetBody(jsonBody)
 
-	timings["request_setup"] = time.Since(setupStart)
+	metrics.RequestSetup = time.Since(setupStart)
 
 	// Track HTTP request time
 	httpStart := time.Now()
@@ -261,7 +281,11 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 		}
 	}
 
-	timings["http_request"] = time.Since(httpStart)
+	metrics.HTTPRequest = time.Since(httpStart)
+
+	// Track response size in bytes
+	responseBody := resp.Body()
+	metrics.ResponseSizeInBytes = len(responseBody)
 
 	// Track error handling time
 	errorStart := time.Now()
@@ -281,9 +305,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 
 		return nil, bifrostErr
 	}
-	timings["error_handling"] = time.Since(errorStart)
-
-	responseBody := resp.Body()
+	metrics.ErrorHandling = time.Since(errorStart)
 
 	parseStart := time.Now()
 
@@ -300,7 +322,7 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 		return nil, bifrostErr
 	}
 
-	timings["response_parsing"] = time.Since(parseStart)
+	metrics.ResponseParsing = time.Since(parseStart)
 
 	// Populate result from response
 	result.ID = response.ID
@@ -314,8 +336,8 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 	result.ExtraFields = schemas.BifrostResponseExtraFields{
 		Provider: schemas.OpenAI,
 		RawResponse: map[string]interface{}{
-			"response": rawResponse,
-			"timings":  timings,
+			"response":         rawResponse,
+			"provider_metrics": metrics,
 		},
 	}
 
