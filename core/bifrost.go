@@ -96,7 +96,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		bifrost.waitGroups[providerKey].Add(1)
-		go bifrost.processRequests(provider, queue)
+		go bifrost.requestWorker(provider, queue)
 	}
 
 	return nil
@@ -273,9 +273,9 @@ func (bifrost *Bifrost) calculateBackoff(attempt int, config *schemas.ProviderCo
 	return time.Duration(jitter)
 }
 
-// processRequests handles incoming requests from the queue for a specific provider.
+// requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
-func (bifrost *Bifrost) processRequests(provider schemas.Provider, queue chan ChannelMessage) {
+func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan ChannelMessage) {
 	defer bifrost.waitGroups[provider.GetProviderKey()].Done()
 
 	for req := range queue {
@@ -358,7 +358,6 @@ func (bifrost *Bifrost) processRequests(provider schemas.Provider, queue chan Ch
 			bifrost.logger.Debug(fmt.Sprintf("Request for provider %s completed", provider.GetProviderKey()))
 
 			// Check if successful or if we should retry
-
 			//TODO should have a better way to check for only network errors
 			if bifrostError == nil || bifrostError.IsBifrostError { // Only retry non-bifrost errors
 				break
@@ -401,6 +400,8 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey schemas.ModelProvider) (cha
 	var exists bool
 
 	if queue, exists = bifrost.requestQueues[providerKey]; !exists {
+		bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
+
 		config, err := bifrost.account.GetConfigForProvider(providerKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get config for provider: %v", err)
@@ -508,7 +509,20 @@ func (bifrost *Bifrost) tryTextCompletion(providerKey schemas.ModelProvider, req
 
 	// Get a ChannelMessage from the pool
 	msg := bifrost.getChannelMessage(*req, TextCompletionRequest)
-	queue <- *msg
+	select {
+	case queue <- *msg:
+		// Message was sent successfully
+	default:
+		// Queue is full, drop the request
+		bifrost.releaseChannelMessage(msg)
+		bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size")
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "request dropped: queue is full, please increase the queue size",
+			},
+		}
+	}
 
 	// Handle response
 	var result *schemas.BifrostResponse
@@ -629,7 +643,21 @@ func (bifrost *Bifrost) tryChatCompletion(providerKey schemas.ModelProvider, req
 
 	// Get a ChannelMessage from the pool
 	msg := bifrost.getChannelMessage(*req, ChatCompletionRequest)
-	queue <- *msg
+
+	select {
+	case queue <- *msg:
+		// Message was sent successfully
+	default:
+		// Queue is full, drop the request
+		bifrost.releaseChannelMessage(msg)
+		bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size")
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "request dropped: queue is full, please increase the queue size",
+			},
+		}
+	}
 
 	// Handle response
 	var result *schemas.BifrostResponse
