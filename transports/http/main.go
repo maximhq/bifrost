@@ -38,10 +38,11 @@ import (
 
 // Command line flags
 var (
-	initialPoolSize int    // Initial size of the connection pool
-	port            string // Port to run the server on
-	configPath      string // Path to the config file
-	envPath         string // Path to the .env file
+	initialPoolSize    int    // Initial size of the connection pool
+	dropExcessRequests bool   // Drop excess requests
+	port               string // Port to run the server on
+	configPath         string // Path to the config file
+	envPath            string // Path to the .env file
 )
 
 // init initializes command line flags with default values.
@@ -51,6 +52,7 @@ func init() {
 	flag.StringVar(&port, "port", "8080", "Port to run the server on")
 	flag.StringVar(&configPath, "config", "", "Path to the config file")
 	flag.StringVar(&envPath, "env", "", "Path to the .env file")
+	flag.BoolVar(&dropExcessRequests, "drop-excess-requests", false, "Drop excess requests")
 	flag.Parse()
 
 	if configPath == "" {
@@ -410,8 +412,9 @@ func main() {
 	}
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
-		Account:         account,
-		InitialPoolSize: initialPoolSize,
+		Account:            account,
+		InitialPoolSize:    initialPoolSize,
+		DropExcessRequests: dropExcessRequests,
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize bifrost: %v", err)
