@@ -616,6 +616,8 @@ func (bifrost *Bifrost) tryTextCompletion(providerKey schemas.ModelProvider, req
 	// Get a ChannelMessage from the pool
 	msg := bifrost.getChannelMessage(*req, TextCompletionRequest)
 
+	msg.Timestamp = time.Now()
+
 	// Handle queue send with context and proper cleanup
 	select {
 	case queue <- *msg:
@@ -799,6 +801,8 @@ func (bifrost *Bifrost) tryChatCompletion(providerKey schemas.ModelProvider, req
 
 	// Get a ChannelMessage from the pool
 	msg := bifrost.getChannelMessage(*req, ChatCompletionRequest)
+
+	msg.Timestamp = time.Now()
 
 	// Handle queue send with context and proper cleanup
 	select {
