@@ -75,7 +75,8 @@ type Bifrost struct {
 	errorChannelGets         atomic.Int64
 	errorChannelPuts         atomic.Int64
 	errorChannelCreations    atomic.Int64
-	dropExcessRequests       bool // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	dropExcessRequests       bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	backgroundCtx            context.Context // Shared background context for nil context handling
 }
 
 // createProviderFromProviderKey creates a new provider instance based on the provider key.
@@ -148,6 +149,7 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 		waitGroups:         make(map[schemas.ModelProvider]*sync.WaitGroup),
 		requestQueues:      make(map[schemas.ModelProvider]chan ChannelMessage),
 		dropExcessRequests: config.DropExcessRequests,
+		backgroundCtx:      context.Background(),
 	}
 
 	// Initialize object pools
@@ -640,6 +642,9 @@ func (bifrost *Bifrost) tryTextCompletion(providerKey schemas.ModelProvider, req
 			}
 		}
 		// If not dropping excess requests, wait with context
+		if ctx == nil {
+			ctx = bifrost.backgroundCtx
+		}
 		select {
 		case queue <- *msg:
 			// Message was sent successfully
@@ -821,6 +826,9 @@ func (bifrost *Bifrost) tryChatCompletion(providerKey schemas.ModelProvider, req
 			}
 		}
 		// If not dropping excess requests, wait with context
+		if ctx == nil {
+			ctx = bifrost.backgroundCtx
+		}
 		select {
 		case queue <- *msg:
 			// Message was sent successfully
