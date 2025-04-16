@@ -3,13 +3,13 @@
 package providers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"reflect"
 	"strings"
 	"sync"
 
+	"github.com/goccy/go-json"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"

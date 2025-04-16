@@ -3,13 +3,14 @@
 package providers
 
 import (
-	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goccy/go-json"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/maxim-go"
