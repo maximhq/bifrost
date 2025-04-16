@@ -9,10 +9,11 @@ const (
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
 type BifrostConfig struct {
-	Account         Account
-	Plugins         []Plugin
-	Logger          Logger
-	InitialPoolSize int
+	Account            Account
+	Plugins            []Plugin
+	Logger             Logger
+	InitialPoolSize    int  // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests bool // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 }
 
 // ModelChatMessageRole represents the role of a chat message

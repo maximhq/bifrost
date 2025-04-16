@@ -47,6 +47,7 @@ type Bifrost struct {
 	responseChannelPool sync.Pool                                     // Pool for response channels, initial pool size is set in Init
 	errorChannelPool    sync.Pool                                     // Pool for error channels, initial pool size is set in Init
 	logger              schemas.Logger                                // logger instance, default logger is used if not provided
+	dropExcessRequests  bool                                          // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 }
 
 // createProviderFromProviderKey creates a new provider instance based on the provider key.
@@ -112,10 +113,11 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 	}
 
 	bifrost := &Bifrost{
-		account:       config.Account,
-		plugins:       config.Plugins,
-		waitGroups:    make(map[schemas.ModelProvider]*sync.WaitGroup),
-		requestQueues: make(map[schemas.ModelProvider]chan ChannelMessage),
+		account:            config.Account,
+		plugins:            config.Plugins,
+		waitGroups:         make(map[schemas.ModelProvider]*sync.WaitGroup),
+		requestQueues:      make(map[schemas.ModelProvider]chan ChannelMessage),
+		dropExcessRequests: config.DropExcessRequests,
 	}
 
 	// Initialize object pools
@@ -509,18 +511,44 @@ func (bifrost *Bifrost) tryTextCompletion(providerKey schemas.ModelProvider, req
 
 	// Get a ChannelMessage from the pool
 	msg := bifrost.getChannelMessage(*req, TextCompletionRequest)
+
+	// Handle queue send with context and proper cleanup
 	select {
 	case queue <- *msg:
 		// Message was sent successfully
-	default:
-		// Queue is full, drop the request
+	case <-ctx.Done():
+		// Request was cancelled by caller
 		bifrost.releaseChannelMessage(msg)
-		bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size")
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
-				Message: "request dropped: queue is full, please increase the queue size",
+				Message: "request cancelled while waiting for queue space",
 			},
+		}
+	default:
+		if bifrost.dropExcessRequests {
+			// Drop request immediately if configured to do so
+			bifrost.releaseChannelMessage(msg)
+			bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: schemas.ErrorField{
+					Message: "request dropped: queue is full",
+				},
+			}
+		}
+		// If not dropping excess requests, wait with context
+		select {
+		case queue <- *msg:
+			// Message was sent successfully
+		case <-ctx.Done():
+			bifrost.releaseChannelMessage(msg)
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: schemas.ErrorField{
+					Message: "request cancelled while waiting for queue space",
+				},
+			}
 		}
 	}
 
@@ -644,18 +672,43 @@ func (bifrost *Bifrost) tryChatCompletion(providerKey schemas.ModelProvider, req
 	// Get a ChannelMessage from the pool
 	msg := bifrost.getChannelMessage(*req, ChatCompletionRequest)
 
+	// Handle queue send with context and proper cleanup
 	select {
 	case queue <- *msg:
 		// Message was sent successfully
-	default:
-		// Queue is full, drop the request
+	case <-ctx.Done():
+		// Request was cancelled by caller
 		bifrost.releaseChannelMessage(msg)
-		bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size")
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
-				Message: "request dropped: queue is full, please increase the queue size",
+				Message: "request cancelled while waiting for queue space",
 			},
+		}
+	default:
+		if bifrost.dropExcessRequests {
+			// Drop request immediately if configured to do so
+			bifrost.releaseChannelMessage(msg)
+			bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: schemas.ErrorField{
+					Message: "request dropped: queue is full",
+				},
+			}
+		}
+		// If not dropping excess requests, wait with context
+		select {
+		case queue <- *msg:
+			// Message was sent successfully
+		case <-ctx.Done():
+			bifrost.releaseChannelMessage(msg)
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: schemas.ErrorField{
+					Message: "request cancelled while waiting for queue space",
+				},
+			}
 		}
 	}
 
