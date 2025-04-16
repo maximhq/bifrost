@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -346,6 +347,11 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 
 // mockOpenAIResponse creates a mock response for OpenAI API calls
 func mockOpenAIChatCompletionResponse(req *fasthttp.Request, model string) []byte {
+	baseMessage := "This is a mock response from the Bifrost API gateway. The actual API was not called."
+	// Calculate how many times to repeat to reach ~10kb
+	repeatCount := (10*1024)/len(baseMessage) + 1
+	repeatedMessage := strings.Repeat(baseMessage, repeatCount)
+
 	// Create a mock response that mimics OpenAI's format
 	mockResp := &OpenAIResponse{
 		ID:      "mock-" + model + "-" + fmt.Sprintf("%d", time.Now().Unix()),
@@ -357,7 +363,7 @@ func mockOpenAIChatCompletionResponse(req *fasthttp.Request, model string) []byt
 				Index: 0,
 				Message: schemas.BifrostResponseChoiceMessage{
 					Role:    schemas.RoleAssistant,
-					Content: maxim.StrPtr("This is a mock response from the Bifrost API gateway. The actual API was not called."),
+					Content: maxim.StrPtr(repeatedMessage),
 				},
 				FinishReason: maxim.StrPtr("stop"),
 			},
