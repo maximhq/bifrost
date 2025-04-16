@@ -607,6 +607,10 @@ func (bifrost *Bifrost) tryTextCompletion(providerKey schemas.ModelProvider, req
 		}
 	}
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Get a ChannelMessage from the pool
 	msg := bifrost.getChannelMessage(*req, TextCompletionRequest)
 
@@ -782,6 +786,10 @@ func (bifrost *Bifrost) tryChatCompletion(providerKey schemas.ModelProvider, req
 				Message: "bifrost request after plugin hooks cannot be nil",
 			},
 		}
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	// Get a ChannelMessage from the pool
