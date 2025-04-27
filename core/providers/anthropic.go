@@ -4,6 +4,7 @@ package providers
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -279,46 +280,59 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Add system messages if present
+	var systemMessages []BedrockAnthropicSystemMessage
+	for _, msg := range messages {
+		if msg.Role == schemas.RoleSystem {
+			//TODO handling image inputs here
+			systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
+				Text: *msg.Content,
+			})
+		}
+	}
+
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
-		if msg.ImageContent != nil {
-			var content []map[string]interface{}
+		if msg.Role != schemas.RoleSystem {
+			if msg.ImageContent != nil {
+				var content []map[string]interface{}
 
-			imageContent := map[string]interface{}{
-				"type": "image",
-				"source": map[string]interface{}{
-					"type": msg.ImageContent.Type,
-				},
-			}
+				imageContent := map[string]interface{}{
+					"type": "image",
+					"source": map[string]interface{}{
+						"type": msg.ImageContent.Type,
+					},
+				}
 
-			// Handle different image source types
-			if *msg.ImageContent.Type == "url" {
-				imageContent["source"].(map[string]interface{})["url"] = msg.ImageContent.URL
+				// Handle different image source types
+				if *msg.ImageContent.Type == "url" {
+					imageContent["source"].(map[string]interface{})["url"] = msg.ImageContent.URL
+				} else {
+					imageContent["source"].(map[string]interface{})["media_type"] = msg.ImageContent.MediaType
+					imageContent["source"].(map[string]interface{})["data"] = msg.ImageContent.URL
+				}
+
+				content = append(content, imageContent)
+
+				// Add text content if present
+				if msg.Content != nil {
+					content = append(content, map[string]interface{}{
+						"type": "text",
+						"text": msg.Content,
+					})
+				}
+
+				formattedMessages = append(formattedMessages, map[string]interface{}{
+					"role":    msg.Role,
+					"content": content,
+				})
 			} else {
-				imageContent["source"].(map[string]interface{})["media_type"] = msg.ImageContent.MediaType
-				imageContent["source"].(map[string]interface{})["data"] = msg.ImageContent.URL
-			}
-
-			content = append(content, imageContent)
-
-			// Add text content if present
-			if msg.Content != nil {
-				content = append(content, map[string]interface{}{
-					"type": "text",
-					"text": msg.Content,
+				formattedMessages = append(formattedMessages, map[string]interface{}{
+					"role":    msg.Role,
+					"content": msg.Content,
 				})
 			}
-
-			formattedMessages = append(formattedMessages, map[string]interface{}{
-				"role":    msg.Role,
-				"content": content,
-			})
-		} else {
-			formattedMessages = append(formattedMessages, map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
-			})
 		}
 	}
 
@@ -343,6 +357,15 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		"model":    model,
 		"messages": formattedMessages,
 	}, preparedParams)
+
+	if len(systemMessages) > 0 {
+		var messages []string
+		for _, message := range systemMessages {
+			messages = append(messages, message.Text)
+		}
+
+		requestBody["system"] = strings.Join(messages, " ")
+	}
 
 	responseBody, err := provider.completeRequest(requestBody, "https://api.anthropic.com/v1/messages", key)
 	if err != nil {

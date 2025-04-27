@@ -199,12 +199,16 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 
-		bifrostErr.EventID = &errorResp.EventID
+		if errorResp.EventID != "" {
+			bifrostErr.EventID = &errorResp.EventID
+		}
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Code = &errorResp.Error.Code
 		bifrostErr.Error.Message = errorResp.Error.Message
 		bifrostErr.Error.Param = errorResp.Error.Param
-		bifrostErr.Error.EventID = &errorResp.Error.EventID
+		if errorResp.Error.EventID != "" {
+			bifrostErr.Error.EventID = &errorResp.Error.EventID
+		}
 
 		return nil, bifrostErr
 	}

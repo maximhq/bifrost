@@ -434,7 +434,7 @@ func main() {
 		Handler: r.Handler,
 	}
 
-	fmt.Printf("Starting HTTP server on port %s\n", port)
+	log.Println("Starting HTTP server on port", port)
 	if err := server.ListenAndServe(fmt.Sprintf(":%s", port)); err != nil {
 		log.Fatalf("failed to start server: %v", err)
 	}

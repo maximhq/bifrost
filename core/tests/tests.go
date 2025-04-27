@@ -5,7 +5,7 @@ package tests
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -103,9 +103,9 @@ func setupTextCompletionRequest(bifrost *bifrost.Bifrost, config TestConfig, ctx
 			Fallbacks: config.Fallbacks,
 		}, ctx)
 		if err != nil {
-			fmt.Printf("\nError in %s text completion: %v\n", config.Provider, err.Error.Message)
+			log.Println("Error in", config.Provider, "text completion:", err.Error.Message)
 		} else {
-			fmt.Printf("\n🐒 %s Text Completion Result: %s\n", config.Provider, *result.Choices[0].Message.Content)
+			log.Println("🐒", config.Provider, "Text Completion Result:", *result.Choices[0].Message.Content)
 		}
 	}()
 }
@@ -147,9 +147,9 @@ func setupChatCompletionRequests(bifrost *bifrost.Bifrost, config TestConfig, ct
 				Fallbacks: config.Fallbacks,
 			}, ctx)
 			if err != nil {
-				fmt.Printf("\nError in %s request %d: %v\n", config.Provider, index+1, err.Error.Message)
+				log.Println("Error in", config.Provider, "request", index+1, ":", err.Error.Message)
 			} else {
-				fmt.Printf("\n🐒 %s Chat Completion Result %d: %s\n", config.Provider, index+1, *result.Choices[0].Message.Content)
+				log.Println("🐒", config.Provider, "Chat Completion Result", index+1, ":", *result.Choices[0].Message.Content)
 			}
 		}(message, delay, i)
 	}
@@ -194,9 +194,9 @@ func setupImageTests(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Co
 			Fallbacks: config.Fallbacks,
 		}, ctx)
 		if err != nil {
-			fmt.Printf("\nError in %s URL image request: %v\n", config.Provider, err.Error.Message)
+			log.Println("Error in", config.Provider, "URL image request:", err.Error.Message)
 		} else {
-			fmt.Printf("\n🐒 %s URL Image Result: %s\n", config.Provider, *result.Choices[0].Message.Content)
+			log.Println("🐒", config.Provider, "URL Image Result:", *result.Choices[0].Message.Content)
 		}
 	}()
 
@@ -224,9 +224,9 @@ func setupImageTests(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Co
 				Fallbacks: config.Fallbacks,
 			}, ctx)
 			if err != nil {
-				fmt.Printf("\nError in %s base64 image request: %v\n", config.Provider, err.Error.Message)
+				log.Println("Error in", config.Provider, "base64 image request:", err.Error.Message)
 			} else {
-				fmt.Printf("\n🐒 %s Base64 Image Result: %s\n", config.Provider, *result.Choices[0].Message.Content)
+				log.Println("🐒", config.Provider, "Base64 Image Result:", *result.Choices[0].Message.Content)
 			}
 		}()
 	}
@@ -272,15 +272,21 @@ func setupToolCalls(bifrost *bifrost.Bifrost, config TestConfig, ctx context.Con
 				Fallbacks: config.Fallbacks,
 			}, ctx)
 			if err != nil {
-				fmt.Printf("\nError in %s tool call request %d: %v\n", config.Provider, index+1, err.Error.Message)
+				log.Println("Error in", config.Provider, "tool call request", index+1, ":", err.Error.Message)
 			} else {
 				if result.Choices[0].Message.ToolCalls != nil && len(*result.Choices[0].Message.ToolCalls) > 0 {
-					toolCall := *result.Choices[0].Message.ToolCalls
-					fmt.Printf("\n🐒 %s Tool Call Result %d: %s\n", config.Provider, index+1, toolCall[0].Function.Arguments)
+					for i, choice := range result.Choices {
+						if choice.Message.ToolCalls != nil && len(*choice.Message.ToolCalls) > 0 {
+							toolCall := *choice.Message.ToolCalls
+							log.Println("🐒", config.Provider, "Tool Call Result", index+1, "(Choice", i+1, "):", toolCall[0].Function.Arguments)
+						} else {
+							log.Println("🐒", config.Provider, "No tool calls in response", index+1, "(Choice", i+1, ")")
+						}
+					}
 				} else {
-					fmt.Printf("\n🐒 %s No tool calls in response %d\n", config.Provider, index+1)
+					log.Println("🐒", config.Provider, "No tool calls in response", index+1)
 					if result.ExtraFields.RawResponse != nil {
-						fmt.Println("\nRaw JSON Response", result.ExtraFields.RawResponse)
+						log.Println("Raw JSON Response", result.ExtraFields.RawResponse)
 					}
 				}
 			}

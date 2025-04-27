@@ -21,9 +21,9 @@ func TestAnthropic(t *testing.T) {
 	config := TestConfig{
 		Provider:       schemas.Anthropic,
 		TextModel:      "claude-2.1",
-		ChatModel:      "claude-3-5-sonnet-20240620",
+		ChatModel:      "claude-3-7-sonnet-20250219",
 		SetupText:      true,
-		SetupToolCalls: false, // available in 3.7 sonnet
+		SetupToolCalls: true, // available in 3.7 sonnet only
 		SetupImage:     true,
 		SetupBaseImage: true,
 		CustomParams: &schemas.ModelParameters{

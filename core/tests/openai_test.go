@@ -20,7 +20,7 @@ func TestOpenAI(t *testing.T) {
 		Provider:       schemas.OpenAI,
 		TextModel:      "gpt-4o-mini",
 		ChatModel:      "gpt-4o-mini",
-		SetupText:      true, // OpenAI does not support text completion
+		SetupText:      false, // OpenAI does not support text completion
 		SetupToolCalls: false,
 		SetupImage:     false,
 		SetupBaseImage: false,

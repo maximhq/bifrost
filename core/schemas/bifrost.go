@@ -73,14 +73,14 @@ type Fallback struct {
 type ModelParameters struct {
 	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`
 	Tools             *[]Tool     `json:"tools,omitempty"`
-	Temperature       *float64    `json:"temperature,omitempty"`       // Controls randomness in the output
-	TopP              *float64    `json:"top_p,omitempty"`             // Controls diversity via nucleus sampling
-	TopK              *int        `json:"top_k,omitempty"`             // Controls diversity via top-k sampling
-	MaxTokens         *int        `json:"max_tokens,omitempty"`        // Maximum number of tokens to generate
-	StopSequences     *[]string   `json:"stop_sequences,omitempty"`    // Sequences that stop generation
-	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`  // Penalizes repeated tokens
-	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"` // Penalizes frequent tokens
-	ParallelToolCalls *bool       `json:"parallel_tool_calls"`         // Enables parallel tool calls
+	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
+	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
+	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
+	MaxTokens         *int        `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
+	StopSequences     *[]string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
+	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
+	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
@@ -89,10 +89,11 @@ type ModelParameters struct {
 
 // FunctionParameters represents the parameters for a function definition.
 type FunctionParameters struct {
-	Type        string                 `json:"type,"`                 // Type of the parameters
+	Type        string                 `json:"type"`                  // Type of the parameters
 	Description *string                `json:"description,omitempty"` // Description of the parameters
-	Required    []string               `json:"required"`              // Required parameter names
-	Properties  map[string]interface{} `json:"properties"`            // Parameter properties
+	Required    []string               `json:"required,omitempty"`    // Required parameter names
+	Properties  map[string]interface{} `json:"properties,omitempty"`  // Parameter properties
+	Enum        *[]string              `json:"enum,omitempty"`        // Enum values for the parameters
 }
 
 // Function represents a function that can be called by the model.
