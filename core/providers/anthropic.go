@@ -207,6 +207,8 @@ func (provider *AnthropicProvider) completeRequest(requestBody map[string]interf
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from anthropic provider: %s", string(resp.Body())))
+
 		var errorResp AnthropicError
 
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
@@ -280,6 +282,46 @@ func (provider *AnthropicProvider) TextCompletion(model, key, text string, param
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	formattedMessages, preparedParams := prepareAnthropicChatRequest(model, messages, params)
+
+	// Merge additional parameters
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":    model,
+		"messages": formattedMessages,
+	}, preparedParams)
+
+	responseBody, err := provider.completeRequest(requestBody, "https://api.anthropic.com/v1/messages", key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create response object from pool
+	response := acquireAnthropicChatResponse()
+	defer releaseAnthropicChatResponse(response)
+
+	// Create Bifrost response from pool
+	bifrostResponse := acquireBifrostResponse()
+	defer releaseBifrostResponse(bifrostResponse)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	bifrostResponse, err = parseAnthropicResponse(response, bifrostResponse)
+	if err != nil {
+		return nil, err
+	}
+
+	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+		Provider:    schemas.Anthropic,
+		RawResponse: rawResponse,
+	}
+
+	return bifrostResponse, nil
+}
+
+func prepareAnthropicChatRequest(model string, messages []schemas.Message, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
 	// Add system messages if present
 	var systemMessages []BedrockAnthropicSystemMessage
 	for _, msg := range messages {
@@ -352,39 +394,19 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		preparedParams["tools"] = tools
 	}
 
-	// Merge additional parameters
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
-
 	if len(systemMessages) > 0 {
 		var messages []string
 		for _, message := range systemMessages {
 			messages = append(messages, message.Text)
 		}
 
-		requestBody["system"] = strings.Join(messages, " ")
+		preparedParams["system"] = strings.Join(messages, " ")
 	}
 
-	responseBody, err := provider.completeRequest(requestBody, "https://api.anthropic.com/v1/messages", key)
-	if err != nil {
-		return nil, err
-	}
+	return formattedMessages, preparedParams
+}
 
-	// Create response object from pool
-	response := acquireAnthropicChatResponse()
-	defer releaseAnthropicChatResponse(response)
-
-	// Create Bifrost response from pool
-	bifrostResponse := acquireBifrostResponse()
-	defer releaseBifrostResponse(bifrostResponse)
-
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
+func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *schemas.BifrostResponse) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Process the response into our BifrostResponse format
 	var choices []schemas.BifrostResponseChoice
 
@@ -437,10 +459,6 @@ func (provider *AnthropicProvider) ChatCompletion(model, key string, messages []
 		TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
 	}
 	bifrostResponse.Model = response.Model
-	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.Anthropic,
-		RawResponse: rawResponse,
-	}
 
 	return bifrostResponse, nil
 }

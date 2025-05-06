@@ -3,6 +3,7 @@
 package providers
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -113,46 +114,7 @@ func (provider *OpenAIProvider) TextCompletion(model, key, text string, params *
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Format messages for OpenAI API
-	var formattedMessages []map[string]interface{}
-	for _, msg := range messages {
-		if msg.ImageContent != nil {
-			var content []map[string]interface{}
-
-			// Add text content if present
-			if msg.Content != nil {
-				content = append(content, map[string]interface{}{
-					"type": "text",
-					"text": msg.Content,
-				})
-			}
-
-			imageContent := map[string]interface{}{
-				"type": "image_url",
-				"image_url": map[string]interface{}{
-					"url": msg.ImageContent.URL,
-				},
-			}
-
-			if msg.ImageContent.Detail != nil {
-				imageContent["image_url"].(map[string]interface{})["detail"] = msg.ImageContent.Detail
-			}
-
-			content = append(content, imageContent)
-
-			formattedMessages = append(formattedMessages, map[string]interface{}{
-				"role":    msg.Role,
-				"content": content,
-			})
-		} else {
-			formattedMessages = append(formattedMessages, map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
-			})
-		}
-	}
-
-	preparedParams := prepareParams(params)
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(model, messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
@@ -195,6 +157,8 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from openai provider: %s", string(resp.Body())))
+
 		var errorResp OpenAIError
 
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
@@ -243,4 +207,49 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 	}
 
 	return result, nil
+}
+
+func prepareOpenAIChatRequest(model string, messages []schemas.Message, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
+	// Format messages for OpenAI API
+	var formattedMessages []map[string]interface{}
+	for _, msg := range messages {
+		if msg.ImageContent != nil {
+			var content []map[string]interface{}
+
+			// Add text content if present
+			if msg.Content != nil {
+				content = append(content, map[string]interface{}{
+					"type": "text",
+					"text": msg.Content,
+				})
+			}
+
+			imageContent := map[string]interface{}{
+				"type": "image_url",
+				"image_url": map[string]interface{}{
+					"url": msg.ImageContent.URL,
+				},
+			}
+
+			if msg.ImageContent.Detail != nil {
+				imageContent["image_url"].(map[string]interface{})["detail"] = msg.ImageContent.Detail
+			}
+
+			content = append(content, imageContent)
+
+			formattedMessages = append(formattedMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": content,
+			})
+		} else {
+			formattedMessages = append(formattedMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": msg.Content,
+			})
+		}
+	}
+
+	preparedParams := prepareParams(params)
+
+	return formattedMessages, preparedParams
 }

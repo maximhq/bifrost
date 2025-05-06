@@ -65,6 +65,8 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelP
 		return providers.NewCohereProvider(config, bifrost.logger), nil
 	case schemas.Azure:
 		return providers.NewAzureProvider(config, bifrost.logger), nil
+	case schemas.Vertex:
+		return providers.NewVertexProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -78,10 +80,12 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to get config for provider: %v", err)
 	}
 
-	// Check if the provider has any keys
-	keys, err := bifrost.account.GetKeysForProvider(providerKey)
-	if err != nil || len(keys) == 0 {
-		return fmt.Errorf("failed to get keys for provider: %v", err)
+	// Check if the provider has any keys (skip vertex)
+	if providerKey != schemas.Vertex {
+		keys, err := bifrost.account.GetKeysForProvider(providerKey)
+		if err != nil || len(keys) == 0 {
+			return fmt.Errorf("failed to get keys for provider: %v", err)
+		}
 	}
 
 	queue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
@@ -93,7 +97,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 
 	provider, err := bifrost.createProviderFromProviderKey(providerKey, config)
 	if err != nil {
-		return fmt.Errorf("failed to get provider for the given key: %v", err)
+		return fmt.Errorf("failed to create provider for the given key: %v", err)
 	}
 
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
@@ -291,18 +295,22 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 	for req := range queue {
 		var result *schemas.BifrostResponse
 		var bifrostError *schemas.BifrostError
+		var err error
 
-		key, err := bifrost.SelectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
-		if err != nil {
-			bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))
-			req.Err <- schemas.BifrostError{
-				IsBifrostError: false,
-				Error: schemas.ErrorField{
-					Message: err.Error(),
-					Error:   err,
-				},
+		key := ""
+		if provider.GetProviderKey() != schemas.Vertex {
+			key, err = bifrost.SelectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
+			if err != nil {
+				bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))
+				req.Err <- schemas.BifrostError{
+					IsBifrostError: false,
+					Error: schemas.ErrorField{
+						Message: err.Error(),
+						Error:   err,
+					},
+				}
+				continue
 			}
-			continue
 		}
 
 		config, err := bifrost.account.GetConfigForProvider(provider.GetProviderKey())

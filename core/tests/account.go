@@ -27,7 +27,7 @@ type BaseAccount struct{}
 //   - []schemas.SupportedModelProvider: A slice containing the supported provider identifiers
 //   - error: Always returns nil as this implementation doesn't produce errors
 func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Cohere, schemas.Azure}, nil
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Cohere, schemas.Azure, schemas.Vertex}, nil
 }
 
 // GetKeysForProvider returns the API keys and associated models for a given provider.
@@ -191,6 +191,23 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 					"gpt-4o": "gpt-4o-aug",
 				},
 				APIVersion: bifrost.Ptr("2024-08-01-preview"),
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Vertex:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			MetaConfig: &meta.VertexMetaConfig{
+				ProjectID:          os.Getenv("VERTEX_PROJECT_ID"),
+				AuthCredentialPath: os.Getenv("VERTEX_CREDENTIALS_PATH"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,

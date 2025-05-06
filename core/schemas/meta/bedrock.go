@@ -57,3 +57,13 @@ func (c *BedrockMetaConfig) GetDeployments() map[string]string {
 func (c *BedrockMetaConfig) GetAPIVersion() *string {
 	return nil
 }
+
+// This is not used for Bedrock.
+func (c *BedrockMetaConfig) GetProjectID() *string {
+	return nil
+}
+
+// This is not used for Bedrock.
+func (c *BedrockMetaConfig) GetAuthCredentialPath() *string {
+	return nil
+}

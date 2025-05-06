@@ -1,3 +1,4 @@
 .env
 .vscode
 .DS_Store
+*_creds*
