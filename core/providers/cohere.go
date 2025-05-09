@@ -234,6 +234,8 @@ func (provider *CohereProvider) ChatCompletion(model, key string, messages []sch
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from cohere provider: %s", string(resp.Body())))
+
 		var errorResp CohereError
 
 		bifrostErr := handleProviderAPIError(resp, &errorResp)

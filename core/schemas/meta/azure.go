@@ -54,3 +54,13 @@ func (c *AzureMetaConfig) GetDeployments() map[string]string {
 func (c *AzureMetaConfig) GetAPIVersion() *string {
 	return c.APIVersion
 }
+
+// This is not used for Azure.
+func (c *AzureMetaConfig) GetProjectID() *string {
+	return nil
+}
+
+// This is not used for Azure.
+func (c *AzureMetaConfig) GetAuthCredentialPath() *string {
+	return nil
+}

@@ -212,6 +212,8 @@ func (provider *AzureProvider) completeRequest(requestBody map[string]interface{
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from azure provider: %s", string(resp.Body())))
+
 		var errorResp AzureError
 
 		bifrostErr := handleProviderAPIError(resp, &errorResp)

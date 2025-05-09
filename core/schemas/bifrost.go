@@ -36,6 +36,7 @@ const (
 	Anthropic ModelProvider = "anthropic"
 	Bedrock   ModelProvider = "bedrock"
 	Cohere    ModelProvider = "cohere"
+	Vertex    ModelProvider = "vertex"
 )
 
 //* Request Structs
@@ -81,7 +82,7 @@ type ModelParameters struct {
 	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
 	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
 	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
-
+	Region            *string     `json:"region"`
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
