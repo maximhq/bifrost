@@ -136,16 +136,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		}, nil
 	case schemas.Anthropic:
 		return &schemas.ProviderConfig{
-			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 30,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
-			},
-			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
-				BufferSize:  10,
-			},
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
 	case schemas.Bedrock:
 		return &schemas.ProviderConfig{
@@ -166,16 +158,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		}, nil
 	case schemas.Cohere:
 		return &schemas.ProviderConfig{
-			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 30,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
-			},
-			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
-				BufferSize:  10,
-			},
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
 	case schemas.Azure:
 		return &schemas.ProviderConfig{

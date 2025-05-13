@@ -15,6 +15,8 @@ This package contains clients for various transports that can be used to spin up
     - [Text Completions](#text-completions)
     - [Chat Completions](#chat-completions)
   - [🔧 Advanced Features](#-advanced-features)
+    - [Prometheus Support](#prometheus-support)
+    - [Plugin Support](#plugin-support)
     - [Fallbacks](#fallbacks)
 
 ---
@@ -164,6 +166,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ---
 
 ## 🔧 Advanced Features
+
+### Prometheus Support
+
+HTTP transport supports Prometheus out of the box. By default all the metrics are available at `/metrics` endpoint. It providers metrics for httpRequestsTotal, httpRequestDuration, httpRequestSizeBytes, httpResponseSizeBytes, bifrostUpstreamRequestsTotal, and bifrostUpstreamLatencySeconds. To add custom labels to these metrics using can pass a flag of `-prometheus-labels` while running the http transport.
+
+For eg. `-prometheus-labels team-id,task-id,location`
+
+Values for labels are then picked up from the HTTP request headers with the prefix `x-bf-prom-`.
+
+### Plugin Support
+
+You can explore the available plugins [here](https://github.com/maximhq/bifrost/tree/main/plugins). And to attached these plugins to your HTTP transport, just pass the flag `-plugins`.
+
+For eg. `-plugins maxim`
+
+Note: Please check plugin specific documentations (github.com/maximhq/bifrost/tree/main/plugins/{plugin_name}) for more nuanced control.
 
 ### Fallbacks
 
