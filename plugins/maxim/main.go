@@ -1,6 +1,6 @@
 // Package plugins provides plugins for the Bifrost system.
 // This file contains the Plugin implementation using maxim's logger plugin for bifrost.
-package main
+package maxim
 
 import (
 	"context"
@@ -45,18 +45,31 @@ func NewMaximLoggerPlugin(apiKey string, loggerId string) (schemas.Plugin, error
 	return plugin, nil
 }
 
-// contextKey is a custom type for context keys to prevent key collisions in the context.
+// ContextKey is a custom type for context keys to prevent key collisions in the context.
 // It provides type safety for context values and ensures that context keys are unique
 // across different packages.
-type contextKey string
+type ContextKey string
 
-// traceIDKey is the context key used to store and retrieve trace IDs.
+// TraceIDKey is the context key used to store and retrieve trace IDs.
 // This constant provides a consistent key for tracking request traces
 // throughout the request/response lifecycle.
 const (
-	traceIDKey      contextKey = "traceID"
-	generationIDKey contextKey = "generationID"
+	TraceIDKey      ContextKey = "trace-id"
+	GenerationIDKey ContextKey = "generation-id"
 )
+
+// The plugin provides request/response tracing functionality by integrating with Maxim's logging system.
+// It supports both chat completion and text completion requests, tracking the entire lifecycle of each request
+// including inputs, parameters, and responses.
+//
+// Key Features:
+// - Automatic trace and generation ID management
+// - Support for both chat and text completion requests
+// - Contextual tracking across request lifecycle
+// - Graceful handling of existing trace/generation IDs
+//
+// The plugin uses context values to maintain trace and generation IDs throughout the request lifecycle.
+// These IDs can be propagated from external systems through HTTP headers (x-bf-maxim-trace-id and x-bf-maxim-generation-id).
 
 // Plugin implements the schemas.Plugin interface for Maxim's logger.
 // It provides request and response tracing functionality using the Maxim logger,
@@ -69,30 +82,37 @@ type Plugin struct {
 }
 
 // PreHook is called before a request is processed by Bifrost.
-// It creates a new trace for the incoming request and stores the trace ID in the context.
-// The trace includes request details that can be used for debugging and monitoring.
+// It manages trace and generation tracking for incoming requests by either:
+// - Creating a new trace if none exists
+// - Reusing an existing trace ID from the context
+// - Creating a new generation within an existing trace
+// - Skipping trace/generation creation if they already exist
+//
+// The function handles both chat completion and text completion requests,
+// capturing relevant metadata such as:
+// - Request type (chat/text completion)
+// - Model information
+// - Message content and role
+// - Model parameters
 //
 // Parameters:
-//   - ctx: Pointer to the context.Context that will store the trace ID
+//   - ctx: Pointer to the context.Context that may contain existing trace/generation IDs
 //   - req: The incoming Bifrost request to be traced
 //
 // Returns:
 //   - *schemas.BifrostRequest: The original request, unmodified
-//   - error: Always returns nil as this implementation doesn't produce errors
-//
-// The trace ID format is "YYYYMMDD_HHmmssSSS" based on the current time.
-// If the context is nil, tracing information will still be logged but not stored in context.
+//   - error: Any error that occurred during trace/generation creation
 func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, error) {
 	var traceID string
 
 	// Check if context already has traceID and generationID
 	if ctx != nil {
-		if existingGenerationID, ok := (*ctx).Value(generationIDKey).(string); ok && existingGenerationID != "" {
+		if existingGenerationID, ok := (*ctx).Value(GenerationIDKey).(string); ok && existingGenerationID != "" {
 			// If generationID exists, return early
 			return req, nil
 		}
 
-		if existingTraceID, ok := (*ctx).Value(traceIDKey).(string); ok && existingTraceID != "" {
+		if existingTraceID, ok := (*ctx).Value(TraceIDKey).(string); ok && existingTraceID != "" {
 			// If traceID exists, and no generationID, create a new generation on the trace
 			traceID = existingTraceID
 		}
@@ -182,40 +202,43 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	})
 
 	if ctx != nil {
-		if _, ok := (*ctx).Value(traceIDKey).(string); !ok {
-			*ctx = context.WithValue(*ctx, traceIDKey, traceID)
+		if _, ok := (*ctx).Value(TraceIDKey).(string); !ok {
+			*ctx = context.WithValue(*ctx, TraceIDKey, traceID)
 		}
-		*ctx = context.WithValue(*ctx, generationIDKey, generationID)
+		*ctx = context.WithValue(*ctx, GenerationIDKey, generationID)
 	}
 
 	return req, nil
 }
 
 // PostHook is called after a request has been processed by Bifrost.
-// It retrieves the trace ID from the context and logs the response details.
-// This completes the request trace by adding response information.
+// It completes the request trace by:
+// - Adding response data to the generation if a generation ID exists
+// - Ending the generation if it exists
+// - Ending the trace if a trace ID exists
+// - Flushing all pending log data
+//
+// The function gracefully handles cases where trace or generation IDs may be missing,
+// ensuring that partial logging is still performed when possible.
 //
 // Parameters:
-//   - ctxRef: Pointer to the context.Context containing the trace ID
+//   - ctxRef: Pointer to the context.Context containing trace/generation IDs
 //   - res: The Bifrost response to be traced
 //
 // Returns:
 //   - *schemas.BifrostResponse: The original response, unmodified
-//   - error: Returns an error if the trace ID cannot be retrieved from the context
-//
-// If the context is nil or the trace ID is not found, an error will be returned
-// but the response will still be passed through unmodified.
+//   - error: Never returns an error as it handles missing IDs gracefully
 func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResponse) (*schemas.BifrostResponse, error) {
 	if ctxRef != nil {
 		ctx := *ctxRef
 
-		generationID, ok := ctx.Value(generationIDKey).(string)
+		generationID, ok := ctx.Value(GenerationIDKey).(string)
 		if ok {
 			plugin.logger.AddResultToGeneration(generationID, res)
 			plugin.logger.EndGeneration(generationID)
 		}
 
-		traceID, ok := ctx.Value(traceIDKey).(string)
+		traceID, ok := ctx.Value(TraceIDKey).(string)
 		if ok {
 			plugin.logger.EndTrace(traceID)
 		}

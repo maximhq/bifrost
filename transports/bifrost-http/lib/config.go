@@ -1,5 +1,5 @@
 // Package lib provides core functionality for the Bifrost HTTP service,
-// including configuration management and account handling.
+// including context propagation, header management, and integration with monitoring systems.
 package lib
 
 import (

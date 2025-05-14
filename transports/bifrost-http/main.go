@@ -28,7 +28,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins"
+	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -159,7 +159,7 @@ func main() {
 				continue
 			}
 
-			maximPlugin, err := plugins.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), maximLogRepoId)
+			maximPlugin, err := maxim.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), maximLogRepoId)
 			if err != nil {
 				log.Printf("warning: failed to initialize maxim plugin: %v", err)
 				continue
@@ -280,7 +280,7 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 		}
 	}
 
-	bifrostCtx := tracking.ConvertToBifrostContext(ctx)
+	bifrostCtx := lib.ConvertToBifrostContext(ctx)
 
 	var resp *schemas.BifrostResponse
 	var err *schemas.BifrostError
