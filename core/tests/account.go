@@ -190,9 +190,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 				RetryBackoffMax:                2 * time.Second,
 			},
 			MetaConfig: &meta.VertexMetaConfig{
-				ProjectID:          os.Getenv("VERTEX_PROJECT_ID"),
-				Region:             "us-central1",
-				AuthCredentialPath: os.Getenv("VERTEX_CREDENTIALS_PATH"),
+				ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
+				Region:          "us-central1",
+				AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,

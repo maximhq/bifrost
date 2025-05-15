@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/goccy/go-json"
@@ -42,18 +41,13 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		return nil, fmt.Errorf("meta config is not set")
 	}
 
-	authCredentialPath := config.MetaConfig.GetAuthCredentialPath()
-	if authCredentialPath == nil {
-		return nil, fmt.Errorf("auth credential path is not set")
-	}
-
-	data, err := os.ReadFile(*authCredentialPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read auth credentials: %w", err)
+	authCredentials := config.MetaConfig.GetAuthCredentials()
+	if authCredentials == nil {
+		return nil, fmt.Errorf("auth credentials are not set")
 	}
 
 	// Get a Google JWT Config for the correct scope
-	conf, err := google.JWTConfigFromJSON(data, "https://www.googleapis.com/auth/cloud-platform")
+	conf, err := google.JWTConfigFromJSON([]byte(*authCredentials), "https://www.googleapis.com/auth/cloud-platform")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT config: %w", err)
 	}

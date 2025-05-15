@@ -64,6 +64,6 @@ func (c *BedrockMetaConfig) GetProjectID() *string {
 }
 
 // This is not used for Bedrock.
-func (c *BedrockMetaConfig) GetAuthCredentialPath() *string {
+func (c *BedrockMetaConfig) GetAuthCredentials() *string {
 	return nil
 }

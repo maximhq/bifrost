@@ -6,9 +6,9 @@ package meta
 // VertexMetaConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
 type VertexMetaConfig struct {
-	ProjectID          string `json:"project_id,omitempty"`
-	Region             string `json:"region,omitempty"`
-	AuthCredentialPath string `json:"auth_credential_path,omitempty"`
+	ProjectID       string `json:"project_id,omitempty"`
+	Region          string `json:"region,omitempty"`
+	AuthCredentials string `json:"auth_credentials,omitempty"`
 }
 
 // This is not used for Vertex.
@@ -58,8 +58,8 @@ func (c *VertexMetaConfig) GetProjectID() *string {
 	return &c.ProjectID
 }
 
-// GetAuthCredentialPath returns the path to the authentication credentials for the provider.
-// This is the path to the authentication credentials for the google cloud api.
-func (c *VertexMetaConfig) GetAuthCredentialPath() *string {
-	return &c.AuthCredentialPath
+// GetAuthCredentials returns the authentication credentials for the provider.
+// This is the authentication credentials for the google cloud api.
+func (c *VertexMetaConfig) GetAuthCredentials() *string {
+	return &c.AuthCredentials
 }
