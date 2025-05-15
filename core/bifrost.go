@@ -437,12 +437,21 @@ func (bifrost *Bifrost) GetProviderQueue(providerKey schemas.ModelProvider) (cha
 // TextCompletionRequest sends a text completion request to the specified provider.
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
-func (bifrost *Bifrost) TextCompletionRequest(providerKey schemas.ModelProvider, req *schemas.BifrostRequest, ctx context.Context) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
 				Message: "bifrost request cannot be nil",
+			},
+		}
+	}
+
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "provider is required",
 			},
 		}
 	}
@@ -457,7 +466,7 @@ func (bifrost *Bifrost) TextCompletionRequest(providerKey schemas.ModelProvider,
 	}
 
 	// Try the primary provider first
-	primaryResult, primaryErr := bifrost.tryTextCompletion(providerKey, req, ctx)
+	primaryResult, primaryErr := bifrost.tryTextCompletion(req.Provider, req, ctx)
 	if primaryErr == nil {
 		return primaryResult, nil
 	}
@@ -600,12 +609,21 @@ func (bifrost *Bifrost) tryTextCompletion(providerKey schemas.ModelProvider, req
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
-func (bifrost *Bifrost) ChatCompletionRequest(providerKey schemas.ModelProvider, req *schemas.BifrostRequest, ctx context.Context) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
 				Message: "bifrost request cannot be nil",
+			},
+		}
+	}
+
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "provider is required",
 			},
 		}
 	}
@@ -620,7 +638,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(providerKey schemas.ModelProvider,
 	}
 
 	// Try the primary provider first
-	primaryResult, primaryErr := bifrost.tryChatCompletion(providerKey, req, ctx)
+	primaryResult, primaryErr := bifrost.tryChatCompletion(req.Provider, req, ctx)
 	if primaryErr == nil {
 		return primaryResult, nil
 	}
