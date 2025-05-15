@@ -7,13 +7,12 @@
 //
 // Configuration is handled through a JSON config file and environment variables:
 //   - Use -config flag to specify the config file location
-//   - Use -env flag to specify the .env file location
 //   - Use -port flag to specify the server port (default: 8080)
 //   - Use -pool-size flag to specify the initial connection pool size (default: 300)
 //
 // Example usage:
-//   go run http.go -config config.example.json -env .env -port 8080 -pool-size 300
-//   after setting the environment variables present in config.example.json in your .env file.
+//   go run http.go -config config.example.json -port 8080 -pool-size 300
+//   after setting the environment variables present in config.example.json in the environment.
 
 package main
 
@@ -46,7 +45,6 @@ var (
 	dropExcessRequests bool     // Drop excess requests
 	port               string   // Port to run the server on
 	configPath         string   // Path to the config file
-	envPath            string   // Path to the .env file
 	pluginsToLoad      []string // Path to the plugins
 	maximLogRepoId     string   // ID of the Maxim log repo
 	prometheusLabels   []string // Labels to add to Prometheus metrics (optional)
@@ -57,7 +55,6 @@ var (
 //   - pool-size: Initial connection pool size (default: 300)
 //   - port: Server port (default: 8080)
 //   - config: Path to config file (required)
-//   - env: Path to .env file (required)
 //   - drop-excess-requests: Whether to drop excess requests
 func init() {
 	pluginString := ""
@@ -66,7 +63,6 @@ func init() {
 	flag.IntVar(&initialPoolSize, "pool-size", 300, "Initial pool size for Bifrost")
 	flag.StringVar(&port, "port", "8080", "Port to run the server on")
 	flag.StringVar(&configPath, "config", "", "Path to the config file")
-	flag.StringVar(&envPath, "env", "", "Path to the .env file")
 	flag.BoolVar(&dropExcessRequests, "drop-excess-requests", false, "Drop excess requests")
 	flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
 	flag.StringVar(&maximLogRepoId, "maxim-log-repo-id", "", "ID of the Maxim log repo")
@@ -77,10 +73,6 @@ func init() {
 
 	if configPath == "" {
 		log.Fatalf("config path is required")
-	}
-
-	if envPath == "" {
-		log.Fatalf("env path is required")
 	}
 
 	if prometheusLabelsString != "" {
@@ -141,7 +133,7 @@ func main() {
 	config := lib.ReadConfig(configPath)
 	account := &lib.BaseAccount{Config: config}
 
-	if err := account.ReadKeys(envPath); err != nil {
+	if err := account.ReadKeys(); err != nil {
 		log.Printf("warning: failed to read environment variables: %v", err)
 	}
 
