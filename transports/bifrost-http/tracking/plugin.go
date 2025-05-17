@@ -15,8 +15,8 @@ import (
 // Define context key type for storing start time
 type contextKey string
 
-// prometheusContextKey is a custom type for prometheus context keys to prevent collisions
-type prometheusContextKey string
+// PrometheusContextKey is a custom type for prometheus context keys to prevent collisions
+type PrometheusContextKey string
 
 const startTimeKey contextKey = "startTime"
 const methodKey contextKey = "method"
@@ -79,7 +79,7 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 	// Get all prometheus labels from context
 	for _, key := range customLabels {
-		if value := (*ctx).Value(prometheusContextKey(key)); value != nil {
+		if value := (*ctx).Value(PrometheusContextKey(key)); value != nil {
 			if strValue, ok := value.(string); ok {
 				labelValues[key] = strValue
 			}
