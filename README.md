@@ -115,10 +115,8 @@ For additional configurations in HTTP server setup, please read [this](https://g
 
    func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
        return &schemas.ProviderConfig{
-         ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-           Concurrency: 3,
-           BufferSize:  10,
-         },
+          NetworkConfig:            schemas.DefaultNetworkConfig,
+          ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
        }, nil
    }
    ```
@@ -246,7 +244,9 @@ Bifrost is divided into three Go packages: core, plugins, and transports.
 2. **plugins**: This package serves as an extension to core. You can download individual packages using `go get github.com/maximhq/bifrost/plugins/{plugin-name}` and pass the plugins while initializing Bifrost.
 
 ```golang
-plugin, err := plugins.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOGGER_ID"))
+// go get github.com/maximhq/bifrost/plugins/maxim
+
+maximPlugin, err := maxim.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOGGER_ID"))
 if err != nil {
   return nil, err
 }
@@ -254,7 +254,7 @@ if err != nil {
 // Initialize Bifrost
 client, err := bifrost.Init(schemas.BifrostConfig{
   Account: &account,
-  Plugins: []schemas.Plugin{plugin},
+  Plugins: []schemas.Plugin{maximPlugin},
 })
 ```
 

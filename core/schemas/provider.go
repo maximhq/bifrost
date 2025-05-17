@@ -30,6 +30,14 @@ type NetworkConfig struct {
 	RetryBackoffMax                time.Duration `json:"retry_backoff_max"`                  // Maximum backoff duration
 }
 
+// DefaultNetworkConfig is the default network configuration for provider connections.
+var DefaultNetworkConfig = NetworkConfig{
+	DefaultRequestTimeoutInSeconds: DefaultRequestTimeoutInSeconds,
+	MaxRetries:                     DefaultMaxRetries,
+	RetryBackoffInitial:            DefaultRetryBackoffInitial,
+	RetryBackoffMax:                DefaultRetryBackoffMax,
+}
+
 // MetaConfig defines the interface for provider-specific configuration.
 // Check /meta folder for implemented provider-specific meta configurations.
 type MetaConfig interface {
@@ -59,6 +67,12 @@ type MetaConfig interface {
 type ConcurrencyAndBufferSize struct {
 	Concurrency int `json:"concurrency"` // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
 	BufferSize  int `json:"buffer_size"` // Size of the buffer
+}
+
+// DefaultConcurrencyAndBufferSize is the default concurrency and buffer size for provider operations.
+var DefaultConcurrencyAndBufferSize = ConcurrencyAndBufferSize{
+	Concurrency: DefaultConcurrency,
+	BufferSize:  DefaultBufferSize,
 }
 
 // ProxyType defines the type of proxy to use for connections.
