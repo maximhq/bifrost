@@ -146,7 +146,9 @@ For additional configurations in HTTP server setup, please read [this](https://g
 
    ```golang
      bifrostResult, bifrostErr := bifrost.ChatCompletionRequest(
-       schemas.OpenAI, &schemas.BifrostRequest{
+      context.Background(),
+      &schemas.BifrostRequest{
+         Provider: schemas.OpenAI,
          Model: "gpt-4o-mini", // make sure you have configured gpt-4o-mini in your account interface
          Input: schemas.RequestInput{
            ChatCompletionInput: bifrost.Ptr([]schemas.Message{{
@@ -154,7 +156,7 @@ For additional configurations in HTTP server setup, please read [this](https://g
             Content: bifrost.Ptr("What is a LLM gateway?"),
             }}),
          },
-       }, context.Background(),
+       },
      )
    ```
 
@@ -272,7 +274,7 @@ client, err := bifrost.Init(schemas.BifrostConfig{
 ### Additional Configurations
 
 - [Memory Management](https://github.com/maximhq/bifrost/blob/main/docs/memory-management.md)
-- [Logger](https://github.com/maximhq/bifrost/blob/main/docs/logger.md))
+- [Logger](https://github.com/maximhq/bifrost/blob/main/docs/logger.md)
 - [Plugins](https://github.com/maximhq/bifrost/blob/main/docs/plugins.md)
 - [Provider Configurations](https://github.com/maximhq/bifrost/blob/main/docs/providers.md)
 - [Fallbacks](https://github.com/maximhq/bifrost/blob/main/docs/fallbacks.md)

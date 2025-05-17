@@ -247,6 +247,7 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 	}
 
 	bifrostReq := &schemas.BifrostRequest{
+		Provider:  req.Provider,
 		Model:     req.Model,
 		Params:    req.Params,
 		Fallbacks: req.Fallbacks,
@@ -277,9 +278,9 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 	var resp *schemas.BifrostResponse
 	var err *schemas.BifrostError
 	if isChat {
-		resp, err = client.ChatCompletionRequest(req.Provider, bifrostReq, *bifrostCtx)
+		resp, err = client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
 	} else {
-		resp, err = client.TextCompletionRequest(req.Provider, bifrostReq, *bifrostCtx)
+		resp, err = client.TextCompletionRequest(*bifrostCtx, bifrostReq)
 	}
 
 	if err != nil {

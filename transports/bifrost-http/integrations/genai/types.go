@@ -18,7 +18,8 @@ type GeminiChatRequest struct {
 
 func (r *GeminiChatRequest) ConvertToBifrostRequest(modelStr string) *schemas.BifrostRequest {
 	bifrostReq := &schemas.BifrostRequest{
-		Model: modelStr,
+		Provider: schemas.Vertex,
+		Model:    modelStr,
 		Input: schemas.RequestInput{
 			ChatCompletionInput: &[]schemas.Message{},
 		},

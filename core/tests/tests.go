@@ -94,14 +94,15 @@ func setupTextCompletionRequest(bifrostClient *bifrost.Bifrost, config TestConfi
 	}
 
 	go func() {
-		result, err := bifrostClient.TextCompletionRequest(config.Provider, &schemas.BifrostRequest{
-			Model: config.TextModel,
+		result, err := bifrostClient.TextCompletionRequest(ctx, &schemas.BifrostRequest{
+			Provider: config.Provider,
+			Model:    config.TextModel,
 			Input: schemas.RequestInput{
 				TextCompletionInput: &text,
 			},
 			Params:    &params,
 			Fallbacks: config.Fallbacks,
-		}, ctx)
+		})
 		if err != nil {
 			log.Println("Error in", config.Provider, "text completion:", err.Error.Message)
 		} else {
@@ -138,14 +139,15 @@ func setupChatCompletionRequests(bifrostClient *bifrost.Bifrost, config TestConf
 					Content: &msg,
 				},
 			}
-			result, err := bifrostClient.ChatCompletionRequest(config.Provider, &schemas.BifrostRequest{
-				Model: config.ChatModel,
+			result, err := bifrostClient.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+				Provider: config.Provider,
+				Model:    config.ChatModel,
 				Input: schemas.RequestInput{
 					ChatCompletionInput: &messages,
 				},
 				Params:    &params,
 				Fallbacks: config.Fallbacks,
-			}, ctx)
+			})
 			if err != nil {
 				log.Println("Error in", config.Provider, "request", index+1, ":", err.Error.Message)
 			} else {
@@ -185,14 +187,15 @@ func setupImageTests(bifrostClient *bifrost.Bifrost, config TestConfig, ctx cont
 	}
 
 	go func() {
-		result, err := bifrostClient.ChatCompletionRequest(config.Provider, &schemas.BifrostRequest{
-			Model: config.ChatModel,
+		result, err := bifrostClient.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+			Provider: config.Provider,
+			Model:    config.ChatModel,
 			Input: schemas.RequestInput{
 				ChatCompletionInput: &urlImageMessages,
 			},
 			Params:    &params,
 			Fallbacks: config.Fallbacks,
-		}, ctx)
+		})
 		if err != nil {
 			log.Println("Error in", config.Provider, "URL image request:", err.Error.Message)
 		} else {
@@ -215,14 +218,15 @@ func setupImageTests(bifrostClient *bifrost.Bifrost, config TestConfig, ctx cont
 		}
 
 		go func() {
-			result, err := bifrostClient.ChatCompletionRequest(config.Provider, &schemas.BifrostRequest{
-				Model: config.ChatModel,
+			result, err := bifrostClient.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+				Provider: config.Provider,
+				Model:    config.ChatModel,
 				Input: schemas.RequestInput{
 					ChatCompletionInput: &base64ImageMessages,
 				},
 				Params:    &params,
 				Fallbacks: config.Fallbacks,
-			}, ctx)
+			})
 			if err != nil {
 				log.Println("Error in", config.Provider, "base64 image request:", err.Error.Message)
 			} else {
@@ -263,14 +267,15 @@ func setupToolCalls(bifrostClient *bifrost.Bifrost, config TestConfig, ctx conte
 					Content: &msg,
 				},
 			}
-			result, err := bifrostClient.ChatCompletionRequest(config.Provider, &schemas.BifrostRequest{
-				Model: config.ChatModel,
+			result, err := bifrostClient.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+				Provider: config.Provider,
+				Model:    config.ChatModel,
 				Input: schemas.RequestInput{
 					ChatCompletionInput: &messages,
 				},
 				Params:    &params,
 				Fallbacks: config.Fallbacks,
-			}, ctx)
+			})
 			if err != nil {
 				log.Println("Error in", config.Provider, "tool call request", index+1, ":", err.Error.Message)
 			} else {
