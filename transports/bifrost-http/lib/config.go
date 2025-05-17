@@ -30,8 +30,7 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 // Panics if the config file cannot be read or parsed.
 //
 // In the config file, use placeholder keys (e.g., env.OPENAI_API_KEY) instead of hardcoding actual values.
-// These placeholders will be replaced with the corresponding values from the .env file.
-// Location of the .env file is specified by the -env flag. It
+// These placeholders will be replaced with the corresponding values from the environment variables.
 // Example:
 //
 //	"keys":[{
@@ -40,7 +39,7 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 //	     "weight": 1.0
 //	}]
 //
-// In this example, OPENAI_API_KEY refers to a key in the .env file. At runtime, its value will be used to replace the placeholder.
+// In this example, OPENAI_API_KEY refers to a key in the environment variables. At runtime, its value will be used to replace the placeholder.
 // Same setup applies to keys in meta configs of all the providers.
 // Example:
 //
@@ -49,7 +48,7 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 //		"region": "env.BEDROCK_REGION"
 //	}
 //
-// In this example, BEDROCK_ACCESS_KEY and BEDROCK_REGION refer to keys in the .env file.
+// In this example, BEDROCK_ACCESS_KEY and BEDROCK_REGION refer to keys in environment variables.
 func ReadConfig(configLocation string) ConfigMap {
 	data, err := os.ReadFile(configLocation)
 	if err != nil {

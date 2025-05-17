@@ -34,7 +34,7 @@ This package contains clients for various transports that can be used to spin up
 Bifrost uses a combination of a JSON configuration file and environment variables:
 
 1. **JSON Configuration File**: Bifrost requires a configuration file to set up the gateway. This includes all your provider-level settings, keys, and meta configs for each of your providers.
-2. **Environment Variables**: If you don't want to include your keys in your config file, you can provide a `.env` file and add a prefix of `env.` followed by its key in your `.env` file.
+2. **Environment Variables**: If you don't want to include your keys in your config file, you can add a prefix of `env.` followed by its key in your environment.
 
 ```json
 {
@@ -48,7 +48,7 @@ Bifrost uses a combination of a JSON configuration file and environment variable
 }
 ```
 
-In this example, `OPENAI_API_KEY` refers to a key in the `.env` file. At runtime, its value will be used to replace the placeholder.
+In this example, `OPENAI_API_KEY` refers to a key set in your environment. At runtime, its value will be used to replace the placeholder.
 
 The same setup applies to keys in meta configs of all providers:
 
@@ -61,9 +61,9 @@ The same setup applies to keys in meta configs of all providers:
 }
 ```
 
-In this example, `BEDROCK_ACCESS_KEY` and `BEDROCK_REGION` refer to keys in the `.env` file.
+In this example, `BEDROCK_ACCESS_KEY` and `BEDROCK_REGION` refer to keys in the environment.
 
-Please refer to `config.example.json` and `.env.sample` for examples.
+Please refer to `config.example.json` for examples.
 
 ### Docker Setup
 
@@ -78,7 +78,6 @@ curl -L -o Dockerfile https://raw.githubusercontent.com/maximhq/bifrost/main/tra
 ```bash
 docker build \
   --build-arg CONFIG_PATH=./config.example.json \
-  --build-arg ENV_PATH=./.env.sample \
   --build-arg PORT=8080 \
   --build-arg POOL_SIZE=300 \
   -t bifrost-transports .
@@ -87,7 +86,20 @@ docker build \
 3. Run the Docker container:
 
 ```bash
-docker run --name bifrost-api -p 8080:8080 bifrost-transports
+docker run -p 8080:8080 bifrost-transports -e OPENAI_API_KEY -e ANTHROPIC_API_KEY
+```
+
+Note: In the command above, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are just example environment variables.
+You need to pass all environment variables referenced in your `config.json` file that start with the prefix `env.` to the docker run command using the -e flag. This ensures Docker sets them correctly inside the container.
+
+example usage: Suppose your config.json only contains one environment variable placeholder, `env.COHERE_API_KEY`. Here’s how you would run it:
+
+```bash
+export COHERE_API_KEY=your_cohere_api_key
+
+docker build --build-arg CONFIG_PATH=./config.example.json -t bifrost-transports .
+
+docker run -p 8080:8080 bifrost-transports -e COHERE_API_KEY
 ```
 
 You can also add a flag for `DROP_EXCESS_REQUESTS=false` in your Docker build command to drop excess requests when the buffer is full. Read more about `DROP_EXCESS_REQUESTS` and `POOL_SIZE` [here](https://github.com/maximhq/bifrost/tree/main?tab=README-ov-file#additional-configurations).
@@ -109,13 +121,13 @@ go install github.com/maximhq/bifrost/transports/bifrost-http@latest
 - If it's in your PATH:
 
 ```bash
-bifrost-http -config config.json -env .env -port 8080 -pool-size 300
+bifrost-http -config config.json -port 8080 -pool-size 300
 ```
 
 - Otherwise:
 
 ```bash
-./bifrost-http -config config.json -env .env -port 8080 -pool-size 300
+./bifrost-http -config config.json -port 8080 -pool-size 300
 ```
 
 You can also add a flag for `-drop-excess-requests=false` in your command to drop excess requests when the buffer is full. Read more about `DROP_EXCESS_REQUESTS` and `POOL_SIZE` [here](https://github.com/maximhq/bifrost/tree/main?tab=README-ov-file#additional-configurations).

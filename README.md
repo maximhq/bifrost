@@ -13,6 +13,7 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
 ### A. Using Bifrost as an HTTP Server
 
 1. **Create `config.json`**: This file should contain your provider settings and API keys.
+
    ```json
    [
     "openai": {
@@ -24,10 +25,16 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
     },
    ]
    ```
-2. **Create `.env`**: Set up your environment variables here.
-   ```env
-   OPENAI_API_KEY=your_openai_api_key;
+
+2. **Setup your Environment**: Add your environment variable to the session.
+
+   ```bash
+   export OPENAI_API_KEY=your_openai_api_key
+   export ANTHROPIC_API_KEY=your_anthropic_api_key
    ```
+
+   Note: Make sure to add all the variables stated in your config.json file.
+
 3. **Start the Bifrost HTTP Server**:
 
    You have two options to run the server, either using Go Binary or a Docker setup if go is not installed.
@@ -43,13 +50,13 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
      - If it's in your PATH:
 
      ```bash
-     bifrost-http -config config.json -env .env -port 8080 -pool-size 300
+     bifrost-http -config config.json -port 8080 -pool-size 300
      ```
 
      - Otherwise:
 
      ```bash
-     ./bifrost-http -config config.json -env .env -port 8080 -pool-size 300
+     ./bifrost-http -config config.json -port 8080 -pool-size 300
      ```
 
    #### ii) OR Using Docker
@@ -65,16 +72,18 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
      ```bash
      docker build \
      --build-arg CONFIG_PATH=./config.example.json \
-     --build-arg ENV_PATH=./.env.sample \
      --build-arg PORT=8080 \
      --build-arg POOL_SIZE=300 \
      -t bifrost-transports .
      ```
 
    - Run the Docker container:
+
      ```bash
-     docker run -p 8080:8080 bifrost-transports
+     docker run -p 8080:8080 bifrost-transports -e OPENAI_API_KEY -e ANTHROPIC_API_KEY
      ```
+
+     Note: Make sure to add all the variables stated in your config.json file.
 
 4. **Using the API**: Once the server is running, you can send requests to the HTTP endpoints.
 

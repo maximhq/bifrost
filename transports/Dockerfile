@@ -15,7 +15,7 @@ RUN go mod init bifrost-transports && \
     go get github.com/maximhq/bifrost/transports/bifrost-${TRANSPORT_TYPE}@latest
 
 # Build the binary from the fetched package with static linking
-RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports/${TRANSPORT_TYPE} && \
+RUN go build -ldflags="-w -s" -o /app/main github.com/maximhq/bifrost/transports/bifrost-${TRANSPORT_TYPE} && \
     test -f /app/main || (echo "Build failed: /app/main not found" && exit 1) && \
     ls -lh /app/main
 
@@ -32,7 +32,6 @@ RUN mkdir -p /app/config
 
 # Define build-time variables for config file paths
 ARG CONFIG_PATH
-ARG ENV_PATH
 ARG PORT
 ARG POOL_SIZE
 ARG DROP_EXCESS_REQUESTS
@@ -48,16 +47,14 @@ ENV APP_PLUGINS=${PLUGINS:-""}
 ENV APP_MAXIM_LOG_REPO_ID=${MAXIM_LOG_REPO_ID:-""}
 ENV APP_PROMETHEUS_LABELS=${PROMETHEUS_LABELS:-""}
 
-# Copy the config and environment files into the image
+# Copy the config file into the image
 COPY ${CONFIG_PATH} /app/config/config.json
-COPY ${ENV_PATH} /app/config/.env
 
 # Write a small script to validate config presence and run the app
 RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
     echo 'if [ ! -f /app/config/config.json ]; then echo "Missing config.json"; exit 1; fi' >> /app/entrypoint.sh && \
-    echo 'if [ ! -f /app/config/.env ]; then echo "Missing .env"; exit 1; fi' >> /app/entrypoint.sh && \
     echo 'if [ ! -f /app/main ]; then echo "Missing main binary"; exit 1; fi' >> /app/entrypoint.sh && \
-    echo 'exec /app/main -config /app/config/config.json -env /app/config/.env -port "$APP_PORT" -pool-size "$APP_POOL_SIZE" -drop-excess-requests "$APP_DROP_EXCESS_REQUESTS" -plugins "$APP_PLUGINS" -maxim-log-repo-id "$APP_MAXIM_LOG_REPO_ID" -prometheus-labels "$APP_PROMETHEUS_LABELS"' >> /app/entrypoint.sh && \
+    echo 'exec /app/main -config /app/config/config.json -port "$APP_PORT" -pool-size "$APP_POOL_SIZE" -drop-excess-requests "$APP_DROP_EXCESS_REQUESTS" -plugins "$APP_PLUGINS" -maxim-log-repo-id "$APP_MAXIM_LOG_REPO_ID" -prometheus-labels "$APP_PROMETHEUS_LABELS"' >> /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
 
 # Expose the port defined by argument

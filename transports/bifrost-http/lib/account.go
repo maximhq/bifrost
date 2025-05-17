@@ -5,11 +5,11 @@ package lib
 import (
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
 
-	"github.com/joho/godotenv"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -70,23 +70,18 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	return providerConfig, nil
 }
 
-// readKeys reads environment variables from a .env file and updates the provider configurations.
+// ReadKeys reads environment variables from the environment and updates the provider configurations.
 // It replaces values starting with "env." in the config with actual values from the environment.
 // Returns an error if any required environment variable is missing.
-func (baseAccount *BaseAccount) ReadKeys(envLocation string) error {
-	envVars, err := godotenv.Read(envLocation)
-	if err != nil {
-		return fmt.Errorf("failed to read .env file: %w", err)
-	}
-
+func (baseAccount *BaseAccount) ReadKeys() error {
 	// Helper function to check and replace env values
 	replaceEnvValue := func(value string) (string, error) {
 		if strings.HasPrefix(value, "env.") {
 			envKey := strings.TrimPrefix(value, "env.")
-			if envValue, exists := envVars[envKey]; exists {
+			if envValue := os.Getenv(envKey); envValue != "" {
 				return envValue, nil
 			}
-			return "", fmt.Errorf("environment variable %s not found in .env file", envKey)
+			return "", fmt.Errorf("environment variable %s not found in the environment", envKey)
 		}
 		return value, nil
 	}
