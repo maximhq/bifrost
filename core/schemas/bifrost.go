@@ -44,28 +44,28 @@ const (
 // RequestInput represents the input for a model request, which can be either
 // a text completion or a chat completion, but either one must be provided.
 type RequestInput struct {
-	TextCompletionInput *string
-	ChatCompletionInput *[]Message
+	TextCompletionInput *string    `json:"text_completion_input,omitempty"`
+	ChatCompletionInput *[]Message `json:"chat_completion_input,omitempty"`
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
 // It must be provided when calling the Bifrost for text completion or chat completion.
 // It contains the model identifier, input data, and parameters for the request.
 type BifrostRequest struct {
-	Model  string
-	Input  RequestInput
-	Params *ModelParameters
+	Model  string           `json:"model"`
+	Input  RequestInput     `json:"input"`
+	Params *ModelParameters `json:"params,omitempty"`
 
 	// Fallbacks are tried in order, the first one to succeed is returned
 	// Provider config must be available for each fallback's provider in account's GetConfigForProvider,
 	// else it will be skipped.
-	Fallbacks []Fallback
+	Fallbacks []Fallback `json:"fallbacks,omitempty"`
 }
 
 // Fallback represents a fallback model to be used if the primary model is not available.
 type Fallback struct {
-	Provider ModelProvider
-	Model    string
+	Provider ModelProvider `json:"provider"`
+	Model    string        `json:"model"`
 }
 
 // ModelParameters represents the parameters that can be used to configure

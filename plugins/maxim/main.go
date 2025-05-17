@@ -1,12 +1,13 @@
 // Package plugins provides plugins for the Bifrost system.
 // This file contains the Plugin implementation using maxim's logger plugin for bifrost.
-package plugins
+package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"time"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/maxim-go"
@@ -53,7 +54,8 @@ type contextKey string
 // This constant provides a consistent key for tracking request traces
 // throughout the request/response lifecycle.
 const (
-	traceIDKey contextKey = "traceID"
+	traceIDKey      contextKey = "traceID"
+	generationIDKey contextKey = "generationID"
 )
 
 // Plugin implements the schemas.Plugin interface for Maxim's logger.
@@ -81,18 +83,109 @@ type Plugin struct {
 // The trace ID format is "YYYYMMDD_HHmmssSSS" based on the current time.
 // If the context is nil, tracing information will still be logged but not stored in context.
 func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, error) {
-	traceID := time.Now().Format("20060102_150405000")
+	var traceID string
 
-	trace := plugin.logger.Trace(&logging.TraceConfig{
-		Id:   traceID,
-		Name: maxim.StrPtr("bifrost"),
+	// Check if context already has traceID and generationID
+	if ctx != nil {
+		if existingGenerationID, ok := (*ctx).Value(generationIDKey).(string); ok && existingGenerationID != "" {
+			// If generationID exists, return early
+			return req, nil
+		}
+
+		if existingTraceID, ok := (*ctx).Value(traceIDKey).(string); ok && existingTraceID != "" {
+			// If traceID exists, and no generationID, create a new generation on the trace
+			traceID = existingTraceID
+		}
+	}
+
+	// Determine request type and set appropriate tags
+	var requestType string
+	var tags map[string]string
+	var messages []logging.CompletionRequest
+	var latestMessage string
+
+	if req.Input.ChatCompletionInput != nil {
+		requestType = "chat_completion"
+		tags = map[string]string{
+			"action": "chat_completion",
+			"model":  req.Model,
+		}
+		for _, message := range *req.Input.ChatCompletionInput {
+			if message.Content != nil {
+				messages = append(messages, logging.CompletionRequest{
+					Role:    string(message.Role),
+					Content: message.Content,
+				})
+			} else if message.ImageContent != nil {
+				messages = append(messages, logging.CompletionRequest{
+					Role:    string(message.Role),
+					Content: message.ImageContent,
+				})
+			} else if message.ToolCalls != nil {
+				messages = append(messages, logging.CompletionRequest{
+					Role:    string(message.Role),
+					Content: message.ToolCalls,
+				})
+			}
+		}
+		if len(*req.Input.ChatCompletionInput) > 0 {
+			lastMsg := (*req.Input.ChatCompletionInput)[len(*req.Input.ChatCompletionInput)-1]
+			if lastMsg.Content != nil {
+				latestMessage = *lastMsg.Content
+			}
+		}
+	} else if req.Input.TextCompletionInput != nil {
+		requestType = "text_completion"
+		tags = map[string]string{
+			"action": "text_completion",
+			"model":  req.Model,
+		}
+		messages = append(messages, logging.CompletionRequest{
+			Role:    "user",
+			Content: req.Input.TextCompletionInput,
+		})
+		latestMessage = *req.Input.TextCompletionInput
+	}
+
+	if traceID == "" {
+		// If traceID is not set, create a new trace
+		traceID = uuid.New().String()
+
+		trace := plugin.logger.Trace(&logging.TraceConfig{
+			Id:   traceID,
+			Name: maxim.StrPtr(fmt.Sprintf("bifrost_%s", requestType)),
+			Tags: &tags,
+		})
+
+		trace.SetInput(latestMessage)
+	}
+
+	// Convert ModelParameters to map[string]interface{}
+	modelParams := make(map[string]interface{})
+	if req.Params != nil {
+		// Convert the struct to a map using reflection or JSON marshaling
+		jsonData, err := json.Marshal(req.Params)
+		if err == nil {
+			json.Unmarshal(jsonData, &modelParams)
+		}
+	}
+
+	generationID := uuid.New().String()
+
+	plugin.logger.AddGenerationToTrace(traceID, &logging.GenerationConfig{
+		Id:              generationID,
+		Model:           req.Model,
+		Provider:        req.Provider,
+		Tags:            &tags,
+		Messages:        messages,
+		ModelParameters: modelParams,
 	})
 
-	trace.SetInput(fmt.Sprintf("New Request Incoming: %v", req))
-
 	if ctx != nil {
-		// Store traceID in context
-		*ctx = context.WithValue(*ctx, traceIDKey, traceID)
+		if _, ok := (*ctx).Value(traceIDKey).(string); !ok {
+			*ctx = context.WithValue(*ctx, traceIDKey, traceID)
+		}
+		*ctx = context.WithValue(*ctx, generationIDKey, generationID)
 	}
 
 	return req, nil
@@ -113,15 +206,21 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 // If the context is nil or the trace ID is not found, an error will be returned
 // but the response will still be passed through unmodified.
 func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResponse) (*schemas.BifrostResponse, error) {
-	// Get traceID from context
 	if ctxRef != nil {
 		ctx := *ctxRef
-		traceID, ok := ctx.Value(traceIDKey).(string)
-		if !ok {
-			return res, fmt.Errorf("traceID not found in context")
+
+		generationID, ok := ctx.Value(generationIDKey).(string)
+		if ok {
+			plugin.logger.AddResultToGeneration(generationID, res)
+			plugin.logger.EndGeneration(generationID)
 		}
 
-		plugin.logger.SetTraceOutput(traceID, fmt.Sprintf("Response: %v", res))
+		traceID, ok := ctx.Value(traceIDKey).(string)
+		if ok {
+			plugin.logger.EndTrace(traceID)
+		}
+
+		plugin.logger.Flush()
 	}
 
 	return res, nil
