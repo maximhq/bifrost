@@ -119,7 +119,7 @@
     "meta_config": {
       "project_id": "env.VERTEX_PROJECT_ID",
       "region": "us-central1",
-      "auth_credential_path": "env.VERTEX_CREDENTIALS_PATH"
+      "auth_credentials": "env.VERTEX_CREDENTIALS"
     },
     "concurrency_and_buffer_size": {
       "concurrency": 3,

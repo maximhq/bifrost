@@ -59,8 +59,8 @@ type MetaConfig interface {
 	GetAPIVersion() *string
 	// GetProjectID returns the project ID
 	GetProjectID() *string
-	// GetAuthCredentialPath returns the path to the authentication credentials for the provider
-	GetAuthCredentialPath() *string
+	// GetAuthCredentials returns the authentication credentials for the provider
+	GetAuthCredentials() *string
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.

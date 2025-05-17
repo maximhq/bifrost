@@ -61,6 +61,6 @@ func (c *AzureMetaConfig) GetProjectID() *string {
 }
 
 // This is not used for Azure.
-func (c *AzureMetaConfig) GetAuthCredentialPath() *string {
+func (c *AzureMetaConfig) GetAuthCredentials() *string {
 	return nil
 }
