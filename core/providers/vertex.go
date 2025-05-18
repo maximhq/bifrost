@@ -291,3 +291,12 @@ func (provider *VertexProvider) ChatCompletion(model, key string, messages []sch
 		return result, nil
 	}
 }
+
+func (provider *VertexProvider) StreamChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: schemas.ErrorField{
+			Message: fmt.Sprintf("StreamChatCompletion is not implemented for %s provider", provider.GetProviderKey()),
+		},
+	}
+}

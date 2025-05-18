@@ -37,6 +37,7 @@ type TestConfig struct {
 	SetupImage           bool
 	SetupBaseImage       bool
 	CustomTextCompletion *string
+	StreamRequest        bool
 	CustomParams         *schemas.ModelParameters
 	Fallbacks            []schemas.Fallback
 }
@@ -117,7 +118,7 @@ func setupTextCompletionRequest(bifrostClient *bifrost.Bifrost, config TestConfi
 //   - bifrost: The Bifrost instance to use for the requests
 //   - config: Test configuration containing model and parameters
 //   - ctx: Context for the requests
-func setupChatCompletionRequests(bifrostClient *bifrost.Bifrost, config TestConfig, ctx context.Context) {
+func setupChatCompletionRequests(bifrostClient *bifrost.Bifrost, config TestConfig, ctx context.Context, streamRequest bool) {
 	messages := config.Messages
 	if len(messages) == 0 {
 		messages = CommonTestMessages
@@ -138,6 +139,7 @@ func setupChatCompletionRequests(bifrostClient *bifrost.Bifrost, config TestConf
 					Content: &msg,
 				},
 			}
+
 			result, err := bifrostClient.ChatCompletionRequest(config.Provider, &schemas.BifrostRequest{
 				Model: config.ChatModel,
 				Input: schemas.RequestInput{
@@ -145,10 +147,32 @@ func setupChatCompletionRequests(bifrostClient *bifrost.Bifrost, config TestConf
 				},
 				Params:    &params,
 				Fallbacks: config.Fallbacks,
+				Stream:    streamRequest,
 			}, ctx)
+
 			if err != nil {
-				log.Println("Error in", config.Provider, "request", index+1, ":", err.Error.Message)
+				log.Printf("Error from ChatCompletionRequest: %v\n", err)
+				return
+			}
+
+			if result == nil {
+				log.Println("Received nil result from ChatCompletionRequest without error.")
+				return
+			}
+
+			if result.StreamChannel != nil {
+				log.Printf("Received streaming response. Listening to StreamChannel for provider %s, model %s...\n", config.Provider, config.ChatModel)
+				for chunk := range result.StreamChannel {
+					log.Printf("🐒 %s %s Stream chunk delta:\n%+v\n", config.Provider, config.ChatModel, func() string {
+						if chunk.Choices[0].Delta.Content != nil {
+							return *chunk.Choices[0].Delta.Content
+						}
+						return ""
+					}())
+				}
+				log.Printf("Stream ended for provider %s, model %s.\n", config.Provider, config.ChatModel)
 			} else {
+				// Handle non-streaming response
 				log.Println("🐒", config.Provider, "Chat Completion Result", index+1, ":", *result.Choices[0].Message.Content)
 			}
 		}(message, delay, i)
@@ -308,7 +332,7 @@ func SetupAllRequests(bifrost *bifrost.Bifrost, config TestConfig) {
 		setupTextCompletionRequest(bifrost, config, ctx)
 	}
 
-	setupChatCompletionRequests(bifrost, config, ctx)
+	setupChatCompletionRequests(bifrost, config, ctx, config.StreamRequest)
 
 	if config.SetupImage {
 		setupImageTests(bifrost, config, ctx)

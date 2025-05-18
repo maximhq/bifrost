@@ -369,7 +369,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 					}
 					break // Don't retry client errors
 				} else {
-					result, bifrostError = provider.ChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+					if req.Stream { // Check if it's a streaming request
+						result, bifrostError = provider.StreamChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+					} else {
+						result, bifrostError = provider.ChatCompletion(req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+					}
 				}
 			}
 

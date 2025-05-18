@@ -24,6 +24,7 @@ func TestOpenAI(t *testing.T) {
 		SetupToolCalls: false,
 		SetupImage:     false,
 		SetupBaseImage: false,
+		StreamRequest:  true,
 		Fallbacks: []schemas.Fallback{
 			{
 				Provider: schemas.Anthropic,
