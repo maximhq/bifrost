@@ -671,6 +671,18 @@ func (provider *BedrockProvider) ChatCompletion(model, key string, messages []sc
 	return bifrostResponse, nil
 }
 
+// StreamChatCompletion performs a stream chat completion request to Bedrock's API.
+// It formats the request, sends it to Bedrock, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *BedrockProvider) StreamChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: schemas.ErrorField{
+			Message: fmt.Sprintf("StreamChatCompletion is not implemented for %s provider", provider.GetProviderKey()),
+		},
+	}
+}
+
 // signAWSRequest signs an HTTP request using AWS Signature Version 4.
 // It is used in providers like Bedrock.
 // It sets required headers, calculates the request body hash, and signs the request

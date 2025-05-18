@@ -129,4 +129,6 @@ type Provider interface {
 	TextCompletion(model, key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
 	// ChatCompletion performs a chat completion request
 	ChatCompletion(model, key string, messages []Message, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	// StreamChatCompletion performs a streaming chat completion request
+	StreamChatCompletion(model, key string, messages []Message, params *ModelParameters) (*BifrostResponse, *BifrostError)
 }

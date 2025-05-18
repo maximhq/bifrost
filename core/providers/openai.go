@@ -3,7 +3,10 @@
 package providers
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,7 +20,7 @@ import (
 // It includes completion choices, model information, and usage statistics.
 type OpenAIResponse struct {
 	ID                string                          `json:"id"`                 // Unique identifier for the completion
-	Object            string                          `json:"object"`             // Type of completion (text.completion or chat.completion)
+	Object            string                          `json:"object"`             // Type of completion (text.completion or chat.completion) or text.completion.chunk or chat.completion.chunk
 	Choices           []schemas.BifrostResponseChoice `json:"choices"`            // Array of completion choices
 	Model             string                          `json:"model"`              // Model used for the completion
 	Created           int                             `json:"created"`            // Unix timestamp of completion creation
@@ -144,8 +147,10 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.SetBody(jsonBody)
 
-	// Make request
+	// Use the existing client configuration
 	if err := provider.client.Do(req, resp); err != nil {
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -207,6 +212,157 @@ func (provider *OpenAIProvider) ChatCompletion(model, key string, messages []sch
 	}
 
 	return result, nil
+}
+
+// StreamChatCompletion performs a streaming chat completion request to the OpenAI API.
+func (provider *OpenAIProvider) StreamChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(model, messages, params)
+
+	// Ensure 'stream: true' is set for streaming requests
+	if preparedParams == nil {
+		preparedParams = make(map[string]interface{})
+	}
+	preparedParams["stream"] = true
+
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":    model,
+		"messages": formattedMessages,
+	}, preparedParams)
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   err,
+			},
+		}
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	// Do not defer ReleaseResponse for streaming, it's handled in the goroutine
+
+	req.SetRequestURI("https://api.openai.com/v1/chat/completions")
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Accept", "text/event-stream") // Important for SSE
+	req.SetBody(jsonBody)
+
+	// Use the existing client configuration
+	if err := provider.client.Do(req, resp); err != nil {
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderRequest,
+				Error:   err,
+			},
+		}
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		bodyBytes := resp.Body()
+		provider.logger.Debug(fmt.Sprintf("error from openai provider on stream: %s", string(bodyBytes)))
+		var errorResp OpenAIError
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+
+		if errorResp.EventID != "" {
+			bifrostErr.EventID = &errorResp.EventID
+		}
+		bifrostErr.Error.Type = &errorResp.Error.Type
+		bifrostErr.Error.Code = &errorResp.Error.Code
+		bifrostErr.Error.Message = errorResp.Error.Message
+		bifrostErr.Error.Param = errorResp.Error.Param
+		if errorResp.Error.EventID != "" {
+			bifrostErr.Error.EventID = &errorResp.Error.EventID
+		}
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		return nil, bifrostErr
+	}
+
+	// Create a larger buffered channel for stream chunks
+	streamChannel := make(chan schemas.BifrostResponse, 100) //TODO make this configurable
+	initialBifrostResponse := acquireBifrostResponse()
+	initialBifrostResponse.StreamChannel = streamChannel
+	initialBifrostResponse.Object = "chat.completion.chunk"
+	initialBifrostResponse.Model = model
+
+	go func() {
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+		defer close(streamChannel)
+
+		// Get the response body as a reader
+		reader := bufio.NewReader(bytes.NewReader(resp.Body()))
+
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				provider.logger.Warn(fmt.Sprintf("error reading stream: %v", err))
+				continue
+			}
+
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue // Skip empty lines
+			}
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue // Skip non-data lines
+			}
+
+			dataContent := strings.TrimPrefix(line, "data: ")
+			if dataContent == "[DONE]" {
+				provider.logger.Debug("Stream finished with [DONE]")
+				return // End of stream
+			}
+
+			var streamResp OpenAIResponse
+			if err := json.Unmarshal([]byte(dataContent), &streamResp); err != nil {
+				provider.logger.Error(fmt.Errorf("error unmarshalling stream data chunk: %w. Data: '%s'", err, dataContent))
+				continue
+			}
+
+			if len(streamResp.Choices) > 0 {
+				choice := streamResp.Choices[0]
+
+				bifrostChunk := acquireBifrostResponse()
+				bifrostChunk.ID = streamResp.ID
+				bifrostChunk.Object = streamResp.Object
+				bifrostChunk.Model = streamResp.Model
+				bifrostChunk.Created = streamResp.Created
+				bifrostChunk.ServiceTier = streamResp.ServiceTier
+				bifrostChunk.SystemFingerprint = streamResp.SystemFingerprint
+
+				bifrostChunk.Choices = []schemas.BifrostResponseChoice{
+					{
+						Index:        choice.Index,
+						Delta:        choice.Delta,
+						FinishReason: choice.FinishReason,
+					},
+				}
+
+				bifrostChunk.Usage = streamResp.Usage
+
+				// Add timeout to channel send
+				select {
+				case streamChannel <- *bifrostChunk:
+					// Chunk sent successfully
+				case <-time.After(100 * time.Millisecond): //TODO have a better way of handling this
+					provider.logger.Warn("Consumer too slow, forcing chunk delivery")
+					// Try once more with a blocking send
+					streamChannel <- *bifrostChunk
+				}
+			}
+		}
+	}()
+
+	return initialBifrostResponse, nil
 }
 
 func prepareOpenAIChatRequest(model string, messages []schemas.Message, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {

@@ -462,3 +462,15 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 
 	return bifrostResponse, nil
 }
+
+// StreamChatCompletion performs a chat completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *AnthropicProvider) StreamChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: true, // It's a Bifrost limitation that this provider doesn't support it yet.
+		Error: schemas.ErrorField{
+			Message: fmt.Sprintf("StreamChatCompletion is not implemented for %s provider", provider.GetProviderKey()),
+		},
+	}
+}

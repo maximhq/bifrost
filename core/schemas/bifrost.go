@@ -55,6 +55,7 @@ type BifrostRequest struct {
 	Model  string
 	Input  RequestInput
 	Params *ModelParameters
+	Stream bool
 
 	// Fallbacks are tried in order, the first one to succeed is returned
 	// Provider config must be available for each fallback's provider in account's GetConfigForProvider,
@@ -159,14 +160,15 @@ type ImageContent struct {
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
 	ID                string                     `json:"id,omitempty"`
-	Object            string                     `json:"object,omitempty"` // text.completion or chat.completion
+	Object            string                     `json:"object,omitempty"` // text.completion/chat.completion or text.completion.chunk/chat.completion.chunk (streaming)
 	Choices           []BifrostResponseChoice    `json:"choices,omitempty"`
 	Model             string                     `json:"model,omitempty"`
 	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
 	ServiceTier       *string                    `json:"service_tier,omitempty"`
 	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
 	Usage             LLMUsage                   `json:"usage,omitempty"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+	StreamChannel     chan BifrostResponse       `json:"-"` // Channel to receive the stream responses (only available for streaming)
 }
 
 // LLMUsage represents token usage information
@@ -273,7 +275,8 @@ type BifrostResponseChoiceMessage struct {
 // BifrostResponseChoice represents a choice in the completion result
 type BifrostResponseChoice struct {
 	Index        int                          `json:"index"`
-	Message      BifrostResponseChoiceMessage `json:"message"`
+	Message      BifrostResponseChoiceMessage `json:"message,omitempty"` // Only available for non-streaming responses
+	Delta        BifrostResponseChoiceMessage `json:"delta,omitempty"`   // Only available for streaming responses
 	FinishReason *string                      `json:"finish_reason,omitempty"`
 	StopString   *string                      `json:"stop,omitempty"`
 	LogProbs     *LogProbs                    `json:"log_probs,omitempty"`

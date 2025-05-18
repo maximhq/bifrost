@@ -360,3 +360,14 @@ func convertChatHistory(history []struct {
 	}
 	return &converted
 }
+
+// StreamChatCompletion is not implemented for the Cohere provider.
+// Returns an error indicating that stream chat completion is not supported.
+func (provider *CohereProvider) StreamChatCompletion(model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: schemas.ErrorField{
+			Message: fmt.Sprintf("StreamChatCompletion is not implemented for %s provider", provider.GetProviderKey()),
+		},
+	}
+}
