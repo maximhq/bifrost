@@ -18,24 +18,24 @@ import (
 //
 // Parameters:
 //   - apiKey: API key for Maxim SDK authentication
-//   - loggerId: ID for the Maxim logger instance
+//   - logRepoId: ID for the Maxim logger instance
 //
 // Returns:
 //   - schemas.Plugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func NewMaximLoggerPlugin(apiKey string, loggerId string) (schemas.Plugin, error) {
+func NewMaximLoggerPlugin(apiKey string, logRepoId string) (schemas.Plugin, error) {
 	// check if Maxim Logger variables are set
 	if apiKey == "" {
 		return nil, fmt.Errorf("apiKey is not set")
 	}
 
-	if loggerId == "" {
-		return nil, fmt.Errorf("loggerId is not set")
+	if logRepoId == "" {
+		return nil, fmt.Errorf("log repo id is not set")
 	}
 
 	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: apiKey})
 
-	logger, err := mx.GetLogger(&logging.LoggerConfig{Id: loggerId})
+	logger, err := mx.GetLogger(&logging.LoggerConfig{Id: logRepoId})
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +54,7 @@ type ContextKey string
 // This constant provides a consistent key for tracking request traces
 // throughout the request/response lifecycle.
 const (
+	SessionIDKey    ContextKey = "session-id"
 	TraceIDKey      ContextKey = "trace-id"
 	GenerationIDKey ContextKey = "generation-id"
 )
@@ -104,6 +105,7 @@ type Plugin struct {
 //   - error: Any error that occurred during trace/generation creation
 func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, error) {
 	var traceID string
+	var sessionID string
 
 	// Check if context already has traceID and generationID
 	if ctx != nil {
@@ -115,6 +117,10 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		if existingTraceID, ok := (*ctx).Value(TraceIDKey).(string); ok && existingTraceID != "" {
 			// If traceID exists, and no generationID, create a new generation on the trace
 			traceID = existingTraceID
+		}
+
+		if existingSessionID, ok := (*ctx).Value(SessionIDKey).(string); ok && existingSessionID != "" {
+			sessionID = existingSessionID
 		}
 	}
 
@@ -171,11 +177,17 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		// If traceID is not set, create a new trace
 		traceID = uuid.New().String()
 
-		trace := plugin.logger.Trace(&logging.TraceConfig{
+		traceConfig := logging.TraceConfig{
 			Id:   traceID,
 			Name: maxim.StrPtr(fmt.Sprintf("bifrost_%s", requestType)),
 			Tags: &tags,
-		})
+		}
+
+		if sessionID != "" {
+			traceConfig.SessionId = &sessionID
+		}
+
+		trace := plugin.logger.Trace(&traceConfig)
 
 		trace.SetInput(latestMessage)
 	}

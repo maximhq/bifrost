@@ -62,6 +62,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 			if labelName == string(maxim.TraceIDKey) {
 				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
 			}
+
+			if labelName == string(maxim.SessionIDKey) {
+				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
 		}
 	})
 

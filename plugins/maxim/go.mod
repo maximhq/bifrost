@@ -4,13 +4,13 @@ go 1.24.1
 
 require (
 	github.com/maximhq/bifrost/core v1.0.7
-	github.com/maximhq/maxim-go v0.1.1
+	github.com/maximhq/maxim-go v0.1.3
 )
 
 require github.com/google/uuid v1.6.0
 
 require (
-	cloud.google.com/go/compute/metadata v0.3.0 // indirect
+	cloud.google.com/go/compute/metadata v0.7.0 // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.36.3 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.29.14 // indirect
@@ -28,8 +28,9 @@ require (
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.60.0 // indirect
-	golang.org/x/net v0.39.0 // indirect
+	github.com/valyala/fasthttp v1.62.0 // indirect
+	golang.org/x/net v0.40.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
-	golang.org/x/text v0.24.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/text v0.25.0 // indirect
 )
