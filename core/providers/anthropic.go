@@ -254,8 +254,8 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, ke
 	bifrostResponse.Choices = []schemas.BifrostResponseChoice{
 		{
 			Index: 0,
-			Message: schemas.BifrostResponseChoiceMessage{
-				Role:    schemas.RoleAssistant,
+			Message: schemas.BifrostMessage{
+				Role:    schemas.ModelChatMessageRoleAssistant,
 				Content: &response.Completion,
 			},
 		},
@@ -277,7 +277,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, ke
 // ChatCompletion performs a chat completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareAnthropicChatRequest(model, messages, params)
 
 	// Merge additional parameters
@@ -317,38 +317,47 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, ke
 	return bifrostResponse, nil
 }
 
-func prepareAnthropicChatRequest(model string, messages []schemas.Message, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
+func prepareAnthropicChatRequest(model string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
 	// Add system messages if present
 	var systemMessages []BedrockAnthropicSystemMessage
 	for _, msg := range messages {
-		if msg.Role == schemas.RoleSystem {
+		if msg.Role == schemas.ModelChatMessageRoleSystem {
 			//TODO handling image inputs here
-			systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
-				Text: *msg.Content,
-			})
+			if msg.Content != nil {
+				systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
+					Text: *msg.Content,
+				})
+			}
 		}
 	}
 
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
-		if msg.Role != schemas.RoleSystem {
-			if msg.ImageContent != nil {
+		if msg.Role != schemas.ModelChatMessageRoleSystem {
+			if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
+				var messageImageContent schemas.ImageContent
+				if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
+					messageImageContent = *msg.UserMessage.ImageContent
+				} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
+					messageImageContent = *msg.ToolMessage.ImageContent
+				}
+
 				var content []map[string]interface{}
 
 				imageContent := map[string]interface{}{
 					"type": "image",
 					"source": map[string]interface{}{
-						"type": msg.ImageContent.Type,
+						"type": messageImageContent.Type,
 					},
 				}
 
 				// Handle different image source types
-				if *msg.ImageContent.Type == "url" {
-					imageContent["source"].(map[string]interface{})["url"] = msg.ImageContent.URL
+				if messageImageContent.Type != nil && *messageImageContent.Type == "url" {
+					imageContent["source"].(map[string]interface{})["url"] = messageImageContent.URL
 				} else {
-					imageContent["source"].(map[string]interface{})["media_type"] = msg.ImageContent.MediaType
-					imageContent["source"].(map[string]interface{})["data"] = msg.ImageContent.URL
+					imageContent["source"].(map[string]interface{})["media_type"] = messageImageContent.MediaType
+					imageContent["source"].(map[string]interface{})["data"] = messageImageContent.URL
 				}
 
 				content = append(content, imageContent)
@@ -357,7 +366,15 @@ func prepareAnthropicChatRequest(model string, messages []schemas.Message, param
 				if msg.Content != nil {
 					content = append(content, map[string]interface{}{
 						"type": "text",
-						"text": msg.Content,
+						"text": *msg.Content,
+					})
+				}
+
+				// Add thinking content if present in AssistantMessage
+				if msg.AssistantMessage != nil && msg.AssistantMessage.Thought != nil {
+					content = append(content, map[string]interface{}{
+						"type":     "thinking",
+						"thinking": *msg.AssistantMessage.Thought,
 					})
 				}
 
@@ -366,10 +383,59 @@ func prepareAnthropicChatRequest(model string, messages []schemas.Message, param
 					"content": content,
 				})
 			} else {
-				formattedMessages = append(formattedMessages, map[string]interface{}{
-					"role":    msg.Role,
-					"content": msg.Content,
-				})
+				// Handle non-image messages
+				var content []map[string]interface{}
+
+				// Add text content if present
+				if msg.Content != nil && *msg.Content != "" {
+					content = append(content, map[string]interface{}{
+						"type": "text",
+						"text": *msg.Content,
+					})
+				}
+
+				// Add thinking content if present in AssistantMessage
+				if msg.AssistantMessage != nil && msg.AssistantMessage.Thought != nil {
+					content = append(content, map[string]interface{}{
+						"type":     "thinking",
+						"thinking": *msg.AssistantMessage.Thought,
+					})
+				}
+
+				// Add tool calls as content if present
+				if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
+					for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+						if toolCall.Function.Name != nil {
+							var input map[string]interface{}
+							if toolCall.Function.Arguments != "" {
+								if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+									// If unmarshaling fails, use a simple string representation
+									input = map[string]interface{}{"arguments": toolCall.Function.Arguments}
+								}
+							}
+
+							toolUseContent := map[string]interface{}{
+								"type":  "tool_use",
+								"name":  *toolCall.Function.Name,
+								"input": input,
+							}
+
+							if toolCall.ID != nil {
+								toolUseContent["id"] = *toolCall.ID
+							}
+
+							content = append(content, toolUseContent)
+						}
+					}
+				}
+
+				// Always use content block structure
+				if len(content) > 0 {
+					formattedMessages = append(formattedMessages, map[string]interface{}{
+						"role":    msg.Role,
+						"content": content,
+					})
+				}
 			}
 		}
 	}
@@ -403,19 +469,21 @@ func prepareAnthropicChatRequest(model string, messages []schemas.Message, param
 }
 
 func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *schemas.BifrostResponse) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Process the response into our BifrostResponse format
-	var choices []schemas.BifrostResponseChoice
+	// Collect all content and tool calls into a single message
+	var content strings.Builder
+	var toolCalls []schemas.ToolCall
+	var thinking string
 
 	// Process content and tool calls
-	for i, c := range response.Content {
-		var content string
-		var toolCalls []schemas.ToolCall
-
+	for _, c := range response.Content {
 		switch c.Type {
 		case "thinking":
-			content = c.Thinking
+			thinking = c.Thinking
 		case "text":
-			content = c.Text
+			if content.Len() > 0 {
+				content.WriteString("\n")
+			}
+			content.WriteString(c.Text)
 		case "tool_use":
 			function := schemas.FunctionCall{
 				Name: &c.Name,
@@ -434,21 +502,37 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 				Function: function,
 			})
 		}
+	}
 
-		choices = append(choices, schemas.BifrostResponseChoice{
-			Index: i,
-			Message: schemas.BifrostResponseChoiceMessage{
-				Role:      schemas.RoleAssistant,
-				Content:   &content,
-				ToolCalls: &toolCalls,
+	// Create the assistant message
+	messageContent := content.String()
+	var assistantMessage *schemas.AssistantMessage
+
+	// Create AssistantMessage if we have tool calls or thinking
+	if len(toolCalls) > 0 || thinking != "" {
+		assistantMessage = &schemas.AssistantMessage{}
+		if len(toolCalls) > 0 {
+			assistantMessage.ToolCalls = &toolCalls
+		}
+		if thinking != "" {
+			assistantMessage.Thought = &thinking
+		}
+	}
+
+	// Create a single choice with the collected content
+	bifrostResponse.ID = response.ID
+	bifrostResponse.Choices = []schemas.BifrostResponseChoice{
+		{
+			Index: 0,
+			Message: schemas.BifrostMessage{
+				Role:             schemas.ModelChatMessageRoleAssistant,
+				Content:          &messageContent,
+				AssistantMessage: assistantMessage,
 			},
 			FinishReason: &response.StopReason,
 			StopString:   response.StopSequence,
-		})
+		},
 	}
-
-	bifrostResponse.ID = response.ID
-	bifrostResponse.Choices = choices
 	bifrostResponse.Usage = schemas.LLMUsage{
 		PromptTokens:     response.Usage.InputTokens,
 		CompletionTokens: response.Usage.OutputTokens,

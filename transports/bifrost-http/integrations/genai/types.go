@@ -53,7 +53,10 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest(modelStr string) *schemas.Bi
 			}
 		}
 
-		*bifrostReq.Input.ChatCompletionInput = append(*bifrostReq.Input.ChatCompletionInput, bifrostMsg)
+		// Note: ChatCompletionInput is initialized above so this check is defensive
+		if bifrostReq.Input.ChatCompletionInput != nil {
+			*bifrostReq.Input.ChatCompletionInput = append(*bifrostReq.Input.ChatCompletionInput, bifrostMsg)
+		}
 	}
 
 	return bifrostReq
@@ -102,14 +105,16 @@ func DeriveGenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *genai
 					// genai.FunctionCall.Args expects map[string]any.
 					json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
 				}
-				fc := &genai_sdk.FunctionCall{
-					Name: *toolCall.Function.Name,
-					Args: argsMap,
+				if toolCall.Function.Name != nil {
+					fc := &genai_sdk.FunctionCall{
+						Name: *toolCall.Function.Name,
+						Args: argsMap,
+					}
+					if toolCall.ID != nil {
+						fc.ID = *toolCall.ID
+					}
+					parts = append(parts, &genai_sdk.Part{FunctionCall: fc})
 				}
-				if toolCall.ID != nil {
-					fc.ID = *toolCall.ID
-				}
-				parts = append(parts, &genai_sdk.Part{FunctionCall: fc})
 			}
 		}
 

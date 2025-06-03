@@ -277,6 +277,13 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 
 	var resp *schemas.BifrostResponse
 	var err *schemas.BifrostError
+
+	if bifrostCtx == nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString("Failed to convert context")
+		return
+	}
+
 	if isChat {
 		resp, err = client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
 	} else {

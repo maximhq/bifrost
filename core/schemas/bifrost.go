@@ -20,11 +20,11 @@ type BifrostConfig struct {
 type ModelChatMessageRole string
 
 const (
-	RoleAssistant ModelChatMessageRole = "assistant"
-	RoleUser      ModelChatMessageRole = "user"
-	RoleSystem    ModelChatMessageRole = "system"
-	RoleChatbot   ModelChatMessageRole = "chatbot"
-	RoleTool      ModelChatMessageRole = "tool"
+	ModelChatMessageRoleAssistant ModelChatMessageRole = "assistant"
+	ModelChatMessageRoleUser      ModelChatMessageRole = "user"
+	ModelChatMessageRoleSystem    ModelChatMessageRole = "system"
+	ModelChatMessageRoleChatbot   ModelChatMessageRole = "chatbot"
+	ModelChatMessageRoleTool      ModelChatMessageRole = "tool"
 )
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -44,8 +44,8 @@ const (
 // RequestInput represents the input for a model request, which can be either
 // a text completion or a chat completion, but either one must be provided.
 type RequestInput struct {
-	TextCompletionInput *string    `json:"text_completion_input,omitempty"`
-	ChatCompletionInput *[]Message `json:"chat_completion_input,omitempty"`
+	TextCompletionInput *string           `json:"text_completion_input,omitempty"`
+	ChatCompletionInput *[]BifrostMessage `json:"chat_completion_input,omitempty"`
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
@@ -139,13 +139,34 @@ type ToolChoice struct {
 	Function ToolChoiceFunction `json:"function"` // Function to call if type is ToolChoiceTool
 }
 
-// Message represents a single message in a chat conversation.
-type Message struct {
-	Role         ModelChatMessageRole `json:"role"`
-	Content      *string              `json:"content,omitempty"`
-	ToolCallID   *string              `json:"tool_call_id,omitempty"`
-	ImageContent *ImageContent        `json:"image_content,omitempty"`
-	ToolCalls    *[]Tool              `json:"tool_calls,omitempty"`
+// BifrostMessage represents a message in a chat conversation.
+type BifrostMessage struct {
+	Role    ModelChatMessageRole `json:"role"`
+	Content *string              `json:"content,omitempty"`
+
+	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
+	*UserMessage
+	*ToolMessage
+	*AssistantMessage
+}
+
+// UserMessage represents a message from a user
+type UserMessage struct {
+	ImageContent *ImageContent `json:"image_content,omitempty"`
+}
+
+// ToolMessage represents a message from a tool
+type ToolMessage struct {
+	ImageContent *ImageContent `json:"image_content,omitempty"`
+	ToolCallID   *string       `json:"tool_call_id,omitempty"`
+}
+
+// AssistantMessage represents a message from an assistant
+type AssistantMessage struct {
+	Refusal     *string      `json:"refusal,omitempty"`
+	Annotations []Annotation `json:"annotations,omitempty"`
+	ToolCalls   *[]ToolCall  `json:"tool_calls,omitempty"`
+	Thought     *string      `json:"thought,omitempty"`
 }
 
 // ImageContent represents image data in a message.
@@ -263,32 +284,23 @@ type Annotation struct {
 	Citation Citation `json:"url_citation"`
 }
 
-// BifrostResponseChoiceMessage represents a choice in the completion response
-type BifrostResponseChoiceMessage struct {
-	Role        ModelChatMessageRole `json:"role"`
-	Content     *string              `json:"content,omitempty"`
-	Refusal     *string              `json:"refusal,omitempty"`
-	Annotations []Annotation         `json:"annotations,omitempty"`
-	ToolCalls   *[]ToolCall          `json:"tool_calls,omitempty"`
-}
-
 // BifrostResponseChoice represents a choice in the completion result
 type BifrostResponseChoice struct {
-	Index        int                          `json:"index"`
-	Message      BifrostResponseChoiceMessage `json:"message"`
-	FinishReason *string                      `json:"finish_reason,omitempty"`
-	StopString   *string                      `json:"stop,omitempty"`
-	LogProbs     *LogProbs                    `json:"log_probs,omitempty"`
+	Index        int            `json:"index"`
+	Message      BifrostMessage `json:"message"`
+	FinishReason *string        `json:"finish_reason,omitempty"`
+	StopString   *string        `json:"stop,omitempty"`
+	LogProbs     *LogProbs      `json:"log_probs,omitempty"`
 }
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	Provider    ModelProvider                   `json:"provider"`
-	Params      ModelParameters                 `json:"model_params"`
-	Latency     *float64                        `json:"latency,omitempty"`
-	ChatHistory *[]BifrostResponseChoiceMessage `json:"chat_history,omitempty"`
-	BilledUsage *BilledLLMUsage                 `json:"billed_usage,omitempty"`
-	RawResponse interface{}                     `json:"raw_response"`
+	Provider    ModelProvider     `json:"provider"`
+	Params      ModelParameters   `json:"model_params"`
+	Latency     *float64          `json:"latency,omitempty"`
+	ChatHistory *[]BifrostMessage `json:"chat_history,omitempty"`
+	BilledUsage *BilledLLMUsage   `json:"billed_usage,omitempty"`
+	RawResponse interface{}       `json:"raw_response"`
 }
 
 const (
