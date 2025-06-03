@@ -3,6 +3,7 @@ package genai
 import (
 	"encoding/json"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	genai_sdk "google.golang.org/genai"
 )
@@ -21,13 +22,13 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest(modelStr string) *schemas.Bi
 		Provider: schemas.Vertex,
 		Model:    modelStr,
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.Message{},
+			ChatCompletionInput: &[]schemas.BifrostMessage{},
 		},
 	}
 
 	// Convert messages (contents)
 	for _, content := range r.Contents {
-		var bifrostMsg schemas.Message
+		var bifrostMsg schemas.BifrostMessage
 		bifrostMsg.Role = schemas.ModelChatMessageRole(content.Role)
 
 		if len(content.Parts) > 0 {
@@ -37,15 +38,16 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest(modelStr string) *schemas.Bi
 				bifrostMsg.Content = &part.Text
 
 			case part.FunctionCall != nil:
-				toolCalls := []schemas.Tool{
+				jsonArgs, err := json.Marshal(part.FunctionCall.Args)
+				if err != nil {
+					jsonArgs = []byte("{}")
+				}
+				toolCalls := []schemas.ToolCall{
 					{
-						Type: "function",
-						Function: schemas.Function{
-							Name: part.FunctionCall.Name,
-							Parameters: schemas.FunctionParameters{
-								Type:       "object",
-								Properties: part.FunctionCall.Args,
-							},
+						Type: bifrost.Ptr(string(schemas.ToolChoiceTypeFunction)),
+						Function: schemas.FunctionCall{
+							Name:      &part.FunctionCall.Name,
+							Arguments: string(jsonArgs),
 						},
 					},
 				}

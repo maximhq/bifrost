@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,6 +154,87 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 			"role": msg.Role,
 		}
 
+		if msg.Role == schemas.ModelChatMessageRoleAssistant {
+			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
+				var toolCalls []map[string]interface{}
+				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+					var arguments map[string]interface{}
+					var parsedJSON interface{}
+					err := json.Unmarshal([]byte(toolCall.Function.Arguments), &parsedJSON)
+					if err == nil {
+						if arr, ok := parsedJSON.(map[string]interface{}); ok {
+							arguments = arr
+						} else {
+							arguments = map[string]interface{}{"content": parsedJSON}
+						}
+					} else {
+						arguments = map[string]interface{}{"content": toolCall.Function.Arguments}
+					}
+
+					toolCalls = append(toolCalls, map[string]interface{}{
+						"name":       toolCall.Function.Name,
+						"parameters": arguments,
+					})
+				}
+				historyMsg["tool_calls"] = toolCalls
+			}
+		} else if msg.Role == schemas.ModelChatMessageRoleTool {
+			// Find the original tool call parameters from conversation history
+			var toolCallParameters map[string]interface{}
+
+			// Look back through the chat history to find the assistant message with the matching tool call
+			for i := len(chatHistory) - 1; i >= 0; i-- {
+				prevMsg := chatHistory[i]
+				if prevMsg.Role == schemas.ModelChatMessageRoleAssistant &&
+					prevMsg.AssistantMessage != nil &&
+					prevMsg.AssistantMessage.ToolCalls != nil {
+
+					// Search through tool calls in this assistant message
+					for _, toolCall := range *prevMsg.AssistantMessage.ToolCalls {
+						if toolCall.ID != nil && msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil &&
+							*toolCall.ID == *msg.ToolMessage.ToolCallID {
+
+							// Found the matching tool call, extract its parameters
+							var parsedJSON interface{}
+							err := json.Unmarshal([]byte(toolCall.Function.Arguments), &parsedJSON)
+							if err == nil {
+								if arr, ok := parsedJSON.(map[string]interface{}); ok {
+									toolCallParameters = arr
+								} else {
+									toolCallParameters = map[string]interface{}{"content": parsedJSON}
+								}
+							} else {
+								toolCallParameters = map[string]interface{}{"content": toolCall.Function.Arguments}
+							}
+							break
+						}
+					}
+
+					// If we found the parameters, stop searching
+					if toolCallParameters != nil {
+						break
+					}
+				}
+			}
+
+			// If no parameters found, use empty map as fallback
+			if toolCallParameters == nil {
+				toolCallParameters = map[string]interface{}{}
+			}
+
+			toolResults := []map[string]interface{}{
+				{
+					"call": map[string]interface{}{
+						"name":       *msg.ToolMessage.ToolCallID,
+						"parameters": toolCallParameters,
+					},
+					"outputs": *msg.Content,
+				},
+			}
+
+			historyMsg["tool_results"] = toolResults
+		}
+
 		// Only add message content if it's not nil
 		if msg.Content != nil {
 			historyMsg["message"] = *msg.Content
@@ -206,6 +288,10 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 			})
 		}
 		requestBody["tools"] = tools
+	}
+	// Add tool choice if present
+	if params != nil && params.ToolChoice != nil {
+		requestBody["tool_choice"] = strings.ToUpper(string(params.ToolChoice.Type))
 	}
 
 	// Marshal request body

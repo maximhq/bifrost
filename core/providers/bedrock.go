@@ -50,7 +50,9 @@ type BedrockChatResponse struct {
 	Output struct {
 		Message struct {
 			Content []struct {
-				Text string `json:"text"` // Message content
+				Text *string `json:"text"` // Message content
+				// Bedrock returns a union type where either Text or ToolUse is present (mutually exclusive)
+				BedrockAnthropicToolUseMessage
 			} `json:"content"` // Array of message content
 			Role string `json:"role"` // Role of the message sender
 		} `json:"message"` // Message structure
@@ -95,8 +97,8 @@ type BedrockAnthropicImageMessage struct {
 
 // BedrockAnthropicImage represents image data for Anthropic models.
 type BedrockAnthropicImage struct {
-	Format string                      `json:"string"` // Image format
-	Source BedrockAnthropicImageSource `json:"source"` // Image source
+	Format string                      `json:"format,omitempty"` // Image format
+	Source BedrockAnthropicImageSource `json:"source,omitempty"` // Image source
 }
 
 // BedrockAnthropicImageSource represents the source of an image for Anthropic models.
@@ -108,6 +110,16 @@ type BedrockAnthropicImageSource struct {
 type BedrockMistralToolCall struct {
 	ID       string               `json:"id"`       // Tool call ID
 	Function schemas.FunctionCall `json:"function"` // Function to call
+}
+
+type BedrockAnthropicToolUseMessage struct {
+	ToolUse *BedrockAnthropicToolUse `json:"toolUse"`
+}
+
+type BedrockAnthropicToolUse struct {
+	ToolUseID string                 `json:"toolUseId"`
+	Name      string                 `json:"name"`
+	Input     map[string]interface{} `json:"input"`
 }
 
 // BedrockAnthropicToolCall represents a tool call for Anthropic models.
@@ -415,7 +427,6 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 		var systemMessages []BedrockAnthropicSystemMessage
 		for _, msg := range messages {
 			if msg.Role == schemas.ModelChatMessageRoleSystem {
-				//TODO handling image inputs here
 				if msg.Content != nil {
 					systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
 						Text: *msg.Content,
@@ -427,43 +438,157 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 		// Format messages for Bedrock API
 		var bedrockMessages []map[string]interface{}
 		for _, msg := range messages {
+			var content []interface{}
 			if msg.Role != schemas.ModelChatMessageRoleSystem {
-				var content any
-				if msg.Content != nil {
-					content = BedrockAnthropicTextMessage{
-						Type: "text",
-						Text: *msg.Content,
-					}
-				} else if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
-					var messageImageContent schemas.ImageContent
-					if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
-						messageImageContent = *msg.UserMessage.ImageContent
-					} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
-						messageImageContent = *msg.ToolMessage.ImageContent
+				if msg.Role == schemas.ModelChatMessageRoleTool && msg.ToolCallID != nil {
+					toolCallResult := map[string]interface{}{
+						"toolUseId": *msg.ToolCallID,
 					}
 
-					content = BedrockAnthropicImageMessage{
-						Type: "image",
-						Image: BedrockAnthropicImage{
-							Format: func() string {
-								if messageImageContent.Type != nil {
-									return *messageImageContent.Type
+					var toolResultContentBlock map[string]interface{}
+					if msg.Content != nil {
+						toolResultContentBlock = map[string]interface{}{}
+						var parsedJSON interface{}
+						err := json.Unmarshal([]byte(*msg.Content), &parsedJSON)
+						if err == nil {
+							if arr, ok := parsedJSON.([]interface{}); ok {
+								toolResultContentBlock["json"] = map[string]interface{}{"content": arr}
+							} else {
+								toolResultContentBlock["json"] = parsedJSON
+							}
+						} else {
+							toolResultContentBlock["text"] = *msg.Content
+						}
+
+						toolCallResult["content"] = []interface{}{toolResultContentBlock}
+
+						content = append(content, map[string]interface{}{
+							"toolResult": toolCallResult,
+						})
+					}
+				} else {
+					if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
+						for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+							var input map[string]interface{}
+							if toolCall.Function.Arguments != "" {
+								if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+									input = map[string]interface{}{"arguments": toolCall.Function.Arguments}
 								}
-								return ""
-							}(),
-							Source: BedrockAnthropicImageSource{
-								Bytes: messageImageContent.URL,
+							}
+
+							content = append(content, BedrockAnthropicToolUseMessage{
+								ToolUse: &BedrockAnthropicToolUse{
+									ToolUseID: *toolCall.ID,
+									Name:      *toolCall.Function.Name,
+									Input:     input,
+								},
+							})
+						}
+					}
+
+					if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
+						var messageImageContent schemas.ImageContent
+						if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
+							messageImageContent = *msg.UserMessage.ImageContent
+						} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
+							messageImageContent = *msg.ToolMessage.ImageContent
+						}
+
+						content = append(content, BedrockAnthropicImageMessage{
+							Type: "image",
+							Image: BedrockAnthropicImage{
+								Format: func() string {
+									if messageImageContent.MediaType != nil {
+										mediaType := *messageImageContent.MediaType
+										mediaType = strings.TrimPrefix(mediaType, "image/")
+										return mediaType
+									}
+									return ""
+								}(),
+								Source: BedrockAnthropicImageSource{
+									Bytes: messageImageContent.URL,
+								},
 							},
-						},
+						})
+					}
+
+					if msg.Content != nil {
+						content = append(content, BedrockAnthropicTextMessage{
+							Type: "text",
+							Text: *msg.Content,
+						})
 					}
 				}
 
-				bedrockMessages = append(bedrockMessages, map[string]interface{}{
-					"role":    msg.Role,
-					"content": []interface{}{content},
-				})
+				if len(content) > 0 {
+					bedrockMessages = append(bedrockMessages, map[string]interface{}{
+						"role":    msg.Role,
+						"content": content,
+					})
+				}
 			}
 		}
+
+		// Post-process bedrockMessages for tool call results
+		processedBedrockMessages := []map[string]interface{}{}
+		i := 0
+		for i < len(bedrockMessages) {
+			currentMsg := bedrockMessages[i]
+			currentRole, roleOk := getRoleFromMessage(currentMsg)
+
+			if !roleOk {
+				// If role is of an unexpected type or missing, treat as non-tool message
+				processedBedrockMessages = append(processedBedrockMessages, currentMsg)
+				i++
+				continue
+			}
+
+			if currentRole == schemas.ModelChatMessageRoleTool {
+				// Content of a tool message is the toolCallResult map
+				// Initialize accumulatedToolResults with the content of the current tool message.
+				var accumulatedToolResults []interface{}
+
+				// Safely extract content from current message
+				if content, ok := currentMsg["content"].([]interface{}); ok {
+					accumulatedToolResults = content
+				} else {
+					// If content is not the expected type, skip this message
+					processedBedrockMessages = append(processedBedrockMessages, currentMsg)
+					i++
+					continue
+				}
+
+				// Look ahead for more sequential tool messages
+				j := i + 1
+				for j < len(bedrockMessages) {
+					nextMsg := bedrockMessages[j]
+					nextRole, nextRoleOk := getRoleFromMessage(nextMsg)
+
+					if !nextRoleOk || nextRole != schemas.ModelChatMessageRoleTool {
+						break // Not a sequential tool message or role is invalid/missing
+					}
+
+					// Safely extract content from next message
+					if nextContent, ok := nextMsg["content"].([]interface{}); ok {
+						accumulatedToolResults = append(accumulatedToolResults, nextContent...)
+					}
+					j++
+				}
+
+				// Create a new message with role User and accumulated content
+				mergedMsg := map[string]interface{}{
+					"role":    schemas.ModelChatMessageRoleUser, // Final role is User
+					"content": accumulatedToolResults,
+				}
+				processedBedrockMessages = append(processedBedrockMessages, mergedMsg)
+				i = j // Advance main loop index past all merged messages
+			} else {
+				// Not a tool message, add it as is
+				processedBedrockMessages = append(processedBedrockMessages, currentMsg)
+				i++
+			}
+		}
+		bedrockMessages = processedBedrockMessages // Update with processed messages
 
 		body := map[string]interface{}{
 			"messages": bedrockMessages,
@@ -631,6 +756,56 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model, key,
 	return result, nil
 }
 
+// extractToolsFromHistory extracts minimal tool definitions from conversation history.
+// It analyzes the messages to find tool-related content and returns whether tool content
+// was found and a list of unique minimal tool definitions extracted from the conversation.
+// This is needed when Bedrock requires toolConfig but no tools are provided in the current request.
+func (provider *BedrockProvider) extractToolsFromHistory(messages []schemas.BifrostMessage) (bool, []BedrockAnthropicToolCall) {
+	hasToolContent := false
+	var toolsFromHistory []BedrockAnthropicToolCall
+	seenTools := make(map[string]BedrockAnthropicToolCall)
+
+	for _, msg := range messages {
+		// Check for tool result messages
+		if msg.Role == schemas.ModelChatMessageRoleTool {
+			hasToolContent = true
+		}
+		// Check for assistant messages with tool calls
+		if msg.Role == schemas.ModelChatMessageRoleAssistant && msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
+			hasToolContent = true
+			// Extract tool definitions from tool calls for toolConfig
+			for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+				if toolCall.Function.Name != nil {
+					toolName := *toolCall.Function.Name
+					if _, exists := seenTools[toolName]; !exists {
+						// Create a basic tool definition from the tool call
+						// Note: We can't fully reconstruct the original tool definition,
+						// but we can provide a minimal one that satisfies Bedrock's requirement
+						tool := BedrockAnthropicToolCall{
+							ToolSpec: BedrockAnthropicToolSpec{
+								Name:        toolName,
+								Description: fmt.Sprintf("Tool: %s", toolName),
+								InputSchema: struct {
+									Json interface{} `json:"json"`
+								}{
+									Json: map[string]interface{}{
+										"type":       "object",
+										"properties": map[string]interface{}{},
+									},
+								},
+							},
+						}
+						seenTools[toolName] = tool
+						toolsFromHistory = append(toolsFromHistory, tool)
+					}
+				}
+			}
+		}
+	}
+
+	return hasToolContent, toolsFromHistory
+}
+
 // ChatCompletion performs a chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -644,7 +819,21 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
-		preparedParams["tools"] = provider.getChatCompletionTools(params, model)
+		preparedParams["toolConfig"] = map[string]interface{}{
+			"tools": provider.getChatCompletionTools(params, model),
+		}
+	} else {
+		// Check if conversation history contains tool use/result blocks
+		// Bedrock requires toolConfig when such blocks are present
+		hasToolContent, toolsFromHistory := provider.extractToolsFromHistory(messages)
+
+		// If conversation contains tool content but no tools provided in current request,
+		// include the extracted tools to satisfy Bedrock's toolConfig requirement
+		if hasToolContent && len(toolsFromHistory) > 0 {
+			preparedParams["toolConfig"] = map[string]interface{}{
+				"tools": toolsFromHistory,
+			}
+		}
 	}
 
 	requestBody := mergeConfig(messageBody, preparedParams)
@@ -680,16 +869,69 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 		return nil, bifrostErr
 	}
 
-	var choices []schemas.BifrostResponseChoice
-	for i, choice := range response.Output.Message.Content {
-		choices = append(choices, schemas.BifrostResponseChoice{
-			Index: i,
+	// Collect all content and tool calls into a single message (similar to Anthropic aggregation)
+	var content strings.Builder
+	var toolCalls []schemas.ToolCall
+
+	// Process content and tool calls
+	for _, choice := range response.Output.Message.Content {
+		if choice.Text != nil && *choice.Text != "" {
+			if content.Len() > 0 {
+				content.WriteString("\n")
+			}
+			content.WriteString(*choice.Text)
+		}
+
+		if choice.ToolUse != nil {
+			input := choice.ToolUse.Input
+			if input == nil {
+				input = map[string]any{}
+			}
+			arguments, err := json.Marshal(input)
+			if err != nil {
+				arguments = []byte("{}")
+			}
+
+			idCopy := choice.ToolUse.ToolUseID // copy to avoid unsafe pointer creation
+			nameCopy := choice.ToolUse.Name    // copy to avoid unsafe pointer creation
+			toolCalls = append(toolCalls, schemas.ToolCall{
+				Type: StrPtr("function"),
+				ID:   &idCopy,
+				Function: schemas.FunctionCall{
+					Name:      &nameCopy,
+					Arguments: string(arguments),
+				},
+			})
+		}
+	}
+
+	// Create the assistant message
+	messageContent := content.String()
+	var contentPtr *string
+	if messageContent != "" {
+		contentPtr = &messageContent
+	}
+
+	var assistantMessage *schemas.AssistantMessage
+
+	// Create AssistantMessage if we have tool calls
+	if len(toolCalls) > 0 {
+		assistantMessage = &schemas.AssistantMessage{
+			ToolCalls: &toolCalls,
+		}
+	}
+
+	// Create a single choice with the aggregated content
+	choices := []schemas.BifrostResponseChoice{
+		{
+			Index: 0,
 			Message: schemas.BifrostMessage{
-				Role:    schemas.ModelChatMessageRoleAssistant,
-				Content: &choice.Text,
+				Role:             schemas.ModelChatMessageRoleAssistant,
+				Content:          contentPtr,
+				AssistantMessage: assistantMessage,
 			},
 			FinishReason: &response.StopReason,
-		})
+		},
 	}
 
 	latency := float64(response.Metrics.Latency)

@@ -20,7 +20,7 @@ func TestVertex(t *testing.T) {
 		Provider:       schemas.Vertex,
 		ChatModel:      "google/gemini-2.0-flash-001",
 		SetupText:      false, // Vertex does not support text completion
-		SetupToolCalls: false,
+		SetupToolCalls: true,
 		SetupImage:     false,
 		SetupBaseImage: false,
 	}

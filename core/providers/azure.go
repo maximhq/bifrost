@@ -297,22 +297,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	preparedParams := prepareParams(params)
-
-	// Format messages for Azure API
-	var formattedMessages []map[string]interface{}
-	for _, msg := range messages {
-		message := map[string]interface{}{
-			"role": msg.Role,
-		}
-
-		// Only add content if it's not nil
-		if msg.Content != nil {
-			message["content"] = *msg.Content
-		}
-
-		formattedMessages = append(formattedMessages, message)
-	}
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	// Merge additional parameters
 	requestBody := mergeConfig(map[string]interface{}{

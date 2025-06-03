@@ -95,9 +95,9 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model, key s
 	var preparedParams map[string]interface{}
 
 	if strings.Contains(model, "claude") {
-		formattedMessages, preparedParams = prepareAnthropicChatRequest(model, messages, params)
+		formattedMessages, preparedParams = prepareAnthropicChatRequest(messages, params)
 	} else {
-		formattedMessages, preparedParams = prepareOpenAIChatRequest(model, messages, params)
+		formattedMessages, preparedParams = prepareOpenAIChatRequest(messages, params)
 	}
 
 	requestBody := mergeConfig(map[string]interface{}{

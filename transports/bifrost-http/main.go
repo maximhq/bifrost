@@ -91,7 +91,7 @@ func init() {
 // It includes all necessary fields for both types of completions.
 type CompletionRequest struct {
 	Provider  schemas.ModelProvider    `json:"provider"`  // The AI model provider to use
-	Messages  []schemas.Message        `json:"messages"`  // Chat messages (for chat completion)
+	Messages  []schemas.BifrostMessage `json:"messages"`  // Chat messages (for chat completion)
 	Text      string                   `json:"text"`      // Text input (for text completion)
 	Model     string                   `json:"model"`     // Model to use
 	Params    *schemas.ModelParameters `json:"params"`    // Additional model parameters
@@ -215,7 +215,7 @@ func main() {
 		log.Fatalf("failed to start server: %v", err)
 	}
 
-	client.Shutdown()
+	client.Cleanup()
 }
 
 // handleCompletion processes both text and chat completion requests.

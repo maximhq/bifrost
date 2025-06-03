@@ -116,16 +116,16 @@ type Tool struct {
 type ToolChoiceType string
 
 const (
-	// ToolChoiceNone means no tool will be called
-	ToolChoiceNone ToolChoiceType = "none"
-	// ToolChoiceAuto means the model can choose whether to call a tool
-	ToolChoiceAuto ToolChoiceType = "auto"
-	// ToolChoiceAny means any tool can be called
-	ToolChoiceAny ToolChoiceType = "any"
-	// ToolChoiceTool means a specific tool must be called
-	ToolChoiceTool ToolChoiceType = "tool"
-	// ToolChoiceRequired means a tool must be called
-	ToolChoiceRequired ToolChoiceType = "required"
+	// ToolChoiceTypeNone means no tool will be called
+	ToolChoiceTypeNone ToolChoiceType = "none"
+	// ToolChoiceTypeAuto means the model can choose whether to call a tool
+	ToolChoiceTypeAuto ToolChoiceType = "auto"
+	// ToolChoiceTypeAny means any tool can be called
+	ToolChoiceTypeAny ToolChoiceType = "any"
+	// ToolChoiceTypeFunction means a specific tool must be called (converted to "tool" for Anthropic)
+	ToolChoiceTypeFunction ToolChoiceType = "function"
+	// ToolChoiceTypeRequired means a tool must be called
+	ToolChoiceTypeRequired ToolChoiceType = "required"
 )
 
 // ToolChoiceFunction represents a specific function to be called.
@@ -135,8 +135,8 @@ type ToolChoiceFunction struct {
 
 // ToolChoice represents how a tool should be chosen for a request.
 type ToolChoice struct {
-	Type     ToolChoiceType     `json:"type"`     // Type of tool choice
-	Function ToolChoiceFunction `json:"function"` // Function to call if type is ToolChoiceTool
+	Type     ToolChoiceType     `json:"type"`               // Type of tool choice
+	Function ToolChoiceFunction `json:"function,omitempty"` // Function to call if type is ToolChoiceTypeFunction
 }
 
 // BifrostMessage represents a message in a chat conversation.
@@ -145,6 +145,7 @@ type BifrostMessage struct {
 	Content *string              `json:"content,omitempty"`
 
 	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
+	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
 	*UserMessage
 	*ToolMessage
 	*AssistantMessage

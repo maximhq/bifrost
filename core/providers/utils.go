@@ -268,12 +268,45 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 	return rawResponse, nil
 }
 
+// getRoleFromMessage extracts and validates the role from a message map.
+func getRoleFromMessage(msg map[string]interface{}) (schemas.ModelChatMessageRole, bool) {
+	roleVal, exists := msg["role"]
+	if !exists {
+		return "", false // Role key doesn't exist
+	}
+
+	// Try direct assertion to ModelChatMessageRole
+	roleAsModelType, ok := roleVal.(schemas.ModelChatMessageRole)
+	if ok {
+		return roleAsModelType, true
+	}
+
+	// Try assertion to string and then convert
+	roleAsString, okStr := roleVal.(string)
+	if okStr {
+		return schemas.ModelChatMessageRole(roleAsString), true
+	}
+
+	return "", false // Role is of an unexpected or invalid type
+}
+
 // float64Ptr creates a pointer to a float64 value.
 // This is a helper function for creating pointers to float64 values.
 func float64Ptr(f float64) *float64 {
 	return &f
 }
 
+// StrPtr creates a pointer to a string value.
+// This is a helper function for creating pointers to string values.
 func StrPtr(s string) *string {
 	return &s
+}
+
+// coalesceString returns the string value of a pointer to a string, or an empty string if the pointer is nil.
+// This is a helper function for safely handling pointer-to-string values.
+func coalesceString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

@@ -25,8 +25,8 @@ func TestBedrock(t *testing.T) {
 		ChatModel:      "anthropic.claude-3-sonnet-20240229-v1:0",
 		SetupText:      true,
 		SetupToolCalls: true,
-		SetupImage:     true,
-		SetupBaseImage: false,
+		SetupImage:     false, // bedrock does not support image URLs
+		SetupBaseImage: true,
 		CustomParams: &schemas.ModelParameters{
 			MaxTokens: &maxTokens,
 		},

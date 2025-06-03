@@ -278,7 +278,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, ke
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareAnthropicChatRequest(model, messages, params)
+	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
 
 	// Merge additional parameters
 	requestBody := mergeConfig(map[string]interface{}{
@@ -317,12 +317,32 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, ke
 	return bifrostResponse, nil
 }
 
-func prepareAnthropicChatRequest(model string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
+// buildAnthropicImageSourceMap creates the "source" map for an Anthropic image content part.
+func buildAnthropicImageSourceMap(imgContent *schemas.ImageContent) map[string]interface{} {
+	if imgContent == nil || imgContent.Type == nil {
+		return nil
+	}
+
+	sourceMap := map[string]interface{}{
+		"type": *imgContent.Type, // "base64" or "url"
+	}
+
+	if *imgContent.Type == "url" {
+		sourceMap["url"] = imgContent.URL
+	} else {
+		if imgContent.MediaType != nil {
+			sourceMap["media_type"] = *imgContent.MediaType
+		}
+		sourceMap["data"] = imgContent.URL // URL field is used for base64 data string
+	}
+	return sourceMap
+}
+
+func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
 	// Add system messages if present
 	var systemMessages []BedrockAnthropicSystemMessage
 	for _, msg := range messages {
 		if msg.Role == schemas.ModelChatMessageRoleSystem {
-			//TODO handling image inputs here
 			if msg.Content != nil {
 				systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
 					Text: *msg.Content,
@@ -334,57 +354,61 @@ func prepareAnthropicChatRequest(model string, messages []schemas.BifrostMessage
 	// Format messages for Anthropic API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
+		var content []interface{}
+
 		if msg.Role != schemas.ModelChatMessageRoleSystem {
-			if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
-				var messageImageContent schemas.ImageContent
-				if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
-					messageImageContent = *msg.UserMessage.ImageContent
-				} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
-					messageImageContent = *msg.ToolMessage.ImageContent
+			if msg.Role == schemas.ModelChatMessageRoleTool && msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
+				toolCallResult := map[string]interface{}{
+					"type":        "tool_result",
+					"tool_use_id": *msg.ToolMessage.ToolCallID,
 				}
 
-				var content []map[string]interface{}
+				var toolCallResultContent []map[string]interface{}
 
-				imageContent := map[string]interface{}{
-					"type": "image",
-					"source": map[string]interface{}{
-						"type": messageImageContent.Type,
-					},
-				}
-
-				// Handle different image source types
-				if messageImageContent.Type != nil && *messageImageContent.Type == "url" {
-					imageContent["source"].(map[string]interface{})["url"] = messageImageContent.URL
-				} else {
-					imageContent["source"].(map[string]interface{})["media_type"] = messageImageContent.MediaType
-					imageContent["source"].(map[string]interface{})["data"] = messageImageContent.URL
-				}
-
-				content = append(content, imageContent)
-
-				// Add text content if present
 				if msg.Content != nil {
-					content = append(content, map[string]interface{}{
+					toolCallResultContent = append(toolCallResultContent, map[string]interface{}{
 						"type": "text",
 						"text": *msg.Content,
 					})
 				}
 
-				// Add thinking content if present in AssistantMessage
-				if msg.AssistantMessage != nil && msg.AssistantMessage.Thought != nil {
-					content = append(content, map[string]interface{}{
-						"type":     "thinking",
-						"thinking": *msg.AssistantMessage.Thought,
-					})
+				if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
+					var messageImageContent schemas.ImageContent
+					if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
+						messageImageContent = *msg.UserMessage.ImageContent
+					} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
+						messageImageContent = *msg.ToolMessage.ImageContent
+					}
+
+					imageSource := buildAnthropicImageSourceMap(&messageImageContent)
+					if imageSource != nil {
+						toolCallResultContent = append(toolCallResultContent, map[string]interface{}{
+							"type":   "image",
+							"source": imageSource,
+						})
+					}
 				}
 
-				formattedMessages = append(formattedMessages, map[string]interface{}{
-					"role":    msg.Role,
-					"content": content,
-				})
+				toolCallResult["content"] = toolCallResultContent
+
+				content = append(content, toolCallResult)
 			} else {
-				// Handle non-image messages
-				var content []map[string]interface{}
+				if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
+					var messageImageContent schemas.ImageContent
+					if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
+						messageImageContent = *msg.UserMessage.ImageContent
+					} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
+						messageImageContent = *msg.ToolMessage.ImageContent
+					}
+
+					imageSource := buildAnthropicImageSourceMap(&messageImageContent)
+					if imageSource != nil {
+						content = append(content, map[string]interface{}{
+							"type":   "image",
+							"source": imageSource,
+						})
+					}
+				}
 
 				// Add text content if present
 				if msg.Content != nil && *msg.Content != "" {
@@ -428,14 +452,13 @@ func prepareAnthropicChatRequest(model string, messages []schemas.BifrostMessage
 						}
 					}
 				}
+			}
 
-				// Always use content block structure
-				if len(content) > 0 {
-					formattedMessages = append(formattedMessages, map[string]interface{}{
-						"role":    msg.Role,
-						"content": content,
-					})
-				}
+			if len(content) > 0 {
+				formattedMessages = append(formattedMessages, map[string]interface{}{
+					"role":    msg.Role,
+					"content": content,
+				})
 			}
 		}
 	}
@@ -456,6 +479,21 @@ func prepareAnthropicChatRequest(model string, messages []schemas.BifrostMessage
 		preparedParams["tools"] = tools
 	}
 
+	// Transform tool choice if present
+	if params != nil && params.ToolChoice != nil {
+		switch toolChoice := params.ToolChoice.Type; toolChoice {
+		case schemas.ToolChoiceTypeFunction:
+			preparedParams["tool_choice"] = map[string]interface{}{
+				"type": "tool",
+				"name": params.ToolChoice.Function.Name,
+			}
+		default:
+			preparedParams["tool_choice"] = map[string]interface{}{
+				"type": toolChoice,
+			}
+		}
+	}
+
 	if len(systemMessages) > 0 {
 		var messages []string
 		for _, message := range systemMessages {
@@ -464,6 +502,67 @@ func prepareAnthropicChatRequest(model string, messages []schemas.BifrostMessage
 
 		preparedParams["system"] = strings.Join(messages, " ")
 	}
+
+	// Post-process formattedMessages for tool call results
+	processedFormattedMessages := []map[string]interface{}{} // Use a new slice
+	i := 0
+	for i < len(formattedMessages) {
+		currentMsg := formattedMessages[i]
+		currentRole, roleOk := getRoleFromMessage(currentMsg)
+
+		if !roleOk || currentRole == "" {
+			// If role is of an unexpected type, missing, or empty, treat as non-tool message
+			processedFormattedMessages = append(processedFormattedMessages, currentMsg)
+			i++
+			continue
+		}
+
+		if currentRole == schemas.ModelChatMessageRoleTool {
+			// Content of a tool message is the toolCallResult map
+			// Initialize accumulatedToolResults with the content of the current tool message.
+			var accumulatedToolResults []interface{}
+
+			// Safely extract content from current message
+			if content, ok := currentMsg["content"].([]interface{}); ok {
+				accumulatedToolResults = content
+			} else {
+				// If content is not the expected type, skip this message
+				processedFormattedMessages = append(processedFormattedMessages, currentMsg)
+				i++
+				continue
+			}
+
+			// Look ahead for more sequential tool messages
+			j := i + 1
+			for j < len(formattedMessages) {
+				nextMsg := formattedMessages[j]
+				nextRole, nextRoleOk := getRoleFromMessage(nextMsg)
+
+				if !nextRoleOk || nextRole == "" || nextRole != schemas.ModelChatMessageRoleTool {
+					break // Not a sequential tool message or role is invalid/missing/empty
+				}
+
+				// Safely extract content from next message
+				if nextContent, ok := nextMsg["content"].([]interface{}); ok {
+					accumulatedToolResults = append(accumulatedToolResults, nextContent...)
+				}
+				j++
+			}
+
+			// Create a new message with role User and accumulated content
+			mergedMsg := map[string]interface{}{
+				"role":    schemas.ModelChatMessageRoleUser, // Final role is User
+				"content": accumulatedToolResults,
+			}
+			processedFormattedMessages = append(processedFormattedMessages, mergedMsg)
+			i = j // Advance main loop index past all merged messages
+		} else {
+			// Not a tool message, add it as is
+			processedFormattedMessages = append(processedFormattedMessages, currentMsg)
+			i++
+		}
+	}
+	formattedMessages = processedFormattedMessages // Update with processed messages
 
 	return formattedMessages, preparedParams
 }

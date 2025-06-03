@@ -115,7 +115,7 @@ func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model, key, 
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(model, messages, params)
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
@@ -205,11 +205,20 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model, key s
 	return result, nil
 }
 
-func prepareOpenAIChatRequest(model string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
+func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
 	// Format messages for OpenAI API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
-		if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
+		if msg.Role == schemas.ModelChatMessageRoleAssistant {
+			assistantMessage := map[string]interface{}{
+				"role":    msg.Role,
+				"content": coalesceString(msg.Content),
+			}
+			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
+				assistantMessage["tool_calls"] = *msg.AssistantMessage.ToolCalls
+			}
+			formattedMessages = append(formattedMessages, assistantMessage)
+		} else if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
 			var messageImageContent schemas.ImageContent
 			if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
 				messageImageContent = *msg.UserMessage.ImageContent
@@ -247,7 +256,7 @@ func prepareOpenAIChatRequest(model string, messages []schemas.BifrostMessage, p
 		} else {
 			message := map[string]interface{}{
 				"role":    msg.Role,
-				"content": msg.Content,
+				"content": coalesceString(msg.Content),
 			}
 
 			if msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
