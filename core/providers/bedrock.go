@@ -415,7 +415,6 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 		var systemMessages []BedrockAnthropicSystemMessage
 		for _, msg := range messages {
 			if msg.Role == schemas.ModelChatMessageRoleSystem {
-				//TODO handling image inputs here
 				if msg.Content != nil {
 					systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
 						Text: *msg.Content,
@@ -428,42 +427,121 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 		var bedrockMessages []map[string]interface{}
 		for _, msg := range messages {
 			if msg.Role != schemas.ModelChatMessageRoleSystem {
-				var content any
-				if msg.Content != nil {
-					content = BedrockAnthropicTextMessage{
-						Type: "text",
-						Text: *msg.Content,
-					}
-				} else if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
-					var messageImageContent schemas.ImageContent
-					if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
-						messageImageContent = *msg.UserMessage.ImageContent
-					} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
-						messageImageContent = *msg.ToolMessage.ImageContent
+				if msg.Role == schemas.ModelChatMessageRoleTool && msg.ToolCallID != nil {
+					toolCallResult := map[string]interface{}{
+						"toolUseId": *msg.ToolCallID,
 					}
 
-					content = BedrockAnthropicImageMessage{
-						Type: "image",
-						Image: BedrockAnthropicImage{
-							Format: func() string {
-								if messageImageContent.Type != nil {
-									return *messageImageContent.Type
-								}
-								return ""
-							}(),
-							Source: BedrockAnthropicImageSource{
-								Bytes: messageImageContent.URL,
+					var toolResultContentBlock map[string]interface{}
+					if msg.Content != nil {
+						toolResultContentBlock = map[string]interface{}{}
+						var parsedJSON interface{}
+						err := json.Unmarshal([]byte(*msg.Content), &parsedJSON)
+						if err == nil {
+							if arr, ok := parsedJSON.([]interface{}); ok {
+								toolResultContentBlock["json"] = map[string]interface{}{"content": arr}
+							} else {
+								toolResultContentBlock["json"] = parsedJSON
+							}
+						} else {
+							toolResultContentBlock["text"] = *msg.Content
+						}
+
+						toolCallResult["content"] = []interface{}{toolResultContentBlock}
+
+						bedrockMessages = append(bedrockMessages, map[string]interface{}{
+							"role": schemas.ModelChatMessageRoleTool,
+							"content": map[string]interface{}{
+								"toolResult": toolCallResult,
 							},
-						},
+						})
 					}
-				}
+				} else {
+					var content any
+					if msg.Content != nil {
+						content = BedrockAnthropicTextMessage{
+							Type: "text",
+							Text: *msg.Content,
+						}
+					} else if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
+						var messageImageContent schemas.ImageContent
+						if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
+							messageImageContent = *msg.UserMessage.ImageContent
+						} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
+							messageImageContent = *msg.ToolMessage.ImageContent
+						}
 
-				bedrockMessages = append(bedrockMessages, map[string]interface{}{
-					"role":    msg.Role,
-					"content": []interface{}{content},
-				})
+						content = BedrockAnthropicImageMessage{
+							Type: "image",
+							Image: BedrockAnthropicImage{
+								Format: func() string {
+									if messageImageContent.Type != nil {
+										return *messageImageContent.Type
+									}
+									return ""
+								}(),
+								Source: BedrockAnthropicImageSource{
+									Bytes: messageImageContent.URL,
+								},
+							},
+						}
+					}
+
+					bedrockMessages = append(bedrockMessages, map[string]interface{}{
+						"role":    msg.Role,
+						"content": []interface{}{content},
+					})
+				}
 			}
 		}
+
+		// Post-process bedrockMessages for tool call results
+		processedBedrockMessages := []map[string]interface{}{}
+		i := 0
+		for i < len(bedrockMessages) {
+			currentMsg := bedrockMessages[i]
+			currentRole, roleOk := getRoleFromMessage(currentMsg)
+
+			if !roleOk {
+				// If role is of an unexpected type or missing, treat as non-tool message
+				processedBedrockMessages = append(processedBedrockMessages, currentMsg)
+				i++
+				continue
+			}
+
+			if currentRole == schemas.ModelChatMessageRoleTool {
+				// Content of a tool message is the toolCallResult map
+				// Initialize accumulatedToolResults with the content of the current tool message.
+				accumulatedToolResults := []interface{}{currentMsg["content"]}
+
+				// Look ahead for more sequential tool messages
+				j := i + 1
+				for j < len(bedrockMessages) {
+					nextMsg := bedrockMessages[j]
+					nextRole, nextRoleOk := getRoleFromMessage(nextMsg)
+
+					if !nextRoleOk || nextRole != schemas.ModelChatMessageRoleTool {
+						break // Not a sequential tool message or role is invalid/missing
+					}
+
+					accumulatedToolResults = append(accumulatedToolResults, nextMsg["content"])
+					j++
+				}
+
+				// Create a new message with role User and accumulated content
+				mergedMsg := map[string]interface{}{
+					"role":    schemas.ModelChatMessageRoleUser, // Final role is User
+					"content": accumulatedToolResults,
+				}
+				processedBedrockMessages = append(processedBedrockMessages, mergedMsg)
+				i = j // Advance main loop index past all merged messages
+			} else {
+				// Not a tool message, add it as is
+				processedBedrockMessages = append(processedBedrockMessages, currentMsg)
+				i++
+			}
+		}
+		bedrockMessages = processedBedrockMessages // Update with processed messages
 
 		body := map[string]interface{}{
 			"messages": bedrockMessages,

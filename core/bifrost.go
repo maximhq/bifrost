@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -229,7 +230,7 @@ func (bifrost *Bifrost) SelectKeyFromProviderForModel(providerKey schemas.ModelP
 	// filter out keys which dont support the model
 	var supportedKeys []schemas.Key
 	for _, key := range keys {
-		if slices.Contains(key.Models, model) {
+		if slices.Contains(key.Models, model) && strings.TrimSpace(key.Value) != "" {
 			supportedKeys = append(supportedKeys, key)
 		}
 	}

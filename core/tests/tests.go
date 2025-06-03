@@ -149,6 +149,7 @@ func setupChatCompletionRequests(bifrostClient *bifrost.Bifrost, config TestConf
 					Content: &msg,
 				},
 			}
+
 			result, err := bifrostClient.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
 				Provider: config.Provider,
 				Model:    config.ChatModel,
