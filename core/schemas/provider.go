@@ -145,5 +145,5 @@ type Provider interface {
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx context.Context, model, key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
 	// ChatCompletion performs a chat completion request
-	ChatCompletion(ctx context.Context, model, key string, messages []Message, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	ChatCompletion(ctx context.Context, model, key string, messages []BifrostMessage, params *ModelParameters) (*BifrostResponse, *BifrostError)
 }

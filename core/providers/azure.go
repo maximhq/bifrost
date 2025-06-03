@@ -265,8 +265,8 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 	if len(response.Choices) > 0 {
 		choices = append(choices, schemas.BifrostResponseChoice{
 			Index: 0,
-			Message: schemas.BifrostResponseChoiceMessage{
-				Role:    schemas.RoleAssistant,
+			Message: schemas.BifrostMessage{
+				Role:    schemas.ModelChatMessageRoleAssistant,
 				Content: &response.Choices[0].Text,
 			},
 			FinishReason: response.Choices[0].FinishReason,
@@ -293,16 +293,22 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 // ChatCompletion performs a chat completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	preparedParams := prepareParams(params)
 
 	// Format messages for Azure API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
-		formattedMessages = append(formattedMessages, map[string]interface{}{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
+		message := map[string]interface{}{
+			"role": msg.Role,
+		}
+
+		// Only add content if it's not nil
+		if msg.Content != nil {
+			message["content"] = *msg.Content
+		}
+
+		formattedMessages = append(formattedMessages, message)
 	}
 
 	// Merge additional parameters

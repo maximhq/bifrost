@@ -141,7 +141,7 @@ func (provider *CohereProvider) TextCompletion(ctx context.Context, model, key, 
 // ChatCompletion performs a chat completion request to the Cohere API.
 // It formats the request, sends it to Cohere, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Get the last message and chat history
 	lastMessage := messages[len(messages)-1]
 	chatHistory := messages[:len(messages)-1]
@@ -149,20 +149,30 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 	// Transform chat history
 	var cohereHistory []map[string]interface{}
 	for _, msg := range chatHistory {
-		cohereHistory = append(cohereHistory, map[string]interface{}{
-			"role":    msg.Role,
-			"message": msg.Content,
-		})
+		historyMsg := map[string]interface{}{
+			"role": msg.Role,
+		}
+
+		// Only add message content if it's not nil
+		if msg.Content != nil {
+			historyMsg["message"] = *msg.Content
+		}
+
+		cohereHistory = append(cohereHistory, historyMsg)
 	}
 
 	preparedParams := prepareParams(params)
 
 	// Prepare request body
 	requestBody := mergeConfig(map[string]interface{}{
-		"message":      lastMessage.Content,
 		"chat_history": cohereHistory,
 		"model":        model,
 	}, preparedParams)
+
+	// Only add last message content if it's not nil
+	if lastMessage.Content != nil {
+		requestBody["message"] = *lastMessage.Content
+	}
 
 	// Add tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
@@ -285,7 +295,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 		role = lastMsg.Role
 		content = lastMsg.Message
 	} else {
-		role = schemas.RoleChatbot
+		role = schemas.ModelChatMessageRoleChatbot
 		content = response.Text
 	}
 
@@ -293,10 +303,12 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 	bifrostResponse.Choices = []schemas.BifrostResponseChoice{
 		{
 			Index: 0,
-			Message: schemas.BifrostResponseChoiceMessage{
-				Role:      role,
-				Content:   &content,
-				ToolCalls: &toolCalls,
+			Message: schemas.BifrostMessage{
+				Role:    role,
+				Content: &content,
+				AssistantMessage: &schemas.AssistantMessage{
+					ToolCalls: &toolCalls,
+				},
 			},
 			FinishReason: &response.FinishReason,
 		},
@@ -326,8 +338,8 @@ func convertChatHistory(history []struct {
 	Role      schemas.ModelChatMessageRole `json:"role"`
 	Message   string                       `json:"message"`
 	ToolCalls []CohereToolCall             `json:"tool_calls"`
-}) *[]schemas.BifrostResponseChoiceMessage {
-	converted := make([]schemas.BifrostResponseChoiceMessage, len(history))
+}) *[]schemas.BifrostMessage {
+	converted := make([]schemas.BifrostMessage, len(history))
 	for i, msg := range history {
 		var toolCalls []schemas.ToolCall
 		if msg.ToolCalls != nil {
@@ -348,10 +360,12 @@ func convertChatHistory(history []struct {
 				})
 			}
 		}
-		converted[i] = schemas.BifrostResponseChoiceMessage{
-			Role:      msg.Role,
-			Content:   &msg.Message,
-			ToolCalls: &toolCalls,
+		converted[i] = schemas.BifrostMessage{
+			Role:    msg.Role,
+			Content: &msg.Message,
+			AssistantMessage: &schemas.AssistantMessage{
+				ToolCalls: &toolCalls,
+			},
 		}
 	}
 	return &converted

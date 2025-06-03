@@ -106,8 +106,8 @@ type BedrockAnthropicImageSource struct {
 
 // BedrockMistralToolCall represents a tool call for Mistral models.
 type BedrockMistralToolCall struct {
-	ID       string           `json:"id"`       // Tool call ID
-	Function schemas.Function `json:"function"` // Function to call
+	ID       string               `json:"id"`       // Tool call ID
+	Function schemas.FunctionCall `json:"function"` // Function to call
 }
 
 // BedrockAnthropicToolCall represents a tool call for Anthropic models.
@@ -238,8 +238,17 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		}
 	}
 
-	if err := signAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); err != nil {
-		return nil, err
+	if provider.meta.GetSecretAccessKey() != nil {
+		if err := signAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "secret access key not set",
+			},
+		}
 	}
 
 	// Execute the request
@@ -317,8 +326,8 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index: 0,
-					Message: schemas.BifrostResponseChoiceMessage{
-						Role:    schemas.RoleAssistant,
+					Message: schemas.BifrostMessage{
+						Role:    schemas.ModelChatMessageRoleAssistant,
 						Content: &response.Completion,
 					},
 					FinishReason: &response.StopReason,
@@ -355,8 +364,8 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 		for i, output := range response.Outputs {
 			choices = append(choices, schemas.BifrostResponseChoice{
 				Index: i,
-				Message: schemas.BifrostResponseChoiceMessage{
-					Role:    schemas.RoleAssistant,
+				Message: schemas.BifrostMessage{
+					Role:    schemas.ModelChatMessageRoleAssistant,
 					Content: &output.Text,
 				},
 				FinishReason: &output.StopReason,
@@ -383,7 +392,7 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 // PrepareChatCompletionMessages formats chat messages for Bedrock's API.
 // It handles different model types (Anthropic and Mistral) and formats messages accordingly.
 // Returns a map containing the formatted messages and any system messages, or an error if formatting fails.
-func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schemas.Message, model string) (map[string]interface{}, *schemas.BifrostError) {
+func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schemas.BifrostMessage, model string) (map[string]interface{}, *schemas.BifrostError) {
 	switch model {
 	case "anthropic.claude-instant-v1:2":
 		fallthrough
@@ -405,31 +414,45 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 		// Add system messages if present
 		var systemMessages []BedrockAnthropicSystemMessage
 		for _, msg := range messages {
-			if msg.Role == schemas.RoleSystem {
+			if msg.Role == schemas.ModelChatMessageRoleSystem {
 				//TODO handling image inputs here
-				systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
-					Text: *msg.Content,
-				})
+				if msg.Content != nil {
+					systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
+						Text: *msg.Content,
+					})
+				}
 			}
 		}
 
 		// Format messages for Bedrock API
 		var bedrockMessages []map[string]interface{}
 		for _, msg := range messages {
-			if msg.Role != schemas.RoleSystem {
+			if msg.Role != schemas.ModelChatMessageRoleSystem {
 				var content any
 				if msg.Content != nil {
 					content = BedrockAnthropicTextMessage{
 						Type: "text",
 						Text: *msg.Content,
 					}
-				} else if msg.ImageContent != nil {
+				} else if (msg.UserMessage != nil && msg.UserMessage.ImageContent != nil) || (msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil) {
+					var messageImageContent schemas.ImageContent
+					if msg.UserMessage != nil && msg.UserMessage.ImageContent != nil {
+						messageImageContent = *msg.UserMessage.ImageContent
+					} else if msg.ToolMessage != nil && msg.ToolMessage.ImageContent != nil {
+						messageImageContent = *msg.ToolMessage.ImageContent
+					}
+
 					content = BedrockAnthropicImageMessage{
 						Type: "image",
 						Image: BedrockAnthropicImage{
-							Format: *msg.ImageContent.Type,
+							Format: func() string {
+								if messageImageContent.Type != nil {
+									return *messageImageContent.Type
+								}
+								return ""
+							}(),
 							Source: BedrockAnthropicImageSource{
-								Bytes: msg.ImageContent.URL,
+								Bytes: messageImageContent.URL,
 							},
 						},
 					}
@@ -463,20 +486,25 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 		var bedrockMessages []BedrockMistralChatMessage
 		for _, msg := range messages {
 			var filteredToolCalls []BedrockMistralToolCall
-			if msg.ToolCalls != nil {
-				for _, toolCall := range *msg.ToolCalls {
-					filteredToolCalls = append(filteredToolCalls, BedrockMistralToolCall{
-						ID:       *toolCall.ID,
-						Function: toolCall.Function,
-					})
+			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
+				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+					if toolCall.ID != nil {
+						filteredToolCalls = append(filteredToolCalls, BedrockMistralToolCall{
+							ID:       *toolCall.ID,
+							Function: toolCall.Function,
+						})
+					}
 				}
 			}
 
 			message := BedrockMistralChatMessage{
 				Role: msg.Role,
-				Content: []BedrockMistralContent{
+			}
+
+			if msg.Content != nil {
+				message.Content = []BedrockMistralContent{
 					{Text: *msg.Content},
-				},
+				}
 			}
 
 			if len(filteredToolCalls) > 0 {
@@ -606,7 +634,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model, key,
 // ChatCompletion performs a chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.Message, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
 	if err != nil {
 		return nil, err
@@ -656,8 +684,8 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 	for i, choice := range response.Output.Message.Content {
 		choices = append(choices, schemas.BifrostResponseChoice{
 			Index: i,
-			Message: schemas.BifrostResponseChoiceMessage{
-				Role:    schemas.RoleAssistant,
+			Message: schemas.BifrostMessage{
+				Role:    schemas.ModelChatMessageRoleAssistant,
 				Content: &choice.Text,
 			},
 			FinishReason: &response.StopReason,
