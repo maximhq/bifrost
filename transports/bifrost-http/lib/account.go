@@ -57,6 +57,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 
 	if config.NetworkConfig != nil {
 		providerConfig.NetworkConfig = *config.NetworkConfig
+	} else {
+		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
 
 	if config.MetaConfig != nil {
@@ -65,6 +67,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 
 	if config.ConcurrencyAndBufferSize != nil {
 		providerConfig.ConcurrencyAndBufferSize = *config.ConcurrencyAndBufferSize
+	} else {
+		providerConfig.ConcurrencyAndBufferSize = schemas.DefaultConcurrencyAndBufferSize
 	}
 
 	return providerConfig, nil
