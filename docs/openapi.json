@@ -1,0 +1,1139 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Bifrost HTTP Transport API",
+    "description": "A unified HTTP API for accessing multiple AI model providers including OpenAI, Anthropic, Azure, Bedrock, Cohere, and Vertex AI. Bifrost provides standardized endpoints for text and chat completions with built-in fallback support and comprehensive monitoring.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Bifrost API Support",
+      "url": "https://github.com/maximhq/bifrost"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Local development server"
+    }
+  ],
+  "paths": {
+    "/v1/chat/completions": {
+      "post": {
+        "summary": "Create Chat Completion",
+        "description": "Creates a chat completion using conversational messages. Supports tool calling, image inputs, and multiple AI providers with automatic fallbacks.",
+        "operationId": "createChatCompletion",
+        "tags": ["Chat Completions"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              },
+              "examples": {
+                "simple_chat": {
+                  "summary": "Simple chat message",
+                  "value": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "Hello, how are you?"
+                      }
+                    ]
+                  }
+                },
+                "tool_calling": {
+                  "summary": "Chat with tool calling",
+                  "value": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "What's the weather in San Francisco?"
+                      }
+                    ],
+                    "params": {
+                      "tools": [
+                        {
+                          "type": "function",
+                          "function": {
+                            "name": "get_weather",
+                            "description": "Get current weather for a location",
+                            "parameters": {
+                              "type": "object",
+                              "properties": {
+                                "location": {
+                                  "type": "string",
+                                  "description": "The city and state, e.g. San Francisco, CA"
+                                }
+                              },
+                              "required": ["location"]
+                            }
+                          }
+                        }
+                      ],
+                      "tool_choice": {
+                        "type": "function",
+                        "function": {
+                          "name": "get_weather"
+                        }
+                      }
+                    }
+                  }
+                },
+                "with_fallbacks": {
+                  "summary": "Chat with fallback providers",
+                  "value": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "Explain quantum computing"
+                      }
+                    ],
+                    "fallbacks": [
+                      {
+                        "provider": "anthropic",
+                        "model": "claude-3-sonnet-20240229"
+                      },
+                      {
+                        "provider": "cohere",
+                        "model": "command"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful chat completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostResponse"
+                },
+                "examples": {
+                  "simple_response": {
+                    "summary": "Simple chat response",
+                    "value": {
+                      "id": "chatcmpl-123",
+                      "object": "chat.completion",
+                      "choices": [
+                        {
+                          "index": 0,
+                          "message": {
+                            "role": "assistant",
+                            "content": "Hello! I'm doing well, thank you for asking. How can I help you today?"
+                          },
+                          "finish_reason": "stop"
+                        }
+                      ],
+                      "model": "gpt-4o",
+                      "created": 1677652288,
+                      "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 19,
+                        "total_tokens": 31
+                      },
+                      "extra_fields": {
+                        "provider": "openai",
+                        "model_params": {},
+                        "latency": 1.234,
+                        "raw_response": {}
+                      }
+                    }
+                  },
+                  "tool_response": {
+                    "summary": "Tool calling response",
+                    "value": {
+                      "id": "chatcmpl-456",
+                      "object": "chat.completion",
+                      "choices": [
+                        {
+                          "index": 0,
+                          "message": {
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": [
+                              {
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {
+                                  "name": "get_weather",
+                                  "arguments": "{\"location\": \"San Francisco, CA\"}"
+                                }
+                              }
+                            ]
+                          },
+                          "finish_reason": "tool_calls"
+                        }
+                      ],
+                      "model": "gpt-4o",
+                      "created": 1677652288,
+                      "usage": {
+                        "prompt_tokens": 45,
+                        "completion_tokens": 12,
+                        "total_tokens": 57
+                      },
+                      "extra_fields": {
+                        "provider": "openai",
+                        "model_params": {},
+                        "latency": 0.856,
+                        "raw_response": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/v1/text/completions": {
+      "post": {
+        "summary": "Create Text Completion",
+        "description": "Creates a text completion from a prompt. Useful for text generation, summarization, and other non-conversational tasks.",
+        "operationId": "createTextCompletion",
+        "tags": ["Text Completions"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TextCompletionRequest"
+              },
+              "examples": {
+                "simple_text": {
+                  "summary": "Simple text completion",
+                  "value": {
+                    "provider": "openai",
+                    "model": "gpt-3.5-turbo-instruct",
+                    "text": "The future of artificial intelligence is",
+                    "params": {
+                      "max_tokens": 100,
+                      "temperature": 0.7
+                    }
+                  }
+                },
+                "with_stop_sequences": {
+                  "summary": "Text completion with stop sequences",
+                  "value": {
+                    "provider": "cohere",
+                    "model": "command",
+                    "text": "Write a short story about a robot:",
+                    "params": {
+                      "max_tokens": 200,
+                      "temperature": 0.8,
+                      "stop_sequences": ["\n\n", "THE END"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful text completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostResponse"
+                },
+                "examples": {
+                  "text_response": {
+                    "summary": "Text completion response",
+                    "value": {
+                      "id": "cmpl-789",
+                      "object": "text.completion",
+                      "choices": [
+                        {
+                          "index": 0,
+                          "message": {
+                            "role": "assistant",
+                            "content": "The future of artificial intelligence is incredibly promising, with advances in machine learning, natural language processing, and robotics reshaping industries and daily life."
+                          },
+                          "finish_reason": "stop"
+                        }
+                      ],
+                      "model": "gpt-3.5-turbo-instruct",
+                      "created": 1677652288,
+                      "usage": {
+                        "prompt_tokens": 8,
+                        "completion_tokens": 32,
+                        "total_tokens": 40
+                      },
+                      "extra_fields": {
+                        "provider": "openai",
+                        "model_params": {
+                          "max_tokens": 100,
+                          "temperature": 0.7
+                        },
+                        "latency": 0.654,
+                        "raw_response": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Get Prometheus Metrics",
+        "description": "Returns Prometheus-compatible metrics for monitoring request counts, latency, token usage, and error rates.",
+        "operationId": "getMetrics",
+        "tags": ["Monitoring"],
+        "responses": {
+          "200": {
+            "description": "Prometheus metrics in text format",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# HELP http_requests_total Total number of HTTP requests\n# TYPE http_requests_total counter\nhttp_requests_total{method=\"POST\",handler=\"/v1/chat/completions\",code=\"200\"} 42\n"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChatCompletionRequest": {
+        "type": "object",
+        "required": ["provider", "model", "messages"],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model identifier (provider-specific)",
+            "example": "gpt-4o"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BifrostMessage"
+            },
+            "description": "Array of chat messages",
+            "minItems": 1
+          },
+          "params": {
+            "$ref": "#/components/schemas/ModelParameters"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Fallback"
+            },
+            "description": "Fallback providers and models"
+          }
+        }
+      },
+      "TextCompletionRequest": {
+        "type": "object",
+        "required": ["provider", "model", "text"],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model identifier (provider-specific)",
+            "example": "gpt-3.5-turbo-instruct"
+          },
+          "text": {
+            "type": "string",
+            "description": "Text prompt for completion",
+            "example": "The benefits of artificial intelligence include"
+          },
+          "params": {
+            "$ref": "#/components/schemas/ModelParameters"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Fallback"
+            },
+            "description": "Fallback providers and models"
+          }
+        }
+      },
+      "ModelProvider": {
+        "type": "string",
+        "enum": ["openai", "anthropic", "azure", "bedrock", "cohere", "vertex"],
+        "description": "AI model provider",
+        "example": "openai"
+      },
+      "BifrostMessage": {
+        "type": "object",
+        "required": ["role"],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/MessageRole"
+          },
+          "content": {
+            "type": "string",
+            "description": "Text content of the message",
+            "example": "Hello, how are you?"
+          },
+          "tool_call_id": {
+            "type": "string",
+            "description": "ID of the tool call (for tool messages)"
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "description": "Tool calls made by assistant"
+          },
+          "image_content": {
+            "$ref": "#/components/schemas/ImageContent"
+          },
+          "refusal": {
+            "type": "string",
+            "description": "Refusal message from assistant"
+          },
+          "annotations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Annotation"
+            },
+            "description": "Message annotations"
+          },
+          "thought": {
+            "type": "string",
+            "description": "Assistant's internal thought process"
+          }
+        }
+      },
+      "MessageRole": {
+        "type": "string",
+        "enum": ["user", "assistant", "system", "tool"],
+        "description": "Role of the message sender",
+        "example": "user"
+      },
+      "ModelParameters": {
+        "type": "object",
+        "properties": {
+          "temperature": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 2.0,
+            "description": "Controls randomness in the output",
+            "example": 0.7
+          },
+          "top_p": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Nucleus sampling parameter",
+            "example": 0.9
+          },
+          "top_k": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Top-k sampling parameter",
+            "example": 40
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of tokens to generate",
+            "example": 1000
+          },
+          "stop_sequences": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sequences that stop generation",
+            "example": ["\n\n", "END"]
+          },
+          "presence_penalty": {
+            "type": "number",
+            "minimum": -2.0,
+            "maximum": 2.0,
+            "description": "Penalizes repeated tokens",
+            "example": 0.0
+          },
+          "frequency_penalty": {
+            "type": "number",
+            "minimum": -2.0,
+            "maximum": 2.0,
+            "description": "Penalizes frequent tokens",
+            "example": 0.0
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            },
+            "description": "Available tools for the model"
+          },
+          "tool_choice": {
+            "$ref": "#/components/schemas/ToolChoice"
+          },
+          "parallel_tool_calls": {
+            "type": "boolean",
+            "description": "Enable parallel tool execution",
+            "example": true
+          }
+        }
+      },
+      "Tool": {
+        "type": "object",
+        "required": ["type", "function"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique tool identifier"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["function"],
+            "description": "Tool type",
+            "example": "function"
+          },
+          "function": {
+            "$ref": "#/components/schemas/Function"
+          }
+        }
+      },
+      "Function": {
+        "type": "object",
+        "required": ["name", "description", "parameters"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Function name",
+            "example": "get_weather"
+          },
+          "description": {
+            "type": "string",
+            "description": "Function description",
+            "example": "Get current weather for a location"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/FunctionParameters"
+          }
+        }
+      },
+      "FunctionParameters": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Parameter type",
+            "example": "object"
+          },
+          "description": {
+            "type": "string",
+            "description": "Parameter description"
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Parameter properties (JSON Schema)"
+          },
+          "required": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Required parameter names"
+          },
+          "enum": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Enum values for parameters"
+          }
+        }
+      },
+      "ToolChoice": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["none", "auto", "any", "function", "required"],
+            "description": "How tools should be chosen",
+            "example": "auto"
+          },
+          "function": {
+            "$ref": "#/components/schemas/ToolChoiceFunction"
+          }
+        }
+      },
+      "ToolChoiceFunction": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the function to call",
+            "example": "get_weather"
+          }
+        }
+      },
+      "ToolCall": {
+        "type": "object",
+        "required": ["function"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique tool call identifier",
+            "example": "call_123"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["function"],
+            "description": "Tool call type",
+            "example": "function"
+          },
+          "function": {
+            "$ref": "#/components/schemas/FunctionCall"
+          }
+        }
+      },
+      "FunctionCall": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Function name",
+            "example": "get_weather"
+          },
+          "arguments": {
+            "type": "string",
+            "description": "JSON string of function arguments",
+            "example": "{\"location\": \"San Francisco, CA\"}"
+          }
+        }
+      },
+      "ImageContent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Content type"
+          },
+          "url": {
+            "type": "string",
+            "description": "Image URL or data URI",
+            "example": "https://example.com/image.jpg"
+          },
+          "media_type": {
+            "type": "string",
+            "description": "MIME type of the image",
+            "example": "image/jpeg"
+          },
+          "detail": {
+            "type": "string",
+            "enum": ["low", "high", "auto"],
+            "description": "Image detail level",
+            "example": "auto"
+          }
+        }
+      },
+      "Annotation": {
+        "type": "object",
+        "required": ["type", "url_citation"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Annotation type"
+          },
+          "url_citation": {
+            "$ref": "#/components/schemas/Citation"
+          }
+        }
+      },
+      "Citation": {
+        "type": "object",
+        "required": ["start_index", "end_index", "title"],
+        "properties": {
+          "start_index": {
+            "type": "integer",
+            "description": "Start index in the text"
+          },
+          "end_index": {
+            "type": "integer",
+            "description": "End index in the text"
+          },
+          "title": {
+            "type": "string",
+            "description": "Citation title"
+          },
+          "url": {
+            "type": "string",
+            "description": "Citation URL"
+          },
+          "sources": {
+            "description": "Citation sources"
+          },
+          "type": {
+            "type": "string",
+            "description": "Citation type"
+          }
+        }
+      },
+      "Fallback": {
+        "type": "object",
+        "required": ["provider", "model"],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "model": {
+            "type": "string",
+            "description": "Fallback model name",
+            "example": "claude-3-sonnet-20240229"
+          }
+        }
+      },
+      "BifrostResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique response identifier",
+            "example": "chatcmpl-123"
+          },
+          "object": {
+            "type": "string",
+            "enum": ["chat.completion", "text.completion"],
+            "description": "Response type",
+            "example": "chat.completion"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BifrostResponseChoice"
+            },
+            "description": "Array of completion choices"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model used for generation",
+            "example": "gpt-4o"
+          },
+          "created": {
+            "type": "integer",
+            "description": "Unix timestamp of creation",
+            "example": 1677652288
+          },
+          "service_tier": {
+            "type": "string",
+            "description": "Service tier used"
+          },
+          "system_fingerprint": {
+            "type": "string",
+            "description": "System fingerprint"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/LLMUsage"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "BifrostResponseChoice": {
+        "type": "object",
+        "required": ["index", "message"],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Choice index",
+            "example": 0
+          },
+          "message": {
+            "$ref": "#/components/schemas/BifrostMessage"
+          },
+          "finish_reason": {
+            "type": "string",
+            "enum": [
+              "stop",
+              "length",
+              "tool_calls",
+              "content_filter",
+              "function_call"
+            ],
+            "description": "Reason completion stopped",
+            "example": "stop"
+          },
+          "stop": {
+            "type": "string",
+            "description": "Stop sequence that ended generation"
+          },
+          "log_probs": {
+            "$ref": "#/components/schemas/LogProbs"
+          }
+        }
+      },
+      "LLMUsage": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "description": "Tokens in the prompt",
+            "example": 56
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "description": "Tokens in the completion",
+            "example": 31
+          },
+          "total_tokens": {
+            "type": "integer",
+            "description": "Total tokens used",
+            "example": 87
+          },
+          "completion_tokens_details": {
+            "$ref": "#/components/schemas/CompletionTokensDetails"
+          }
+        }
+      },
+      "CompletionTokensDetails": {
+        "type": "object",
+        "properties": {
+          "reasoning_tokens": {
+            "type": "integer",
+            "description": "Tokens used for reasoning"
+          },
+          "audio_tokens": {
+            "type": "integer",
+            "description": "Tokens used for audio"
+          },
+          "accepted_prediction_tokens": {
+            "type": "integer",
+            "description": "Accepted prediction tokens"
+          },
+          "rejected_prediction_tokens": {
+            "type": "integer",
+            "description": "Rejected prediction tokens"
+          }
+        }
+      },
+      "BifrostResponseExtraFields": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "model_params": {
+            "$ref": "#/components/schemas/ModelParameters"
+          },
+          "latency": {
+            "type": "number",
+            "description": "Request latency in seconds",
+            "example": 1.234
+          },
+          "chat_history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BifrostMessage"
+            },
+            "description": "Full conversation history"
+          },
+          "billed_usage": {
+            "$ref": "#/components/schemas/BilledLLMUsage"
+          },
+          "raw_response": {
+            "type": "object",
+            "description": "Raw provider response"
+          }
+        }
+      },
+      "BilledLLMUsage": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "type": "number",
+            "description": "Billed prompt tokens"
+          },
+          "completion_tokens": {
+            "type": "number",
+            "description": "Billed completion tokens"
+          },
+          "search_units": {
+            "type": "number",
+            "description": "Billed search units"
+          },
+          "classifications": {
+            "type": "number",
+            "description": "Billed classifications"
+          }
+        }
+      },
+      "LogProbs": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentLogProb"
+            },
+            "description": "Log probabilities for content"
+          },
+          "refusal": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogProb"
+            },
+            "description": "Log probabilities for refusal"
+          }
+        }
+      },
+      "ContentLogProb": {
+        "type": "object",
+        "required": ["logprob", "token"],
+        "properties": {
+          "bytes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Byte representation"
+          },
+          "logprob": {
+            "type": "number",
+            "description": "Log probability",
+            "example": -0.123
+          },
+          "token": {
+            "type": "string",
+            "description": "Token",
+            "example": "hello"
+          },
+          "top_logprobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogProb"
+            },
+            "description": "Top log probabilities"
+          }
+        }
+      },
+      "LogProb": {
+        "type": "object",
+        "required": ["logprob", "token"],
+        "properties": {
+          "bytes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Byte representation"
+          },
+          "logprob": {
+            "type": "number",
+            "description": "Log probability",
+            "example": -0.456
+          },
+          "token": {
+            "type": "string",
+            "description": "Token",
+            "example": "world"
+          }
+        }
+      },
+      "BifrostError": {
+        "type": "object",
+        "required": ["is_bifrost_error", "error"],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "description": "Unique error event ID",
+            "example": "evt_123"
+          },
+          "type": {
+            "type": "string",
+            "description": "Error type",
+            "example": "invalid_request_error"
+          },
+          "is_bifrost_error": {
+            "type": "boolean",
+            "description": "Whether error originated from Bifrost",
+            "example": true
+          },
+          "status_code": {
+            "type": "integer",
+            "description": "HTTP status code",
+            "example": 400
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorField"
+          }
+        }
+      },
+      "ErrorField": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Error type",
+            "example": "invalid_request_error"
+          },
+          "code": {
+            "type": "string",
+            "description": "Error code",
+            "example": "missing_required_parameter"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error message",
+            "example": "Provider is required"
+          },
+          "param": {
+            "description": "Parameter that caused the error",
+            "example": "provider"
+          },
+          "event_id": {
+            "type": "string",
+            "description": "Error event ID",
+            "example": "evt_123"
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad Request - Invalid request format or missing required fields",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": true,
+              "status_code": 400,
+              "error": {
+                "type": "invalid_request_error",
+                "code": "missing_required_parameter",
+                "message": "Provider is required",
+                "param": "provider"
+              }
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Unauthorized - Invalid or missing API key",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": true,
+              "status_code": 401,
+              "error": {
+                "type": "authentication_error",
+                "message": "Invalid API key provided"
+              }
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Too Many Requests - Rate limit exceeded",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": false,
+              "status_code": 429,
+              "error": {
+                "type": "rate_limit_error",
+                "message": "Rate limit exceeded. Please try again later."
+              }
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Internal Server Error - Server or provider error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": true,
+              "status_code": 500,
+              "error": {
+                "type": "api_error",
+                "message": "Internal server error occurred"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Chat Completions",
+      "description": "Create chat completions using conversational messages"
+    },
+    {
+      "name": "Text Completions",
+      "description": "Create text completions from prompts"
+    },
+    {
+      "name": "Monitoring",
+      "description": "Monitoring and observability endpoints"
+    }
+  ]
+}

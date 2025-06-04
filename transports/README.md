@@ -2,6 +2,8 @@
 
 This package contains clients for various transports that can be used to spin up your Bifrost client with just a single line of code.
 
+📖 **Comprehensive HTTP API documentation is available in** _[`docs/http-transport-api.md`](../docs/http-transport-api.md)_.
+
 ## 📑 Table of Contents
 
 - [Bifrost Transports](#bifrost-transports)
@@ -94,7 +96,7 @@ docker run -p 8080:8080 -e OPENAI_API_KEY -e ANTHROPIC_API_KEY bifrost-transport
 Note: In the command above, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are just example environment variables.
 You need to pass all environment variables referenced in your `config.json` file that start with the prefix `env.` to the docker run command using the -e flag. This ensures Docker sets them correctly inside the container.
 
-example usage: Suppose your config.json only contains one environment variable placeholder, `env.COHERE_API_KEY`. Here’s how you would run it:
+example usage: Suppose your config.json only contains one environment variable placeholder, `env.COHERE_API_KEY`. Here's how you would run it:
 
 ```bash
 export COHERE_API_KEY=your_cohere_api_key
