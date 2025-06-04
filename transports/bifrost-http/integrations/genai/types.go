@@ -2,11 +2,14 @@ package genai
 
 import (
 	"encoding/json"
+	"fmt"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	genai_sdk "google.golang.org/genai"
 )
+
+var fnTypePtr = bifrost.Ptr(string(schemas.ToolChoiceTypeFunction))
 
 type GeminiChatRequest struct {
 	Contents         []genai_sdk.Content        `json:"contents"`
@@ -40,15 +43,18 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest(modelStr string) *schemas.Bi
 			case part.FunctionCall != nil:
 				jsonArgs, err := json.Marshal(part.FunctionCall.Args)
 				if err != nil {
-					jsonArgs = []byte("{}")
+					jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
 				}
 				toolCalls := []schemas.ToolCall{
 					{
-						Type: bifrost.Ptr(string(schemas.ToolChoiceTypeFunction)),
-						Function: schemas.FunctionCall{
-							Name:      &part.FunctionCall.Name,
-							Arguments: string(jsonArgs),
-						},
+						Type: fnTypePtr,
+						Function: func() schemas.FunctionCall {
+							nameCopy := part.FunctionCall.Name
+							return schemas.FunctionCall{
+								Name:      &nameCopy,
+								Arguments: string(jsonArgs),
+							}
+						}(),
 					},
 				}
 				bifrostMsg.ToolCalls = &toolCalls

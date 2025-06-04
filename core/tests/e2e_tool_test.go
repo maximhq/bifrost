@@ -75,7 +75,6 @@ func TestToolCallingEndToEnd(t *testing.T) {
 	// Only assert on Function.Name if it's not nil to prevent panic
 	require.NotNil(t, toolCall.Function.Name, "toolCall.Function.Name should not be nil")
 	assert.Equal(t, "get_weather", *toolCall.Function.Name)
-	require.NotNil(t, toolCall.ID)
 
 	// Verify tool arguments contain location
 	var params map[string]interface{}

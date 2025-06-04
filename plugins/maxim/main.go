@@ -142,15 +142,20 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 					Role:    string(message.Role),
 					Content: message.Content,
 				})
-			} else if message.ImageContent != nil {
+			} else if message.UserMessage != nil && message.UserMessage.ImageContent != nil {
 				messages = append(messages, logging.CompletionRequest{
 					Role:    string(message.Role),
-					Content: message.ImageContent,
+					Content: message.UserMessage.ImageContent,
 				})
 			} else if message.ToolCalls != nil {
 				messages = append(messages, logging.CompletionRequest{
 					Role:    string(message.Role),
 					Content: message.ToolCalls,
+				})
+			} else if message.ToolMessage != nil && message.ToolMessage.ToolCallID != nil {
+				messages = append(messages, logging.CompletionRequest{
+					Role:    string(message.Role),
+					Content: message.ToolMessage,
 				})
 			}
 		}

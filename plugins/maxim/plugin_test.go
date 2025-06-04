@@ -107,7 +107,7 @@ func TestMaximLoggerPlugin(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.Message{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
 				{
 					Role:    "user",
 					Content: bifrost.Ptr("Hello, how are you?"),

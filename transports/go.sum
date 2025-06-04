@@ -67,8 +67,8 @@ github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zt
 github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
-github.com/maximhq/bifrost/core v1.0.7 h1:+89Vq+FuD7FFZNbF161/FLBSFjAYLr4/UuWR8Do0Hyc=
-github.com/maximhq/bifrost/core v1.0.7/go.mod h1:8aUSLGVdOhwxDzMcdQnSyMfSBA3lT05ICgX0b/VKc8g=
+github.com/maximhq/bifrost/core v1.0.9 h1:OWUHCWCQsBH43YPIy2AsqNMZhoFXYe/qhJSCLbw5su8=
+github.com/maximhq/bifrost/core v1.0.9/go.mod h1:8ycaWQ9bjQezoUT/x6a82VmPjoqLzyGglQ0RnnlZjqo=
 github.com/maximhq/bifrost/plugins/maxim v1.0.2 h1:l+J+HL9Kag6I7at/YKwwnDHOGoyUcySHXanJXALtXg0=
 github.com/maximhq/bifrost/plugins/maxim v1.0.2/go.mod h1:9jC7ZaI7+N+3XZxJ9rmjwn+pfXHMwBcZk/omvzhgbP0=
 github.com/maximhq/maxim-go v0.1.3 h1:nVzdz3hEjZVxmWHARWIM+Yrn1Jp50qrsK4BA/sz2jj8=
