@@ -29,13 +29,17 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/langchain"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/langgraph"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/litellm"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/mistral"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
+// File: core/schemas/bifrost.go
+
+const (
+    OpenAI    ModelProvider = "openai"
+    Azure     ModelProvider = "azure"
+    Anthropic ModelProvider = "anthropic"
+    Bedrock   ModelProvider = "bedrock"
+    Cohere    ModelProvider = "cohere"
+    Vertex    ModelProvider = "vertex"
+    Mistral   ModelProvider = "mistral"
+)
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
 	"github.com/prometheus/client_golang/prometheus"
