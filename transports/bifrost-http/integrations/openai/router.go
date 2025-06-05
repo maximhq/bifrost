@@ -47,3 +47,4 @@ func (o *OpenAIRouter) handleChatCompletion(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType("application/json")
 	json.NewEncoder(ctx).Encode(result)
 }
+n

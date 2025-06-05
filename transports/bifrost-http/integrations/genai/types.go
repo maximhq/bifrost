@@ -138,3 +138,4 @@ func DeriveGenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *genai
 
 	return genaiResp
 }
+n
