@@ -46,4 +46,3 @@ func (r *ChatCompletionRequest) ConvertToBifrostRequest(model string) *schemas.B
 		Params: params,
 	}
 }
-n

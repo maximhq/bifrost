@@ -61,4 +61,3 @@ func (g *GenAIRouter) handleChatCompletion(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType("application/json")
 	json.NewEncoder(ctx).Encode(genAIResponse)
 }
-n
