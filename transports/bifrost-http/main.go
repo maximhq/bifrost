@@ -29,7 +29,13 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/langchain"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/langgraph"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/litellm"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/mistral"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
 	"github.com/prometheus/client_golang/prometheus"
@@ -176,7 +182,15 @@ func main() {
 
 	r := router.New()
 
-	extensions := []integrations.ExtensionRouter{genai.NewGenAIRouter(client)}
+	extensions := []integrations.ExtensionRouter{
+		genai.NewGenAIRouter(client),
+		openai.NewOpenAIRouter(client),
+		anthropic.NewAnthropicRouter(client),
+		litellm.NewLiteLLMRouter(client),
+		langchain.NewLangChainRouter(client),
+		langgraph.NewLangGraphRouter(client),
+		mistral.NewMistralRouter(client),
+	}
 
 	r.POST("/v1/text/completions", func(ctx *fasthttp.RequestCtx) {
 		handleCompletion(ctx, client, false)
