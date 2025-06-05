@@ -41,7 +41,9 @@ func (g *GenAIRouter) handleChatCompletion(ctx *fasthttp.RequestCtx) {
 	var req GeminiChatRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		json.NewEncoder(ctx).Encode(err)
+		ctx.SetContentType("application/json")
+		jsonBytes, _ := json.Marshal(err)
+		ctx.SetBody(jsonBytes)
 		return
 	}
 
@@ -52,12 +54,15 @@ func (g *GenAIRouter) handleChatCompletion(ctx *fasthttp.RequestCtx) {
 	result, err := g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		json.NewEncoder(ctx).Encode(err)
+		ctx.SetContentType("application/json")
+		jsonBytes, _ := json.Marshal(err)
+		ctx.SetBody(jsonBytes)
 		return
 	}
 
 	genAIResponse := DeriveGenAIFromBifrostResponse(result)
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")
-	json.NewEncoder(ctx).Encode(genAIResponse)
+	jsonBytes, _ := json.Marshal(genAIResponse)
+	ctx.SetBody(jsonBytes)
 }
