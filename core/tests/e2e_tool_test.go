@@ -41,9 +41,11 @@ func TestToolCallingEndToEnd(t *testing.T) {
 
 	toolParams := WeatherToolParams
 	toolParams.ToolChoice = &schemas.ToolChoice{
-		Type: schemas.ToolChoiceTypeFunction,
-		Function: schemas.ToolChoiceFunction{
-			Name: "get_weather",
+		ToolChoiceStruct: &schemas.ToolChoiceStruct{
+			Type: schemas.ToolChoiceTypeFunction,
+			Function: schemas.ToolChoiceFunction{
+				Name: "get_weather",
+			},
 		},
 	}
 	toolParams.MaxTokens = bifrost.Ptr(1000)

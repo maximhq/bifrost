@@ -138,6 +138,8 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelP
 		return providers.NewAzureProvider(config, bifrost.logger)
 	case schemas.Vertex:
 		return providers.NewVertexProvider(config, bifrost.logger)
+	case schemas.Mistral:
+		return providers.NewMistralProvider(config, bifrost.logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}

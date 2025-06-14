@@ -27,7 +27,7 @@ type BaseAccount struct{}
 //   - []schemas.SupportedModelProvider: A slice containing the supported provider identifiers
 //   - error: Always returns nil as this implementation doesn't produce errors
 func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Cohere, schemas.Azure, schemas.Vertex}, nil
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Cohere, schemas.Azure, schemas.Vertex, schemas.Mistral}, nil
 }
 
 // GetKeysForProvider returns the API keys and associated models for a given provider.
@@ -86,6 +86,14 @@ func (baseAccount *BaseAccount) GetKeysForProvider(providerKey schemas.ModelProv
 			{
 				Value:  os.Getenv("AZURE_API_KEY"),
 				Models: []string{"gpt-4o"},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.Mistral:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("MISTRAL_API_KEY"),
+				Models: []string{"mistral-large-2411", "ministral-3b-2410", "pixtral-12b-latest"},
 				Weight: 1.0,
 			},
 		}, nil
@@ -193,6 +201,19 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 				ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
 				Region:          "us-central1",
 				AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Mistral:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
