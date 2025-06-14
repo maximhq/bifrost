@@ -12,6 +12,8 @@ Bifrost currently supports the following providers:
 - Bedrock
 - Cohere
 - Vertex
+- Mistral
+- Ollama
 
 ## 2. Provider Configuration
 
