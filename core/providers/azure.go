@@ -96,9 +96,10 @@ func releaseAzureTextResponse(resp *AzureTextResponse) {
 
 // AzureProvider implements the Provider interface for Azure's OpenAI API.
 type AzureProvider struct {
-	logger schemas.Logger     // Logger for provider operations
-	client *fasthttp.Client   // HTTP client for API requests
-	meta   schemas.MetaConfig // Azure-specific configuration
+	logger        schemas.Logger        // Logger for provider operations
+	client        *fasthttp.Client      // HTTP client for API requests
+	meta          schemas.MetaConfig    // Azure-specific configuration
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
 // NewAzureProvider creates a new Azure provider instance.
@@ -128,9 +129,10 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 	client = configureProxy(client, config.ProxyConfig, logger)
 
 	return &AzureProvider{
-		logger: logger,
-		client: client,
-		meta:   config.MetaConfig,
+		logger:        logger,
+		client:        client,
+		meta:          config.MetaConfig,
+		networkConfig: config.NetworkConfig,
 	}, nil
 }
 
@@ -202,6 +204,10 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("api-key", key)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders)
+
 	req.SetBody(jsonData)
 
 	// Send the request

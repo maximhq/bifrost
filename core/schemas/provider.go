@@ -28,11 +28,12 @@ const (
 // NetworkConfig represents the network configuration for provider connections.
 type NetworkConfig struct {
 	// BaseURL is only supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama(required here) providers
-	BaseURL                        string        `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
-	DefaultRequestTimeoutInSeconds int           `json:"default_request_timeout_in_seconds"` // Default timeout for requests
-	MaxRetries                     int           `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration `json:"retry_backoff_initial"`              // Initial backoff duration
-	RetryBackoffMax                time.Duration `json:"retry_backoff_max"`                  // Maximum backoff duration
+	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
+	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
+	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
+	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
+	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration
+	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
