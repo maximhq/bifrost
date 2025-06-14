@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Bifrost HTTP Transport API",
-    "description": "A unified HTTP API for accessing multiple AI model providers including OpenAI, Anthropic, Azure, Bedrock, Cohere, and Vertex AI. Bifrost provides standardized endpoints for text and chat completions with built-in fallback support and comprehensive monitoring.",
+    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n\nBifrost provides standardized endpoints for text and chat completions with built-in fallback support and comprehensive monitoring.",
     "version": "1.0.0",
     "contact": {
       "name": "Bifrost API Support",
@@ -432,7 +432,16 @@
       },
       "ModelProvider": {
         "type": "string",
-        "enum": ["openai", "anthropic", "azure", "bedrock", "cohere", "vertex"],
+        "enum": [
+          "openai",
+          "anthropic",
+          "azure",
+          "bedrock",
+          "cohere",
+          "vertex",
+          "mistral",
+          "ollama"
+        ],
         "description": "AI model provider",
         "example": "openai"
       },

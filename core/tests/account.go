@@ -15,7 +15,7 @@ import (
 
 // BaseAccount provides a test implementation of the Account interface.
 // It implements basic account functionality for testing purposes, supporting
-// multiple AI providers including OpenAI, Anthropic, Bedrock, Cohere, and Azure.
+// multiple AI providers including OpenAI, Anthropic, Bedrock, Cohere, Azure, Mistral, and Ollama.
 // The implementation uses environment variables from the .env file for API keys and provides
 // default configurations suitable for testing.
 type BaseAccount struct{}
@@ -27,7 +27,16 @@ type BaseAccount struct{}
 //   - []schemas.SupportedModelProvider: A slice containing the supported provider identifiers
 //   - error: Always returns nil as this implementation doesn't produce errors
 func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Cohere, schemas.Azure, schemas.Vertex, schemas.Mistral}, nil
+	return []schemas.ModelProvider{
+		schemas.OpenAI,
+		schemas.Anthropic,
+		schemas.Bedrock,
+		schemas.Cohere,
+		schemas.Azure,
+		schemas.Vertex,
+		schemas.Mistral,
+		schemas.Ollama,
+	}, nil
 }
 
 // GetKeysForProvider returns the API keys and associated models for a given provider.
@@ -211,6 +220,20 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		return &schemas.ProviderConfig{
 			NetworkConfig:            schemas.DefaultNetworkConfig,
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	case schemas.Ollama:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("OLLAMA_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)

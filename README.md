@@ -189,7 +189,7 @@ For additional configurations in HTTP server setup, please read [this](https://g
 
 ## 🔍 Overview
 
-Bifrost acts as a bridge between your applications and multiple AI providers (OpenAI, Anthropic, Amazon Bedrock, etc.). It provides a consistent API interface while handling:
+Bifrost acts as a bridge between your applications and multiple AI providers (OpenAI, Anthropic, Amazon Bedrock, Mistral, Ollama, etc.). It provides a consistent API while handling:
 
 - Authentication and key management
 - Request routing and load balancing
@@ -203,7 +203,7 @@ With Bifrost, you can focus on building your AI-powered applications without wor
 
 ## ✨ Features
 
-- **Multi-Provider Support**: Integrate with OpenAI, Anthropic, Amazon Bedrock, and more through a single API
+- **Multi-Provider Support**: Integrate with OpenAI, Anthropic, Amazon Bedrock, Mistral, Ollama, and more through a single API
 - **Fallback Mechanisms**: Automatically retry failed requests with alternative models or providers
 - **Dynamic Key Management**: Rotate and manage API keys efficiently
 - **Connection Pooling**: Optimize network resources for better performance
@@ -211,7 +211,7 @@ With Bifrost, you can focus on building your AI-powered applications without wor
 - **Flexible Transports**: Multiple transports for easy integration into your infra
 - **Plugin First Architecture**: No callback hell, simple addition/creation of custom plugins
 - **Custom Configuration**: Offers granular control over pool sizes, network retry settings, fallback providers, and network proxy configurations
-- **Build in Observability**: Native Prometheus metrics out of the box, no wrappers, no sidecars, just drop it in and scrape
+- **Built-in Observability**: Native Prometheus metrics out of the box, no wrappers, no sidecars, just drop it in and scrape
 
 ---
 
@@ -269,7 +269,7 @@ client, err := bifrost.Init(schemas.BifrostConfig{
 })
 ```
 
-3. **transports**: This package contains transport clients like HTTP to expose your Bifrost client. You can either `go get` this package or directly use the independent Dockerfile to quickly spin up your Bifrost API interface ([Click here](https://github.com/maximhq/bifrost/tree/main/transports/README.md) to read more on this).
+1. **transports**: This package contains transport clients like HTTP to expose your Bifrost client. You can either `go get` this package or directly use the independent Dockerfile to quickly spin up your Bifrost API ([Click here](https://github.com/maximhq/bifrost/tree/main/transports/README.md) to read more on this).
 
 ### Additional Configurations
 
@@ -318,9 +318,9 @@ Bifrost has been tested under high load conditions to ensure optimal performance
 | Response Parsing          | 11.30 ms      | 2.11 ms        |
 | **Bifrost's Overhead**    | **`59 µs\*`** | **`11 µs\*`**  |
 
-_\*Bifrost's overhead is measured at 59 µs on t3.medium and 11 µs on t3.xlarge, excluding the time taken for JSON marshalling and the HTTP call to the LLM, both of which are required in any custom implementation._
+_\*Bifrost's overhead is measured at 59 µs on t3.medium and 11 µs on t3.xlarge, excluding the time taken for JSON marshalling and the HTTP call to the LLM, both of which are required in any custom implementation._
 
-**Note**: On the t3.xlarge, we tested with significantly larger response payloads (~10 KB average vs ~1 KB on t3.medium). Even so, response parsing time dropped dramatically thanks to better CPU throughput and Bifrost's optimized memory reuse.
+**Note**: On the t3.xlarge, we tested with significantly larger response payloads (~10 KB average vs ~1 KB on t3.medium). Even so, response parsing time dropped dramatically thanks to better CPU throughput and Bifrost's optimized memory reuse.
 
 ### Key Performance Highlights
 
@@ -344,13 +344,13 @@ One of Bifrost's key strengths is its flexibility in configuration. You can free
   - Buffer and Concurrency Settings: Controls the queue size and maximum number of concurrent requests (adjustable per provider).
   - Retry and Timeout Configurations: Customizable based on your requirements for each provider.
 
-Curious? Run your own benchmarks. The [Bifrost Benchmarking](https://github.com/maximhq/bifrost-benchmarking) repo has everything you need to test it in your own environment.
+Curious? Run your own benchmarks. The [Bifrost Benchmarking](https://github.com/maximhq/bifrost-benchmarking) repo has everything you need to test it in your own environment.
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions of all kinds—whether it's bug fixes, features, documentation improvements, or new ideas. Feel free to open an issue, and once its’ assigned, submit a Pull Request.
+We welcome contributions of all kinds—whether it's bug fixes, features, documentation improvements, or new ideas. Feel free to open an issue, and once it's assigned, submit a Pull Request.
 
 Here's how to get started (after picking up an issue):
 

@@ -9,7 +9,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestMistral(t *testing.T) {
+func TestOllama(t *testing.T) {
 	bifrost, err := getBifrost()
 	if err != nil {
 		t.Fatalf("Error initializing bifrost: %v", err)
@@ -17,10 +17,10 @@ func TestMistral(t *testing.T) {
 	}
 
 	config := TestConfig{
-		Provider:       schemas.Mistral,
-		TextModel:      "ministral-3b-2410",
-		ChatModel:      "pixtral-12b-latest",
-		SetupText:      false, // Mistral does not support text completion
+		Provider:       schemas.Ollama,
+		TextModel:      "llama3.2",
+		ChatModel:      "llama3.2",
+		SetupText:      false, // Ollama does not support text completion
 		SetupToolCalls: true,
 		SetupImage:     true,
 		SetupBaseImage: true,
