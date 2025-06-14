@@ -18,7 +18,7 @@ type OpenAIRouter struct {
 func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 	routes := []integrations.RouteConfig{
 		{
-			Path:   "/openai/v1/chat/completions",
+			Path:   "/openai/chat/completions",
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
 				return &OpenAIChatRequest{}

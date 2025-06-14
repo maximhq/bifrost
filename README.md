@@ -230,6 +230,9 @@ bifrost/
 ├── docs/                 # Documentations for Bifrost's configurations and contribution guides
 │   └── ...
 │
+├── tests/                # All test setups related to /core and /transports
+│   └── ...│
+│
 ├── transports/           # Interface layers (HTTP, gRPC, etc.)
 │   ├── bifrost-http/             # HTTP transport implementation
 │   └── ...
