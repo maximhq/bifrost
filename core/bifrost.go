@@ -140,6 +140,8 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelP
 		return providers.NewVertexProvider(config, bifrost.logger)
 	case schemas.Mistral:
 		return providers.NewMistralProvider(config, bifrost.logger), nil
+	case schemas.Ollama:
+		return providers.NewOllamaProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -153,8 +155,8 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to get config for provider: %v", err)
 	}
 
-	// Check if the provider has any keys (skip vertex)
-	if providerKey != schemas.Vertex {
+	// Check if the provider has any keys (skip vertex and ollama)
+	if providerKey != schemas.Vertex && providerKey != schemas.Ollama {
 		keys, err := bifrost.account.GetKeysForProvider(providerKey)
 		if err != nil || len(keys) == 0 {
 			return fmt.Errorf("failed to get keys for provider: %v", err)
@@ -371,7 +373,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		var err error
 
 		key := ""
-		if provider.GetProviderKey() != schemas.Vertex {
+		if provider.GetProviderKey() != schemas.Vertex && provider.GetProviderKey() != schemas.Ollama {
 			key, err = bifrost.selectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
 			if err != nil {
 				bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))

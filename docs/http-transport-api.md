@@ -227,14 +227,14 @@ Returns Prometheus metrics for monitoring and observability.
 
 The main request object for both chat and text completions.
 
-| Field       | Type                                  | Required | Description                                                                       |
-| ----------- | ------------------------------------- | -------- | --------------------------------------------------------------------------------- |
-| `provider`  | `string`                              | ✅       | AI model provider (`openai`, `anthropic`, `azure`, `bedrock`, `cohere`, `vertex`) |
-| `model`     | `string`                              | ✅       | Model identifier (provider-specific)                                              |
-| `messages`  | [`BifrostMessage[]`](#bifrostmessage) | ✅\*     | Array of chat messages (required for chat completions)                            |
-| `text`      | `string`                              | ✅\*     | Text prompt (required for text completions)                                       |
-| `params`    | [`ModelParameters`](#modelparameters) | ❌       | Model parameters and configuration                                                |
-| `fallbacks` | [`Fallback[]`](#fallback)             | ❌       | Fallback providers and models                                                     |
+| Field       | Type                                  | Required | Description                                                                                            |
+| ----------- | ------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------ |
+| `provider`  | `string`                              | ✅       | AI model provider (`openai`, `anthropic`, `azure`, `bedrock`, `cohere`, `vertex`, `mistral`, `ollama`) |
+| `model`     | `string`                              | ✅       | Model identifier (provider-specific)                                                                   |
+| `messages`  | [`BifrostMessage[]`](#bifrostmessage) | ✅\*     | Array of chat messages (required for chat completions)                                                 |
+| `text`      | `string`                              | ✅\*     | Text prompt (required for text completions)                                                            |
+| `params`    | [`ModelParameters`](#modelparameters) | ❌       | Model parameters and configuration                                                                     |
+| `fallbacks` | [`Fallback[]`](#fallback)             | ❌       | Fallback providers and models                                                                          |
 
 \*Either `messages` or `text` is required depending on the endpoint.
 
@@ -451,6 +451,8 @@ Detailed error information.
 | AWS Bedrock      | `bedrock`   |
 | Cohere           | `cohere`    |
 | Google Vertex AI | `vertex`    |
+| Mistral          | `mistral`   |
+| Ollama           | `ollama`    |
 
 ## Error Codes
 

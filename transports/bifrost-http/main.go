@@ -1,5 +1,5 @@
 // Package http provides an HTTP service using FastHTTP that exposes endpoints
-// for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, etc.).
+// for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
 //
 // The HTTP service provides two main endpoints:
 //   - /v1/text/completions: For text completion requests
