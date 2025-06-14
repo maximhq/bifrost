@@ -8,6 +8,10 @@
       }
     ],
     "network_config": {
+      "extra_headers": {
+        "X-Organization-ID": "org-123",
+        "X-Environment": "production"
+      },
       "default_request_timeout_in_seconds": 30,
       "max_retries": 1,
       "retry_backoff_initial_ms": 100,

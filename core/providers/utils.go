@@ -5,6 +5,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -235,6 +236,30 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	return client
+}
+
+// setExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
+// This allows users to configure custom headers for their provider requests.
+func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string) {
+	if extraHeaders == nil {
+		return
+	}
+
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
+}
+
+// setExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
+// This allows users to configure custom headers for their provider requests.
+func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string) {
+	if extraHeaders == nil {
+		return
+	}
+
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
 }
 
 // handleProviderAPIError processes error responses from provider APIs.
