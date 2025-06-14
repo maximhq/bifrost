@@ -5,9 +5,12 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/textproto"
 	"net/url"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -235,6 +238,63 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	return client
+}
+
+// setExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
+// This allows users to configure custom headers for their provider requests.
+// Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
+// The Authorization header is excluded for security reasons.
+// It accepts a list of headers (all canonicalized) to skip for security reasons.
+// Headers are only set if they don't already exist on the request to avoid overwriting important headers.
+func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders *[]string) {
+	if extraHeaders == nil {
+		return
+	}
+
+	for key, value := range extraHeaders {
+		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
+		// Skip Authorization header for security reasons
+		if key == "Authorization" {
+			continue
+		}
+		if skipHeaders != nil {
+			if slices.Contains(*skipHeaders, key) {
+				continue
+			}
+		}
+		// Only set the header if it doesn't already exist to avoid overwriting important headers
+		if len(req.Header.Peek(canonicalKey)) == 0 {
+			req.Header.Set(canonicalKey, value)
+		}
+	}
+}
+
+// setExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
+// This allows users to configure custom headers for their provider requests.
+// Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
+// It accepts a list of headers (all canonicalized) to skip for security reasons.
+// Headers are only set if they don't already exist on the request to avoid overwriting important headers.
+func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skipHeaders *[]string) {
+	if extraHeaders == nil {
+		return
+	}
+
+	for key, value := range extraHeaders {
+		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
+		// Skip Authorization header for security reasons
+		if key == "Authorization" {
+			continue
+		}
+		if skipHeaders != nil {
+			if slices.Contains(*skipHeaders, key) {
+				continue
+			}
+		}
+		// Only set the header if it doesn't already exist to avoid overwriting important headers
+		if req.Header.Get(canonicalKey) == "" {
+			req.Header.Set(canonicalKey, value)
+		}
+	}
 }
 
 // handleProviderAPIError processes error responses from provider APIs.

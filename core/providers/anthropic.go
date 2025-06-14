@@ -77,10 +77,10 @@ type AnthropicImageContent struct {
 
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API.
 type AnthropicProvider struct {
-	logger     schemas.Logger   // Logger for provider operations
-	client     *fasthttp.Client // HTTP client for API requests
-	baseURL    string           // Base URL for the provider
-	apiVersion string           // API version for the provider
+	logger        schemas.Logger        // Logger for provider operations
+	client        *fasthttp.Client      // HTTP client for API requests
+	apiVersion    string                // API version for the provider
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
 // anthropicChatResponsePool provides a pool for Anthropic chat response objects.
@@ -147,16 +147,17 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	// Configure proxy if provided
 	client = configureProxy(client, config.ProxyConfig, logger)
 
-	baseURL := strings.TrimRight(config.NetworkConfig.BaseURL, "/")
-	if baseURL == "" {
-		baseURL = "https://api.anthropic.com"
+	// Set default BaseURL if not provided
+	if config.NetworkConfig.BaseURL == "" {
+		config.NetworkConfig.BaseURL = "https://api.anthropic.com"
 	}
+	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &AnthropicProvider{
-		logger:     logger,
-		client:     client,
-		baseURL:    baseURL,
-		apiVersion: "2023-06-01",
+		logger:        logger,
+		client:        client,
+		apiVersion:    "2023-06-01",
+		networkConfig: config.NetworkConfig,
 	}
 }
 
@@ -203,11 +204,15 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
 	req.SetRequestURI(url)
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", provider.apiVersion)
+
 	req.SetBody(jsonData)
 
 	// Send the request
@@ -247,7 +252,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, ke
 		"prompt": fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
 	}, preparedParams)
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, provider.baseURL+"/v1/complete", key)
+	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/complete", key)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +308,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, ke
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, provider.baseURL+"/v1/messages", key)
+	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/messages", key)
 	if err != nil {
 		return nil, err
 	}

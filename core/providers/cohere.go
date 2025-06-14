@@ -95,9 +95,9 @@ type CohereError struct {
 
 // CohereProvider implements the Provider interface for Cohere.
 type CohereProvider struct {
-	logger  schemas.Logger   // Logger for provider operations
-	client  *fasthttp.Client // HTTP client for API requests
-	baseURL string           // Base URL for the provider
+	logger        schemas.Logger        // Logger for provider operations
+	client        *fasthttp.Client      // HTTP client for API requests
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
 // NewCohereProvider creates a new Cohere provider instance.
@@ -118,15 +118,16 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 		bifrostResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
-	baseURL := strings.TrimRight(config.NetworkConfig.BaseURL, "/")
-	if baseURL == "" {
-		baseURL = "https://api.cohere.ai"
+	// Set default BaseURL if not provided
+	if config.NetworkConfig.BaseURL == "" {
+		config.NetworkConfig.BaseURL = "https://api.cohere.ai"
 	}
+	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &CohereProvider{
-		logger:  logger,
-		client:  client,
-		baseURL: baseURL,
+		logger:        logger,
+		client:        client,
+		networkConfig: config.NetworkConfig,
 	}
 }
 
@@ -352,10 +353,14 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.SetRequestURI(provider.baseURL + "/v1/chat")
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
+
 	req.SetBody(jsonBody)
 
 	// Make request

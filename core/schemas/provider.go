@@ -3,6 +3,7 @@ package schemas
 
 import (
 	"context"
+	"maps"
 	"time"
 )
 
@@ -26,13 +27,15 @@ const (
 )
 
 // NetworkConfig represents the network configuration for provider connections.
+// ExtraHeaders is automatically copied during provider initialization to prevent data races.
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string        `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
-	DefaultRequestTimeoutInSeconds int           `json:"default_request_timeout_in_seconds"` // Default timeout for requests
-	MaxRetries                     int           `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration `json:"retry_backoff_initial"`              // Initial backoff duration
-	RetryBackoffMax                time.Duration `json:"retry_backoff_max"`                  // Maximum backoff duration
+	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
+	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
+	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
+	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
+	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration
+	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
@@ -137,6 +140,13 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.RetryBackoffMax == 0 {
 		config.NetworkConfig.RetryBackoffMax = DefaultRetryBackoffMax
+	}
+
+	// Create a defensive copy of ExtraHeaders to prevent data races
+	if config.NetworkConfig.ExtraHeaders != nil {
+		headersCopy := make(map[string]string, len(config.NetworkConfig.ExtraHeaders))
+		maps.Copy(headersCopy, config.NetworkConfig.ExtraHeaders)
+		config.NetworkConfig.ExtraHeaders = headersCopy
 	}
 }
 

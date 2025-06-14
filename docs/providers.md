@@ -22,6 +22,12 @@ Bifrost currently supports the following providers:
 ```golang
 schemas.ProviderConfig{
     NetworkConfig: schemas.NetworkConfig{
+        BaseURL:                        "https://api.custom-deployment.com", // Custom base URL (optional)
+        ExtraHeaders:                   map[string]string{                   // Additional headers (optional)
+            "X-Organization-ID": "org-123",
+            "X-Environment":     "production",
+            "User-Agent":        "MyApp/1.0 Bifrost/1.0",
+        },
         DefaultRequestTimeoutInSeconds: 30,
         MaxRetries:                     2,
         RetryBackoffInitial:            100 * time.Millisecond,
@@ -187,7 +193,97 @@ schemas.ProxyConfig{
    - Configure retry policies
    - Monitor proxy errors
 
-## 6. Provider Development Guidelines
+## 6. Extra Headers Configuration
+
+Bifrost supports custom headers that can be added to all requests sent to a provider. This is useful for enterprise deployments, custom authentication, or provider-specific requirements.
+
+### Configuration
+
+Extra headers are configured in the `NetworkConfig` section:
+
+```golang
+schemas.NetworkConfig{
+    ExtraHeaders: map[string]string{
+        "X-Organization-ID": "org-123",
+        "X-Environment":     "production",
+        "User-Agent":        "MyApp/1.0 Bifrost/1.0",
+        "X-Custom-Auth":     "bearer-token-xyz",
+    },
+}
+```
+
+### JSON Configuration
+
+```json
+{
+  "openai": {
+    "keys": [...],
+    "network_config": {
+      "extra_headers": {
+        "X-Organization-ID": "org-123",
+        "X-Environment": "production",
+        "User-Agent": "MyApp/1.0 Bifrost/1.0"
+      }
+    }
+  }
+}
+```
+
+### Use Cases
+
+1. **Enterprise Deployments**
+
+   - Organization or tenant identification
+   - Custom authentication headers
+   - Environment tracking (dev/staging/prod)
+
+2. **Self-hosted Providers**
+
+   - Custom routing headers for Ollama deployments
+   - Load balancer identification
+   - Custom API versions
+
+3. **Monitoring & Observability**
+
+   - Request source identification
+   - Custom correlation IDs
+   - Application version tracking
+
+4. **Provider-specific Requirements**
+   - Beta feature flags
+   - Custom API versions
+   - Regional preferences
+
+### Header Precedence
+
+Headers configured in `extra_headers` are applied before mandatory provider headers. If there are conflicts (such as duplicate header names), the mandatory headers will take precedence and overwrite or ignore the `extra_headers` values. This ensures that critical provider functionality is not compromised by custom header configurations.
+
+**Important Notes:**
+
+- Authorization headers are automatically filtered out from `extra_headers` for security reasons
+- Provider-specific mandatory headers (like API keys, content-type, etc.) always take precedence
+- Custom headers should not conflict with standard HTTP headers required by the provider
+
+### Best Practices
+
+1. **Security**
+
+   - Use environment variables for sensitive headers
+   - Avoid hardcoding authentication tokens
+   - Review headers regularly for security implications
+
+2. **Performance**
+
+   - Keep header count minimal for performance
+   - Use short, descriptive header names
+   - Monitor header impact on request size
+
+3. **Compliance**
+   - Document custom headers for audit purposes
+   - Ensure headers comply with HTTP standards
+   - Validate header values before deployment
+
+## 7. Provider Development Guidelines
 
 ### 1. Provider Structure
 

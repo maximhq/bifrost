@@ -25,11 +25,12 @@ type VertexError struct {
 	} `json:"error"`
 }
 
-// VertexProvider implements the Provider interface for Vertex's API.
+// VertexProvider implements the Provider interface for Google's Vertex AI API.
 type VertexProvider struct {
-	logger schemas.Logger     // Logger for provider operations
-	client *http.Client       // HTTP client for API requests
-	meta   schemas.MetaConfig // Vertex-specific configuration
+	logger        schemas.Logger        // Logger for provider operations
+	client        *http.Client          // HTTP client for API requests
+	meta          schemas.MetaConfig    // Vertex-specific configuration
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
 // NewVertexProvider creates a new Vertex provider instance.
@@ -64,9 +65,10 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	}
 
 	return &VertexProvider{
-		logger: logger,
-		client: client,
-		meta:   config.MetaConfig,
+		logger:        logger,
+		client:        client,
+		meta:          config.MetaConfig,
+		networkConfig: config.NetworkConfig,
 	}, nil
 }
 
@@ -163,6 +165,10 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model, key s
 			},
 		}
 	}
+
+	// Set any extra headers from network config
+	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+
 	req.Header.Set("Content-Type", "application/json")
 
 	// Make request
