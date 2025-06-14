@@ -143,9 +143,10 @@ type BedrockError struct {
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
-	logger schemas.Logger     // Logger for provider operations
-	client *http.Client       // HTTP client for API requests
-	meta   schemas.MetaConfig // AWS-specific configuration
+	logger        schemas.Logger        // Logger for provider operations
+	client        *http.Client          // HTTP client for API requests
+	meta          schemas.MetaConfig    // Bedrock-specific configuration
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
@@ -188,9 +189,10 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	return &BedrockProvider{
-		logger: logger,
-		client: client,
-		meta:   config.MetaConfig,
+		logger:        logger,
+		client:        client,
+		meta:          config.MetaConfig,
+		networkConfig: config.NetworkConfig,
 	}, nil
 }
 
@@ -251,7 +253,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	}
 
 	if provider.meta.GetSecretAccessKey() != nil {
-		if err := signAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); err != nil {
+		if err := signAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock", provider.networkConfig.ExtraHeaders); err != nil {
 			return nil, err
 		}
 	} else {
@@ -995,10 +997,13 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 // It sets required headers, calculates the request body hash, and signs the request
 // using the provided AWS credentials.
 // Returns a BifrostError if signing fails.
-func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) *schemas.BifrostError {
+func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string, extraHeaders map[string]string) *schemas.BifrostError {
 	// Set required headers before signing
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+
+	// Set any extra headers from network config
+	setExtraHeadersHTTP(req, extraHeaders)
 
 	// Calculate SHA256 hash of the request body
 	var bodyHash string
