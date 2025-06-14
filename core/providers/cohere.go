@@ -325,7 +325,13 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 	}
 	// Add tool choice if present
 	if params != nil && params.ToolChoice != nil {
-		requestBody["tool_choice"] = strings.ToUpper(string(params.ToolChoice.Type))
+		if params.ToolChoice.ToolChoiceStr != nil {
+			requestBody["tool_choice"] = *params.ToolChoice.ToolChoiceStr
+		} else if params.ToolChoice.ToolChoiceStruct != nil {
+			requestBody["tool_choice"] = map[string]interface{}{
+				"type": strings.ToUpper(string(params.ToolChoice.ToolChoiceStruct.Type)),
+			}
+		}
 	}
 
 	// Marshal request body
