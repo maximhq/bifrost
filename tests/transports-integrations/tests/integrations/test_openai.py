@@ -1,0 +1,411 @@
+"""
+OpenAI Integration Tests
+
+🤖 MODELS USED:
+- Chat: gpt-3.5-turbo
+- Vision: gpt-4o
+- Tools: gpt-3.5-turbo
+- Streaming: gpt-3.5-turbo
+- Alternatives: gpt-4, gpt-4-turbo-preview, gpt-4o, gpt-4o-mini
+
+Tests all 11 core scenarios using OpenAI SDK directly:
+1. Simple chat
+2. Multi turn conversation
+3. Tool calls
+4. Multiple tool calls
+5. End2End tool calling
+6. Automatic function calling
+7. Image (url)
+8. Image (base64)
+9. Multiple images
+10. Complete end2end test with conversation history, tool calls, tool results and images
+11. Integration specific tests
+"""
+
+import pytest
+import json
+from openai import OpenAI
+from typing import List, Dict, Any
+
+from ..utils.common import (
+    Config,
+    SIMPLE_CHAT_MESSAGES,
+    MULTI_TURN_MESSAGES,
+    SINGLE_TOOL_CALL_MESSAGES,
+    MULTIPLE_TOOL_CALL_MESSAGES,
+    IMAGE_URL_MESSAGES,
+    IMAGE_BASE64_MESSAGES,
+    MULTIPLE_IMAGES_MESSAGES,
+    COMPLEX_E2E_MESSAGES,
+    ALL_TOOLS,
+    WEATHER_TOOL,
+    CALCULATOR_TOOL,
+    mock_tool_response,
+    assert_valid_chat_response,
+    assert_has_tool_calls,
+    assert_valid_image_response,
+    extract_tool_calls,
+    get_api_key,
+    skip_if_no_api_key,
+    TestCategories,
+    get_model,
+    COMPARISON_KEYWORDS,
+    WEATHER_KEYWORDS,
+    LOCATION_KEYWORDS,
+)
+
+
+@pytest.fixture
+def openai_client():
+    """Create OpenAI client for testing"""
+    from ..utils.config_loader import get_integration_url, get_config
+
+    api_key = get_api_key("openai")
+    base_url = get_integration_url("openai")
+
+    # Get additional integration settings
+    config = get_config()
+    integration_settings = config.get_integration_settings("openai")
+    api_config = config.get_api_config()
+
+    client_kwargs = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": api_config.get("timeout", 30),
+        "max_retries": api_config.get("max_retries", 3),
+    }
+
+    # Add optional OpenAI-specific settings
+    if integration_settings.get("organization"):
+        client_kwargs["organization"] = integration_settings["organization"]
+    if integration_settings.get("project"):
+        client_kwargs["project"] = integration_settings["project"]
+
+    return OpenAI(**client_kwargs)
+
+
+@pytest.fixture
+def test_config():
+    """Test configuration"""
+    return Config()
+
+
+class TestOpenAIIntegration:
+    """Test suite for OpenAI integration covering all 11 core scenarios"""
+
+    @skip_if_no_api_key("openai")
+    def test_01_simple_chat(self, openai_client, test_config):
+        """Test Case 1: Simple chat interaction"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "chat"),
+            messages=SIMPLE_CHAT_MESSAGES,
+            max_tokens=100,
+        )
+
+        assert_valid_chat_response(response)
+        assert response.choices[0].message.content is not None
+        assert len(response.choices[0].message.content) > 0
+
+    @skip_if_no_api_key("openai")
+    def test_02_multi_turn_conversation(self, openai_client, test_config):
+        """Test Case 2: Multi-turn conversation"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "chat"),
+            messages=MULTI_TURN_MESSAGES,
+            max_tokens=150,
+        )
+
+        assert_valid_chat_response(response)
+        content = response.choices[0].message.content.lower()
+        # Should mention population or numbers since we asked about Paris population
+        assert any(
+            word in content
+            for word in ["population", "million", "people", "inhabitants"]
+        )
+
+    @skip_if_no_api_key("openai")
+    def test_03_single_tool_call(self, openai_client, test_config):
+        """Test Case 3: Single tool call"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "tools"),
+            messages=SINGLE_TOOL_CALL_MESSAGES,
+            tools=[{"type": "function", "function": WEATHER_TOOL}],
+            max_tokens=100,
+        )
+
+        assert_has_tool_calls(response, expected_count=1)
+        tool_calls = extract_tool_calls(response)
+        assert tool_calls[0]["name"] == "get_weather"
+        assert "location" in tool_calls[0]["arguments"]
+
+    @skip_if_no_api_key("openai")
+    def test_04_multiple_tool_calls(self, openai_client, test_config):
+        """Test Case 4: Multiple tool calls in one response"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "tools"),
+            messages=MULTIPLE_TOOL_CALL_MESSAGES,
+            tools=[
+                {"type": "function", "function": WEATHER_TOOL},
+                {"type": "function", "function": CALCULATOR_TOOL},
+            ],
+            max_tokens=200,
+        )
+
+        assert_has_tool_calls(response, expected_count=2)
+        tool_calls = extract_openai_tool_calls(response)
+        tool_names = [tc["name"] for tc in tool_calls]
+        assert "get_weather" in tool_names
+        assert "calculate" in tool_names
+
+    @skip_if_no_api_key("openai")
+    def test_05_end2end_tool_calling(self, openai_client, test_config):
+        """Test Case 5: Complete tool calling flow with responses"""
+        # Initial request
+        messages = [{"role": "user", "content": "What's the weather in Boston?"}]
+
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "tools"),
+            messages=messages,
+            tools=[{"type": "function", "function": WEATHER_TOOL}],
+            max_tokens=100,
+        )
+
+        assert_has_tool_calls(response, expected_count=1)
+
+        # Add assistant's tool call to conversation
+        messages.append(response.choices[0].message)
+
+        # Add tool response
+        tool_calls = extract_openai_tool_calls(response)
+        tool_response = mock_tool_response(
+            tool_calls[0]["name"], tool_calls[0]["arguments"]
+        )
+
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": response.choices[0].message.tool_calls[0].id,
+                "content": tool_response,
+            }
+        )
+
+        # Get final response
+        final_response = openai_client.chat.completions.create(
+            model=get_model("openai", "tools"), messages=messages, max_tokens=150
+        )
+
+        assert_valid_chat_response(final_response)
+        content = final_response.choices[0].message.content.lower()
+        weather_location_keywords = WEATHER_KEYWORDS + LOCATION_KEYWORDS
+        assert any(word in content for word in weather_location_keywords)
+
+    @skip_if_no_api_key("openai")
+    def test_06_automatic_function_calling(self, openai_client, test_config):
+        """Test Case 6: Automatic function calling (tool_choice='auto')"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "tools"),
+            messages=[{"role": "user", "content": "Calculate 25 * 4 for me"}],
+            tools=[{"type": "function", "function": CALCULATOR_TOOL}],
+            tool_choice="auto",  # Let model decide
+            max_tokens=100,
+        )
+
+        # Should automatically choose to use the calculator
+        assert_has_tool_calls(response, expected_count=1)
+        tool_calls = extract_openai_tool_calls(response)
+        assert tool_calls[0]["name"] == "calculate"
+
+    @skip_if_no_api_key("openai")
+    def test_07_image_url(self, openai_client, test_config):
+        """Test Case 7: Image analysis from URL"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "vision"),
+            messages=IMAGE_URL_MESSAGES,
+            max_tokens=200,
+        )
+
+        assert_valid_image_response(response)
+
+    @skip_if_no_api_key("openai")
+    def test_08_image_base64(self, openai_client, test_config):
+        """Test Case 8: Image analysis from base64"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "vision"),
+            messages=IMAGE_BASE64_MESSAGES,
+            max_tokens=200,
+        )
+
+        assert_valid_image_response(response)
+
+    @skip_if_no_api_key("openai")
+    def test_09_multiple_images(self, openai_client, test_config):
+        """Test Case 9: Multiple image analysis"""
+        response = openai_client.chat.completions.create(
+            model=get_model("openai", "vision"),
+            messages=MULTIPLE_IMAGES_MESSAGES,
+            max_tokens=300,
+        )
+
+        assert_valid_image_response(response)
+        content = response.choices[0].message.content.lower()
+        # Should mention comparison or differences (flexible matching)
+        assert any(
+            word in content for word in COMPARISON_KEYWORDS
+        ), f"Response should contain comparison keywords. Got content: {content}"
+
+    @skip_if_no_api_key("openai")
+    def test_10_complex_end2end(self, openai_client, test_config):
+        """Test Case 10: Complex end-to-end with conversation, images, and tools"""
+        messages = COMPLEX_E2E_MESSAGES.copy()
+
+        # First, analyze the image
+        response1 = openai_client.chat.completions.create(
+            model=get_model("openai", "vision"),
+            messages=messages,
+            tools=[{"type": "function", "function": WEATHER_TOOL}],
+            max_tokens=300,
+        )
+
+        # Should either describe image or call weather tool (or both)
+        assert (
+            response1.choices[0].message.content is not None
+            or response1.choices[0].message.tool_calls is not None
+        )
+
+        # Add response to conversation
+        messages.append(response1.choices[0].message)
+
+        # If there were tool calls, handle them
+        if response1.choices[0].message.tool_calls:
+            for tool_call in response1.choices[0].message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+                tool_response = mock_tool_response(tool_name, tool_args)
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": tool_response,
+                    }
+                )
+
+            # Get final response after tool calls
+            final_response = openai_client.chat.completions.create(
+                model=get_model("openai", "vision"), messages=messages, max_tokens=200
+            )
+
+            assert_valid_chat_response(final_response)
+
+    @skip_if_no_api_key("openai")
+    def test_11_integration_specific_features(self, openai_client, test_config):
+        """Test Case 11: OpenAI-specific features"""
+
+        # Test 1: Function calling with specific tool choice
+        response1 = openai_client.chat.completions.create(
+            model=get_model("openai", "tools"),
+            messages=[{"role": "user", "content": "What's 15 + 27?"}],
+            tools=[
+                {"type": "function", "function": CALCULATOR_TOOL},
+                {"type": "function", "function": WEATHER_TOOL},
+            ],
+            tool_choice={
+                "type": "function",
+                "function": {"name": "calculate"},
+            },  # Force specific tool
+            max_tokens=100,
+        )
+
+        assert_has_tool_calls(response1, expected_count=1)
+        tool_calls = extract_openai_tool_calls(response1)
+        assert tool_calls[0]["name"] == "calculate"
+
+        # Test 2: System message
+        response2 = openai_client.chat.completions.create(
+            model=get_model("openai", "chat"),
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that always responds in exactly 5 words.",
+                },
+                {"role": "user", "content": "Hello, how are you?"},
+            ],
+            max_tokens=50,
+        )
+
+        assert_valid_chat_response(response2)
+        # Check if response is approximately 5 words (allow some flexibility)
+        word_count = len(response2.choices[0].message.content.split())
+        assert 3 <= word_count <= 7, f"Expected ~5 words, got {word_count}"
+
+        # Test 3: Temperature and top_p parameters
+        response3 = openai_client.chat.completions.create(
+            model=get_model("openai", "chat"),
+            messages=[
+                {"role": "user", "content": "Tell me a creative story in one sentence."}
+            ],
+            temperature=0.9,
+            top_p=0.9,
+            max_tokens=100,
+        )
+
+        assert_valid_chat_response(response3)
+
+        # Test 4: Streaming (basic test)
+        stream = openai_client.chat.completions.create(
+            model=get_model("openai", "streaming"),
+            messages=[{"role": "user", "content": "Count from 1 to 5"}],
+            max_tokens=50,
+            stream=True,
+        )
+
+        chunks = []
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                chunks.append(chunk.choices[0].delta.content)
+
+        assert len(chunks) > 0, "Should receive streaming chunks"
+        full_content = "".join(chunks)
+        assert len(full_content) > 0, "Streaming content should not be empty"
+
+
+# Additional helper functions specific to OpenAI
+def convert_to_openai_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert common tool format to OpenAI format"""
+    return [{"type": "function", "function": tool} for tool in tools]
+
+
+def extract_openai_tool_calls(response: Any) -> List[Dict[str, Any]]:
+    """Extract tool calls from OpenAI response format with proper type checking"""
+    tool_calls = []
+
+    # Type check for OpenAI ChatCompletion response
+    if not hasattr(response, "choices") or not response.choices:
+        return tool_calls
+
+    choice = response.choices[0]
+    if not hasattr(choice, "message") or not hasattr(choice.message, "tool_calls"):
+        return tool_calls
+
+    if not choice.message.tool_calls:
+        return tool_calls
+
+    for tool_call in choice.message.tool_calls:
+        if hasattr(tool_call, "function") and hasattr(tool_call.function, "name"):
+            try:
+                arguments = (
+                    json.loads(tool_call.function.arguments)
+                    if isinstance(tool_call.function.arguments, str)
+                    else tool_call.function.arguments
+                )
+                tool_calls.append(
+                    {
+                        "name": tool_call.function.name,
+                        "arguments": arguments,
+                    }
+                )
+            except (json.JSONDecodeError, AttributeError) as e:
+                print(f"Warning: Failed to parse tool call arguments: {e}")
+                continue
+
+    return tool_calls

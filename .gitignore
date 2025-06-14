@@ -2,3 +2,5 @@
 .vscode
 .DS_Store
 *_creds*
+**/venv/
+**/__pycache__/

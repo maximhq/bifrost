@@ -1,0 +1,227 @@
+# Bifrost Integration Tests Configuration
+# This file centralizes all configuration for AI integration clients and test settings
+
+# Bifrost Gateway Configuration
+# All integrations route through Bifrost as a proxy/gateway
+bifrost:
+  base_url: "${BIFROST_BASE_URL:-http://localhost:8080}"
+
+  # Integration-specific endpoints (suffixes appended to base_url)
+  endpoints:
+    openai: "/openai"
+    anthropic: "/anthropic"
+    google: "/google"
+    litellm: "/litellm"
+
+  # Full URLs constructed as: {base_url}{endpoints[integration]}
+  # Examples:
+  # - OpenAI: http://localhost:8080/openai
+  # - Anthropic: http://localhost:8080/anthropic
+  # - Google: http://localhost:8080/google
+  # - LiteLLM: http://localhost:8080/litellm
+
+# Fallback URLs (direct integration endpoints, used only if Bifrost is unavailable)
+fallback_urls:
+  openai: "${OPENAI_DIRECT_URL:-https://api.openai.com/v1}"
+  anthropic: "${ANTHROPIC_DIRECT_URL:-https://api.anthropic.com}"
+  google: "${GOOGLE_DIRECT_URL:-}" # Google uses default genai endpoints
+  litellm: "${LITELLM_DIRECT_URL:-}" # LiteLLM uses integration-specific defaults
+
+# API Configuration
+api:
+  timeout: 30 # seconds
+  max_retries: 3
+  retry_delay: 1 # seconds
+
+# Model configurations for each integration
+models:
+  openai:
+    chat: "gpt-3.5-turbo"
+    vision: "gpt-4o"
+    tools: "gpt-3.5-turbo"
+    streaming: "gpt-3.5-turbo"
+    alternatives:
+      - "gpt-4"
+      - "gpt-4-turbo-preview"
+      - "gpt-4o"
+      - "gpt-4o-mini"
+
+  anthropic:
+    chat: "claude-3-haiku-20240307"
+    vision: "claude-3-haiku-20240307"
+    tools: "claude-3-haiku-20240307"
+    streaming: "claude-3-haiku-20240307"
+    alternatives:
+      - "claude-3-sonnet-20240229"
+      - "claude-3-opus-20240229"
+      - "claude-3-5-sonnet-20241022"
+
+  google:
+    chat: "gemini-pro"
+    vision: "gemini-pro-vision"
+    tools: "gemini-pro"
+    streaming: "gemini-pro"
+    alternatives:
+      - "gemini-1.5-pro"
+      - "gemini-1.5-flash"
+      - "gemini-1.0-pro"
+
+  litellm:
+    chat: "gpt-3.5-turbo" # Uses OpenAI by default
+    vision: "gpt-4o" # Uses OpenAI vision
+    tools: "gpt-3.5-turbo" # Uses OpenAI for tools
+    streaming: "gpt-3.5-turbo" # Uses OpenAI for streaming
+    alternatives:
+      - "claude-3-haiku-20240307" # Anthropic via LiteLLM
+      - "gemini-pro" # Google via LiteLLM
+      - "gpt-4" # OpenAI GPT-4
+      - "command-r-plus" # Cohere via LiteLLM
+
+# Model capabilities matrix
+model_capabilities:
+  # OpenAI Models
+  "gpt-3.5-turbo":
+    chat: true
+    tools: true
+    vision: false
+    streaming: true
+    max_tokens: 4096
+    context_window: 16385
+
+  "gpt-4":
+    chat: true
+    tools: true
+    vision: false
+    streaming: true
+    max_tokens: 8192
+    context_window: 8192
+
+  "gpt-4o":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 128000
+
+  "gpt-4o-mini":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 128000
+
+  # Anthropic Models
+  "claude-3-haiku-20240307":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 200000
+
+  "claude-3-sonnet-20240229":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 200000
+
+  "claude-3-opus-20240229":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 200000
+
+  # Google Models
+  "gemini-pro":
+    chat: true
+    tools: true
+    vision: false
+    streaming: true
+    max_tokens: 8192
+    context_window: 32768
+
+  "gemini-pro-vision":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 8192
+    context_window: 32768
+
+  "gemini-1.5-pro":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 8192
+    context_window: 1000000
+
+# Test configuration
+test_settings:
+  # Maximum tokens for test responses
+  max_tokens:
+    chat: 100
+    vision: 200
+    tools: 100
+    streaming: 150
+    complex: 300
+
+  # Timeout settings for tests
+  timeouts:
+    simple: 30 # seconds
+    complex: 60 # seconds
+    streaming: 45 # seconds
+
+  # Retry settings for flaky tests
+  retries:
+    max_attempts: 3
+    delay: 2 # seconds
+
+# Integration-specific settings
+integration_settings:
+  openai:
+    organization: "${OPENAI_ORG_ID:-}"
+    project: "${OPENAI_PROJECT_ID:-}"
+
+  anthropic:
+    version: "2023-06-01"
+
+  google:
+    project_id: "${GOOGLE_PROJECT_ID:-}"
+    location: "${GOOGLE_LOCATION:-us-central1}"
+
+  litellm:
+    drop_params: true
+    debug: false
+
+# Environment-specific overrides
+environments:
+  development:
+    api:
+      timeout: 60
+      max_retries: 5
+    test_settings:
+      timeouts:
+        simple: 60
+        complex: 120
+
+  production:
+    api:
+      timeout: 15
+      max_retries: 2
+    test_settings:
+      timeouts:
+        simple: 20
+        complex: 40
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "tests.log"
