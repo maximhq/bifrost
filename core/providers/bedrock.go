@@ -519,6 +519,12 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 						})
 					} else if msg.Content.ContentBlocks != nil {
 						for _, block := range *msg.Content.ContentBlocks {
+							if block.Text != nil {
+								content = append(content, BedrockAnthropicTextMessage{
+									Type: "text",
+									Text: *block.Text,
+								})
+							}
 							if block.ImageURL != nil {
 								sanitizedURL, _ := SanitizeImageURL(block.ImageURL.URL)
 								urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
