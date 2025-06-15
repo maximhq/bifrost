@@ -48,9 +48,9 @@ func releaseMistralResponse(resp *MistralResponse) {
 
 // MistralProvider implements the Provider interface for Mistral's API.
 type MistralProvider struct {
-	logger  schemas.Logger   // Logger for provider operations
-	client  *fasthttp.Client // HTTP client for API requests
-	baseURL string           // Base URL for the provider
+	logger        schemas.Logger        // Logger for provider operations
+	client        *fasthttp.Client      // HTTP client for API requests
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
 // NewMistralProvider creates a new Mistral provider instance.
@@ -74,15 +74,16 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	// Configure proxy if provided
 	client = configureProxy(client, config.ProxyConfig, logger)
 
-	baseURL := strings.TrimRight(config.NetworkConfig.BaseURL, "/")
-	if baseURL == "" {
-		baseURL = "https://api.mistral.ai"
+	// Set default BaseURL if not provided
+	if config.NetworkConfig.BaseURL == "" {
+		config.NetworkConfig.BaseURL = "https://api.mistral.ai"
 	}
+	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &MistralProvider{
-		logger:  logger,
-		client:  client,
-		baseURL: baseURL,
+		logger:        logger,
+		client:        client,
+		networkConfig: config.NetworkConfig,
 	}
 }
 
@@ -127,10 +128,14 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model, key 
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.SetRequestURI(provider.baseURL + "/v1/chat/completions")
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
+
 	req.SetBody(jsonBody)
 
 	// Make request

@@ -48,9 +48,9 @@ func releaseOllamaResponse(resp *OllamaResponse) {
 
 // OllamaProvider implements the Provider interface for Ollama's API.
 type OllamaProvider struct {
-	logger  schemas.Logger   // Logger for provider operations
-	client  *fasthttp.Client // HTTP client for API requests
-	baseURL string           // Base URL for the provider
+	logger        schemas.Logger        // Logger for provider operations
+	client        *fasthttp.Client      // HTTP client for API requests
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
 // NewOllamaProvider creates a new Ollama provider instance.
@@ -74,15 +74,17 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	// Configure proxy if provided
 	client = configureProxy(client, config.ProxyConfig, logger)
 
-	baseURL := strings.TrimRight(config.NetworkConfig.BaseURL, "/")
-	if baseURL == "" {
+	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+
+	// BaseURL is required for Ollama
+	if config.NetworkConfig.BaseURL == "" {
 		return nil, fmt.Errorf("base_url is required for ollama provider")
 	}
 
 	return &OllamaProvider{
-		logger:  logger,
-		client:  client,
-		baseURL: baseURL,
+		logger:        logger,
+		client:        client,
+		networkConfig: config.NetworkConfig,
 	}, nil
 }
 
@@ -127,12 +129,16 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model, key s
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.SetRequestURI(provider.baseURL + "/v1/chat/completions")
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+
 	req.SetBody(jsonBody)
 
 	// Make request
