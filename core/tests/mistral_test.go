@@ -18,7 +18,7 @@ func TestMistral(t *testing.T) {
 
 	config := TestConfig{
 		Provider:       schemas.Mistral,
-		TextModel:      "ministral-3b-2410",
+		TextModel:      "mistral-3b-2410",
 		ChatModel:      "pixtral-12b-latest",
 		SetupText:      false, // Mistral does not support text completion
 		SetupToolCalls: true,

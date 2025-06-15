@@ -102,7 +102,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(providerKey schemas.ModelProv
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("MISTRAL_API_KEY"),
-				Models: []string{"mistral-large-2411", "ministral-3b-2410", "pixtral-12b-latest"},
+				Models: []string{"mistral-large-2411", "mistral-3b-2410", "pixtral-12b-latest"},
 				Weight: 1.0,
 			},
 		}, nil

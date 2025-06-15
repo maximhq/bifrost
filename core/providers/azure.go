@@ -122,7 +122,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		azureChatResponsePool.Put(&AzureChatResponse{})
 		azureTextCompletionResponsePool.Put(&AzureTextResponse{})
-		bifrostResponsePool.Put(&schemas.BifrostResponse{})
+
 	}
 
 	// Configure proxy if provided
@@ -256,10 +256,6 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 	response := acquireAzureTextResponse()
 	defer releaseAzureTextResponse(response)
 
-	// Create Bifrost response from pool
-	bifrostResponse := acquireBifrostResponse()
-	defer releaseBifrostResponse(bifrostResponse)
-
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -269,15 +265,12 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 
 	// Create the completion result
 	if len(response.Choices) > 0 {
-		// Create a copy of the text to avoid dangling pointer to pooled object
-		textCopy := response.Choices[0].Text
-
 		choices = append(choices, schemas.BifrostResponseChoice{
 			Index: 0,
 			Message: schemas.BifrostMessage{
 				Role: schemas.ModelChatMessageRoleAssistant,
 				Content: schemas.MessageContent{
-					ContentStr: &textCopy,
+					ContentStr: &response.Choices[0].Text,
 				},
 			},
 			FinishReason: response.Choices[0].FinishReason,
@@ -287,15 +280,22 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 		})
 	}
 
-	bifrostResponse.ID = response.ID
-	bifrostResponse.Choices = choices
-	bifrostResponse.Model = response.Model
-	bifrostResponse.Created = response.Created
-	bifrostResponse.SystemFingerprint = response.SystemFingerprint
-	bifrostResponse.Usage = response.Usage
-	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.Azure,
-		RawResponse: rawResponse,
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:                response.ID,
+		Choices:           choices,
+		Model:             response.Model,
+		Created:           response.Created,
+		SystemFingerprint: response.SystemFingerprint,
+		Usage:             response.Usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Azure,
+			RawResponse: rawResponse,
+		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
 	}
 
 	return bifrostResponse, nil
@@ -322,24 +322,27 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key st
 	response := acquireAzureChatResponse()
 	defer releaseAzureChatResponse(response)
 
-	// Create Bifrost response from pool
-	bifrostResponse := acquireBifrostResponse()
-	defer releaseBifrostResponse(bifrostResponse)
-
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	bifrostResponse.ID = response.ID
-	bifrostResponse.Choices = response.Choices
-	bifrostResponse.Model = response.Model
-	bifrostResponse.Created = response.Created
-	bifrostResponse.SystemFingerprint = response.SystemFingerprint
-	bifrostResponse.Usage = response.Usage
-	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.Azure,
-		RawResponse: rawResponse,
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:                response.ID,
+		Choices:           response.Choices,
+		Model:             response.Model,
+		Created:           response.Created,
+		SystemFingerprint: response.SystemFingerprint,
+		Usage:             response.Usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Azure,
+			RawResponse: rawResponse,
+		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
 	}
 
 	return bifrostResponse, nil

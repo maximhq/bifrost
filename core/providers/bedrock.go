@@ -185,7 +185,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		bedrockChatResponsePool.Put(&BedrockChatResponse{})
-		bifrostResponsePool.Put(&schemas.BifrostResponse{})
+
 	}
 
 	return &BedrockProvider{
@@ -522,6 +522,12 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 						})
 					} else if msg.Content.ContentBlocks != nil {
 						for _, block := range *msg.Content.ContentBlocks {
+							if block.Text != nil {
+								content = append(content, BedrockAnthropicTextMessage{
+									Type: "text",
+									Text: *block.Text,
+								})
+							}
 							if block.ImageURL != nil {
 								sanitizedURL, _ := SanitizeImageURL(block.ImageURL.URL)
 								urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
@@ -781,7 +787,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model, key,
 		return nil, err
 	}
 
-	result, err := provider.getTextCompletionResult(body, model)
+	bifrostResponse, err := provider.getTextCompletionResult(body, model)
 	if err != nil {
 		return nil, err
 	}
@@ -798,9 +804,13 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model, key,
 		}
 	}
 
-	result.ExtraFields.RawResponse = rawResponse
+	bifrostResponse.ExtraFields.RawResponse = rawResponse
 
-	return result, nil
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
 }
 
 // extractToolsFromHistory extracts minimal tool definitions from conversation history.
@@ -907,10 +917,6 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 	response := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(response)
 
-	// Create Bifrost response from pool
-	bifrostResponse := acquireBifrostResponse()
-	defer releaseBifrostResponse(bifrostResponse)
-
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -939,13 +945,11 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 				arguments = []byte("{}")
 			}
 
-			idCopy := choice.ToolUse.ToolUseID // copy to avoid unsafe pointer creation
-			nameCopy := choice.ToolUse.Name    // copy to avoid unsafe pointer creation
 			toolCalls = append(toolCalls, schemas.ToolCall{
 				Type: StrPtr("function"),
-				ID:   &idCopy,
+				ID:   &choice.ToolUse.ToolUseID,
 				Function: schemas.FunctionCall{
-					Name:      &nameCopy,
+					Name:      &choice.ToolUse.Name,
 					Arguments: string(arguments),
 				},
 			})
@@ -979,17 +983,24 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 
 	latency := float64(response.Metrics.Latency)
 
-	bifrostResponse.Choices = choices
-	bifrostResponse.Usage = schemas.LLMUsage{
-		PromptTokens:     response.Usage.InputTokens,
-		CompletionTokens: response.Usage.OutputTokens,
-		TotalTokens:      response.Usage.TotalTokens,
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		Choices: choices,
+		Usage: schemas.LLMUsage{
+			PromptTokens:     response.Usage.InputTokens,
+			CompletionTokens: response.Usage.OutputTokens,
+			TotalTokens:      response.Usage.TotalTokens,
+		},
+		Model: model,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:     &latency,
+			Provider:    schemas.Bedrock,
+			RawResponse: rawResponse,
+		},
 	}
-	bifrostResponse.Model = model
-	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Latency:     &latency,
-		Provider:    schemas.Bedrock,
-		RawResponse: rawResponse,
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
 	}
 
 	return bifrostResponse, nil

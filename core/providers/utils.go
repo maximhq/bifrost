@@ -22,13 +22,6 @@ import (
 	"maps"
 )
 
-// bifrostResponsePool provides a pool for Bifrost response objects.
-var bifrostResponsePool = sync.Pool{
-	New: func() interface{} {
-		return &schemas.BifrostResponse{}
-	},
-}
-
 // dataURIRegex is a precompiled regex for matching data URI format patterns.
 // It matches patterns like: data:image/png;base64,iVBORw0KGgo...
 var dataURIRegex = regexp.MustCompile(`^data:([^;]+)(;base64)?,(.+)$`)
@@ -62,20 +55,6 @@ type URLTypeInfo struct {
 	Type                 ImageContentType
 	MediaType            *string
 	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
-}
-
-// acquireBifrostResponse gets a Bifrost response from the pool and resets it.
-func acquireBifrostResponse() *schemas.BifrostResponse {
-	resp := bifrostResponsePool.Get().(*schemas.BifrostResponse)
-	*resp = schemas.BifrostResponse{} // Reset the struct
-	return resp
-}
-
-// releaseBifrostResponse returns a Bifrost response to the pool.
-func releaseBifrostResponse(resp *schemas.BifrostResponse) {
-	if resp != nil {
-		bifrostResponsePool.Put(resp)
-	}
 }
 
 // mergeConfig merges a default configuration map with custom parameters.

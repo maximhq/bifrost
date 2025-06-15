@@ -141,7 +141,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		anthropicTextResponsePool.Put(&AnthropicTextResponse{})
 		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
-		bifrostResponsePool.Put(&schemas.BifrostResponse{})
+
 	}
 
 	// Configure proxy if provided
@@ -261,36 +261,39 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, ke
 	response := acquireAnthropicTextResponse()
 	defer releaseAnthropicTextResponse(response)
 
-	// Create Bifrost response from pool
-	bifrostResponse := acquireBifrostResponse()
-	defer releaseBifrostResponse(bifrostResponse)
-
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	bifrostResponse.ID = response.ID
-	bifrostResponse.Choices = []schemas.BifrostResponseChoice{
-		{
-			Index: 0,
-			Message: schemas.BifrostMessage{
-				Role: schemas.ModelChatMessageRoleAssistant,
-				Content: schemas.MessageContent{
-					ContentStr: &response.Completion,
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID: response.ID,
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				Message: schemas.BifrostMessage{
+					Role: schemas.ModelChatMessageRoleAssistant,
+					Content: schemas.MessageContent{
+						ContentStr: &response.Completion,
+					},
 				},
 			},
 		},
+		Usage: schemas.LLMUsage{
+			PromptTokens:     response.Usage.InputTokens,
+			CompletionTokens: response.Usage.OutputTokens,
+			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
+		},
+		Model: response.Model,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Anthropic,
+			RawResponse: rawResponse,
+		},
 	}
-	bifrostResponse.Usage = schemas.LLMUsage{
-		PromptTokens:     response.Usage.InputTokens,
-		CompletionTokens: response.Usage.OutputTokens,
-		TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
-	}
-	bifrostResponse.Model = response.Model
-	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.Anthropic,
-		RawResponse: rawResponse,
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
 	}
 
 	return bifrostResponse, nil
@@ -317,15 +320,13 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, ke
 	response := acquireAnthropicChatResponse()
 	defer releaseAnthropicChatResponse(response)
 
-	// Create Bifrost response from pool
-	bifrostResponse := acquireBifrostResponse()
-	defer releaseBifrostResponse(bifrostResponse)
-
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{}
 	bifrostResponse, err = parseAnthropicResponse(response, bifrostResponse)
 	if err != nil {
 		return nil, err
@@ -334,6 +335,10 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, ke
 	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 		Provider:    schemas.Anthropic,
 		RawResponse: rawResponse,
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
 	}
 
 	return bifrostResponse, nil
@@ -521,7 +526,9 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 	// Transform tool choice if present
 	if params != nil && params.ToolChoice != nil {
 		if params.ToolChoice.ToolChoiceStr != nil {
-			preparedParams["tool_choice"] = *params.ToolChoice.ToolChoiceStr
+			preparedParams["tool_choice"] = map[string]interface{}{
+				"type": *params.ToolChoice.ToolChoiceStr,
+			}
 		} else if params.ToolChoice.ToolChoiceStruct != nil {
 			switch toolChoice := params.ToolChoice.ToolChoiceStruct.Type; toolChoice {
 			case schemas.ToolChoiceTypeFunction:
