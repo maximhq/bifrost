@@ -140,6 +140,8 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelP
 		return providers.NewVertexProvider(config, bifrost.logger)
 	case schemas.Mistral:
 		return providers.NewMistralProvider(config, bifrost.logger), nil
+	case schemas.Ollama:
+		return providers.NewOllamaProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -153,8 +155,8 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to get config for provider: %v", err)
 	}
 
-	// Check if the provider has any keys (skip vertex)
-	if providerKey != schemas.Vertex {
+	// Check if the provider has any keys (skip keyless providers)
+	if providerRequiresKey(providerKey) {
 		keys, err := bifrost.account.GetKeysForProvider(providerKey)
 		if err != nil || len(keys) == 0 {
 			return fmt.Errorf("failed to get keys for provider: %v", err)
@@ -349,6 +351,12 @@ var retryableStatusCodes = map[int]bool{
 	429: true, // Too Many Requests
 }
 
+// providerRequiresKey returns true if the given provider requires an API key for authentication.
+// Some providers like Vertex and Ollama are keyless and don't require API keys.
+func providerRequiresKey(providerKey schemas.ModelProvider) bool {
+	return providerKey != schemas.Vertex && providerKey != schemas.Ollama
+}
+
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
 func (bifrost *Bifrost) calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration {
 	// Calculate an exponential backoff: initial * 2^attempt
@@ -371,7 +379,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		var err error
 
 		key := ""
-		if provider.GetProviderKey() != schemas.Vertex {
+		if providerRequiresKey(provider.GetProviderKey()) {
 			key, err = bifrost.selectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
 			if err != nil {
 				bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))

@@ -43,6 +43,7 @@ const (
 	Cohere    ModelProvider = "cohere"
 	Vertex    ModelProvider = "vertex"
 	Mistral   ModelProvider = "mistral"
+	Ollama    ModelProvider = "ollama"
 )
 
 //* Request Structs
