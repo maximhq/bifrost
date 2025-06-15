@@ -115,7 +115,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		cohereResponsePool.Put(&CohereChatResponse{})
-		bifrostResponsePool.Put(&schemas.BifrostResponse{})
+
 	}
 
 	// Set default BaseURL if not provided
@@ -388,10 +388,6 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 	response := acquireCohereResponse()
 	defer releaseCohereResponse(response)
 
-	// Create Bifrost response from pool
-	bifrostResponse := acquireBifrostResponse()
-	defer releaseBifrostResponse(bifrostResponse)
-
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -430,36 +426,43 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 		content = response.Text
 	}
 
-	bifrostResponse.ID = response.ResponseID
-	bifrostResponse.Choices = []schemas.BifrostResponseChoice{
-		{
-			Index: 0,
-			Message: schemas.BifrostMessage{
-				Role: role,
-				Content: schemas.MessageContent{
-					ContentStr: &content,
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID: response.ResponseID,
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				Message: schemas.BifrostMessage{
+					Role: role,
+					Content: schemas.MessageContent{
+						ContentStr: &content,
+					},
+					AssistantMessage: &schemas.AssistantMessage{
+						ToolCalls: &toolCalls,
+					},
 				},
-				AssistantMessage: &schemas.AssistantMessage{
-					ToolCalls: &toolCalls,
-				},
+				FinishReason: &response.FinishReason,
 			},
-			FinishReason: &response.FinishReason,
+		},
+		Usage: schemas.LLMUsage{
+			PromptTokens:     int(response.Meta.Tokens.InputTokens),
+			CompletionTokens: int(response.Meta.Tokens.OutputTokens),
+			TotalTokens:      int(response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens),
+		},
+		Model: model,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Cohere,
+			BilledUsage: &schemas.BilledLLMUsage{
+				PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
+				CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
+			},
+			ChatHistory: convertChatHistory(response.ChatHistory),
+			RawResponse: rawResponse,
 		},
 	}
-	bifrostResponse.Usage = schemas.LLMUsage{
-		PromptTokens:     int(response.Meta.Tokens.InputTokens),
-		CompletionTokens: int(response.Meta.Tokens.OutputTokens),
-		TotalTokens:      int(response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens),
-	}
-	bifrostResponse.Model = model
-	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider: schemas.Cohere,
-		BilledUsage: &schemas.BilledLLMUsage{
-			PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
-			CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
-		},
-		ChatHistory: convertChatHistory(response.ChatHistory),
-		RawResponse: rawResponse,
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
 	}
 
 	return bifrostResponse, nil
@@ -521,6 +524,7 @@ func convertChatHistory(history []struct {
 				})
 			}
 		}
+
 		converted[i] = schemas.BifrostMessage{
 			Role: msg.Role,
 			Content: schemas.MessageContent{

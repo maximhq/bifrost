@@ -61,7 +61,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		openAIResponsePool.Put(&OpenAIResponse{})
 		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
-		bifrostResponsePool.Put(&schemas.BifrostResponse{})
+
 	}
 
 	return &VertexProvider{
@@ -250,15 +250,13 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model, key s
 		response := acquireAnthropicChatResponse()
 		defer releaseAnthropicChatResponse(response)
 
-		// Create Bifrost response from pool
-		bifrostResponse := acquireBifrostResponse()
-		defer releaseBifrostResponse(bifrostResponse)
-
 		rawResponse, bifrostErr := handleProviderResponse(body, response)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 
+		// Create final response
+		bifrostResponse := &schemas.BifrostResponse{}
 		var err *schemas.BifrostError
 		bifrostResponse, err = parseAnthropicResponse(response, bifrostResponse)
 		if err != nil {
@@ -270,14 +268,15 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model, key s
 			RawResponse: rawResponse,
 		}
 
+		if params != nil {
+			bifrostResponse.ExtraFields.Params = *params
+		}
+
 		return bifrostResponse, nil
 	} else {
 		// Pre-allocate response structs from pools
 		response := acquireOpenAIResponse()
 		defer releaseOpenAIResponse(response)
-
-		result := acquireBifrostResponse()
-		defer releaseBifrostResponse(result)
 
 		// Use enhanced response handler with pre-allocated response
 		rawResponse, bifrostErr := handleProviderResponse(body, response)
@@ -285,20 +284,26 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model, key s
 			return nil, bifrostErr
 		}
 
-		// Populate result from response
-		result.ID = response.ID
-		result.Choices = response.Choices
-		result.Object = response.Object
-		result.Usage = response.Usage
-		result.ServiceTier = response.ServiceTier
-		result.SystemFingerprint = response.SystemFingerprint
-		result.Model = response.Model
-		result.Created = response.Created
-		result.ExtraFields = schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Vertex,
-			RawResponse: rawResponse,
+		// Create final response
+		bifrostResponse := &schemas.BifrostResponse{
+			ID:                response.ID,
+			Object:            response.Object,
+			Choices:           response.Choices,
+			Model:             response.Model,
+			Created:           response.Created,
+			ServiceTier:       response.ServiceTier,
+			SystemFingerprint: response.SystemFingerprint,
+			Usage:             response.Usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:    schemas.Vertex,
+				RawResponse: rawResponse,
+			},
 		}
 
-		return result, nil
+		if params != nil {
+			bifrostResponse.ExtraFields.Params = *params
+		}
+
+		return bifrostResponse, nil
 	}
 }

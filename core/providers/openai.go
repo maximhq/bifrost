@@ -85,7 +85,6 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		openAIResponsePool.Put(&OpenAIResponse{})
-		bifrostResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
 	// Configure proxy if provided
@@ -192,30 +191,33 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model, key s
 	response := acquireOpenAIResponse()
 	defer releaseOpenAIResponse(response)
 
-	result := acquireBifrostResponse()
-	defer releaseBifrostResponse(result)
-
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Populate result from response
-	result.ID = response.ID
-	result.Choices = response.Choices
-	result.Object = response.Object
-	result.Usage = response.Usage
-	result.ServiceTier = response.ServiceTier
-	result.SystemFingerprint = response.SystemFingerprint
-	result.Model = response.Model
-	result.Created = response.Created
-	result.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.OpenAI,
-		RawResponse: rawResponse,
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:                response.ID,
+		Object:            response.Object,
+		Choices:           response.Choices,
+		Model:             response.Model,
+		Created:           response.Created,
+		ServiceTier:       response.ServiceTier,
+		SystemFingerprint: response.SystemFingerprint,
+		Usage:             response.Usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.OpenAI,
+			RawResponse: rawResponse,
+		},
 	}
 
-	return result, nil
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
 }
 
 func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
