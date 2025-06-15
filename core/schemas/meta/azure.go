@@ -11,31 +11,6 @@ type AzureMetaConfig struct {
 	APIVersion  *string           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-02-01"
 }
 
-// This is not used for Azure.
-func (c *AzureMetaConfig) GetSecretAccessKey() *string {
-	return nil
-}
-
-// This is not used for Azure.
-func (c *AzureMetaConfig) GetRegion() *string {
-	return nil
-}
-
-// This is not used for Azure.
-func (c *AzureMetaConfig) GetSessionToken() *string {
-	return nil
-}
-
-// This is not used for Azure.
-func (c *AzureMetaConfig) GetARN() *string {
-	return nil
-}
-
-// This is not used for Azure.
-func (c *AzureMetaConfig) GetInferenceProfiles() map[string]string {
-	return nil
-}
-
 // GetEndpoint returns the Azure service endpoint.
 // This specifies the base URL for Azure API requests.
 func (c *AzureMetaConfig) GetEndpoint() *string {
@@ -55,12 +30,11 @@ func (c *AzureMetaConfig) GetAPIVersion() *string {
 	return c.APIVersion
 }
 
-// This is not used for Azure.
-func (c *AzureMetaConfig) GetProjectID() *string {
-	return nil
-}
-
-// This is not used for Azure.
-func (c *AzureMetaConfig) GetAuthCredentials() *string {
-	return nil
-}
+// These are not used for Azure.
+func (c *AzureMetaConfig) GetARN() *string                         { return nil }
+func (c *AzureMetaConfig) GetAuthCredentials() *string             { return nil }
+func (c *AzureMetaConfig) GetInferenceProfiles() map[string]string { return nil }
+func (c *AzureMetaConfig) GetProjectID() *string                   { return nil }
+func (c *AzureMetaConfig) GetRegion() *string                      { return nil }
+func (c *AzureMetaConfig) GetSecretAccessKey() *string             { return nil }
+func (c *AzureMetaConfig) GetSessionToken() *string                { return nil }

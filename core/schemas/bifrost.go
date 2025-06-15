@@ -42,6 +42,7 @@ const (
 	Bedrock   ModelProvider = "bedrock"
 	Cohere    ModelProvider = "cohere"
 	Vertex    ModelProvider = "vertex"
+	Mistral   ModelProvider = "mistral"
 )
 
 //* Request Structs
@@ -138,10 +139,60 @@ type ToolChoiceFunction struct {
 	Name string `json:"name"` // Name of the function to call
 }
 
-// ToolChoice represents how a tool should be chosen for a request.
-type ToolChoice struct {
+// ToolChoiceStruct represents a specific tool choice.
+type ToolChoiceStruct struct {
 	Type     ToolChoiceType     `json:"type"`               // Type of tool choice
 	Function ToolChoiceFunction `json:"function,omitempty"` // Function to call if type is ToolChoiceTypeFunction
+}
+
+// ToolChoice represents how a tool should be chosen for a request. (either a string or a struct)
+type ToolChoice struct {
+	ToolChoiceStr    *string
+	ToolChoiceStruct *ToolChoiceStruct
+}
+
+// MarshalJSON implements custom JSON marshalling for ToolChoice.
+// It marshals either ToolChoiceStr or ToolChoiceStruct directly without wrapping.
+func (tc ToolChoice) MarshalJSON() ([]byte, error) {
+	// Validation: ensure only one field is set at a time
+	if tc.ToolChoiceStr != nil && tc.ToolChoiceStruct != nil {
+		return nil, fmt.Errorf("both ToolChoiceStr and ToolChoiceStruct are set; only one should be non-nil")
+	}
+
+	if tc.ToolChoiceStr != nil {
+		return json.Marshal(*tc.ToolChoiceStr)
+	}
+	if tc.ToolChoiceStruct != nil {
+		return json.Marshal(*tc.ToolChoiceStruct)
+	}
+	// If both are nil, return null
+	return json.Marshal(nil)
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for ToolChoice.
+// It determines whether "tool_choice" is a string or struct and assigns to the appropriate field.
+// It also handles direct string/array content without a wrapper object.
+func (tc *ToolChoice) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var stringContent string
+	if err := json.Unmarshal(data, &stringContent); err == nil {
+		tc.ToolChoiceStr = &stringContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct struct of ToolChoiceStruct
+	var toolChoiceStruct ToolChoiceStruct
+	if err := json.Unmarshal(data, &toolChoiceStruct); err == nil {
+		// Validate the Type field is not empty and is a valid value
+		if toolChoiceStruct.Type == "" {
+			return fmt.Errorf("tool_choice struct has empty type field")
+		}
+
+		tc.ToolChoiceStruct = &toolChoiceStruct
+		return nil
+	}
+
+	return fmt.Errorf("tool_choice field is neither a string nor a struct")
 }
 
 // BifrostMessage represents a message in a chat conversation.

@@ -11,45 +11,10 @@ type VertexMetaConfig struct {
 	AuthCredentials string `json:"auth_credentials,omitempty"`
 }
 
-// This is not used for Vertex.
-func (c *VertexMetaConfig) GetSecretAccessKey() *string {
-	return nil
-}
-
 // GetRegion returns the Vertex region.
 // This is the region for the Vertex project.
 func (c *VertexMetaConfig) GetRegion() *string {
 	return &c.Region
-}
-
-// This is not used for Vertex.
-func (c *VertexMetaConfig) GetSessionToken() *string {
-	return nil
-}
-
-// This is not used for Vertex.
-func (c *VertexMetaConfig) GetARN() *string {
-	return nil
-}
-
-// This is not used for Vertex.
-func (c *VertexMetaConfig) GetInferenceProfiles() map[string]string {
-	return nil
-}
-
-// This is not used for Vertex.
-func (c *VertexMetaConfig) GetEndpoint() *string {
-	return nil
-}
-
-// This is not used for Vertex.
-func (c *VertexMetaConfig) GetDeployments() map[string]string {
-	return nil
-}
-
-// This is not used for Vertex.
-func (c *VertexMetaConfig) GetAPIVersion() *string {
-	return nil
 }
 
 // GetProjectID returns the Vertex project ID.
@@ -63,3 +28,12 @@ func (c *VertexMetaConfig) GetProjectID() *string {
 func (c *VertexMetaConfig) GetAuthCredentials() *string {
 	return &c.AuthCredentials
 }
+
+// These are not used for Vertex.
+func (c *VertexMetaConfig) GetAPIVersion() *string                  { return nil }
+func (c *VertexMetaConfig) GetARN() *string                         { return nil }
+func (c *VertexMetaConfig) GetDeployments() map[string]string       { return nil }
+func (c *VertexMetaConfig) GetEndpoint() *string                    { return nil }
+func (c *VertexMetaConfig) GetInferenceProfiles() map[string]string { return nil }
+func (c *VertexMetaConfig) GetSecretAccessKey() *string             { return nil }
+func (c *VertexMetaConfig) GetSessionToken() *string                { return nil }

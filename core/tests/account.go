@@ -27,7 +27,7 @@ type BaseAccount struct{}
 //   - []schemas.SupportedModelProvider: A slice containing the supported provider identifiers
 //   - error: Always returns nil as this implementation doesn't produce errors
 func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Cohere, schemas.Azure, schemas.Vertex}, nil
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Cohere, schemas.Azure, schemas.Vertex, schemas.Mistral}, nil
 }
 
 // GetKeysForProvider returns the API keys and associated models for a given provider.
@@ -86,6 +86,14 @@ func (baseAccount *BaseAccount) GetKeysForProvider(providerKey schemas.ModelProv
 			{
 				Value:  os.Getenv("AZURE_API_KEY"),
 				Models: []string{"gpt-4o"},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.Mistral:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("MISTRAL_API_KEY"),
+				Models: []string{"mistral-large-2411", "ministral-3b-2410", "pixtral-12b-latest"},
 				Weight: 1.0,
 			},
 		}, nil
@@ -198,6 +206,11 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 				Concurrency: 3,
 				BufferSize:  10,
 			},
+		}, nil
+	case schemas.Mistral:
+		return &schemas.ProviderConfig{
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
