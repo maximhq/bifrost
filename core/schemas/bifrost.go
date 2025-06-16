@@ -49,10 +49,11 @@ const (
 //* Request Structs
 
 // RequestInput represents the input for a model request, which can be either
-// a text completion or a chat completion, but either one must be provided.
+// a text completion, a chat completion, or an embedding request.
 type RequestInput struct {
 	TextCompletionInput *string           `json:"text_completion_input,omitempty"`
 	ChatCompletionInput *[]BifrostMessage `json:"chat_completion_input,omitempty"`
+	EmbeddingInput      *any              `json:"embedding_input,omitempty"`
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.

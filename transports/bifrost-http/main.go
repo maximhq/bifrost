@@ -1,9 +1,10 @@
 // Package http provides an HTTP service using FastHTTP that exposes endpoints
-// for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
+// for text completions, chat completions, and embeddings using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
 //
-// The HTTP service provides two main endpoints:
+// The HTTP service provides three main endpoints:
 //   - /v1/text/completions: For text completion requests
 //   - /v1/chat/completions: For chat completion requests
+//   - /v1/embeddings: For text embedding requests
 //
 // Configuration is handled through a JSON config file and environment variables:
 //   - Use -config flag to specify the config file location
@@ -117,6 +118,15 @@ type CompletionRequest struct {
 	Fallbacks []schemas.Fallback       `json:"fallbacks"` // Fallback providers and models
 }
 
+// EmbeddingRequest represents a request for text embeddings.
+type EmbeddingRequest struct {
+	Provider  schemas.ModelProvider    `json:"provider"`  // The AI model provider to use
+	Input     any                      `json:"input"`     // Text input (string or []string)
+	Model     string                   `json:"model"`     // Model to use
+	Params    *schemas.ModelParameters `json:"params"`    // Additional model parameters
+	Fallbacks []schemas.Fallback       `json:"fallbacks"` // Fallback providers and models
+}
+
 // registerCollectorSafely attempts to register a Prometheus collector,
 // handling the case where it may already be registered.
 // It logs any errors that occur during registration, except for AlreadyRegisteredError.
@@ -139,6 +149,7 @@ func registerCollectorSafely(collector prometheus.Collector) {
 // The server exposes the following endpoints:
 //   - POST /v1/text/completions: For text completion requests
 //   - POST /v1/chat/completions: For chat completion requests
+//   - POST /v1/embeddings: For embedding requests
 //   - GET /metrics: For Prometheus metrics
 func main() {
 	// Register Prometheus collectors
@@ -208,6 +219,10 @@ func main() {
 
 	r.POST("/v1/chat/completions", func(ctx *fasthttp.RequestCtx) {
 		handleCompletion(ctx, client, true)
+	})
+
+	r.POST("/v1/embeddings", func(ctx *fasthttp.RequestCtx) {
+		handleEmbedding(ctx, client)
 	})
 
 	for _, extension := range extensions {
@@ -314,6 +329,73 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 		resp, err = client.TextCompletionRequest(*bifrostCtx, bifrostReq)
 	}
 
+	if err != nil {
+		if err.IsBifrostError {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		}
+		ctx.SetContentType("application/json")
+		json.NewEncoder(ctx).Encode(err)
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetContentType("application/json")
+	json.NewEncoder(ctx).Encode(resp)
+}
+
+// handleEmbedding processes embedding requests.
+// It handles request parsing, validation, and response formatting.
+//
+// Parameters:
+//   - ctx: The FastHTTP request context
+//   - client: The Bifrost client instance
+//
+// The function:
+// 1. Parses the request body into an EmbeddingRequest
+// 2. Validates required fields
+// 3. Creates a BifrostRequest with the appropriate input type
+// 4. Calls the embedding method on the client
+// 5. Handles any errors and formats the response
+func handleEmbedding(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
+	var req EmbeddingRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetBodyString(fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+
+	if req.Provider == "" {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetBodyString("Provider is required")
+		return
+	}
+
+	if req.Input == nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetBodyString("Input is required")
+		return
+	}
+
+	bifrostReq := &schemas.BifrostRequest{
+		Provider:  req.Provider,
+		Model:     req.Model,
+		Params:    req.Params,
+		Fallbacks: req.Fallbacks,
+		Input: schemas.RequestInput{
+			EmbeddingInput: &req.Input,
+		},
+	}
+
+	bifrostCtx := lib.ConvertToBifrostContext(ctx)
+	if bifrostCtx == nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString("Failed to convert context")
+		return
+	}
+
+	resp, err := client.EmbeddingRequest(*bifrostCtx, bifrostReq)
 	if err != nil {
 		if err.IsBifrostError {
 			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
