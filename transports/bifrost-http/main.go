@@ -378,13 +378,14 @@ func handleEmbedding(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
 		return
 	}
 
+	input := req.Input
 	bifrostReq := &schemas.BifrostRequest{
 		Provider:  req.Provider,
 		Model:     req.Model,
 		Params:    req.Params,
 		Fallbacks: req.Fallbacks,
 		Input: schemas.RequestInput{
-			EmbeddingInput: &req.Input,
+			EmbeddingInput: input,
 		},
 	}
 

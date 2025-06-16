@@ -53,7 +53,7 @@ const (
 type RequestInput struct {
 	TextCompletionInput *string           `json:"text_completion_input,omitempty"`
 	ChatCompletionInput *[]BifrostMessage `json:"chat_completion_input,omitempty"`
-	EmbeddingInput      *any              `json:"embedding_input,omitempty"`
+	EmbeddingInput      any               `json:"embedding_input,omitempty"`
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
