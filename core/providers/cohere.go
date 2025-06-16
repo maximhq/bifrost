@@ -537,3 +537,13 @@ func convertChatHistory(history []struct {
 	}
 	return &converted
 }
+
+// Embedding is not supported by the Cohere provider.
+func (provider *CohereProvider) Embedding(ctx context.Context, model, key string, text any) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: schemas.ErrorField{
+			Message: "embedding is not supported by cohere provider",
+		},
+	}
+}

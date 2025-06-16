@@ -1091,3 +1091,13 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 
 	return nil
 }
+
+// Embedding is not supported by the Bedrock provider.
+func (provider *BedrockProvider) Embedding(ctx context.Context, model, key string, text any) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: schemas.ErrorField{
+			Message: "embedding is not supported by bedrock provider",
+		},
+	}
+}

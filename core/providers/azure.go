@@ -347,3 +347,13 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key st
 
 	return bifrostResponse, nil
 }
+
+// Embedding is not supported by the Azure provider.
+func (provider *AzureProvider) Embedding(ctx context.Context, model, key string, text any) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: schemas.ErrorField{
+			Message: "embedding is not supported by azure provider",
+		},
+	}
+}

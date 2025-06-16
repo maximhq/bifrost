@@ -288,7 +288,7 @@ type ImageURLStruct struct {
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
 	ID                string                     `json:"id,omitempty"`
-	Object            string                     `json:"object,omitempty"` // text.completion or chat.completion
+	Object            string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
 	Choices           []BifrostResponseChoice    `json:"choices,omitempty"`
 	Model             string                     `json:"model,omitempty"`
 	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
@@ -296,6 +296,7 @@ type BifrostResponse struct {
 	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
 	Usage             LLMUsage                   `json:"usage,omitempty"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	Embedding         [][]float32                `json:"embedding,omitempty"`
 }
 
 // LLMUsage represents token usage information
