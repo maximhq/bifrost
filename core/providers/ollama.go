@@ -190,7 +190,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model, key s
 }
 
 // Embedding is not supported by the Ollama provider.
-func (provider *OllamaProvider) Embedding(ctx context.Context, model, key string, text any) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OllamaProvider) Embedding(ctx context.Context, model, key string, input any, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, &schemas.BifrostError{
 		IsBifrostError: false,
 		Error: schemas.ErrorField{

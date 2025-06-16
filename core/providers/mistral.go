@@ -187,7 +187,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model, key 
 }
 
 // Embedding is not supported by the Mistral provider.
-func (provider *MistralProvider) Embedding(ctx context.Context, model, key string, text any) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *MistralProvider) Embedding(ctx context.Context, model, key string, input any, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, &schemas.BifrostError{
 		IsBifrostError: false,
 		Error: schemas.ErrorField{

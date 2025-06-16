@@ -463,7 +463,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 					}
 					break // Don't retry client errors
 				} else {
-					result, bifrostError = provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput)
+					result, bifrostError = provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
 				}
 			}
 

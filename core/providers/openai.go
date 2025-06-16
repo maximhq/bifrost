@@ -4,7 +4,10 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -22,9 +25,9 @@ type OpenAIResponse struct {
 	Object  string                          `json:"object"`  // Type of completion (text.completion, chat.completion, or embedding)
 	Choices []schemas.BifrostResponseChoice `json:"choices"` // Array of completion choices
 	Data    []struct {                      // Embedding data
-		Object    string    `json:"object"`
-		Embedding []float32 `json:"embedding"`
-		Index     int       `json:"index"`
+		Object    string `json:"object"`
+		Embedding any    `json:"embedding"`
+		Index     int    `json:"index"`
 	} `json:"data,omitempty"`
 	Model             string           `json:"model"`              // Model used for the completion
 	Created           int              `json:"created"`            // Unix timestamp of completion creation
@@ -270,27 +273,47 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 	return formattedMessages, preparedParams
 }
 
-// Embedding generates embeddings for the given text using OpenAI's API.
-func (provider *OpenAIProvider) Embedding(ctx context.Context, model, key string, text any) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Convert text input to string slice
-	var input []string
-	switch v := text.(type) {
+// Embedding generates embeddings for the given input text(s).
+// The input can be either a single string or a slice of strings for batch embedding.
+// Returns a BifrostResponse containing the embedding(s) and any error that occurred.
+func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key string, input any, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Convert input to string array if it's a single string
+	var inputArray []string
+	switch v := input.(type) {
 	case string:
-		input = []string{v}
+		inputArray = []string{v}
 	case []string:
-		input = v
+		inputArray = v
 	default:
 		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
+			IsBifrostError: false,
 			Error: schemas.ErrorField{
-				Message: "invalid input type for embedding, expected string or []string",
+				Message: "input must be a string or []string",
 			},
 		}
 	}
 
+	// Prepare request body with base parameters
 	requestBody := map[string]interface{}{
 		"model": model,
-		"input": input,
+		"input": inputArray,
+	}
+
+	// Merge any additional parameters
+	if params != nil {
+		// Map standard parameters
+		if params.EncodingFormat != nil {
+			requestBody["encoding_format"] = *params.EncodingFormat
+		}
+		if params.Dimensions != nil {
+			requestBody["dimensions"] = *params.Dimensions
+		}
+		if params.User != nil {
+			requestBody["user"] = *params.User
+		}
+
+		// Merge any extra parameters
+		requestBody = mergeConfig(requestBody, params.ExtraParams)
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
@@ -331,6 +354,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model, key string
 		provider.logger.Debug(fmt.Sprintf("error from openai provider: %s", string(resp.Body())))
 
 		var errorResp OpenAIError
+
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 
 		if errorResp.EventID != "" {
@@ -347,13 +371,9 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model, key string
 		return nil, bifrostErr
 	}
 
-	responseBody := resp.Body()
-
 	// Parse response
-	response := acquireOpenAIResponse()
-	defer releaseOpenAIResponse(response)
-
-	if err := json.Unmarshal(responseBody, response); err != nil {
+	var response OpenAIResponse
+	if err := json.Unmarshal(resp.Body(), &response); err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
@@ -365,16 +385,72 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model, key string
 
 	// Create final response
 	bifrostResponse := &schemas.BifrostResponse{
-		Object: "embedding",
-		Model:  response.Model,
-		Usage:  response.Usage,
+		ID:      response.ID,
+		Object:  response.Object,
+		Model:   response.Model,
+		Created: response.Created,
+		Usage:   response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.OpenAI,
-			RawResponse: response,
+			Provider: schemas.OpenAI,
 		},
 	}
-	for _, data := range response.Data {
-		bifrostResponse.Embedding = append(bifrostResponse.Embedding, data.Embedding)
+
+	// Extract embeddings from response data
+	if len(response.Data) > 0 {
+		embeddings := make([][]float32, len(response.Data))
+		for i, data := range response.Data {
+			switch v := data.Embedding.(type) {
+			case []float32:
+				embeddings[i] = v
+			case []interface{}:
+				// Convert []interface{} to []float32
+				floatArray := make([]float32, len(v))
+				for j := range v {
+					if num, ok := v[j].(float64); ok {
+						floatArray[j] = float32(num)
+					} else {
+						return nil, &schemas.BifrostError{
+							IsBifrostError: true,
+							Error: schemas.ErrorField{
+								Message: fmt.Sprintf("unsupported number type in embedding array: %T", v[j]),
+							},
+						}
+					}
+				}
+				embeddings[i] = floatArray
+			case string:
+				// Decode base64 string into float32 array
+				decodedData, err := base64.StdEncoding.DecodeString(v)
+				if err != nil {
+					return nil, &schemas.BifrostError{
+						IsBifrostError: true,
+						Error: schemas.ErrorField{
+							Message: "failed to decode base64 embedding",
+							Error:   err,
+						},
+					}
+				}
+
+				const sizeOfFloat32 = 4
+				floats := make([]float32, len(decodedData)/sizeOfFloat32)
+				for i := 0; i < len(floats); i++ {
+					floats[i] = math.Float32frombits(binary.LittleEndian.Uint32(decodedData[i*4 : (i+1)*4]))
+				}
+				embeddings[i] = floats
+			default:
+				return nil, &schemas.BifrostError{
+					IsBifrostError: true,
+					Error: schemas.ErrorField{
+						Message: fmt.Sprintf("unsupported embedding type: %T", data.Embedding),
+					},
+				}
+			}
+		}
+		bifrostResponse.Embedding = embeddings
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
 	}
 
 	return bifrostResponse, nil

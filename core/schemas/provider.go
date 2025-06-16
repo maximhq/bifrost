@@ -160,5 +160,5 @@ type Provider interface {
 	ChatCompletion(ctx context.Context, model, key string, messages []BifrostMessage, params *ModelParameters) (*BifrostResponse, *BifrostError)
 	// Embedding generates embeddings for the given input text(s). The input can
 	// be either a single string or a slice of strings for batch embedding.
-	Embedding(ctx context.Context, model string, key string, input any) (*BifrostResponse, *BifrostError)
+	Embedding(ctx context.Context, model string, key string, input any, params *ModelParameters) (*BifrostResponse, *BifrostError)
 }

@@ -120,11 +120,14 @@ type CompletionRequest struct {
 
 // EmbeddingRequest represents a request for text embeddings.
 type EmbeddingRequest struct {
-	Provider  schemas.ModelProvider    `json:"provider"`  // The AI model provider to use
-	Input     any                      `json:"input"`     // Text input (string or []string)
-	Model     string                   `json:"model"`     // Model to use
-	Params    *schemas.ModelParameters `json:"params"`    // Additional model parameters
-	Fallbacks []schemas.Fallback       `json:"fallbacks"` // Fallback providers and models
+	Provider       schemas.ModelProvider    `json:"provider"`        // The AI model provider to use
+	Input          any                      `json:"input"`           // Text input (string or []string)
+	Model          string                   `json:"model"`           // Model to use
+	Params         *schemas.ModelParameters `json:"params"`          // Additional model parameters
+	Fallbacks      []schemas.Fallback       `json:"fallbacks"`       // Fallback providers and models
+	Dimensions     *int                     `json:"dimensions"`      // Number of dimensions for embedding output
+	EncodingFormat *string                  `json:"encoding_format"` // Format of embedding output (e.g., "float", "base64")
+	User           *string                  `json:"user"`            // User identification
 }
 
 // registerCollectorSafely attempts to register a Prometheus collector,
@@ -378,15 +381,24 @@ func handleEmbedding(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
 		return
 	}
 
-	input := req.Input
 	bifrostReq := &schemas.BifrostRequest{
 		Provider:  req.Provider,
 		Model:     req.Model,
 		Params:    req.Params,
 		Fallbacks: req.Fallbacks,
 		Input: schemas.RequestInput{
-			EmbeddingInput: input,
+			EmbeddingInput: req.Input,
 		},
+	}
+
+	// If any of the new fields are set, ensure we have a Params object
+	if req.Dimensions != nil || req.EncodingFormat != nil || req.User != nil {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ModelParameters{}
+		}
+		bifrostReq.Params.Dimensions = req.Dimensions
+		bifrostReq.Params.EncodingFormat = req.EncodingFormat
+		bifrostReq.Params.User = req.User
 	}
 
 	bifrostCtx := lib.ConvertToBifrostContext(ctx)
