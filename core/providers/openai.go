@@ -276,27 +276,11 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 // Embedding generates embeddings for the given input text(s).
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key string, input any, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Convert input to string array if it's a single string
-	var inputArray []string
-	switch v := input.(type) {
-	case string:
-		inputArray = []string{v}
-	case []string:
-		inputArray = v
-	default:
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "input must be a string or []string",
-			},
-		}
-	}
-
+func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Prepare request body with base parameters
 	requestBody := map[string]interface{}{
 		"model": model,
-		"input": inputArray,
+		"input": input.Texts,
 	}
 
 	// Merge any additional parameters
@@ -385,11 +369,13 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 
 	// Create final response
 	bifrostResponse := &schemas.BifrostResponse{
-		ID:      response.ID,
-		Object:  response.Object,
-		Model:   response.Model,
-		Created: response.Created,
-		Usage:   response.Usage,
+		ID:                response.ID,
+		Object:            response.Object,
+		Model:             response.Model,
+		Created:           response.Created,
+		Usage:             response.Usage,
+		ServiceTier:       response.ServiceTier,
+		SystemFingerprint: response.SystemFingerprint,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.OpenAI,
 		},

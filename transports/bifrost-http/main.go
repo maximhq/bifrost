@@ -375,9 +375,15 @@ func handleEmbedding(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
 		return
 	}
 
-	if req.Input == nil {
+	var input schemas.EmbeddingInput
+	switch v := req.Input.(type) {
+	case string:
+		input.Texts = []string{v}
+	case []string:
+		input.Texts = v
+	default:
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.SetBodyString("Input is required")
+		ctx.SetBodyString("Input must be a string or []string")
 		return
 	}
 
@@ -387,7 +393,7 @@ func handleEmbedding(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
 		Params:    req.Params,
 		Fallbacks: req.Fallbacks,
 		Input: schemas.RequestInput{
-			EmbeddingInput: req.Input,
+			EmbeddingInput: &input,
 		},
 	}
 

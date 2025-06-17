@@ -53,11 +53,16 @@ const (
 type RequestInput struct {
 	TextCompletionInput *string           `json:"text_completion_input,omitempty"`
 	ChatCompletionInput *[]BifrostMessage `json:"chat_completion_input,omitempty"`
-	EmbeddingInput      any               `json:"embedding_input,omitempty"`
+	EmbeddingInput      *EmbeddingInput   `json:"embedding_input,omitempty"`
+}
+
+// EmbeddingInput represents the input for an embedding request.
+type EmbeddingInput struct {
+	Texts []string `json:"texts"`
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
-// It must be provided when calling the Bifrost for text completion or chat completion.
+// It must be provided when calling the Bifrost for text completion, chat completion, or embedding.
 // It contains the model identifier, input data, and parameters for the request.
 type BifrostRequest struct {
 	Provider ModelProvider    `json:"provider"`
@@ -300,7 +305,7 @@ type BifrostResponse struct {
 	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
 	Usage             LLMUsage                   `json:"usage,omitempty"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
-	Embedding         [][]float32                `json:"embedding,omitempty"`
+	Embedding         [][]float32                `json:"data,omitempty"`
 }
 
 // LLMUsage represents token usage information
