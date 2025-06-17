@@ -68,6 +68,9 @@ type BifrostRequest struct {
 	// Provider config must be available for each fallback's provider in account's GetConfigForProvider,
 	// else it will be skipped.
 	Fallbacks []Fallback `json:"fallbacks,omitempty"`
+
+	// MCPTools contains approved MCP tools to execute (used with safe mode)
+	MCPTools []Tool `json:"mcp_tools,omitempty"`
 }
 
 // Fallback represents a fallback model to be used if the primary model is not available.
@@ -401,12 +404,13 @@ type BifrostResponseChoice struct {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	Provider    ModelProvider     `json:"provider"`
-	Params      ModelParameters   `json:"model_params"`
-	Latency     *float64          `json:"latency,omitempty"`
-	ChatHistory *[]BifrostMessage `json:"chat_history,omitempty"`
-	BilledUsage *BilledLLMUsage   `json:"billed_usage,omitempty"`
-	RawResponse interface{}       `json:"raw_response"`
+	Provider        ModelProvider     `json:"provider"`
+	Params          ModelParameters   `json:"model_params"`
+	Latency         *float64          `json:"latency,omitempty"`
+	ChatHistory     *[]BifrostMessage `json:"chat_history,omitempty"`
+	BilledUsage     *BilledLLMUsage   `json:"billed_usage,omitempty"`
+	RawResponse     interface{}       `json:"raw_response"`
+	PendingMCPTools []PendingMCPTool  `json:"pending_mcp_tools,omitempty"`
 }
 
 const (
@@ -430,4 +434,11 @@ type ErrorField struct {
 	Error   error       `json:"error,omitempty"`
 	Param   interface{} `json:"param,omitempty"`
 	EventID *string     `json:"event_id,omitempty"`
+}
+
+// PendingMCPTool represents an MCP tool that requires user approval
+type PendingMCPTool struct {
+	ClientName string   `json:"client_name"`
+	Tool       Tool     `json:"tool"`
+	ToolCall   ToolCall `json:"tool_call"` // Original tool call for reference
 }
