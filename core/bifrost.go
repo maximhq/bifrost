@@ -22,6 +22,7 @@ type RequestType string
 const (
 	TextCompletionRequest RequestType = "text_completion"
 	ChatCompletionRequest RequestType = "chat_completion"
+	EmbeddingRequest      RequestType = "embedding"
 )
 
 // ChannelMessage represents a message passed through the request channel.
@@ -452,6 +453,18 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				} else {
 					result, bifrostError = provider.ChatCompletion(req.Context, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
 				}
+			} else if req.Type == EmbeddingRequest {
+				if req.Input.EmbeddingInput == nil {
+					bifrostError = &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: schemas.ErrorField{
+							Message: "input not provided for embedding request",
+						},
+					}
+					break // Don't retry client errors
+				} else {
+					result, bifrostError = provider.Embedding(req.Context, req.Model, key, *req.Input.EmbeddingInput, req.Params)
+				}
 			}
 
 			bifrost.logger.Debug(fmt.Sprintf("Request for provider %s completed", provider.GetProviderKey()))
@@ -740,6 +753,131 @@ func (bifrost *Bifrost) tryChatCompletion(req *schemas.BifrostRequest, ctx conte
 	}
 
 	msg := bifrost.getChannelMessage(*preReq, ChatCompletionRequest)
+	msg.Context = ctx
+
+	select {
+	case queue <- *msg:
+		// Message was sent successfully
+	case <-ctx.Done():
+		bifrost.releaseChannelMessage(msg)
+		return nil, newBifrostErrorFromMsg("request cancelled while waiting for queue space")
+	default:
+		if bifrost.dropExcessRequests {
+			bifrost.releaseChannelMessage(msg)
+			bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
+			return nil, newBifrostErrorFromMsg("request dropped: queue is full")
+		}
+		if ctx == nil {
+			ctx = bifrost.backgroundCtx
+		}
+		select {
+		case queue <- *msg:
+			// Message was sent successfully
+		case <-ctx.Done():
+			bifrost.releaseChannelMessage(msg)
+			return nil, newBifrostErrorFromMsg("request cancelled while waiting for queue space")
+		}
+	}
+
+	var result *schemas.BifrostResponse
+	var resp *schemas.BifrostResponse
+	select {
+	case result = <-msg.Response:
+		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(bifrost.plugins))
+		if bifrostErr != nil {
+			bifrost.releaseChannelMessage(msg)
+			return nil, bifrostErr
+		}
+		bifrost.releaseChannelMessage(msg)
+		return resp, nil
+	case bifrostErrVal := <-msg.Err:
+		bifrostErrPtr := &bifrostErrVal
+		resp, bifrostErrPtr = pipeline.RunPostHooks(&ctx, nil, bifrostErrPtr, len(bifrost.plugins))
+		bifrost.releaseChannelMessage(msg)
+		if bifrostErrPtr != nil {
+			return nil, bifrostErrPtr
+		}
+		return resp, nil
+	}
+}
+
+// EmbeddingRequest sends an embedding request to the specified provider.
+// It handles plugin hooks, request validation, response processing, and fallback providers.
+// If the primary provider fails, it will try each fallback provider in order until one succeeds.
+func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, newBifrostErrorFromMsg("bifrost request cannot be nil")
+	}
+
+	if req.Provider == "" {
+		return nil, newBifrostErrorFromMsg("provider is required")
+	}
+
+	if req.Model == "" {
+		return nil, newBifrostErrorFromMsg("model is required")
+	}
+
+	// Try the primary provider first
+	primaryResult, primaryErr := bifrost.tryEmbedding(req, ctx)
+	if primaryErr == nil {
+		return primaryResult, nil
+	}
+
+	// If primary provider failed and we have fallbacks, try them in order
+	if len(req.Fallbacks) > 0 {
+		for _, fallback := range req.Fallbacks {
+			// Check if we have config for this fallback provider
+			_, err := bifrost.account.GetConfigForProvider(fallback.Provider)
+			if err != nil {
+				bifrost.logger.Warn(fmt.Sprintf("Config not found for provider %s, skipping fallback: %v", fallback.Provider, err))
+				continue
+			}
+
+			// Create a new request with the fallback provider and model
+			fallbackReq := *req
+			fallbackReq.Provider = fallback.Provider
+			fallbackReq.Model = fallback.Model
+
+			// Try the fallback provider
+			result, fallbackErr := bifrost.tryEmbedding(&fallbackReq, ctx)
+			if fallbackErr == nil {
+				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+				return result, nil
+			}
+			if fallbackErr.Error.Type != nil && *fallbackErr.Error.Type == schemas.RequestCancelled {
+				return nil, fallbackErr
+			}
+
+			bifrost.logger.Warn(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+		}
+	}
+
+	// All providers failed, return the original error
+	return nil, primaryErr
+}
+
+// tryEmbedding attempts an embedding request with a single provider.
+// This is a helper function used by EmbeddingRequest to handle individual provider attempts.
+func (bifrost *Bifrost) tryEmbedding(req *schemas.BifrostRequest, ctx context.Context) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	queue, err := bifrost.getProviderQueue(req.Provider)
+	if err != nil {
+		return nil, newBifrostError(err)
+	}
+
+	pipeline := NewPluginPipeline(bifrost.plugins, bifrost.logger)
+	preReq, preResp, preCount := pipeline.RunPreHooks(&ctx, req)
+	if preResp != nil {
+		resp, bifrostErr := pipeline.RunPostHooks(&ctx, preResp, nil, preCount)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return resp, nil
+	}
+	if preReq == nil {
+		return nil, newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
+	}
+
+	msg := bifrost.getChannelMessage(*preReq, EmbeddingRequest)
 	msg.Context = ctx
 
 	select {

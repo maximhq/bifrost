@@ -43,6 +43,20 @@ type AzureChatResponse struct {
 	Usage             schemas.LLMUsage                `json:"usage"`              // Token usage statistics
 }
 
+// AzureEmbeddingResponse represents the response structure from Azure's embedding API.
+type AzureEmbeddingResponse struct {
+	Object string `json:"object"`
+	Data   []struct {
+		Object    string      `json:"object"`
+		Embedding interface{} `json:"embedding"`
+		Index     int         `json:"index"`
+	} `json:"data"`
+	Model             string           `json:"model"`
+	Usage             schemas.LLMUsage `json:"usage"`
+	ID                string           `json:"id"`
+	SystemFingerprint *string          `json:"system_fingerprint"`
+}
+
 // AzureError represents the error response structure from Azure's API.
 // It includes error code and message information.
 type AzureError struct {
@@ -348,6 +362,106 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key st
 			Provider:    schemas.Azure,
 			RawResponse: rawResponse,
 		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
+}
+
+// Embedding generates embeddings for the given input text(s) using Azure OpenAI.
+// The input can be either a single string or a slice of strings for batch embedding.
+// Returns a BifrostResponse containing the embedding(s) and any error that occurred.
+func (provider *AzureProvider) Embedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if len(input.Texts) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
+		}
+	}
+
+	// Prepare request body - Azure uses deployment-scoped URLs, so model is not needed in body
+	requestBody := map[string]interface{}{
+		"input": input.Texts,
+	}
+
+	// Merge any additional parameters
+	if params != nil {
+		if params.EncodingFormat != nil {
+			requestBody["encoding_format"] = *params.EncodingFormat
+		}
+		if params.Dimensions != nil {
+			requestBody["dimensions"] = *params.Dimensions
+		}
+		if params.User != nil {
+			requestBody["user"] = *params.User
+		}
+		requestBody = mergeConfig(requestBody, params.ExtraParams)
+	}
+
+	responseBody, err := provider.completeRequest(ctx, requestBody, "embeddings", key, model)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse response
+	var response AzureEmbeddingResponse
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderResponseUnmarshal,
+				Error:   err,
+			},
+		}
+	}
+
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:                response.ID,
+		Object:            response.Object,
+		Model:             response.Model,
+		Usage:             response.Usage,
+		SystemFingerprint: response.SystemFingerprint,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Azure,
+			RawResponse: responseBody,
+		},
+	}
+
+	// Extract embeddings from response data
+	if len(response.Data) > 0 {
+		embeddings := make([][]float32, len(response.Data))
+		for i, data := range response.Data {
+			switch v := data.Embedding.(type) {
+			case []float32:
+				embeddings[i] = v
+			case []interface{}:
+				floatArray := make([]float32, len(v))
+				for j := range v {
+					if num, ok := v[j].(float64); ok {
+						floatArray[j] = float32(num)
+					} else {
+						return nil, &schemas.BifrostError{
+							IsBifrostError: true,
+							Error: schemas.ErrorField{
+								Message: fmt.Sprintf("unsupported number type in embedding array: %T", v[j]),
+							},
+						}
+					}
+				}
+				embeddings[i] = floatArray
+			default:
+				return nil, &schemas.BifrostError{
+					IsBifrostError: true,
+					Error: schemas.ErrorField{
+						Message: fmt.Sprintf("unsupported embedding type: %T", data.Embedding),
+					},
+				}
+			}
+		}
+		bifrostResponse.Embedding = embeddings
 	}
 
 	if params != nil {

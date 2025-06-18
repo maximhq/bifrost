@@ -25,6 +25,20 @@ type MistralResponse struct {
 	Usage   schemas.LLMUsage                `json:"usage"`
 }
 
+// MistralEmbeddingResponse represents the response structure from Mistral's embedding API.
+type MistralEmbeddingResponse struct {
+	Object string `json:"object"`
+	Data   []struct {
+		Object    string    `json:"object"`
+		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
+	} `json:"data"`
+	Model             string           `json:"model"`
+	Usage             schemas.LLMUsage `json:"usage"`
+	ID                string           `json:"id"`
+	SystemFingerprint *string          `json:"system_fingerprint"`
+}
+
 // mistralResponsePool provides a pool for Mistral response objects.
 var mistralResponsePool = sync.Pool{
 	New: func() interface{} {
@@ -173,6 +187,145 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model, key 
 		Model:   response.Model,
 		Created: response.Created,
 		Usage:   response.Usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Mistral,
+			RawResponse: rawResponse,
+		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
+}
+
+// Embedding generates embeddings for the given input text(s) using the Mistral API.
+// Supports Mistral's embedding models and returns a BifrostResponse containing the embedding(s).
+func (provider *MistralProvider) Embedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if len(input.Texts) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
+		}
+	}
+
+	// Prepare request body with base parameters
+	requestBody := map[string]interface{}{
+		"model": model,
+		"input": input.Texts,
+	}
+
+	// Merge any additional parameters
+	if params != nil {
+		// Validate encoding format - Mistral API supports multiple formats, but our provider only implements float
+		if params.EncodingFormat != nil {
+			if *params.EncodingFormat != "float" {
+				return nil, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: schemas.ErrorField{
+						Message: fmt.Sprintf("Mistral provider currently only supports 'float' encoding format, received: %s", *params.EncodingFormat),
+					},
+				}
+			}
+			// Map to Mistral's parameter name
+			requestBody["output_dtype"] = *params.EncodingFormat
+		}
+		
+		// Map dimensions to Mistral's parameter name
+		if params.Dimensions != nil {
+			requestBody["output_dimension"] = *params.Dimensions
+		}
+
+		// Merge any extra parameters
+		if params.ExtraParams != nil {
+			for k, v := range params.ExtraParams {
+				requestBody[k] = v
+			}
+		}
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   err,
+			},
+		}
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/embeddings")
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	req.SetBody(jsonBody)
+
+	// Make request
+	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from mistral embedding provider: %s", string(resp.Body())))
+
+		var errorResp map[string]interface{}
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = fmt.Sprintf("Mistral embedding error: %v", errorResp)
+		return nil, bifrostErr
+	}
+
+	// Parse response
+	var mistralResp MistralEmbeddingResponse
+	if err := json.Unmarshal(resp.Body(), &mistralResp); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing Mistral embedding response",
+				Error:   err,
+			},
+		}
+	}
+
+	// Parse raw response for consistent format
+	var rawResponse interface{}
+	if err := json.Unmarshal(resp.Body(), &rawResponse); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing raw response for Mistral embedding",
+				Error:   err,
+			},
+		}
+	}
+
+	// Convert data to embeddings array
+	var embeddings [][]float32
+	for _, data := range mistralResp.Data {
+		embeddings = append(embeddings, data.Embedding)
+	}
+
+	// Create BifrostResponse
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:                mistralResp.ID,
+		Object:            mistralResp.Object,
+		Embedding:         embeddings,
+		Model:             mistralResp.Model,
+		Usage:             mistralResp.Usage,
+		SystemFingerprint: mistralResp.SystemFingerprint,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.Mistral,
 			RawResponse: rawResponse,

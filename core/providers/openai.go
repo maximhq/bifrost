@@ -4,7 +4,10 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -18,14 +21,19 @@ import (
 // OpenAIResponse represents the response structure from the OpenAI API.
 // It includes completion choices, model information, and usage statistics.
 type OpenAIResponse struct {
-	ID                string                          `json:"id"`                 // Unique identifier for the completion
-	Object            string                          `json:"object"`             // Type of completion (text.completion or chat.completion)
-	Choices           []schemas.BifrostResponseChoice `json:"choices"`            // Array of completion choices
-	Model             string                          `json:"model"`              // Model used for the completion
-	Created           int                             `json:"created"`            // Unix timestamp of completion creation
-	ServiceTier       *string                         `json:"service_tier"`       // Service tier used for the request
-	SystemFingerprint *string                         `json:"system_fingerprint"` // System fingerprint for the request
-	Usage             schemas.LLMUsage                `json:"usage"`              // Token usage statistics
+	ID      string                          `json:"id"`      // Unique identifier for the completion
+	Object  string                          `json:"object"`  // Type of completion (text.completion, chat.completion, or embedding)
+	Choices []schemas.BifrostResponseChoice `json:"choices"` // Array of completion choices
+	Data    []struct {                      // Embedding data
+		Object    string `json:"object"`
+		Embedding any    `json:"embedding"`
+		Index     int    `json:"index"`
+	} `json:"data,omitempty"`
+	Model             string           `json:"model"`              // Model used for the completion
+	Created           int              `json:"created"`            // Unix timestamp of completion creation
+	ServiceTier       *string          `json:"service_tier"`       // Service tier used for the request
+	SystemFingerprint *string          `json:"system_fingerprint"` // System fingerprint for the request
+	Usage             schemas.LLMUsage `json:"usage"`              // Token usage statistics
 }
 
 // OpenAIError represents the error response structure from the OpenAI API.
@@ -263,4 +271,173 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 	preparedParams := prepareParams(params)
 
 	return formattedMessages, preparedParams
+}
+
+// Embedding generates embeddings for the given input text(s).
+// The input can be either a single string or a slice of strings for batch embedding.
+// Returns a BifrostResponse containing the embedding(s) and any error that occurred.
+func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Prepare request body with base parameters
+	requestBody := map[string]interface{}{
+		"model": model,
+		"input": input.Texts,
+	}
+
+	// Merge any additional parameters
+	if params != nil {
+		// Map standard parameters
+		if params.EncodingFormat != nil {
+			requestBody["encoding_format"] = *params.EncodingFormat
+		}
+		if params.Dimensions != nil {
+			requestBody["dimensions"] = *params.Dimensions
+		}
+		if params.User != nil {
+			requestBody["user"] = *params.User
+		}
+
+		// Merge any extra parameters
+		requestBody = mergeConfig(requestBody, params.ExtraParams)
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   err,
+			},
+		}
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/embeddings")
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	req.SetBody(jsonBody)
+
+	// Make request
+	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from openai provider: %s", string(resp.Body())))
+
+		var errorResp OpenAIError
+
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+
+		if errorResp.EventID != "" {
+			bifrostErr.EventID = &errorResp.EventID
+		}
+		bifrostErr.Error.Type = &errorResp.Error.Type
+		bifrostErr.Error.Code = &errorResp.Error.Code
+		bifrostErr.Error.Message = errorResp.Error.Message
+		bifrostErr.Error.Param = errorResp.Error.Param
+		if errorResp.Error.EventID != "" {
+			bifrostErr.Error.EventID = &errorResp.Error.EventID
+		}
+
+		return nil, bifrostErr
+	}
+
+	// Parse response
+	var response OpenAIResponse
+	if err := json.Unmarshal(resp.Body(), &response); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderResponseUnmarshal,
+				Error:   err,
+			},
+		}
+	}
+
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:                response.ID,
+		Object:            response.Object,
+		Model:             response.Model,
+		Created:           response.Created,
+		Usage:             response.Usage,
+		ServiceTier:       response.ServiceTier,
+		SystemFingerprint: response.SystemFingerprint,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+		},
+	}
+
+	// Extract embeddings from response data
+	if len(response.Data) > 0 {
+		embeddings := make([][]float32, len(response.Data))
+		for i, data := range response.Data {
+			switch v := data.Embedding.(type) {
+			case []float32:
+				embeddings[i] = v
+			case []interface{}:
+				// Convert []interface{} to []float32
+				floatArray := make([]float32, len(v))
+				for j := range v {
+					if num, ok := v[j].(float64); ok {
+						floatArray[j] = float32(num)
+					} else {
+						return nil, &schemas.BifrostError{
+							IsBifrostError: true,
+							Error: schemas.ErrorField{
+								Message: fmt.Sprintf("unsupported number type in embedding array: %T", v[j]),
+							},
+						}
+					}
+				}
+				embeddings[i] = floatArray
+			case string:
+				// Decode base64 string into float32 array
+				decodedData, err := base64.StdEncoding.DecodeString(v)
+				if err != nil {
+					return nil, &schemas.BifrostError{
+						IsBifrostError: true,
+						Error: schemas.ErrorField{
+							Message: "failed to decode base64 embedding",
+							Error:   err,
+						},
+					}
+				}
+
+				const sizeOfFloat32 = 4
+				floats := make([]float32, len(decodedData)/sizeOfFloat32)
+				for i := 0; i < len(floats); i++ {
+					floats[i] = math.Float32frombits(binary.LittleEndian.Uint32(decodedData[i*4 : (i+1)*4]))
+				}
+				embeddings[i] = floats
+			default:
+				return nil, &schemas.BifrostError{
+					IsBifrostError: true,
+					Error: schemas.ErrorField{
+						Message: fmt.Sprintf("unsupported embedding type: %T", data.Embedding),
+					},
+				}
+			}
+		}
+		bifrostResponse.Embedding = embeddings
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
 }

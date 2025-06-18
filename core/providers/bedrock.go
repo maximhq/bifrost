@@ -1091,3 +1091,193 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 
 	return nil
 }
+
+// Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
+// Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
+func (provider *BedrockProvider) Embedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	switch {
+	case strings.HasPrefix(model, "amazon.titan-embed-text"):
+		return provider.handleTitanEmbedding(ctx, model, key, input, params)
+	case strings.HasPrefix(model, "cohere.embed"):
+		return provider.handleCohereEmbedding(ctx, model, key, input, params)
+	default:
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          schemas.ErrorField{Message: "embedding is not supported for this Bedrock model"},
+		}
+	}
+}
+
+// handleTitanEmbedding handles embedding requests for Amazon Titan models.
+func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Titan Text Embeddings V1/V2 - only supports single text input
+	if len(input.Texts) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
+		}
+	}
+	if len(input.Texts) > 1 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          schemas.ErrorField{Message: "Amazon Titan embedding models support only single text input, received multiple texts"},
+		}
+	}
+
+	requestBody := map[string]interface{}{
+		"inputText": input.Texts[0],
+	}
+
+	if params != nil {
+		// Titan models do not support the dimensions parameter - they have fixed dimensions
+		if params.Dimensions != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error:          schemas.ErrorField{Message: "Amazon Titan embedding models do not support custom dimensions parameter"},
+			}
+		}
+		if params.ExtraParams != nil {
+			for k, v := range params.ExtraParams {
+				requestBody[k] = v
+			}
+		}
+	}
+
+	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
+	path := url.PathEscape(model) + "/invoke"
+	responseBody, err := provider.completeRequest(ctx, requestBody, path, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse Titan response
+	var titanResp struct {
+		Embedding           []float32 `json:"embedding"`
+		InputTextTokenCount int       `json:"inputTextTokenCount"`
+	}
+	if err := json.Unmarshal(responseBody, &titanResp); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing Titan embedding response",
+				Error:   err,
+			},
+		}
+	}
+
+	// Parse raw response for consistent format
+	var rawResponse interface{}
+	if err := json.Unmarshal(responseBody, &rawResponse); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing raw response for Titan embedding",
+				Error:   err,
+			},
+		}
+	}
+
+	bifrostResponse := &schemas.BifrostResponse{
+		Embedding: [][]float32{titanResp.Embedding},
+		Model:     model,
+		Usage: schemas.LLMUsage{
+			PromptTokens: titanResp.InputTextTokenCount,
+			TotalTokens:  titanResp.InputTextTokenCount,
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Bedrock,
+			RawResponse: rawResponse,
+		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
+}
+
+// handleCohereEmbedding handles embedding requests for Cohere models on Bedrock.
+func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if len(input.Texts) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
+		}
+	}
+
+	requestBody := map[string]interface{}{
+		"texts":      input.Texts,
+		"input_type": "search_document",
+	}
+
+	if params != nil {
+		if params.ExtraParams != nil {
+			for k, v := range params.ExtraParams {
+				requestBody[k] = v
+			}
+		}
+	}
+
+	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
+	path := url.PathEscape(model) + "/invoke"
+	responseBody, err := provider.completeRequest(ctx, requestBody, path, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse Cohere response
+	var cohereResp struct {
+		Embeddings [][]float32 `json:"embeddings"`
+		ID         string      `json:"id"`
+		Texts      []string    `json:"texts"`
+	}
+	if err := json.Unmarshal(responseBody, &cohereResp); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing Cohere embedding response",
+				Error:   err,
+			},
+		}
+	}
+
+	// Parse raw response for consistent format
+	var rawResponse interface{}
+	if err := json.Unmarshal(responseBody, &rawResponse); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing raw response for Cohere embedding",
+				Error:   err,
+			},
+		}
+	}
+
+	// Calculate token usage based on input texts (approximation since Cohere doesn't provide this)
+	totalInputTokens := 0
+	for _, text := range input.Texts {
+		// Rough approximation: 1 token per 4 characters
+		totalInputTokens += len(text) / 4
+	}
+
+	bifrostResponse := &schemas.BifrostResponse{
+		Embedding: cohereResp.Embeddings,
+		ID:        cohereResp.ID,
+		Model:     model,
+		Usage: schemas.LLMUsage{
+			PromptTokens: totalInputTokens,
+			TotalTokens:  totalInputTokens,
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Bedrock,
+			RawResponse: rawResponse,
+		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
+}

@@ -694,3 +694,13 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 
 	return bifrostResponse, nil
 }
+
+// Embedding is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) Embedding(ctx context.Context, model, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: schemas.ErrorField{
+			Message: "embedding is not supported by anthropic provider",
+		},
+	}
+}

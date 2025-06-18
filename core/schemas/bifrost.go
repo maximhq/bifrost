@@ -49,14 +49,20 @@ const (
 //* Request Structs
 
 // RequestInput represents the input for a model request, which can be either
-// a text completion or a chat completion, but either one must be provided.
+// a text completion, a chat completion, or an embedding request.
 type RequestInput struct {
 	TextCompletionInput *string           `json:"text_completion_input,omitempty"`
 	ChatCompletionInput *[]BifrostMessage `json:"chat_completion_input,omitempty"`
+	EmbeddingInput      *EmbeddingInput   `json:"embedding_input,omitempty"`
+}
+
+// EmbeddingInput represents the input for an embedding request.
+type EmbeddingInput struct {
+	Texts []string `json:"texts"`
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
-// It must be provided when calling the Bifrost for text completion or chat completion.
+// It must be provided when calling the Bifrost for text completion, chat completion, or embedding.
 // It contains the model identifier, input data, and parameters for the request.
 type BifrostRequest struct {
 	Provider ModelProvider    `json:"provider"`
@@ -90,6 +96,9 @@ type ModelParameters struct {
 	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
 	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
 	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
+	EncodingFormat    *string     `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
+	Dimensions        *int        `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
+	User              *string     `json:"user,omitempty"`                // User identifier for tracking
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -288,7 +297,7 @@ type ImageURLStruct struct {
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
 	ID                string                     `json:"id,omitempty"`
-	Object            string                     `json:"object,omitempty"` // text.completion or chat.completion
+	Object            string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
 	Choices           []BifrostResponseChoice    `json:"choices,omitempty"`
 	Model             string                     `json:"model,omitempty"`
 	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
@@ -296,6 +305,7 @@ type BifrostResponse struct {
 	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
 	Usage             LLMUsage                   `json:"usage,omitempty"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	Embedding         [][]float32                `json:"data,omitempty"`
 }
 
 // LLMUsage represents token usage information

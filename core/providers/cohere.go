@@ -93,6 +93,14 @@ type CohereError struct {
 	Message string `json:"message"` // Error message
 }
 
+// CohereEmbeddingResponse represents the response from Cohere's embedding API.
+type CohereEmbeddingResponse struct {
+	ID         string `json:"id"` // Unique identifier for the embedding request
+	Embeddings struct {
+		Float [][]float32 `json:"float"` // Array of float embeddings, one for each input text
+	} `json:"embeddings"` // Embeddings in the response
+}
+
 // CohereProvider implements the Provider interface for Cohere.
 type CohereProvider struct {
 	logger        schemas.Logger        // Logger for provider operations
@@ -536,4 +544,143 @@ func convertChatHistory(history []struct {
 		}
 	}
 	return &converted
+}
+
+// Embedding generates embeddings for the given input text(s) using the Cohere API.
+// Supports Cohere's embedding models and returns a BifrostResponse containing the embedding(s).
+func (provider *CohereProvider) Embedding(ctx context.Context, model string, key string, input schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if len(input.Texts) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
+		}
+	}
+
+	// Prepare request body with default values
+	requestBody := map[string]interface{}{
+		"texts":            input.Texts,
+		"model":            model,
+		"input_type":       "search_document", // Default input type
+		"embedding_types":  []string{"float"}, // Default to float embeddings
+	}
+
+	// Apply additional parameters if provided
+	if params != nil {
+		// Validate encoding format - Cohere API supports float, int8, uint8, binary, ubinary, but our provider only implements float
+		if params.EncodingFormat != nil {
+			if *params.EncodingFormat != "float" {
+				return nil, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: schemas.ErrorField{
+						Message: fmt.Sprintf("Cohere provider currently only supports 'float' encoding format, received: %s", *params.EncodingFormat),
+					},
+				}
+			}
+			// Override default with the specified format
+			requestBody["embedding_types"] = []string{*params.EncodingFormat}
+		}
+
+		if params.ExtraParams != nil {
+			for k, v := range params.ExtraParams {
+				requestBody[k] = v
+			}
+		}
+	}
+
+	// Marshal request body
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   err,
+			},
+		}
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/embed")
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	req.SetBody(jsonBody)
+
+	// Make request
+	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from cohere embedding provider: %s", string(resp.Body())))
+
+		var errorResp CohereError
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = errorResp.Message
+
+		return nil, bifrostErr
+	}
+
+	// Parse response
+	var cohereResp CohereEmbeddingResponse
+	if err := json.Unmarshal(resp.Body(), &cohereResp); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing Cohere embedding response",
+				Error:   err,
+			},
+		}
+	}
+
+	// Parse raw response for consistent format
+	var rawResponse interface{}
+	if err := json.Unmarshal(resp.Body(), &rawResponse); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error parsing raw response for Cohere embedding",
+				Error:   err,
+			},
+		}
+	}
+
+	// Calculate token usage approximation (since Cohere doesn't provide this for embeddings)
+	totalInputTokens := 0
+	for _, text := range input.Texts {
+		// Rough approximation: 1 token per 4 characters
+		totalInputTokens += len(text) / 4
+	}
+
+	// Create BifrostResponse
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:        cohereResp.ID,
+		Embedding: cohereResp.Embeddings.Float,
+		Model:     model,
+		Usage: schemas.LLMUsage{
+			PromptTokens: totalInputTokens,
+			TotalTokens:  totalInputTokens,
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Cohere,
+			RawResponse: rawResponse,
+		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
 }
