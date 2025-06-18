@@ -43,15 +43,6 @@ type AzureChatResponse struct {
 	Usage             schemas.LLMUsage                `json:"usage"`              // Token usage statistics
 }
 
-// AzureError represents the error response structure from Azure's API.
-// It includes error code and message information.
-type AzureError struct {
-	Error struct {
-		Code    string `json:"code"`    // Error code
-		Message string `json:"message"` // Error message
-	} `json:"error"`
-}
-
 // AzureEmbeddingResponse represents the response structure from Azure's embedding API.
 type AzureEmbeddingResponse struct {
 	Object string `json:"object"`
@@ -65,6 +56,18 @@ type AzureEmbeddingResponse struct {
 	ID                string           `json:"id"`
 	SystemFingerprint *string          `json:"system_fingerprint"`
 }
+
+// AzureError represents the error response structure from Azure's API.
+// It includes error code and message information.
+type AzureError struct {
+	Error struct {
+		Code    string `json:"code"`    // Error code
+		Message string `json:"message"` // Error message
+	} `json:"error"`
+}
+
+// AzureAuthorizationTokenKey is the context key for the Azure authentication token.
+const AzureAuthorizationTokenKey ContextKey = "azure-authorization-token"
 
 // azureTextCompletionResponsePool provides a pool for Azure text completion response objects.
 var azureTextCompletionResponsePool = sync.Pool{
@@ -220,7 +223,13 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	req.SetRequestURI(url)
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	req.Header.Set("api-key", key)
+	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
+		// Ensure api-key is not accidentally present (from extra headers, etc.)
+		req.Header.Del("api-key")
+	} else {
+		req.Header.Set("api-key", key)
+	}
 
 	req.SetBody(jsonData)
 

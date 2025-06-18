@@ -57,6 +57,11 @@ type URLTypeInfo struct {
 	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
+// ContextKey is a custom type for context keys to prevent key collisions in the context.
+// It provides type safety for context values and ensures that context keys are unique
+// across different packages.
+type ContextKey string
+
 // mergeConfig merges a default configuration map with custom parameters.
 // It creates a new map containing all default values, then overrides them with any custom values.
 // Returns a new map containing the merged configuration.
