@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Bifrost HTTP Transport API",
-    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n\nBifrost provides standardized endpoints for text and chat completions with built-in fallback support and comprehensive monitoring.",
-    "version": "1.0.0",
+    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n\nBifrost provides standardized endpoints for text and chat completions with built-in fallback support and comprehensive monitoring.\n\n**MCP Integration**: Includes Model Context Protocol (MCP) support for external tool integration. Configure MCP servers to automatically add tools to model requests and execute them via dedicated endpoints.",
+    "version": "1.1.2",
     "contact": {
       "name": "Bifrost API Support",
       "url": "https://github.com/maximhq/bifrost"
@@ -335,6 +335,87 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/v1/mcp/tool/execute": {
+      "post": {
+        "summary": "Execute MCP Tool",
+        "description": "Executes an MCP (Model Context Protocol) tool that has been configured in Bifrost. This endpoint is used to execute tool calls returned by AI models during conversations. Requires MCP to be configured in Bifrost.",
+        "operationId": "executeMCPTool",
+        "tags": ["MCP Tools"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolCall"
+              },
+              "examples": {
+                "google_search": {
+                  "summary": "Google Search Tool Execution",
+                  "value": {
+                    "type": "function",
+                    "id": "toolu_01VfefsSy7ZRdawdw7U2fg",
+                    "function": {
+                      "name": "google_search",
+                      "arguments": "{\"gl\":\"us\",\"hl\":\"en\",\"num\":5,\"q\":\"San Francisco news yesterday\",\"tbs\":\"qdr:d\"}"
+                    }
+                  }
+                },
+                "file_read": {
+                  "summary": "File Read Tool Execution",
+                  "value": {
+                    "type": "function",
+                    "id": "call_abc123",
+                    "function": {
+                      "name": "read_file",
+                      "arguments": "{\"path\": \"/tmp/config.json\"}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool execution successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostMessage"
+                },
+                "examples": {
+                  "search_result": {
+                    "summary": "Google Search Result",
+                    "value": {
+                      "role": "tool",
+                      "content": "{\n  \"searchParameters\": {\n    \"q\": \"San Francisco news yesterday\",\n    \"gl\": \"us\",\n    \"hl\": \"en\",\n    \"type\": \"search\",\n    \"num\": 5,\n    \"tbs\": \"qdr:d\",\n    \"engine\": \"google\"\n  },\n  \"organic\": [\n    {\n      \"title\": \"San Francisco Chronicle · Giants' today\"\n    },\n    {\n      \"query\": \"s.f. chronicle e edition\"\n    }\n  ],\n  \"credits\": 1\n}",
+                      "tool_call_id": "toolu_01VfefsSy7ZRdawdw7U2fg"
+                    }
+                  },
+                  "file_content": {
+                    "summary": "File Read Result",
+                    "value": {
+                      "role": "tool",
+                      "content": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"api_key\": \"sk-***\"\n}",
+                      "tool_call_id": "call_abc123"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -737,7 +818,7 @@
           "id": {
             "type": "string",
             "description": "Unique tool call identifier",
-            "example": "call_123"
+            "example": "tool_123"
           },
           "type": {
             "type": "string",
@@ -752,6 +833,7 @@
       },
       "FunctionCall": {
         "type": "object",
+        "required": ["name", "arguments"],
         "properties": {
           "name": {
             "type": "string",
@@ -1215,8 +1297,12 @@
       "description": "Create text completions from prompts"
     },
     {
+      "name": "MCP Tools",
+      "description": "Execute MCP tools"
+    },
+    {
       "name": "Monitoring",
-      "description": "Monitoring and observability endpoints"
+      "description": "Monitoring and observability endpoint"
     }
   ]
 }

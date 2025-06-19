@@ -4,9 +4,11 @@ This document provides comprehensive API documentation for the Bifrost HTTP tran
 
 ## Base URL
 
-    ```
-    http://localhost:8080
-    ```
+```text
+  http://localhost:8080
+```
+
+> 🔧 **MCP (Model Context Protocol) Integration**: Bifrost HTTP transport includes built-in MCP support for external tool integration. When MCP is configured, tools are automatically discovered and added to model requests. For comprehensive MCP setup and usage, see the [**MCP Integration Guide**](mcp.md) and [**HTTP Transport MCP Configuration**](../transports/README.md#mcp-model-context-protocol-configuration).
 
 ## OpenAPI Specification
 
@@ -215,7 +217,86 @@ Creates a text completion from a prompt.
     }
     ```
 
-### 3. Metrics
+### 3. MCP Tool Execution
+
+**POST** `/v1/mcp/tool/execute`
+
+Executes MCP (Model Context Protocol) tools that have been configured in Bifrost. This endpoint is used to execute tool calls returned by AI models during conversations.
+
+> **Note**: This endpoint requires MCP to be configured in Bifrost. See [MCP Integration Guide](mcp.md) for setup instructions.
+
+#### Request Body
+
+```json
+{
+  "type": "function",
+  "id": "toolu_01Vmq4gaU6tSy7ZRKVC7U2fg",
+  "function": {
+    "name": "google_search",
+    "arguments": "{\"gl\":\"us\",\"hl\":\"en\",\"num\":5,\"q\":\"San Francisco news yesterday\",\"tbs\":\"qdr:d\"}"
+  }
+}
+```
+
+#### Response
+
+```json
+{
+  "role": "tool",
+  "content": "{\n  \"searchParameters\": {\n    \"q\": \"San Francisco news yesterday\",\n    \"gl\": \"us\",\n    \"hl\": \"en\",\n    \"type\": \"search\",\n    \"num\": 5,\n    \"tbs\": \"qdr:d\",\n    \"engine\": \"google\"\n  },\n  \"organic\": [\n    {\n      \"title\": \"San Francisco Chronicle · Giants' today\"\n    },\n    {\n      \"query\": \"s.f. chronicle e edition\"\n    }\n  ],\n  \"credits\": 1\n}",
+  "tool_call_id": "toolu_01Vmq4gaU6tSy7ZRKVC7U2fg"
+}
+```
+
+#### Multi-Turn Tool Workflow
+
+The typical workflow for using MCP tools involves:
+
+1. **Send chat completion request** → AI responds with `tool_calls`
+2. **Execute tools via `/v1/mcp/tool/execute`** → Get tool result messages
+3. **Add tool results to conversation** → Send back for final response
+
+```bash
+# Step 1: Chat completion (AI decides to use tools)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "Search for San Francisco news from yesterday"}
+    ]
+  }'
+
+# Step 2: Execute the tool call returned by AI
+curl -X POST http://localhost:8080/v1/mcp/tool/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "function",
+    "id": "toolu_01Vmq4gaU6tSy7ZRKVC7U2fg",
+    "function": {
+      "name": "google_search",
+      "arguments": "{\"q\":\"San Francisco news yesterday\"}"
+    }
+  }'
+
+# Step 3: Continue conversation with tool results
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "Search for San Francisco news from yesterday"},
+      {"role": "assistant", "tool_calls": [...]},
+      {"role": "tool", "content": "...", "tool_call_id": "toolu_01Vmq4gaU6tSy7ZRKVC7U2fg"}
+    ]
+  }'
+```
+
+For detailed MCP setup and multi-turn conversation examples, see [Multi-Turn Conversations with MCP Tools](../transports/README.md#multi-turn-conversations-with-mcp-tools).
+
+### 4. Metrics
 
 **GET** `/metrics`
 

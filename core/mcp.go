@@ -486,6 +486,8 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		for toolName, tool := range tools {
 			client.ToolMap[toolName] = tool
 		}
+
+		m.logger.Info(fmt.Sprintf("%s Connected to MCP client: %s", MCPLogPrefix, config.Name))
 	} else {
 		return fmt.Errorf("client %s was removed during connection setup", config.Name)
 	}

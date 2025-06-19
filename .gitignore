@@ -3,6 +3,5 @@
 .DS_Store
 *_creds*
 **/venv/
-**/__pycache__/
 **/__pycache__/**
 private.*

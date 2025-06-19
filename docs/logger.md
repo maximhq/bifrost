@@ -37,16 +37,16 @@ client, err := bifrost.Init(schemas.BifrostConfig{
 
 The default logger formats messages as:
 
-```
-[BIFROST-TIMESTAMP] LEVEL: message
-[BIFROST-TIMESTAMP] ERROR: (error: error_message)
+```text
+    [BIFROST-TIMESTAMP] LEVEL: message
+    [BIFROST-TIMESTAMP] ERROR: (error: error_message)
 ```
 
 Example outputs:
 
-```
-[BIFROST-2024-03-20T10:15:30Z] INFO: Initializing provider OpenAI
-[BIFROST-2024-03-20T10:15:31Z] ERROR: (error: failed to connect to provider)
+```text
+    [BIFROST-2024-03-20T10:15:30Z] INFO: Initializing provider OpenAI
+    [BIFROST-2024-03-20T10:15:31Z] ERROR: (error: failed to connect to provider)
 ```
 
 ## 3. Implementing a Custom Logger

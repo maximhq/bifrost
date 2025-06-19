@@ -11,11 +11,14 @@ This package contains clients for various transports that can be used to spin up
   - [🚀 Setting Up Transports](#-setting-up-transports)
     - [Prerequisites](#prerequisites)
     - [Configuration](#configuration)
+    - [MCP (Model Context Protocol) Configuration](#mcp-model-context-protocol-configuration)
+      - [MCP Environment Variables](#mcp-environment-variables)
     - [Docker Setup](#docker-setup)
     - [Go Setup](#go-setup)
   - [🧰 Usage](#-usage)
     - [Text Completions](#text-completions)
     - [Chat Completions](#chat-completions)
+    - [Multi-Turn Conversations with MCP Tools](#multi-turn-conversations-with-mcp-tools)
   - [🔧 Advanced Features](#-advanced-features)
     - [Prometheus Support](#prometheus-support)
     - [Plugin Support](#plugin-support)
@@ -40,14 +43,16 @@ Bifrost uses a combination of a JSON configuration file and environment variable
 
 ```json
 {
-  "openai": {
-    "keys": [
-      {
-        "value": "env.OPENAI_API_KEY",
-        "models": ["gpt-4o-mini"],
-        "weight": 1.0
-      }
-    ]
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o-mini"],
+          "weight": 1.0
+        }
+      ]
+    }
   }
 }
 ```
@@ -58,9 +63,20 @@ The same setup applies to keys in meta configs of all providers:
 
 ```json
 {
-  "meta_config": {
-    "secret_access_key": "env.AWS_SECRET_ACCESS_KEY",
-    "region": "env.AWS_REGION"
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "value": "env.BEDROCK_API_KEY",
+          "models": ["anthropic.claude-v2:1"],
+          "weight": 1.0
+        }
+      ],
+      "meta_config": {
+        "secret_access_key": "env.AWS_SECRET_ACCESS_KEY",
+        "region": "env.AWS_REGION"
+      }
+    }
   }
 }
 ```
@@ -68,6 +84,80 @@ The same setup applies to keys in meta configs of all providers:
 In this example, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` refer to keys in the environment.
 
 **Please refer to `config.example.json` for examples.**
+
+### MCP (Model Context Protocol) Configuration
+
+Bifrost supports MCP integration for tool usage with AI models. You can configure MCP servers and tools in your configuration file:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o-mini"],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "filesystem",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+          "envs": ["NODE_ENV", "FILESYSTEM_ROOT"]
+        },
+        "tools_to_skip": [],
+        "tools_to_execute": []
+      },
+      {
+        "name": "web-search",
+        "connection_type": "http",
+        "http_connection_string": "http://localhost:3001/mcp",
+        "tools_to_skip": [],
+        "tools_to_execute": []
+      }
+    ]
+  }
+}
+```
+
+#### MCP Environment Variables
+
+The `envs` field in STDIO MCP configuration serves a different purpose than regular environment variables in Bifrost:
+
+- **Regular Bifrost environment variables** (like `"env.OPENAI_API_KEY"`) use the `env.` prefix and are accessed directly by Bifrost
+- **MCP environment variables** (in the `envs` array) do **NOT** use the `env.` prefix and are not accessed by Bifrost directly
+
+Instead, Bifrost checks if the environment variables listed in `envs` are available in the environment **before establishing the MCP client connection**. This ensures that MCP tools that require specific environment variables (like API keys or configuration values) have their dependencies available before attempting to connect.
+
+For example:
+
+```json
+{
+  "name": "weather-service",
+  "connection_type": "stdio",
+  "stdio_config": {
+    "command": "npx",
+    "args": ["weather-mcp-server"],
+    "envs": ["WEATHER_API_KEY", "DEFAULT_LOCATION"]
+  }
+}
+```
+
+In this case, Bifrost will verify that `WEATHER_API_KEY` and `DEFAULT_LOCATION` exist in the environment before attempting to start the weather MCP server.
+
+**Configuration Summary:**
+
+- Connects to a filesystem MCP tool via STDIO (requires `NODE_ENV` and `FILESYSTEM_ROOT` environment variables)
+- Connects to a web-search MCP service via HTTP
+
+**For comprehensive MCP documentation including Go package usage, local tool registration, and advanced configurations, see [MCP Integration Guide](../docs/mcp.md).** This section focuses on HTTP transport specific MCP usage.
 
 ### Docker Setup
 
@@ -172,6 +262,137 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     }
   }'
 ```
+
+### Multi-Turn Conversations with MCP Tools
+
+When MCP is configured, Bifrost automatically adds available tools to requests. Here's an example of a multi-turn conversation where the AI uses tools:
+
+1. **Initial Request** (AI decides to use a tool):
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "Can you list the files in the /tmp directory?"}
+    ]
+  }'
+```
+
+Response includes tool calls:
+
+    ```json
+    {
+      "data": {
+        "choices": [
+          {
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_abc123",
+                  "type": "function",
+                  "function": {
+                    "name": "list_files",
+                    "arguments": "{\"path\": \"/tmp\"}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+    ```
+
+2. **Execute Tool** (Use Bifrost's MCP tool execution endpoint):
+
+   ```bash
+   curl -X POST http://localhost:8080/v1/mcp/tool/execute \
+     -H "Content-Type: application/json" \
+     -d '{
+         "id": "call_abc123",
+         "type": "function",
+         "function": {
+           "name": "list_files",
+           "arguments": "{\"path\": \"/tmp\"}"
+         }
+     }'
+   ```
+
+   Response with tool result:
+
+   ```json
+   {
+     "role": "tool",
+     "content": "config.json\nreadme.txt\ndata.csv",
+     "tool_call_id": "call_abc123"
+   }
+   ```
+
+3. **Continue Conversation** (Add tool result and get final response):
+
+   ```bash
+   curl -X POST http://localhost:8080/v1/chat/completions \
+     -H "Content-Type: application/json" \
+     -d '{
+       "provider": "openai",
+       "model": "gpt-4o-mini",
+       "messages": [
+         {"role": "user", "content": "Can you list the files in the /tmp directory?"},
+         {
+           "role": "assistant",
+           "content": null,
+           "tool_calls": [{
+             "id": "call_abc123",
+             "type": "function",
+             "function": {
+               "name": "list_files",
+               "arguments": "{\"path\": \"/tmp\"}"
+             }
+           }]
+         },
+         {
+           "role": "tool",
+           "content": "config.json\nreadme.txt\ndata.csv",
+           "tool_call_id": "call_abc123"
+         }
+       ]
+     }'
+   ```
+
+   Final response:
+
+   ```json
+   {
+     "data": {
+       "choices": [
+         {
+           "message": {
+             "role": "assistant",
+             "content": "I found 3 files in the /tmp directory:\n1. config.json\n2. readme.txt\n3. data.csv\n\nWould you like me to read the contents of any of these files?"
+           }
+         }
+       ]
+     }
+   }
+   ```
+
+**Tool Execution Flow Summary:**
+
+1. Send chat completion request → AI responds with tool_calls
+2. Send tool_calls to `/v1/mcp/tool/execute` → Get tool_result message
+3. Append tool_result to conversation → Send back for final response
+
+**Key Endpoints:**
+
+- `POST /v1/chat/completions` - Chat with automatic tool discovery
+- `POST /v1/mcp/tool/execute` - Execute tool calls returned by the AI
+
+> 🔧 **For Go package integration and advanced tool execution patterns, see [Implementing Chat Conversations with MCP Tools](../docs/mcp.md#implementing-chat-conversations-with-mcp-tools).**
 
 ---
 

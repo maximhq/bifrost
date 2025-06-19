@@ -1,9 +1,10 @@
 // Package http provides an HTTP service using FastHTTP that exposes endpoints
 // for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
 //
-// The HTTP service provides two main endpoints:
+// The HTTP service provides three main endpoints:
 //   - /v1/text/completions: For text completion requests
 //   - /v1/chat/completions: For chat completion requests
+//   - /v1/mcp/tool/execute: For MCP tool execution requests
 //
 // Configuration is handled through a JSON config file and environment variables:
 //   - Use -config flag to specify the config file location
@@ -148,7 +149,7 @@ func main() {
 	log.Println("Prometheus Go/Process collectors registered.")
 
 	config := lib.ReadConfig(configPath)
-	account := &lib.BaseAccount{Config: config}
+	account := &lib.BaseAccount{Config: config.ProviderConfig}
 
 	if err := account.ReadKeys(); err != nil {
 		log.Printf("warning: failed to read environment variables: %v", err)
@@ -186,6 +187,7 @@ func main() {
 		InitialPoolSize:    initialPoolSize,
 		DropExcessRequests: dropExcessRequests,
 		Plugins:            loadedPlugins,
+		MCPConfig:          config.MCPConfig,
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize bifrost: %v", err)
@@ -206,6 +208,10 @@ func main() {
 
 	r.POST("/v1/chat/completions", func(ctx *fasthttp.RequestCtx) {
 		handleCompletion(ctx, client, true)
+	})
+
+	r.POST("/v1/mcp/tool/execute", func(ctx *fasthttp.RequestCtx) {
+		handleMCPToolExecution(ctx, client)
 	})
 
 	for _, extension := range extensions {
@@ -319,11 +325,42 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 			ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		}
 		ctx.SetContentType("application/json")
-		json.NewEncoder(ctx).Encode(err)
+		if encodeErr := json.NewEncoder(ctx).Encode(err); encodeErr != nil {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+			ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", encodeErr))
+		}
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")
-	json.NewEncoder(ctx).Encode(resp)
+	if encodeErr := json.NewEncoder(ctx).Encode(resp); encodeErr != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf("failed to encode response: %v", encodeErr))
+	}
+}
+
+func handleMCPToolExecution(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
+	var req schemas.ToolCall
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetBodyString(fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+
+	bifrostCtx := lib.ConvertToBifrostContext(ctx)
+
+	resp, err := client.ExecuteMCPTool(*bifrostCtx, req)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf("failed to execute tool: %v", err))
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetContentType("application/json")
+	if encodeErr := json.NewEncoder(ctx).Encode(resp); encodeErr != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf("failed to encode response: %v", encodeErr))
+	}
 }

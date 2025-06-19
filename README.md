@@ -18,14 +18,16 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
 
    ```json
    {
-     "openai": {
-       "keys": [
-         {
-           "value": "env.OPENAI_API_KEY",
-           "models": ["gpt-4o-mini"],
-           "weight": 1.0
-         }
-       ]
+     "providers": {
+       "openai": {
+         "keys": [
+           {
+             "value": "env.OPENAI_API_KEY",
+             "models": ["gpt-4o-mini"],
+             "weight": 1.0
+           }
+         ]
+       }
      }
    }
    ```
@@ -110,6 +112,7 @@ For additional HTTP server configuration options, read [this](https://github.com
          {
            Value:  os.Getenv("OPENAI_API_KEY"),
            Models: []string{"gpt-4o-mini"},
+           Weight: 1.0,
          },
        }, nil
    }
@@ -201,12 +204,12 @@ With Bifrost, you can focus on building your AI-powered applications without wor
 
 - **Multi-Provider Support**: Integrate with OpenAI, Anthropic, Amazon Bedrock, Mistral, Ollama, and more through a single API
 - **Fallback Mechanisms**: Automatically retry failed requests with alternative models or providers
-- **Dynamic Key Management**: Rotate and manage API keys efficiently
+- **Dynamic Key Management**: Rotate and manage API keys efficiently with weighted distribution
 - **Connection Pooling**: Optimize network resources for better performance
 - **Concurrency Control**: Manage rate limits and parallel requests effectively
 - **Flexible Transports**: Multiple transports for easy integration into your infra
 - **Plugin First Architecture**: No callback hell, simple addition/creation of custom plugins
-- **MCP Integration**: Built-in Model Context Protocol (MCP) support for external tool integration
+- **MCP Integration**: Built-in Model Context Protocol (MCP) support for external tool integration and execution
 - **Custom Configuration**: Offers granular control over pool sizes, network retry settings, fallback providers, and network proxy configurations
 - **Built-in Observability**: Native Prometheus metrics out of the box, no wrappers, no sidecars, just drop it in and scrape
 

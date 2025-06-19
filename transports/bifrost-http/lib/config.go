@@ -24,20 +24,34 @@ type ProviderConfig struct {
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
+// BifrostHTTPConfig represents the complete configuration structure for Bifrost HTTP transport.
+// It includes both provider configurations and MCP configuration.
+type BifrostHTTPConfig struct {
+	ProviderConfig ConfigMap          `json:"providers"` // Provider configurations
+	MCPConfig      *schemas.MCPConfig `json:"mcp"`       // MCP configuration (optional)
+}
+
 // readConfig reads and parses the configuration file.
 // It handles case conversion for provider names and sets up provider-specific metadata.
-// Returns a ConfigMap containing all provider configurations.
+// Returns a BifrostHTTPConfig containing both provider and MCP configurations.
 // Panics if the config file cannot be read or parsed.
 //
 // In the config file, use placeholder keys (e.g., env.OPENAI_API_KEY) instead of hardcoding actual values.
 // These placeholders will be replaced with the corresponding values from the environment variables.
 // Example:
 //
-//	"keys":[{
-//		 "value": "env.OPENAI_API_KEY"
-//	     "models": ["gpt-4o-mini", "gpt-4-turbo"],
-//	     "weight": 1.0
-//	}]
+//	"providers": {
+//		"openAI": {
+//			"keys":[{
+//				 "value": "env.OPENAI_API_KEY"
+//			     "models": ["gpt-4o-mini", "gpt-4-turbo"],
+//			     "weight": 1.0
+//			}]
+//		}
+//	},
+//	"mcp": {
+//		"client_configs": [...]
+//	}
 //
 // In this example, OPENAI_API_KEY refers to a key in the environment variables. At runtime, its value will be used to replace the placeholder.
 // Same setup applies to keys in meta configs of all the providers.
@@ -49,71 +63,81 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 //	}
 //
 // In this example, AWS_SECRET_ACCESS_KEY and AWS_REGION refer to keys in environment variables.
-func ReadConfig(configLocation string) ConfigMap {
+func ReadConfig(configLocation string) *BifrostHTTPConfig {
 	data, err := os.ReadFile(configLocation)
 	if err != nil {
 		log.Fatalf("failed to read config JSON file: %v", err)
 	}
 
-	// First unmarshal into a map with string keys to handle case conversion
-	var rawConfig map[string]ProviderConfig
-	if err := json.Unmarshal(data, &rawConfig); err != nil {
+	// First unmarshal into the new structure
+	var fullConfig BifrostHTTPConfig
+	if err := json.Unmarshal(data, &fullConfig); err != nil {
 		log.Fatalf("failed to unmarshal JSON: %v", err)
 	}
 
-	if rawConfig == nil {
-		log.Fatalf("provided config is nil")
+	if fullConfig.ProviderConfig == nil {
+		log.Fatalf("providers section is required in config")
 	}
 
-	// Create a new config map with lowercase provider names
-	config := make(ConfigMap)
-	for rawProvider, cfg := range rawConfig {
-		provider := schemas.ModelProvider(strings.ToLower(rawProvider))
+	// Process provider configurations - convert string keys to lowercase provider names and handle meta configs
+	processedProviders := make(ConfigMap)
 
-		switch provider {
-		case schemas.Azure:
-			var azureMetaConfig meta.AzureMetaConfig
-			if err := json.Unmarshal(data, &struct {
-				Azure struct {
-					MetaConfig *meta.AzureMetaConfig `json:"meta_config"`
-				} `json:"Azure"`
-			}{Azure: struct {
-				MetaConfig *meta.AzureMetaConfig `json:"meta_config"`
-			}{&azureMetaConfig}}); err != nil {
-				log.Printf("warning: failed to unmarshal Azure meta config: %v", err)
+	// First unmarshal providers into a map with string keys to handle case conversion
+	var rawProviders map[string]ProviderConfig
+	if providersBytes, err := json.Marshal(fullConfig.ProviderConfig); err != nil {
+		log.Fatalf("failed to marshal providers: %v", err)
+	} else if err := json.Unmarshal(providersBytes, &rawProviders); err != nil {
+		log.Fatalf("failed to unmarshal providers: %v", err)
+	}
+
+	// Create a temporary structure to unmarshal the full JSON with proper meta configs
+	var tempConfig struct {
+		Providers map[string]struct {
+			MetaConfig json.RawMessage `json:"meta_config"`
+		} `json:"providers"`
+	}
+
+	if err := json.Unmarshal(data, &tempConfig); err != nil {
+		log.Fatalf("failed to unmarshal configuration file: %v\n\n Please check your configuration file for proper JSON formatting and meta_config structure", err)
+	} else {
+		for rawProvider, cfg := range rawProviders {
+			provider := schemas.ModelProvider(strings.ToLower(rawProvider))
+
+			// Get the raw meta config for this provider
+			if tempProvider, exists := tempConfig.Providers[rawProvider]; exists && len(tempProvider.MetaConfig) > 0 {
+				switch provider {
+				case schemas.Azure:
+					var azureMetaConfig meta.AzureMetaConfig
+					if err := json.Unmarshal(tempProvider.MetaConfig, &azureMetaConfig); err != nil {
+						log.Printf("warning: failed to unmarshal Azure meta config: %v", err)
+					} else {
+						var metaConfig schemas.MetaConfig = &azureMetaConfig
+						cfg.MetaConfig = &metaConfig
+					}
+				case schemas.Bedrock:
+					var bedrockMetaConfig meta.BedrockMetaConfig
+					if err := json.Unmarshal(tempProvider.MetaConfig, &bedrockMetaConfig); err != nil {
+						log.Printf("warning: failed to unmarshal Bedrock meta config: %v", err)
+					} else {
+						var metaConfig schemas.MetaConfig = &bedrockMetaConfig
+						cfg.MetaConfig = &metaConfig
+					}
+				case schemas.Vertex:
+					var vertexMetaConfig meta.VertexMetaConfig
+					if err := json.Unmarshal(tempProvider.MetaConfig, &vertexMetaConfig); err != nil {
+						log.Printf("warning: failed to unmarshal Vertex meta config: %v", err)
+					} else {
+						var metaConfig schemas.MetaConfig = &vertexMetaConfig
+						cfg.MetaConfig = &metaConfig
+					}
+				}
 			}
-			var metaConfig schemas.MetaConfig = &azureMetaConfig
-			cfg.MetaConfig = &metaConfig
-		case schemas.Bedrock:
-			var bedrockMetaConfig meta.BedrockMetaConfig
-			if err := json.Unmarshal(data, &struct {
-				Bedrock struct {
-					MetaConfig *meta.BedrockMetaConfig `json:"meta_config"`
-				} `json:"Bedrock"`
-			}{Bedrock: struct {
-				MetaConfig *meta.BedrockMetaConfig `json:"meta_config"`
-			}{&bedrockMetaConfig}}); err != nil {
-				log.Printf("warning: failed to unmarshal Bedrock meta config: %v", err)
-			}
-			var metaConfig schemas.MetaConfig = &bedrockMetaConfig
-			cfg.MetaConfig = &metaConfig
-		case schemas.Vertex:
-			var vertexMetaConfig meta.VertexMetaConfig
-			if err := json.Unmarshal(data, &struct {
-				Vertex struct {
-					MetaConfig *meta.VertexMetaConfig `json:"meta_config"`
-				} `json:"Vertex"`
-			}{Vertex: struct {
-				MetaConfig *meta.VertexMetaConfig `json:"meta_config"`
-			}{&vertexMetaConfig}}); err != nil {
-				log.Printf("warning: failed to unmarshal Vertex meta config: %v", err)
-			}
-			var metaConfig schemas.MetaConfig = &vertexMetaConfig
-			cfg.MetaConfig = &metaConfig
+
+			processedProviders[provider] = cfg
 		}
 
-		config[provider] = cfg
 	}
 
-	return config
+	fullConfig.ProviderConfig = processedProviders
+	return &fullConfig
 }

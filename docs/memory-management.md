@@ -62,10 +62,19 @@ Each provider can be configured with specific concurrency and buffer size settin
 
 ```json
 {
-  "openai": {
-    "concurrency_and_buffer_size": {
-      "concurrency": 20, // Number of concurrent workers
-      "buffer_size": 200 // Size of the request queue
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o-mini"],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 20, // Number of concurrent workers
+        "buffer_size": 200 // Size of the request queue
+      }
     }
   }
 }

@@ -7,6 +7,7 @@ The **Bifrost MCP (Model Context Protocol) Integration** provides seamless conne
 - [Overview](#overview)
 - [Features](#features)
 - [Quick Start](#quick-start)
+- [HTTP Transport Usage](#http-transport-usage)
 - [Configuration](#configuration)
 - [Usage Examples](#usage-examples)
 - [Implementing Chat Conversations with MCP Tools](#implementing-chat-conversations-with-mcp-tools)
@@ -147,6 +148,238 @@ mcpConfig := &schemas.MCPConfig{
         },
     },
 }
+```
+
+## HTTP Transport Usage
+
+This section covers HTTP-specific MCP setup and usage patterns for integrating tools via Bifrost HTTP Transport.
+
+> 📖 **For detailed HTTP transport setup and configuration examples, see** [**Bifrost Transports Documentation**](../transports/README.md#mcp-model-context-protocol-configuration).
+
+### HTTP Transport Configuration
+
+Configure MCP in your JSON configuration file when using Bifrost HTTP Transport:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o-mini"],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "filesystem",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+          "envs": []
+        },
+        "tools_to_skip": ["rm", "delete"],
+        "tools_to_execute": []
+      },
+      {
+        "name": "web-search",
+        "connection_type": "http",
+        "http_connection_string": "http://localhost:3001/mcp",
+        "tools_to_skip": [],
+        "tools_to_execute": []
+      }
+    ]
+  }
+}
+```
+
+### Starting HTTP Transport with MCP
+
+```bash
+# Start Bifrost HTTP server with MCP configuration
+bifrost-http -config config.json -port 8080 -pool-size 300
+
+# Or using Docker
+docker run -p 8080:8080 \
+  -v ./config.json:/app/config.json \
+  -e OPENAI_API_KEY \
+  bifrost-transports
+```
+
+### HTTP API Endpoints with MCP Tools
+
+When MCP is configured, tools are automatically added to chat completion requests. The HTTP transport provides two key endpoints:
+
+- `POST /v1/chat/completions` - Chat with automatic tool discovery
+- `POST /v1/mcp/tool/execute` - Execute specific tool calls
+
+#### 1. Standard Chat Completion (Tools Auto-Added)
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "List the files in /tmp directory"}
+    ]
+  }'
+```
+
+**Response** (AI decides to use tools):
+
+```json
+{
+  "data": {
+    "choices": [
+      {
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_abc123",
+              "type": "function",
+              "function": {
+                "name": "list_files",
+                "arguments": "{\"path\": \"/tmp\"}"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+#### 2. Multi-Turn Tool Execution Flow
+
+> 📋 **For complete multi-turn conversation examples with tool execution, see** [**HTTP Transport Multi-Turn Examples**](../transports/README.md#multi-turn-conversations-with-mcp-tools).
+
+The typical flow involves:
+
+1. **Initial Request** → AI responds with tool calls
+2. **Tool Execution** → Use Bifrost's `/v1/mcp/tool/execute` endpoint
+3. **Continue Conversation** → Send conversation history with tool results
+4. **Final Response** → AI provides final answer
+
+```bash
+# Step 2: Execute tool using Bifrost's MCP endpoint
+curl -X POST http://localhost:8080/v1/mcp/tool/execute \
+  -H "Content-Type: application/json" \
+  -d ' {
+      "id": "call_abc123",
+      "type": "function",
+      "function": {
+        "name": "list_files",
+        "arguments": "{\"path\": \"/tmp\"}"
+      }
+  }'
+
+# Response: {"role": "tool", "content": "config.json\nreadme.txt\ndata.csv", "tool_call_id": "call_abc123"}
+
+# Step 3: Continue conversation with tool results
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "List the files in /tmp directory"},
+      {
+        "role": "assistant",
+        "tool_calls": [{
+          "id": "call_abc123",
+          "type": "function",
+          "function": {
+            "name": "list_files",
+            "arguments": "{\"path\": \"/tmp\"}"
+          }
+        }]
+      },
+      {
+        "role": "tool",
+        "content": "config.json\nreadme.txt\ndata.csv",
+        "tool_call_id": "call_abc123"
+      }
+    ]
+  }'
+```
+
+### HTTP Headers for MCP Client Filtering
+
+Control which MCP clients are active per request using HTTP headers:
+
+```bash
+# Include only specific MCP clients
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-MCP-Include-Clients: filesystem,weather" \
+  -d '{...}'
+
+# Exclude specific MCP clients
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-MCP-Exclude-Clients: dangerous-tools" \
+  -d '{...}'
+```
+
+### Tool Execution with HTTP Transport
+
+The HTTP transport provides a dedicated endpoint for tool execution:
+
+**Endpoint:** `POST /v1/mcp/tool/execute`
+
+**Workflow:**
+
+1. **Send chat completion request** → Receive tool calls in response
+2. **Execute tools via `/v1/mcp/tool/execute`** → Get tool result messages
+3. **Add tool results to conversation** → Continue chat completion
+4. **Receive final response** → Complete conversation
+
+**Request Format:** (Tool Call Result)
+
+```json
+{
+  "id": "call_abc123",
+  "type": "function",
+  "function": {
+    "name": "tool_name",
+    "arguments": "{\"param\": \"value\"}"
+  }
+}
+```
+
+**Response Format:**
+
+```json
+{
+  "role": "tool",
+  "content": "tool execution result",
+  "tool_call_id": "call_abc123"
+}
+```
+
+This approach gives you control over when to execute tools while leveraging Bifrost's MCP infrastructure for the actual execution.
+
+### Environment Variables
+
+Set environment variables for MCP tools that require them:
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+export FILESYSTEM_ROOT="/allowed/path"
+export SEARCH_API_KEY="your-search-key"
+
+# Start HTTP transport
+bifrost-http -config config.json
 ```
 
 ## Configuration
@@ -338,9 +571,13 @@ request := &schemas.BifrostRequest{
 response, err := bifrost.ChatCompletionRequest(ctx, request)
 ```
 
+> 🌐 **HTTP Transport Users**: When using Bifrost HTTP transport, use HTTP headers instead of context values: `X-MCP-Include-Clients` and `X-MCP-Exclude-Clients`. See [HTTP Headers for MCP Client Filtering](#http-headers-for-mcp-client-filtering).
+
 ## Implementing Chat Conversations with MCP Tools
 
-This section explains how to build chat applications that leverage MCP tools. You'll learn the key patterns for tool call handling, conversation management, and implementing your own tool approval logic.
+This section explains how to build chat applications that leverage MCP tools using the Bifrost Go package. You'll learn the key patterns for tool call handling, conversation management, and implementing your own tool approval logic.
+
+> 🌐 **For HTTP Transport usage with MCP tools, see [HTTP Transport Usage](#http-transport-usage) and [Multi-Turn Conversations with MCP Tools](../transports/README.md#multi-turn-conversations-with-mcp-tools).**
 
 ### Why You Control Tool Execution
 
@@ -525,11 +762,11 @@ mcpConfig := &schemas.MCPConfig{
 
 The LLM expects this exact conversation flow:
 
-```
-1. User Message      -> "Can you read config.json?"
-2. Assistant Message -> [with tool_calls to read_file]
-3. Tool Result(s)    -> [file contents]
-4. Assistant Message -> [final response with no tool_calls]
+```text
+    1. User Message      -> "Can you read config.json?"
+    2. Assistant Message -> [with tool_calls to read_file]
+    3. Tool Result(s)    -> [file contents]
+    4. Assistant Message -> [final response with no tool_calls]
 ```
 
 **Implementation:**
@@ -630,7 +867,7 @@ For a complete working example, see `tests/core-chatbot/main.go` in the reposito
 
 ### Integration Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │                     Bifrost Core                             │
 ├──────────────────────────────────────────────────────────────┤
@@ -672,7 +909,7 @@ For a complete working example, see `tests/core-chatbot/main.go` in the reposito
 
 ### Tool Execution Flow
 
-```
+```text
 User Request
      │
      ▼

@@ -216,13 +216,21 @@ schemas.NetworkConfig{
 
 ```json
 {
-  "openai": {
-    "keys": [...],
-    "network_config": {
-      "extra_headers": {
-        "X-Organization-ID": "org-123",
-        "X-Environment": "production",
-        "User-Agent": "MyApp/1.0 Bifrost/1.0"
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o-mini", "gpt-4"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "extra_headers": {
+          "X-Organization-ID": "org-123",
+          "X-Environment": "production",
+          "User-Agent": "MyApp/1.0 Bifrost/1.0"
+        }
       }
     }
   }
@@ -289,7 +297,7 @@ Headers configured in `extra_headers` are applied before mandatory provider head
 
 All providers should be implemented in the `core/providers` directory. The structure should be:
 
-```
+```text
 core/
 ├── providers/
 │   ├── your_provider.go    # Provider implementation

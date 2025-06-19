@@ -244,6 +244,7 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 		StdioConfig: &schemas.MCPStdioConfig{
 			Command: "npx",
 			Args:    []string{"-y", "serper-search-scrape-mcp-server"},
+			Envs:    []string{"SERPER_API_KEY"},
 		},
 		ToolsToSkip: []string{}, // No tools to skip for this client
 	})
