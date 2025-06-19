@@ -304,7 +304,7 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 	bifrostCtx := lib.ConvertToBifrostContext(ctx)
 
 	var resp *schemas.BifrostResponse
-	var err *schemas.BifrostError
+	var bifrostErr *schemas.BifrostError
 
 	if bifrostCtx == nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
@@ -313,22 +313,13 @@ func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat 
 	}
 
 	if isChat {
-		resp, err = client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
+		resp, bifrostErr = client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
 	} else {
-		resp, err = client.TextCompletionRequest(*bifrostCtx, bifrostReq)
+		resp, bifrostErr = client.TextCompletionRequest(*bifrostCtx, bifrostReq)
 	}
 
-	if err != nil {
-		if err.IsBifrostError {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		}
-		ctx.SetContentType("application/json")
-		if encodeErr := json.NewEncoder(ctx).Encode(err); encodeErr != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", encodeErr))
-		}
+	if bifrostErr != nil {
+		handleBifrostError(ctx, bifrostErr)
 		return
 	}
 
@@ -350,10 +341,9 @@ func handleMCPToolExecution(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
 
 	bifrostCtx := lib.ConvertToBifrostContext(ctx)
 
-	resp, err := client.ExecuteMCPTool(*bifrostCtx, req)
-	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString(fmt.Sprintf("failed to execute tool: %v", err))
+	resp, bifrostErr := client.ExecuteMCPTool(*bifrostCtx, req)
+	if bifrostErr != nil {
+		handleBifrostError(ctx, bifrostErr)
 		return
 	}
 
@@ -362,5 +352,19 @@ func handleMCPToolExecution(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
 	if encodeErr := json.NewEncoder(ctx).Encode(resp); encodeErr != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("failed to encode response: %v", encodeErr))
+	}
+}
+
+func handleBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	if bifrostErr.StatusCode != nil {
+		ctx.SetStatusCode(*bifrostErr.StatusCode)
+	} else {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+	}
+
+	ctx.SetContentType("application/json")
+	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", encodeErr))
 	}
 }
