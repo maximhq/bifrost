@@ -415,12 +415,18 @@ const (
 )
 
 // BifrostError represents an error from the Bifrost system.
+//
+// PLUGIN DEVELOPERS: When creating BifrostError in PreHook or PostHook, you can set AllowFallbacks:
+// - AllowFallbacks = &true: Bifrost will try fallback providers if available
+// - AllowFallbacks = &false: Bifrost will return this error immediately, no fallbacks
+// - AllowFallbacks = nil: Treated as true by default (fallbacks allowed for resilience)
 type BifrostError struct {
 	EventID        *string    `json:"event_id,omitempty"`
 	Type           *string    `json:"type,omitempty"`
 	IsBifrostError bool       `json:"is_bifrost_error"`
 	StatusCode     *int       `json:"status_code,omitempty"`
 	Error          ErrorField `json:"error"`
+	AllowFallbacks *bool      `json:"allow_fallbacks,omitempty"` // Optional: Controls fallback behavior (nil = true by default)
 }
 
 // ErrorField represents detailed error information.
