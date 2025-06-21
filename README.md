@@ -169,6 +169,7 @@ For additional HTTP server configuration options, read [this](https://github.com
       - [ii) OR Using Docker](#ii-or-using-docker)
     - [B. Using Bifrost as a Go Package](#b-using-bifrost-as-a-go-package)
   - [📑 Table of Contents](#-table-of-contents)
+  - [🛠️ Development](#️-development)
   - [🔍 Overview](#-overview)
   - [✨ Features](#-features)
   - [🏗️ Repository Structure](#️-repository-structure)
@@ -183,6 +184,52 @@ For additional HTTP server configuration options, read [this](https://github.com
     - [Key Performance Highlights](#key-performance-highlights)
   - [🤝 Contributing](#-contributing)
   - [📄 License](#-license)
+
+---
+
+## 🛠️ Development
+
+Bifrost includes a comprehensive development environment with hot reloading and build tools.
+
+### Quick Start
+
+```bash
+# Set up development environment
+make dev-full
+
+# Start with hot reload (watches core/, plugins/, transports/)
+make dev
+
+# Start UI development server (in another terminal)
+make ui-dev
+```
+
+### Available Commands
+
+Use `make help` to see all available commands:
+
+| Command      | Description                                      |
+|--------------|--------------------------------------------------|
+| `dev`        | Start bifrost-http with hot reload using Air     |
+| `build`      | Build bifrost-http binary                        |
+| `run`        | Build and run bifrost-http (no hot reload)      |
+| `test-all`   | Run all tests (core, plugins, transports)       |
+| `ui-dev`     | Start UI development server                     |
+| `ui-build`   | Build UI for production (static export)        |
+| `docker-build` | Build Docker image                             |
+| `lint`       | Run Go linter                                   |
+| `fmt`        | Format Go code                                  |
+
+### Environment Variables
+
+- `CONFIG_FILE`: Path to config file (default: `transports/config.example.json`)
+- `PORT`: Server port (default: `8080`)
+- `PLUGINS`: Comma-separated plugins to load (default: `maxim`)
+
+**Example:**
+```bash
+make dev CONFIG_FILE=my-config.json PORT=3000 PLUGINS=maxim,other
+```
 
 ---
 
