@@ -1,0 +1,25 @@
+# Air (hot reload) temporary files
+tmp/
+build-errors.log
+
+# Build artifacts
+bifrost-http
+main
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log 

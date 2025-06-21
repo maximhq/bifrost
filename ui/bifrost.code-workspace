@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"cSpell.words": [
+			"fasthttp",
+			"fasthttpadaptor",
+			"genai",
+			"litellm",
+			"promhttp"
+		]
+	}
+}

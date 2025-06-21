@@ -169,6 +169,7 @@ For additional HTTP server configuration options, read [this](https://github.com
       - [ii) OR Using Docker](#ii-or-using-docker)
     - [B. Using Bifrost as a Go Package](#b-using-bifrost-as-a-go-package)
   - [📑 Table of Contents](#-table-of-contents)
+  - [🛠️ Development](#️-development)
   - [🔍 Overview](#-overview)
   - [✨ Features](#-features)
   - [🏗️ Repository Structure](#️-repository-structure)
@@ -183,6 +184,52 @@ For additional HTTP server configuration options, read [this](https://github.com
     - [Key Performance Highlights](#key-performance-highlights)
   - [🤝 Contributing](#-contributing)
   - [📄 License](#-license)
+
+---
+
+## 🛠️ Development
+
+Bifrost includes a comprehensive development environment with hot reloading and build tools.
+
+### Quick Start
+
+```bash
+# Set up development environment
+make dev-full
+
+# Complete development environment (UI dev server + API with proxy)
+make dev-ui
+
+# Or start API server only with static UI files
+make dev
+```
+
+### Available Commands
+
+Use `make help` to see all available commands:
+
+| Command      | Description                                      |
+|--------------|--------------------------------------------------|
+| `dev`        | Start bifrost-http with hot reload using Air     |
+| `dev-ui`     | Start complete development environment (UI + API) |
+| `build`      | Build bifrost-http binary                        |
+| `run`        | Build and run bifrost-http (no hot reload)      |
+| `test-all`   | Run all tests (core, plugins, transports)       |
+| `ui-build`   | Build UI for production (static export)        |
+| `docker-build` | Build Docker image                             |
+| `lint`       | Run Go linter                                   |
+| `fmt`        | Format Go code                                  |
+
+### Environment Variables
+
+- `CONFIG_FILE`: Path to config file (default: `transports/config.example.json`)
+- `PORT`: Server port (default: `8080`)
+- `PLUGINS`: Comma-separated plugins to load (default: `maxim`)
+
+**Example:**
+```bash
+make dev CONFIG_FILE=my-config.json PORT=3000 PLUGINS=maxim,other
+```
 
 ---
 
@@ -212,6 +259,7 @@ With Bifrost, you can focus on building your AI-powered applications without wor
 - **MCP Integration**: Built-in Model Context Protocol (MCP) support for external tool integration and execution
 - **Custom Configuration**: Offers granular control over pool sizes, network retry settings, fallback providers, and network proxy configurations
 - **Built-in Observability**: Native Prometheus metrics out of the box, no wrappers, no sidecars, just drop it in and scrape
+- **Web Interface**: Modern React-based UI for configuration management and monitoring
 
 ---
 
@@ -234,6 +282,11 @@ bifrost/
 │
 ├── transports/           # Interface layers (HTTP, gRPC, etc.)
 │   ├── bifrost-http/             # HTTP transport implementation
+│   └── ...
+│
+├── ui/                   # Modern React-based web interface
+│   ├── app/              # Next.js 15 application with App Router
+│   ├── components/       # Reusable UI components
 │   └── ...
 │
 └── plugins/              # Plugin Implementations

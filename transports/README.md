@@ -8,6 +8,7 @@ This package contains clients for various transports that can be used to spin up
 
 - [Bifrost Transports](#bifrost-transports)
   - [📑 Table of Contents](#-table-of-contents)
+  - [🛠️ Development](#️-development)
   - [🚀 Setting Up Transports](#-setting-up-transports)
     - [Prerequisites](#prerequisites)
     - [Configuration](#configuration)
@@ -23,6 +24,22 @@ This package contains clients for various transports that can be used to spin up
     - [Prometheus Support](#prometheus-support)
     - [Plugin Support](#plugin-support)
     - [Fallbacks](#fallbacks)
+
+---
+
+## 🛠️ Development
+
+For development with hot reloading and comprehensive tooling, use the main Makefile at the repository root:
+
+- **HTTP Transport**: See [`bifrost-http/README.md`](bifrost-http/README.md) for development setup details
+- **UI Interface**: See [`../ui/README.md`](../ui/README.md) for React UI development
+
+Quick start for HTTP transport development:
+```bash
+cd ..          # Go to repository root
+make dev-full  # Set up environment
+make dev       # Start with hot reload
+```
 
 ---
 
