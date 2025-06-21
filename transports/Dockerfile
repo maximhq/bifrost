@@ -1,8 +1,7 @@
 # --- First Stage: Builder image ---
 FROM golang:1.24-alpine AS builder
 WORKDIR /app
-RUN echo $GOPATH
-ENV GOPATH=/go
+
 # Install dependencies in a single layer
 RUN apk add --no-cache upx
 
@@ -12,14 +11,16 @@ ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 # Define build-time variable for transport type
 ARG TRANSPORT_TYPE=http
 
-# Install Go binary directly
-RUN go install \
+# Initialize go module and get bifrost-http
+RUN go mod init bifrost-build && \
+    go get github.com/maximhq/bifrost/transports/bifrost-${TRANSPORT_TYPE}@latest
+
+# Build the binary locally
+RUN go build \
         -ldflags="-w -s -extldflags '-static'" \
         -a -trimpath \
-        github.com/maximhq/bifrost/transports/bifrost-${TRANSPORT_TYPE}@latest
-
-# Move binary to app directory
-RUN mv "$(go env GOPATH)/bin/linux_amd64/bifrost-${TRANSPORT_TYPE}" /app/main
+        -o /app/main \
+        github.com/maximhq/bifrost/transports/bifrost-${TRANSPORT_TYPE}
 
 # Compress binary with upx
 RUN upx --best --lzma /app/main
