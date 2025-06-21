@@ -5,3 +5,7 @@
 **/venv/
 **/__pycache__/**
 private.*
+
+# Build artifacts
+tmp/
+*.log
