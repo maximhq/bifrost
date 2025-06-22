@@ -10,6 +10,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/meta"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/plugins"
 )
 
 // ProviderConfig represents the configuration for a specific AI model provider.
@@ -25,10 +26,11 @@ type ProviderConfig struct {
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
 // BifrostHTTPConfig represents the complete configuration structure for Bifrost HTTP transport.
-// It includes both provider configurations and MCP configuration.
+// It includes provider configurations, MCP configuration, and plugin configurations.
 type BifrostHTTPConfig struct {
-	ProviderConfig ConfigMap          `json:"providers"` // Provider configurations
-	MCPConfig      *schemas.MCPConfig `json:"mcp"`       // MCP configuration (optional)
+	ProviderConfig ConfigMap              `json:"providers"` // Provider configurations
+	MCPConfig      *schemas.MCPConfig     `json:"mcp"`       // MCP configuration (optional)
+	Plugins        []plugins.PluginConfig `json:"plugins"`   // Plugin configurations (optional)
 }
 
 // readConfig reads and parses the configuration file.
@@ -51,7 +53,30 @@ type BifrostHTTPConfig struct {
 //	},
 //	"mcp": {
 //		"client_configs": [...]
-//	}
+//	},
+//	"plugins": [
+//		{
+//			"name": "mocker",
+//			"source": "local",
+//			"binary_path": "./plugins/mocker-plugin",
+//			"enabled": true,
+//			"config": {
+//				"enabled": true,
+//				"rules": [...]
+//			}
+//		},
+//		{
+//			"name": "maxim",
+//			"source": "package",
+//			"package": "github.com/maximhq/bifrost-maxim-plugin",
+//			"version": "v1.0.0",
+//			"enabled": true,
+//			"env_vars": {
+//				"MAXIM_API_KEY": "env.MAXIM_API_KEY",
+//				"MAXIM_LOG_REPO_ID": "env.MAXIM_LOG_REPO_ID"
+//			}
+//		}
+//	]
 //
 // In this example, OPENAI_API_KEY refers to a key in the environment variables. At runtime, its value will be used to replace the placeholder.
 // Same setup applies to keys in meta configs of all the providers.

@@ -1,19 +1,10 @@
 {
   "providers": {
-    "openai": {
+    "openAI": {
       "keys": [
         {
           "value": "env.OPENAI_API_KEY",
-          "models": [
-            "gpt-3.5-turbo",
-            "gpt-3.5-turbo-preview",
-            "gpt-4",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-4-turbo-preview",
-            "gpt-4-vision-preview"
-          ],
+          "models": ["gpt-4o-mini", "gpt-4-turbo"],
           "weight": 1.0
         }
       ],
@@ -36,14 +27,7 @@
       "keys": [
         {
           "value": "env.ANTHROPIC_API_KEY",
-          "models": [
-            "claude-2.1",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-            "claude-3-opus-20240229",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-7-sonnet-20250219"
-          ],
+          "models": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
           "weight": 1.0
         }
       ],
@@ -147,14 +131,73 @@
   "mcp": {
     "client_configs": [
       {
-        "name": "your-mcp-server-name",
-        "connection_type": "stdio",
-        "stdio_config": {
-          "command": "npx",
-          "args": ["-y", "your-mcp-server-name"],
-          "envs": ["YOUR_MCP_SERVER_ENV_VAR"]
+        "name": "filesystem",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/path/to/allowed/files"
+        ],
+        "env": {
+          "NODE_ENV": "production"
         }
       }
     ]
-  }
+  },
+  "plugins": [
+    {
+      "name": "mocker",
+      "source": "local",
+      "plugin_path": "../../plugins/mocker",
+      "enabled": true,
+      "config": {
+        "enabled": true,
+        "default_behavior": "passthrough",
+        "rules": [
+          {
+            "name": "test-mock-rule",
+            "enabled": true,
+            "priority": 1,
+            "probability": 1.0,
+            "conditions": {
+              "message_regex": "test.*"
+            },
+            "responses": [
+              {
+                "type": "success",
+                "weight": 1.0,
+                "content": {
+                  "message": "This is a mocked response for testing"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "maxim",
+      "source": "local",
+      "plugin_path": "../../plugins/maxim",
+      "enabled": false,
+      "env_vars": {
+        "MAXIM_API_KEY": "env.MAXIM_API_KEY",
+        "MAXIM_LOG_REPO_ID": "env.MAXIM_LOG_REPO_ID"
+      }
+    },
+    {
+      "name": "production-plugin",
+      "source": "package",
+      "package": "github.com/company/bifrost-production-plugin",
+      "version": "v1.2.0",
+      "enabled": true,
+      "config": {
+        "timeout": "30s",
+        "retries": 3
+      },
+      "env_vars": {
+        "API_KEY": "env.PRODUCTION_API_KEY"
+      }
+    }
+  ]
 }
