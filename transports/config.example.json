@@ -1,19 +1,10 @@
 {
   "providers": {
-    "openai": {
+    "openAI": {
       "keys": [
         {
           "value": "env.OPENAI_API_KEY",
-          "models": [
-            "gpt-3.5-turbo",
-            "gpt-3.5-turbo-preview",
-            "gpt-4",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-4-turbo-preview",
-            "gpt-4-vision-preview"
-          ],
+          "models": ["gpt-4o-mini", "gpt-4-turbo"],
           "weight": 1.0
         }
       ],
@@ -36,14 +27,7 @@
       "keys": [
         {
           "value": "env.ANTHROPIC_API_KEY",
-          "models": [
-            "claude-2.1",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-            "claude-3-opus-20240229",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-7-sonnet-20250219"
-          ],
+          "models": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
           "weight": 1.0
         }
       ],
@@ -144,17 +128,44 @@
       }
     }
   },
-  "mcp": {
-    "client_configs": [
-      {
-        "name": "your-mcp-server-name",
-        "connection_type": "stdio",
-        "stdio_config": {
-          "command": "npx",
-          "args": ["-y", "your-mcp-server-name"],
-          "envs": ["YOUR_MCP_SERVER_ENV_VAR"]
-        }
+  "plugins": [
+    {
+      "name": "mocker",
+      "type": "rpc",
+      "binary_path": "../../plugins/mocker/cmd/mocker-plugin",
+      "enabled": true,
+      "config": {
+        "enabled": true,
+        "default_behavior": "passthrough",
+        "rules": [
+          {
+            "name": "test-mock",
+            "enabled": true,
+            "priority": 1,
+            "conditions": {},
+            "probability": 0.1,
+            "responses": [
+              {
+                "type": "success",
+                "weight": 1.0,
+                "content": {
+                  "message": "This is a mock response from the standardized Mocker plugin!"
+                }
+              }
+            ]
+          }
+        ]
       }
-    ]
-  }
+    },
+    {
+      "name": "maxim",
+      "type": "rpc",
+      "binary_path": "../../plugins/maxim/cmd/maxim-plugin",
+      "enabled": true,
+      "env_vars": {
+        "MAXIM_API_KEY": "env.MAXIM_API_KEY",
+        "MAXIM_LOG_REPO_ID": "env.MAXIM_LOG_REPO_ID"
+      }
+    }
+  ]
 }

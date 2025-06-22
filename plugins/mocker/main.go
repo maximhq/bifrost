@@ -2,6 +2,7 @@ package mocker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math/rand"
@@ -46,6 +47,7 @@ type MockerPlugin struct {
 	rules         []MockRule
 	compiledRules []compiledRule // Pre-compiled rules for performance
 	mu            sync.RWMutex
+	logger        schemas.Logger // Injected logger instance
 
 	// Atomic counters for high-performance statistics tracking
 	totalRequests      int64
@@ -937,4 +939,54 @@ func (p *MockerPlugin) GetStats() MockStats {
 	p.ruleHitsMu.RUnlock()
 
 	return statsCopy
+}
+
+// NewPlugin creates a new mocker plugin instance using standardized configuration
+// This is the standardized constructor that all plugins should implement
+func NewPlugin(configJSON json.RawMessage) (schemas.Plugin, error) {
+	var config MockerConfig
+
+	// Parse the JSON configuration
+	if len(configJSON) > 0 {
+		if err := json.Unmarshal(configJSON, &config); err != nil {
+			return nil, fmt.Errorf("failed to parse mocker plugin configuration: %w", err)
+		}
+	} else {
+		// Default configuration if none provided
+		config = MockerConfig{
+			Enabled:         true,
+			DefaultBehavior: DefaultBehaviorPassthrough,
+		}
+	}
+
+	return NewMockerPlugin(config)
+}
+
+// SetLogger injects a logger instance into the plugin
+func (p *MockerPlugin) SetLogger(logger schemas.Logger) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.logger = logger
+}
+
+// log is a helper method that logs messages using the injected logger or falls back to no-op
+func (p *MockerPlugin) log(level string, message string, args ...interface{}) {
+	p.mu.RLock()
+	logger := p.logger
+	p.mu.RUnlock()
+
+	if logger != nil {
+		formattedMsg := fmt.Sprintf(message, args...)
+		switch level {
+		case "debug":
+			logger.Debug(formattedMsg)
+		case "info":
+			logger.Info(formattedMsg)
+		case "warn":
+			logger.Warn(formattedMsg)
+		case "error":
+			logger.Error(fmt.Errorf("%s", formattedMsg))
+		}
+	}
+	// If no logger is injected, do nothing (graceful degradation)
 }

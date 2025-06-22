@@ -1,7 +1,10 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // PluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
 // It can contain either a response (success short-circuit) or an error (error short-circuit).
@@ -38,10 +41,21 @@ type PluginShortCircuit struct {
 // - AllowFallbacks = nil: Treated as true by default (allow fallbacks for resilience)
 //
 // Plugin authors should ensure their hooks are robust to both response and error being nil, and should not assume either is always present.
+//
+// STANDARDIZED PLUGIN DEVELOPMENT:
+// All plugins should follow these conventions:
+// 1. Constructor: NewPlugin(config json.RawMessage) (Plugin, error)
+// 2. Implement SetLogger method for dependency injection
+// 3. Handle nil logger gracefully (use default logging or no-op)
 
 type Plugin interface {
 	// GetName returns the name of the plugin.
 	GetName() string
+
+	// SetLogger injects a logger instance into the plugin.
+	// Plugins should handle nil logger gracefully (use default logging or no-op).
+	// This method will be called by Bifrost after plugin creation.
+	SetLogger(logger Logger)
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.
@@ -60,3 +74,8 @@ type Plugin interface {
 	// Returns any error that occurred during cleanup, which will be logged as a warning by the Bifrost instance.
 	Cleanup() error
 }
+
+// PluginConstructor defines the standardized constructor signature for all plugins.
+// All plugins should implement: NewPlugin(config json.RawMessage) (Plugin, error)
+// This is enforced at development time through documentation and examples.
+type PluginConstructor func(config json.RawMessage) (Plugin, error)

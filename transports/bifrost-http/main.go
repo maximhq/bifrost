@@ -157,6 +157,7 @@ func main() {
 
 	loadedPlugins := []schemas.Plugin{}
 
+	// Load legacy plugins from command line flags
 	for _, plugin := range pluginsToLoad {
 		switch strings.ToLower(plugin) {
 		case "maxim":
@@ -178,6 +179,13 @@ func main() {
 			loadedPlugins = append(loadedPlugins, maximPlugin)
 		}
 	}
+
+	// Load RPC plugins from configuration
+	rpcPlugins, err := lib.LoadPlugins(config.Plugins)
+	if err != nil {
+		log.Printf("warning: failed to load RPC plugins: %v", err)
+	}
+	loadedPlugins = append(loadedPlugins, rpcPlugins...)
 
 	promPlugin := tracking.NewPrometheusPlugin()
 	loadedPlugins = append(loadedPlugins, promPlugin)
