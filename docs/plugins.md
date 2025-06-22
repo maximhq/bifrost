@@ -2,6 +2,8 @@
 
 Bifrost provides a powerful plugin system that allows you to extend and customize the request/response pipeline. Plugins can implement rate limiting, caching, authentication, logging, monitoring, and more.
 
+**🎉 New: Auto-Generated RPC Wrappers** - Plugin developers only need to implement business logic. All RPC boilerplate is automatically generated!
+
 ## Table of Contents
 
 1. [Plugin Architecture Overview](#1-plugin-architecture-overview)
@@ -28,6 +30,14 @@ Bifrost plugins follow a **PreHook → Provider → PostHook** pattern with supp
 - **Short-Circuit**: Plugin can skip provider call and return response/error directly
 - **Fallback Control**: Plugins can control whether fallback providers should be tried
 - **Pipeline Symmetry**: Every PreHook execution gets a corresponding PostHook call
+- **Auto-Generated RPC**: All RPC communication is handled automatically - no boilerplate required
+
+### Plugin Distribution
+
+Bifrost supports two plugin deployment methods:
+
+1. **Local Plugins** (Development): Point to plugin directory, system auto-generates RPC wrapper and builds
+2. **Package Plugins** (Production): Reference Go modules, system downloads, generates wrapper, and builds automatically
 
 ## 2. Plugin Interface
 
@@ -46,6 +56,9 @@ type Plugin interface {
 
     // Cleanup is called on bifrost shutdown
     Cleanup() error
+
+    // SetLogger provides a logger instance to the plugin
+    SetLogger(logger Logger)
 }
 
 type PluginShortCircuit struct {
@@ -54,12 +67,31 @@ type PluginShortCircuit struct {
 }
 ```
 
+### Mandatory Plugin Constructor
+
+**ALL plugins MUST implement this standardized constructor:**
+
+```go
+func NewPlugin(configJSON json.RawMessage) (schemas.Plugin, error) {
+    // Parse configuration
+    var config YourPluginConfig
+    if err := json.Unmarshal(configJSON, &config); err != nil {
+        return nil, fmt.Errorf("invalid config: %w", err)
+    }
+
+    // Validate and create plugin instance
+    return &YourPlugin{config: config}, nil
+}
+```
+
 ## 3. Plugin Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PluginInit: Plugin Creation
-    PluginInit --> Registered: Add to BifrostConfig
+    [*] --> PluginInit: Plugin Creation via NewPlugin()
+    PluginInit --> RPCWrapper: Auto-Generate RPC Wrapper
+    RPCWrapper --> BuildBinary: Compile RPC Binary
+    BuildBinary --> Registered: Load into Transport
     Registered --> PreHookCall: Request Received
 
     PreHookCall --> ModifyRequest: Normal Flow
@@ -276,63 +308,181 @@ func (p *RetryPlugin) PostHook(ctx *context.Context, result *BifrostResponse, er
 
 ## 7. Building Custom Plugins
 
-### Basic Plugin Structure
+### Quick Start - Zero Boilerplate Required!
+
+Creating a plugin is now incredibly simple. You only need to implement the `NewPlugin` constructor - all RPC boilerplate is automatically generated!
 
 ```go
-type CustomPlugin struct {
-    config CustomConfig
-    // Add your fields here
+// plugin.go
+package myplugin
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Configuration for your plugin
+type PluginConfig struct {
+    LogLevel string `json:"log_level"`
+    Enabled  bool   `json:"enabled"`
 }
 
-func NewCustomPlugin(config CustomConfig) *CustomPlugin {
-    return &CustomPlugin{config: config}
+// MANDATORY: This is the ONLY function you need to implement
+func NewPlugin(configJSON json.RawMessage) (schemas.Plugin, error) {
+    var config PluginConfig
+    if err := json.Unmarshal(configJSON, &config); err != nil {
+        return nil, fmt.Errorf("invalid config: %w", err)
+    }
+
+    return &MyPlugin{
+        config: config,
+        logger: log.New(os.Stdout, "[MyPlugin] ", log.LstdFlags),
+    }, nil
 }
 
-func (p *CustomPlugin) GetName() string {
-    return "CustomPlugin"
+// Your plugin implementation
+type MyPlugin struct {
+    config PluginConfig
+    logger *log.Logger
 }
 
-func (p *CustomPlugin) PreHook(ctx *context.Context, req *BifrostRequest) (*BifrostRequest, *PluginShortCircuit, error) {
-    // Modify request or short-circuit
+func (p *MyPlugin) GetName() string {
+    return "my-plugin"
+}
+
+func (p *MyPlugin) SetLogger(logger schemas.Logger) {
+    // Optional: Use Bifrost's logger instead of your own
+}
+
+func (p *MyPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+    if !p.config.Enabled {
+        return req, nil, nil
+    }
+
+    p.logger.Printf("Request: %s to %s", req.Model, req.Provider)
     return req, nil, nil
 }
 
-func (p *CustomPlugin) PostHook(ctx *context.Context, result *BifrostResponse, err *BifrostError) (*BifrostResponse, *BifrostError, error) {
-    // Modify response/error or recover from errors
+func (p *MyPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+    if !p.config.Enabled {
+        return result, err, nil
+    }
+
+    if err != nil {
+        p.logger.Printf("Error: %v", err.Error.Message)
+    } else {
+        p.logger.Printf("Success: %d tokens", result.Usage.TotalTokens)
+    }
     return result, err, nil
 }
 
-func (p *CustomPlugin) Cleanup() error {
-    // Clean up resources
+func (p *MyPlugin) Cleanup() error {
     return nil
 }
 ```
 
+### Simplified Plugin Directory Structure
+
+Your plugin only needs this minimal structure:
+
+```
+your-plugin/
+├── plugin.go              # Plugin implementation with NewPlugin constructor
+├── go.mod                 # Go module definition
+├── go.sum                 # Go module checksums (generated)
+└── README.md             # Documentation (optional)
+```
+
 ### Plugin Development Checklist
 
+- [ ] Implement `NewPlugin(json.RawMessage) (schemas.Plugin, error)` constructor
 - [ ] Handle nil response and error in PostHook
 - [ ] Set appropriate AllowFallbacks for errors
 - [ ] Implement proper cleanup in Cleanup()
-- [ ] Add configuration validation
+- [ ] Add configuration validation in NewPlugin
 - [ ] Write comprehensive tests
 - [ ] Document behavior and configuration
+
+### Local Development
+
+```bash
+# Create plugin directory
+mkdir ./plugins/my-plugin
+cd ./plugins/my-plugin
+
+# Initialize Go module
+go mod init my-plugin
+
+# Create plugin.go with NewPlugin function
+# (See example above)
+
+# Test locally - no build required!
+# System auto-generates RPC wrapper and builds for you
+```
+
+### Configuration Usage
+
+```json
+{
+  "plugins": [
+    {
+      "name": "my-plugin",
+      "source": "local",
+      "plugin_path": "./plugins/my-plugin",
+      "enabled": true,
+      "config": {
+        "log_level": "info",
+        "enabled": true
+      }
+    }
+  ]
+}
+```
 
 ## 8. Plugin Examples
 
 ### Rate Limiting Plugin
 
 ```go
-type RateLimitPlugin struct {
-    limiters map[ModelProvider]*rate.Limiter
-    mu       sync.RWMutex
+package ratelimit
+
+import (
+    "encoding/json"
+    "fmt"
+    "sync"
+    "golang.org/x/time/rate"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+type RateLimitConfig struct {
+    Limits map[string]float64 `json:"limits"` // provider -> requests per second
 }
 
-func NewRateLimitPlugin(limits map[ModelProvider]float64) *RateLimitPlugin {
-    limiters := make(map[ModelProvider]*rate.Limiter)
-    for provider, limit := range limits {
+// MANDATORY: Standardized constructor
+func NewPlugin(configJSON json.RawMessage) (schemas.Plugin, error) {
+    var config RateLimitConfig
+    if err := json.Unmarshal(configJSON, &config); err != nil {
+        return nil, fmt.Errorf("invalid config: %w", err)
+    }
+
+    limiters := make(map[schemas.ModelProvider]*rate.Limiter)
+    for providerStr, limit := range config.Limits {
+        provider := schemas.ModelProvider(providerStr)
         limiters[provider] = rate.NewLimiter(rate.Limit(limit), 1)
     }
-    return &RateLimitPlugin{limiters: limiters}
+
+    return &RateLimitPlugin{
+        limiters: limiters,
+    }, nil
+}
+
+type RateLimitPlugin struct {
+    limiters map[schemas.ModelProvider]*rate.Limiter
+    mu       sync.RWMutex
 }
 
 func (p *RateLimitPlugin) GetName() string {
@@ -371,12 +521,39 @@ func (p *RateLimitPlugin) Cleanup() error {
 ### Authentication Plugin
 
 ```go
-type AuthPlugin struct {
-    validator TokenValidator
+package auth
+
+import (
+    "encoding/json"
+    "fmt"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+type AuthConfig struct {
+    RequiredHeader string `json:"required_header"`
+    ValidTokens    []string `json:"valid_tokens"`
 }
 
-func NewAuthPlugin(validator TokenValidator) *AuthPlugin {
-    return &AuthPlugin{validator: validator}
+// MANDATORY: Standardized constructor
+func NewPlugin(configJSON json.RawMessage) (schemas.Plugin, error) {
+    var config AuthConfig
+    if err := json.Unmarshal(configJSON, &config); err != nil {
+        return nil, fmt.Errorf("invalid config: %w", err)
+    }
+
+    if config.RequiredHeader == "" {
+        return nil, fmt.Errorf("required_header is mandatory")
+    }
+
+    return &AuthPlugin{
+        config: config,
+        validator: NewTokenValidator(config.ValidTokens),
+    }, nil
+}
+
+type AuthPlugin struct {
+    config    AuthConfig
+    validator TokenValidator
 }
 
 func (p *AuthPlugin) GetName() string {
@@ -479,27 +656,70 @@ Each plugin should be organized as follows:
 ```
 plugins/
 └── your-plugin-name/
-    ├── main.go           # Plugin implementation
+    ├── plugin.go         # Plugin implementation with NewPlugin constructor
     ├── plugin_test.go    # Comprehensive tests
     ├── README.md         # Documentation with examples
     └── go.mod            # Module definition
 ```
 
-### Using Plugins
+**Note:** No RPC wrapper required - it's auto-generated!
+
+### Using Plugins in Core (Direct Go Usage)
 
 ```go
 import (
+    "encoding/json"
     "github.com/maximhq/bifrost/core"
     "github.com/your-org/your-plugin"
 )
 
+// Configure plugin
+pluginConfig := json.RawMessage(`{
+    "setting1": "value1",
+    "setting2": true
+}`)
+
+plugin, err := your_plugin.NewPlugin(pluginConfig)
+if err != nil {
+    panic(err)
+}
+
 client, err := bifrost.Init(schemas.BifrostConfig{
     Account: &yourAccount,
     Plugins: []schemas.Plugin{
-        your_plugin.NewYourPlugin(config),
+        plugin,
         // Add more plugins as needed
     },
 })
+```
+
+### Using Plugins in Transport (Configuration-Based)
+
+```json
+{
+  "plugins": [
+    {
+      "name": "your-plugin",
+      "source": "local",
+      "plugin_path": "./plugins/your-plugin",
+      "enabled": true,
+      "config": {
+        "setting1": "value1",
+        "setting2": true
+      }
+    },
+    {
+      "name": "production-plugin",
+      "source": "package",
+      "package": "github.com/your-org/your-plugin",
+      "version": "v1.0.0",
+      "enabled": true,
+      "config": {
+        "production_setting": "prod_value"
+      }
+    }
+  ]
+}
 ```
 
 ### Plugin Execution Order

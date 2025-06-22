@@ -4,9 +4,8 @@ go 1.24.1
 
 require (
 	github.com/fasthttp/router v1.5.4
+	github.com/hashicorp/go-plugin v1.6.3
 	github.com/maximhq/bifrost/core v1.1.4
-	github.com/maximhq/bifrost/plugins/maxim v1.0.5
-	github.com/maximhq/bifrost/sdk v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.22.0
 	github.com/valyala/fasthttp v1.62.0
 	google.golang.org/genai v1.4.0
@@ -47,7 +46,6 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -61,7 +59,6 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.4 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
-	github.com/maximhq/maxim-go v0.1.3 // indirect
 	github.com/metoro-io/mcp-golang v0.13.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
@@ -97,8 +94,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/maximhq/bifrost/sdk => ../sdk
-
 replace github.com/maximhq/bifrost/core => ../core
-
-replace github.com/maximhq/bifrost/plugins/maxim => ../plugins/maxim

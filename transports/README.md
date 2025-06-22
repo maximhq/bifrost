@@ -196,7 +196,6 @@ You can also set runtime environment variables for configuration:
 - `APP_PORT`: Server port (default: 8080)
 - `APP_POOL_SIZE`: Connection pool size (default: 300)
 - `APP_DROP_EXCESS_REQUESTS`: Drop excess requests when buffer is full (default: false)
-- `APP_PLUGINS`: Comma-separated list of plugins
 
 Read more about these [configurations](https://github.com/maximhq/bifrost/tree/main?tab=README-ov-file#additional-configurations).
 
@@ -408,11 +407,49 @@ Values for labels are then picked up from the HTTP request headers with the pref
 
 ### Plugin Support
 
-You can explore the [available plugins](https://github.com/maximhq/bifrost/tree/main/plugins). To attach these plugins to your HTTP transport, pass the `-plugins` flag.
+Bifrost supports a simplified plugin system with auto-generated RPC wrappers. You can explore the [available plugins](https://github.com/maximhq/bifrost/tree/main/plugins).
 
-e.g., `-plugins maxim`
+**Plugin Configuration:**
 
-Note: Check plugin-specific documentation (github.com/maximhq/bifrost/tree/main/plugins/{plugin_name}) for more granular control and additional setup requirements.
+```json
+{
+  "plugins": [
+    {
+      "name": "maxim",
+      "source": "local",
+      "plugin_path": "./plugins/maxim",
+      "enabled": true,
+      "env_vars": {
+        "MAXIM_API_KEY": "env.MAXIM_API_KEY",
+        "MAXIM_LOG_REPO_ID": "env.MAXIM_LOG_REPO_ID"
+      }
+    },
+    {
+      "name": "production-plugin",
+      "source": "package",
+      "package": "github.com/company/bifrost-plugin",
+      "version": "v1.0.0",
+      "enabled": true,
+      "config": {
+        "setting": "value"
+      }
+    }
+  ]
+}
+```
+
+**Plugin Types:**
+
+- **Local plugins** (`source: "local"`): Point to plugin directory, system auto-builds with generated RPC wrapper
+- **Package plugins** (`source: "package"`): Reference Go modules, system downloads and builds automatically
+
+**Key Benefits:**
+
+- **Zero Boilerplate**: Plugin developers only implement business logic
+- **Auto-Generated RPC**: All RPC communication handled automatically
+- **Simplified Development**: No manual `cmd/main.go` files required
+
+For comprehensive plugin development guide, see [Plugin System Documentation](../docs/plugin-system-complete-guide.md).
 
 ### Fallbacks
 

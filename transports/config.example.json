@@ -128,28 +128,46 @@
       }
     }
   },
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "filesystem",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/path/to/allowed/files"
+        ],
+        "env": {
+          "NODE_ENV": "production"
+        }
+      }
+    ]
+  },
   "plugins": [
     {
       "name": "mocker",
-      "type": "rpc",
-      "binary_path": "../../plugins/mocker/cmd/mocker-plugin",
+      "source": "local",
+      "plugin_path": "../../plugins/mocker",
       "enabled": true,
       "config": {
         "enabled": true,
         "default_behavior": "passthrough",
         "rules": [
           {
-            "name": "test-mock",
+            "name": "test-mock-rule",
             "enabled": true,
             "priority": 1,
-            "conditions": {},
-            "probability": 0.1,
+            "probability": 1.0,
+            "conditions": {
+              "message_regex": "test.*"
+            },
             "responses": [
               {
                 "type": "success",
                 "weight": 1.0,
                 "content": {
-                  "message": "This is a mock response from the standardized Mocker plugin!"
+                  "message": "This is a mocked response for testing"
                 }
               }
             ]
@@ -159,12 +177,26 @@
     },
     {
       "name": "maxim",
-      "type": "rpc",
-      "binary_path": "../../plugins/maxim/cmd/maxim-plugin",
-      "enabled": true,
+      "source": "local",
+      "plugin_path": "../../plugins/maxim",
+      "enabled": false,
       "env_vars": {
         "MAXIM_API_KEY": "env.MAXIM_API_KEY",
         "MAXIM_LOG_REPO_ID": "env.MAXIM_LOG_REPO_ID"
+      }
+    },
+    {
+      "name": "production-plugin",
+      "source": "package",
+      "package": "github.com/company/bifrost-production-plugin",
+      "version": "v1.2.0",
+      "enabled": true,
+      "config": {
+        "timeout": "30s",
+        "retries": 3
+      },
+      "env_vars": {
+        "API_KEY": "env.PRODUCTION_API_KEY"
       }
     }
   ]

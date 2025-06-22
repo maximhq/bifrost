@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -16,6 +17,43 @@ import (
 
 // PluginName is the canonical name for the bifrost-maxim plugin.
 const PluginName = "bifrost-maxim"
+
+// MaximConfig represents the configuration for the Maxim plugin
+type MaximConfig struct {
+	APIKey    string `json:"api_key"`
+	LogRepoID string `json:"log_repo_id"`
+}
+
+// NewPlugin creates a new Maxim plugin instance using standardized configuration
+// This is the standardized constructor that all plugins should implement
+func NewPlugin(configJSON json.RawMessage) (schemas.Plugin, error) {
+	var config MaximConfig
+
+	// Parse the JSON configuration
+	if len(configJSON) > 0 {
+		if err := json.Unmarshal(configJSON, &config); err != nil {
+			return nil, fmt.Errorf("failed to parse maxim plugin configuration: %w", err)
+		}
+	}
+
+	// Allow configuration from environment variables if not provided in config
+	if config.APIKey == "" {
+		config.APIKey = os.Getenv("MAXIM_API_KEY")
+	}
+	if config.LogRepoID == "" {
+		config.LogRepoID = os.Getenv("MAXIM_LOG_REPO_ID")
+	}
+
+	// Validate required configuration
+	if config.APIKey == "" {
+		return nil, fmt.Errorf("API key is required (provide via config.api_key or MAXIM_API_KEY environment variable)")
+	}
+	if config.LogRepoID == "" {
+		return nil, fmt.Errorf("log repo ID is required (provide via config.log_repo_id or MAXIM_LOG_REPO_ID environment variable)")
+	}
+
+	return NewMaximLoggerPlugin(config.APIKey, config.LogRepoID)
+}
 
 // NewMaximLogger initializes and returns a Plugin instance for Maxim's logger.
 //

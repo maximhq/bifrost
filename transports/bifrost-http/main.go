@@ -39,18 +39,20 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/litellm"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/plugins"
 	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -65,7 +67,6 @@ var (
 	dropExcessRequests bool     // Drop excess requests
 	port               string   // Port to run the server on
 	configPath         string   // Path to the config file
-	pluginsToLoad      []string // Path to the plugins
 	prometheusLabels   []string // Labels to add to Prometheus metrics (optional)
 )
 
@@ -76,18 +77,14 @@ var (
 //   - config: Path to config file (required)
 //   - drop-excess-requests: Whether to drop excess requests
 func init() {
-	pluginString := ""
 	var prometheusLabelsString string
 
 	flag.IntVar(&initialPoolSize, "pool-size", 300, "Initial pool size for Bifrost")
 	flag.StringVar(&port, "port", "8080", "Port to run the server on")
 	flag.StringVar(&configPath, "config", "", "Path to the config file")
 	flag.BoolVar(&dropExcessRequests, "drop-excess-requests", false, "Drop excess requests")
-	flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
 	flag.StringVar(&prometheusLabelsString, "prometheus-labels", "", "Labels to add to Prometheus metrics")
 	flag.Parse()
-
-	pluginsToLoad = strings.Split(pluginString, ",")
 
 	if configPath == "" {
 		log.Fatalf("config path is required")
@@ -157,36 +154,14 @@ func main() {
 
 	loadedPlugins := []schemas.Plugin{}
 
-	// Load legacy plugins from command line flags
-	for _, plugin := range pluginsToLoad {
-		switch strings.ToLower(plugin) {
-		case "maxim":
-			if os.Getenv("MAXIM_LOG_REPO_ID") == "" {
-				log.Println("warning: maxim log repo id is required to initialize maxim plugin")
-				continue
-			}
-			if os.Getenv("MAXIM_API_KEY") == "" {
-				log.Println("warning: maxim api key is required in environment variable MAXIM_API_KEY to initialize maxim plugin")
-				continue
-			}
-
-			maximPlugin, err := maxim.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOG_REPO_ID"))
-			if err != nil {
-				log.Printf("warning: failed to initialize maxim plugin: %v", err)
-				continue
-			}
-
-			loadedPlugins = append(loadedPlugins, maximPlugin)
-		}
-	}
-
-	// Load RPC plugins from configuration
-	rpcPlugins, err := lib.LoadPlugins(config.Plugins)
+	// Load plugins from configuration
+	rpcPlugins, err := plugins.LoadPlugins(config.Plugins)
 	if err != nil {
-		log.Printf("warning: failed to load RPC plugins: %v", err)
+		log.Printf("warning: failed to load plugins: %v", err)
 	}
 	loadedPlugins = append(loadedPlugins, rpcPlugins...)
 
+	// Always add Prometheus plugin
 	promPlugin := tracking.NewPrometheusPlugin()
 	loadedPlugins = append(loadedPlugins, promPlugin)
 
@@ -246,12 +221,40 @@ func main() {
 		},
 	}
 
+	// Set up graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-quit
+		log.Println("Shutting down server...")
+
+		// Cleanup plugins first
+		for _, plugin := range loadedPlugins {
+			if err := plugin.Cleanup(); err != nil {
+				log.Printf("warning: failed to cleanup plugin %s: %v", plugin.GetName(), err)
+			}
+		}
+
+		// Cleanup auto-generated plugin directories
+		plugins.CleanupPluginDirectories(config.Plugins)
+
+		// Cleanup bifrost client
+		client.Cleanup()
+
+		// Shutdown server
+		if err := server.Shutdown(); err != nil {
+			log.Printf("warning: failed to shutdown server gracefully: %v", err)
+		}
+
+		log.Println("Server shutdown complete")
+		os.Exit(0)
+	}()
+
 	log.Println("Started Bifrost HTTP server on port", port)
 	if err := server.ListenAndServe(fmt.Sprintf(":%s", port)); err != nil {
 		log.Fatalf("failed to start server: %v", err)
 	}
-
-	client.Cleanup()
 }
 
 // handleCompletion processes both text and chat completion requests.

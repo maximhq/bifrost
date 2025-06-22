@@ -10,6 +10,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/meta"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/plugins"
 )
 
 // ProviderConfig represents the configuration for a specific AI model provider.
@@ -24,30 +25,12 @@ type ProviderConfig struct {
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
-// PluginType represents the type of plugin loading mechanism
-type PluginType string
-
-const (
-	PluginTypeDirect PluginType = "direct" // Direct plugin loading (traditional)
-	PluginTypeRPC    PluginType = "rpc"    // RPC-based plugin loading
-)
-
-// PluginConfig represents the configuration for a single plugin
-type PluginConfig struct {
-	Name       string            `json:"name"`                  // Plugin name for identification
-	Type       PluginType        `json:"type"`                  // Plugin type: "direct" or "rpc"
-	BinaryPath string            `json:"binary_path,omitempty"` // Path to plugin binary (for RPC plugins)
-	EnvVars    map[string]string `json:"env_vars,omitempty"`    // Environment variables to set for the plugin
-	Config     json.RawMessage   `json:"config,omitempty"`      // Plugin-specific configuration (JSON)
-	Enabled    bool              `json:"enabled"`               // Whether the plugin is enabled
-}
-
 // BifrostHTTPConfig represents the complete configuration structure for Bifrost HTTP transport.
 // It includes provider configurations, MCP configuration, and plugin configurations.
 type BifrostHTTPConfig struct {
-	ProviderConfig ConfigMap          `json:"providers"` // Provider configurations
-	MCPConfig      *schemas.MCPConfig `json:"mcp"`       // MCP configuration (optional)
-	Plugins        []PluginConfig     `json:"plugins"`   // Plugin configurations (optional)
+	ProviderConfig ConfigMap              `json:"providers"` // Provider configurations
+	MCPConfig      *schemas.MCPConfig     `json:"mcp"`       // MCP configuration (optional)
+	Plugins        []plugins.PluginConfig `json:"plugins"`   // Plugin configurations (optional)
 }
 
 // readConfig reads and parses the configuration file.
@@ -74,17 +57,19 @@ type BifrostHTTPConfig struct {
 //	"plugins": [
 //		{
 //			"name": "mocker",
-//			"type": "rpc",
+//			"source": "local",
 //			"binary_path": "./plugins/mocker-plugin",
 //			"enabled": true,
-//			"env_vars": {
-//				"MOCKER_CONFIG": "{\"enabled\":true,\"rules\":[...]}"
+//			"config": {
+//				"enabled": true,
+//				"rules": [...]
 //			}
 //		},
 //		{
 //			"name": "maxim",
-//			"type": "rpc",
-//			"binary_path": "./plugins/maxim-plugin",
+//			"source": "package",
+//			"package": "github.com/maximhq/bifrost-maxim-plugin",
+//			"version": "v1.0.0",
 //			"enabled": true,
 //			"env_vars": {
 //				"MAXIM_API_KEY": "env.MAXIM_API_KEY",
