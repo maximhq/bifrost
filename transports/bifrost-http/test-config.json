@@ -1,0 +1,21 @@
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "test-key",
+          "models": ["gpt-3.5-turbo"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 30,
+        "max_retries": 1
+      },
+      "concurrency_and_buffer_size": {
+        "concurrency": 1,
+        "buffer_size": 1
+      }
+    }
+  }
+} 

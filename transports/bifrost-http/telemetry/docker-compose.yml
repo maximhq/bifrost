@@ -1,0 +1,29 @@
+# Prometheus and Grafana for tracking bifrost-http service (for development and testing purposes only, don't use in production without proper setup)
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090" # Expose Prometheus web UI
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml # Prometheus config file
+    restart: always
+    networks:
+      - bifrost_tracking_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000" # Expose Grafana web UI
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "admin" # Default admin password for Grafana
+    restart: always
+    networks:
+      - bifrost_tracking_network
+
+networks:
+  bifrost_tracking_network:
+    driver: bridge

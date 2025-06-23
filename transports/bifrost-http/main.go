@@ -45,13 +45,13 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/litellm"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
+	"github.com/maximhq/bifrost/transports/bifrost-http/providers"
+	"github.com/maximhq/bifrost/transports/bifrost-http/providers/anthropic"
+	"github.com/maximhq/bifrost/transports/bifrost-http/providers/genai"
+	"github.com/maximhq/bifrost/transports/bifrost-http/providers/litellm"
+	"github.com/maximhq/bifrost/transports/bifrost-http/providers/openai"
+	"github.com/maximhq/bifrost/transports/bifrost-http/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -144,7 +144,7 @@ func main() {
 	registerCollectorSafely(collectors.NewGoCollector())
 	registerCollectorSafely(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
-	tracking.InitPrometheusMetrics(prometheusLabels)
+	telemetry.InitPrometheusMetrics(prometheusLabels)
 
 	log.Println("Prometheus Go/Process collectors registered.")
 
@@ -179,7 +179,7 @@ func main() {
 		}
 	}
 
-	promPlugin := tracking.NewPrometheusPlugin()
+	promPlugin := telemetry.NewPrometheusPlugin()
 	loadedPlugins = append(loadedPlugins, promPlugin)
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
@@ -193,9 +193,17 @@ func main() {
 		log.Fatalf("failed to initialize bifrost: %v", err)
 	}
 
+	// Initialize UI handler
+	uiHandler := lib.NewUIHandler(lib.UIConfig{
+		DevMode:      lib.IsDevModeEnabled(),
+		DevServerURL: "http://localhost:3000",
+		StaticDir:    "../../ui/out",
+		BasePath:     "/ui",
+	})
+
 	r := router.New()
 
-	extensions := []integrations.ExtensionRouter{
+	extensions := []providers.Router{
 		genai.NewGenAIRouter(client),
 		openai.NewOpenAIRouter(client),
 		anthropic.NewAnthropicRouter(client),
@@ -213,6 +221,10 @@ func main() {
 	r.POST("/v1/mcp/tool/execute", func(ctx *fasthttp.RequestCtx) {
 		handleMCPToolExecution(ctx, client)
 	})
+
+	// Register UI routes
+	r.GET("/ui/{filepath:*}", uiHandler.HandleUI)
+	r.GET("/ui/", uiHandler.HandleUI)
 
 	for _, extension := range extensions {
 		extension.RegisterRoutes(r)
@@ -234,7 +246,7 @@ func main() {
 				r.Handler(ctx)
 				return
 			}
-			tracking.PrometheusMiddleware(r.Handler)(ctx)
+			telemetry.PrometheusMiddleware(r.Handler)(ctx)
 		},
 	}
 
