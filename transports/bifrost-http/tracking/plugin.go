@@ -48,7 +48,7 @@ func (p *PrometheusPlugin) GetName() string {
 
 // PreHook records the start time of the request in the context.
 // This time is used later in PostHook to calculate request duration.
-func (p *PrometheusPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.BifrostResponse, error) {
+func (p *PrometheusPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	*ctx = context.WithValue(*ctx, startTimeKey, time.Now())
 
 	if req.Input.ChatCompletionInput != nil {
