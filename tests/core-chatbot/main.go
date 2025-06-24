@@ -253,6 +253,16 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 			ConnectionType:   schemas.MCPConnectionTypeSSE,
 			ConnectionString: bifrost.Ptr("https://mcp.composio.dev/composio/server/654c1e3f-ea7d-47b6-9e31-398d00449654/sse"),
 		},
+		schemas.MCPClientConfig{
+			Name:             "calendar-mcp",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: bifrost.Ptr("https://mcp.composio.dev/composio/server/05caef05-a0fe-4a52-bf64-66cedec9197d/mcp?include_composio_helper_actions=true"),
+		},
+		schemas.MCPClientConfig{
+			Name:             "youtube-mcp",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: bifrost.Ptr("https://mcp.composio.dev/composio/server/ab69d009-5859-4175-a7e6-d96f73ff833b/mcp?include_composio_helper_actions=true"),
+		},
 	)
 
 	fmt.Println("🔌 Configuring Context7 MCP server...")

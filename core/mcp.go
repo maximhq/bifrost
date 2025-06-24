@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -640,7 +641,8 @@ func (m *MCPManager) convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.To
 		var schemaMap map[string]interface{}
 		if json.Unmarshal(schemaBytes, &schemaMap) == nil {
 			if props, ok := schemaMap["properties"].(map[string]interface{}); ok {
-				properties = props
+				// Sanitize properties to handle type mismatches
+				properties = m.sanitizeProperties(props)
 			}
 			if req, ok := schemaMap["required"].([]interface{}); ok {
 				for _, r := range req {
@@ -793,6 +795,197 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 // ============================================================================
 // HELPER METHODS
 // ============================================================================
+
+// Schema field type definitions for validation
+type schemaFieldType int
+
+const (
+	schemaString schemaFieldType = iota
+	schemaNumber
+	schemaBoolean
+	schemaArray
+)
+
+var (
+	// Define expected types for JSON Schema fields
+	schemaFieldTypes = map[string]schemaFieldType{
+		// String fields
+		"type": schemaString, "format": schemaString, "pattern": schemaString,
+		"$id": schemaString, "$schema": schemaString, "title": schemaString,
+		"description": schemaString, "contentMediaType": schemaString,
+		"contentEncoding": schemaString, "$ref": schemaString, "$comment": schemaString,
+
+		// Number fields
+		"minimum": schemaNumber, "maximum": schemaNumber, "minLength": schemaNumber,
+		"maxLength": schemaNumber, "minItems": schemaNumber, "maxItems": schemaNumber,
+		"multipleOf": schemaNumber, "exclusiveMinimum": schemaNumber, "exclusiveMaximum": schemaNumber,
+
+		// Boolean fields
+		"additionalProperties": schemaBoolean, "additionalItems": schemaBoolean,
+		"uniqueItems": schemaBoolean, "readOnly": schemaBoolean, "writeOnly": schemaBoolean,
+
+		// Array fields
+		"required": schemaArray, "enum": schemaArray, "examples": schemaArray,
+		"allOf": schemaArray, "anyOf": schemaArray, "oneOf": schemaArray,
+	}
+)
+
+// convertToExpectedType converts a value to the expected type for a schema field
+func convertToExpectedType(value interface{}, expectedType schemaFieldType) interface{} {
+	switch expectedType {
+	case schemaString:
+		switch v := value.(type) {
+		case string:
+			return v
+		case bool:
+			if v {
+				return "boolean"
+			}
+			return "string"
+		case float64:
+			return fmt.Sprintf("%.0f", v)
+		case int:
+			return fmt.Sprintf("%d", v)
+		default:
+			return fmt.Sprintf("%v", v)
+		}
+
+	case schemaNumber:
+		switch v := value.(type) {
+		case float64, int:
+			return v
+		case string:
+			if num, err := strconv.ParseFloat(v, 64); err == nil {
+				return num
+			}
+			return 0
+		case bool:
+			if v {
+				return 1
+			}
+			return 0
+		default:
+			return 0
+		}
+
+	case schemaBoolean:
+		switch v := value.(type) {
+		case bool:
+			return v
+		case string:
+			switch v {
+			case "true", "1":
+				return true
+			case "false", "0":
+				return false
+			default:
+				return false
+			}
+		case float64, int:
+			return v != 0
+		default:
+			return false
+		}
+
+	case schemaArray:
+		switch v := value.(type) {
+		case []interface{}:
+			return v
+		case bool:
+			if v {
+				return []interface{}{"true"}
+			}
+			return []interface{}{}
+		case string:
+			if v != "" {
+				return []interface{}{v}
+			}
+			return []interface{}{}
+		default:
+			return []interface{}{v}
+		}
+	}
+
+	return value
+}
+
+// sanitizeProperties recursively sanitizes property values to ensure they are valid for JSON Schema.
+// It handles common schema validation issues from external MCP servers.
+func (m *MCPManager) sanitizeProperties(properties map[string]interface{}) map[string]interface{} {
+	sanitized := make(map[string]interface{})
+
+	for key, value := range properties {
+		switch v := value.(type) {
+		case map[string]interface{}:
+			// Handle nested property objects
+			nestedProperty := m.sanitizeProperties(v)
+
+			// Fix array types missing items specification
+			if propType, hasType := nestedProperty["type"].(string); hasType && propType == "array" {
+				if _, hasItems := nestedProperty["items"]; !hasItems {
+					// Default to string items if not specified
+					nestedProperty["items"] = map[string]interface{}{
+						"type": "string",
+					}
+				}
+			}
+
+			// Fix object types without properties
+			if propType, hasType := nestedProperty["type"].(string); hasType && propType == "object" {
+				if _, hasProps := nestedProperty["properties"]; !hasProps {
+					if _, hasAdditional := nestedProperty["additionalProperties"]; !hasAdditional {
+						// Allow any additional properties for objects without defined properties
+						nestedProperty["additionalProperties"] = true
+					}
+				}
+			}
+
+			// Sanitize field types based on JSON Schema expectations
+			for propKey, propValue := range nestedProperty {
+				if expectedType, hasExpectedType := schemaFieldTypes[propKey]; hasExpectedType {
+					nestedProperty[propKey] = convertToExpectedType(propValue, expectedType)
+				}
+			}
+
+			// Sanitize nested schemas in special fields
+			for specialField, specialValue := range nestedProperty {
+				switch specialField {
+				case "items":
+					if itemsMap, ok := specialValue.(map[string]interface{}); ok {
+						nestedProperty["items"] = m.sanitizeProperties(itemsMap)
+					}
+				case "additionalProperties":
+					if addPropsMap, ok := specialValue.(map[string]interface{}); ok {
+						nestedProperty["additionalProperties"] = m.sanitizeProperties(addPropsMap)
+					}
+				case "patternProperties":
+					if patternPropsMap, ok := specialValue.(map[string]interface{}); ok {
+						sanitizedPatternProps := make(map[string]interface{})
+						for pattern, schema := range patternPropsMap {
+							if schemaMap, ok := schema.(map[string]interface{}); ok {
+								sanitizedPatternProps[pattern] = m.sanitizeProperties(schemaMap)
+							} else {
+								sanitizedPatternProps[pattern] = schema
+							}
+						}
+						nestedProperty["patternProperties"] = sanitizedPatternProps
+					}
+				}
+			}
+
+			sanitized[key] = nestedProperty
+		default:
+			// Use data-driven type conversion for all value types
+			if expectedType, hasExpectedType := schemaFieldTypes[key]; hasExpectedType {
+				sanitized[key] = convertToExpectedType(value, expectedType)
+			} else {
+				sanitized[key] = value
+			}
+		}
+	}
+
+	return sanitized
+}
 
 // findMCPClientForTool safely finds a client that has the specified tool.
 func (m *MCPManager) findMCPClientForTool(toolName string) *MCPClient {
