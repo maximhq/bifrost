@@ -349,6 +349,8 @@ One of Bifrost's key strengths is its flexibility in configuration. You can free
 
 Curious? Run your own benchmarks. The [Bifrost Benchmarking](https://github.com/maximhq/bifrost-benchmarking) repo has everything you need to test it in your own environment.
 
+**🏛️ Curious how we handle scales of 10k+ RPS?** Check out our [System Architecture Documentation](./docs/system-architecture.md) for detailed insights into Bifrost's high-performance design, memory management, and scaling strategies.
+
 ---
 
 ## 🤝 Contributing
@@ -367,6 +369,6 @@ Here's how to get started (after picking up an issue):
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
 
 Built with ❤️ by [Maxim](https://github.com/maximhq)
