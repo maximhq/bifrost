@@ -320,21 +320,40 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-### HTTP Headers for MCP Client Filtering
+### HTTP Headers for MCP Client and Tool Filtering
 
-Control which MCP clients are active per request using HTTP headers:
+Control which MCP clients and specific tools are active per request using HTTP headers:
 
 ```bash
 # Include only specific MCP clients
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "X-MCP-Include-Clients: filesystem,weather" \
+  -H "X-BF-MCP-Include-Clients: filesystem,weather" \
   -d '{...}'
 
 # Exclude specific MCP clients
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "X-MCP-Exclude-Clients: dangerous-tools" \
+  -H "X-BF-MCP-Exclude-Clients: dangerous-tools" \
+  -d '{...}'
+
+# Include only specific tools (across all active clients)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-BF-MCP-Include-Tools: read_file,list_files,get_weather" \
+  -d '{...}'
+
+# Exclude specific tools (from all active clients)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-BF-MCP-Exclude-Tools: delete,rm,format_disk" \
+  -d '{...}'
+
+# Combine client and tool filtering
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-BF-MCP-Include-Clients: filesystem,search" \
+  -H "X-BF-MCP-Include-Tools: read_file,search_web" \
   -d '{...}'
 ```
 
@@ -549,16 +568,29 @@ err := bifrost.RegisterMCPTool("get_weather", "Get current weather",
     }, weatherSchema)
 ```
 
-### Example 3: Client Filtering in Requests
+### Example 3: Client and Tool Filtering in Requests
 
 ```go
 // Create context with client filtering
 ctx := context.Background()
-ctx = context.WithValue(ctx, "mcp_include_clients", []string{"weather-service"})
+ctx = context.WithValue(ctx, "mcp-include-clients", []string{"weather-service"})
 // Only tools from weather-service will be available
 
-ctx = context.WithValue(ctx, "mcp_exclude_clients", []string{"filesystem"})
+ctx = context.WithValue(ctx, "mcp-exclude-clients", []string{"filesystem"})
 // All tools except filesystem tools will be available
+
+// Create context with tool-level filtering
+ctx = context.WithValue(ctx, "mcp-include-tools", []string{"read_file", "get_weather"})
+// Only these specific tools will be available (across all active clients)
+
+ctx = context.WithValue(ctx, "mcp-exclude-tools", []string{"delete", "rm", "format"})
+// All tools except these dangerous ones will be available
+
+// Combine client and tool filtering for granular control
+ctx = context.Background()
+ctx = context.WithValue(ctx, "mcp-include-clients", []string{"filesystem", "weather"})
+ctx = context.WithValue(ctx, "mcp-include-tools", []string{"read_file", "list_files", "get_weather"})
+// Only safe, read-only tools from filesystem and weather clients
 
 // Use in Bifrost request
 request := &schemas.BifrostRequest{
@@ -579,7 +611,7 @@ request := &schemas.BifrostRequest{
 response, err := bifrost.ChatCompletionRequest(ctx, request)
 ```
 
-> 🌐 **HTTP Transport Users**: When using Bifrost HTTP transport, use HTTP headers instead of context values: `X-MCP-Include-Clients` and `X-MCP-Exclude-Clients`. See [HTTP Headers for MCP Client Filtering](#http-headers-for-mcp-client-filtering).
+> 🌐 **HTTP Transport Users**: When using Bifrost HTTP transport, use HTTP headers instead of context values: `X-BF-MCP-Include-Clients`, `X-BF-MCP-Exclude-Clients`, `X-BF-MCP-Include-Tools`, and `X-BF-MCP-Exclude-Tools`. See [HTTP Headers for MCP Client and Tool Filtering](#http-headers-for-mcp-client-and-tool-filtering).
 
 ## Implementing Chat Conversations with MCP Tools
 
@@ -1023,10 +1055,17 @@ const (
 )
 ```
 
-### Context Keys for Client Filtering
+### Context Keys for Client and Tool Filtering
 
-- `"mcp_include_clients"`: Whitelist specific clients for a request
-- `"mcp_exclude_clients"`: Blacklist specific clients for a request
+**Client Filtering:**
+
+- `"mcp-include-clients"`: Whitelist specific clients for a request
+- `"mcp-exclude-clients"`: Blacklist specific clients for a request
+
+**Tool Filtering:**
+
+- `"mcp-include-tools"`: Whitelist specific tools for a request (across all active clients)
+- `"mcp-exclude-tools"`: Blacklist specific tools for a request (across all active clients)
 
 ## Advanced Features
 
@@ -1070,16 +1109,30 @@ mcpConfig := &schemas.MCPConfig{
 2. **`ToolsToSkip` is secondary**: Only applies when `ToolsToExecute` is empty (blacklist)
 3. **Empty configurations**: All discovered tools are available
 
-#### Request-Level Client Filtering
+#### Request-Level Client and Tool Filtering
 
-Control which MCP clients are active per individual request:
+Control which MCP clients and specific tools are active per individual request:
 
 ```go
+// Client-level filtering
 // Whitelist mode - only include specific clients
-ctx = context.WithValue(ctx, "mcp_include_clients", []string{"weather", "calendar"})
+ctx = context.WithValue(ctx, "mcp-include-clients", []string{"weather", "calendar"})
 
 // Blacklist mode - exclude specific clients
-ctx = context.WithValue(ctx, "mcp_exclude_clients", []string{"filesystem", "admin-tools"})
+ctx = context.WithValue(ctx, "mcp-exclude-clients", []string{"filesystem", "admin-tools"})
+
+// Tool-level filtering (across all active clients)
+// Whitelist mode - only include specific tools
+ctx = context.WithValue(ctx, "mcp-include-tools", []string{"read_file", "get_weather", "search"})
+
+// Blacklist mode - exclude specific tools
+ctx = context.WithValue(ctx, "mcp-exclude-tools", []string{"delete", "rm", "format_disk", "drop_table"})
+
+// Combined filtering for maximum control
+ctx = context.Background()
+ctx = context.WithValue(ctx, "mcp-include-clients", []string{"filesystem", "weather"})
+ctx = context.WithValue(ctx, "mcp-include-tools", []string{"read_file", "list_files", "get_weather"})
+// Result: Only safe read operations from filesystem + weather tools
 
 // Use in request
 response, err := bifrost.ChatCompletionRequest(ctx, request)
@@ -1087,9 +1140,23 @@ response, err := bifrost.ChatCompletionRequest(ctx, request)
 
 **Request-Level Priority Rules:**
 
-1. **Include takes absolute precedence**: If `mcp_include_clients` is set, only those clients are used
+**Client Filtering:**
+
+1. **Include takes absolute precedence**: If `mcp-include-clients` is set, only those clients are used
 2. **Exclude is secondary**: Only applies when include list is empty
 3. **Empty filters**: All configured clients are available
+
+**Tool Filtering:**
+
+1. **Include takes absolute precedence**: If `mcp-include-tools` is set, only those tools are available
+2. **Exclude is secondary**: Only applies when include list is empty
+3. **Empty filters**: All discovered tools (from active clients) are available
+
+**Interaction Between Client and Tool Filtering:**
+
+- Client filtering is applied first to determine active clients
+- Tool filtering is then applied to tools from the active clients
+- Both types of filtering work together for fine-grained control
 
 #### Combined Example: Multi-Level Filtering
 
@@ -1124,25 +1191,44 @@ mcpConfig := &schemas.MCPConfig{
     },
 }
 
-// 2. Request Level: Further filter clients per request
+// 2. Request Level: Further filter clients and tools per request
 ctx := context.Background()
 
 // For safe operations - include filesystem and weather only
-ctx = context.WithValue(ctx, "mcp_include_clients", []string{"filesystem", "weather"})
+ctx = context.WithValue(ctx, "mcp-include-clients", []string{"filesystem", "weather"})
 
-// For admin operations - exclude only high-risk client
-// ctx = context.WithValue(ctx, "mcp_exclude_clients", []string{"admin-tools"})
+// Add tool-level filtering for extra safety
+ctx = context.WithValue(ctx, "mcp-include-tools", []string{"read_file", "list_files", "get_weather"})
+// Result: Only safe read operations from filesystem + weather data
+
+// Alternative: For admin operations - exclude only high-risk client but allow specific tools
+// ctx = context.WithValue(ctx, "mcp-exclude-clients", []string{"admin-tools"})
+// ctx = context.WithValue(ctx, "mcp-exclude-tools", []string{"delete_user", "reset_system", "drop_table"})
 ```
 
 #### Filtering Priority Summary
 
 **Overall Priority Order (highest to lowest):**
 
-1. **Request-level include** (`mcp_include_clients`) - Absolute whitelist
-2. **Request-level exclude** (`mcp_exclude_clients`) - Applied if no include list
+**Client Filtering:**
+
+1. **Request-level client include** (`mcp-include-clients`) - Absolute client whitelist
+2. **Request-level client exclude** (`mcp-exclude-clients`) - Applied if no include list
+3. **Default**: All configured clients available
+
+**Tool Filtering (applied to tools from active clients):**
+
+1. **Request-level tool include** (`mcp-include-tools`) - Absolute tool whitelist across all active clients
+2. **Request-level tool exclude** (`mcp-exclude-tools`) - Applied if no include list
 3. **Config-level tool whitelist** (`ToolsToExecute`) - Per-client tool whitelist
 4. **Config-level tool blacklist** (`ToolsToSkip`) - Per-client tool blacklist
-5. **Default**: All tools from all clients available
+5. **Default**: All discovered tools from active clients available
+
+**Filtering Execution Order:**
+
+1. **Client filtering** determines which MCP clients are active
+2. **Tool filtering** determines which tools are available from those active clients
+3. **Final result** is the intersection of active clients and allowed tools
 
 ### Automatic Tool Discovery and Integration
 
