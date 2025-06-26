@@ -4,6 +4,7 @@ package lib
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -29,6 +30,41 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 type BifrostHTTPConfig struct {
 	ProviderConfig ConfigMap          `json:"providers"` // Provider configurations
 	MCPConfig      *schemas.MCPConfig `json:"mcp"`       // MCP configuration (optional)
+}
+
+// ReadMCPKeys reads environment variables from the environment and updates the MCP configurations.
+// It replaces values starting with "env." in the connection_string field with actual values from the environment.
+// Returns an error if any required environment variable is missing.
+func (config *BifrostHTTPConfig) ReadMCPKeys() error {
+	if config.MCPConfig == nil {
+		return nil // No MCP config to process
+	}
+
+	// Helper function to check and replace env values
+	replaceEnvValue := func(value string) (string, error) {
+		if strings.HasPrefix(value, "env.") {
+			envKey := strings.TrimPrefix(value, "env.")
+			if envValue := os.Getenv(envKey); envValue != "" {
+				return envValue, nil
+			}
+			return "", fmt.Errorf("environment variable %s not found in the environment", envKey)
+		}
+		return value, nil
+	}
+
+	// Process each client config
+	for i, clientConfig := range config.MCPConfig.ClientConfigs {
+		// Process ConnectionString if present
+		if clientConfig.ConnectionString != nil {
+			newValue, err := replaceEnvValue(*clientConfig.ConnectionString)
+			if err != nil {
+				return fmt.Errorf("MCP client %s: %w", clientConfig.Name, err)
+			}
+			config.MCPConfig.ClientConfigs[i].ConnectionString = &newValue
+		}
+	}
+
+	return nil
 }
 
 // readConfig reads and parses the configuration file.

@@ -155,6 +155,10 @@ func main() {
 		log.Printf("warning: failed to read environment variables: %v", err)
 	}
 
+	if err := config.ReadMCPKeys(); err != nil {
+		log.Printf("warning: failed to read MCP environment variables: %v", err)
+	}
+
 	loadedPlugins := []schemas.Plugin{}
 
 	for _, plugin := range pluginsToLoad {
