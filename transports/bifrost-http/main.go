@@ -38,13 +38,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
@@ -161,30 +159,34 @@ func main() {
 
 	loadedPlugins := []schemas.Plugin{}
 
-	for _, plugin := range pluginsToLoad {
-		switch strings.ToLower(plugin) {
-		case "maxim":
-			if os.Getenv("MAXIM_LOG_REPO_ID") == "" {
-				log.Println("warning: maxim log repo id is required to initialize maxim plugin")
-				continue
-			}
-			if os.Getenv("MAXIM_API_KEY") == "" {
-				log.Println("warning: maxim api key is required in environment variable MAXIM_API_KEY to initialize maxim plugin")
-				continue
-			}
+	// Load plugins from configuration
+	if len(config.Plugins) > 0 {
+		// Initialize plugin compiler for dynamic loading
+		pluginCompiler := lib.NewPluginCompiler()
+		defer pluginCompiler.Cleanup()
 
-			maximPlugin, err := maxim.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOG_REPO_ID"))
+		for _, config := range config.Plugins {
+			plugin, err := pluginCompiler.LoadPlugin(config)
 			if err != nil {
-				log.Printf("warning: failed to initialize maxim plugin: %v", err)
+				log.Printf("warning: failed to load plugin %s: %v", config.Name, err)
 				continue
 			}
 
-			loadedPlugins = append(loadedPlugins, maximPlugin)
+			if plugin != nil {
+				loadedPlugins = append(loadedPlugins, plugin)
+				log.Printf("successfully loaded plugin: %s", plugin.GetName())
+			}
 		}
 	}
 
+	// Always add Prometheus plugin
 	promPlugin := tracking.NewPrometheusPlugin()
 	loadedPlugins = append(loadedPlugins, promPlugin)
+
+	log.Printf("Successfully loaded %d plugins in total:", len(loadedPlugins))
+	for _, plugin := range loadedPlugins {
+		log.Printf("  - %s", plugin.GetName())
+	}
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
 		Account:            account,

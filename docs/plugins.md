@@ -4,20 +4,271 @@ Bifrost provides a powerful plugin system that allows you to extend and customiz
 
 ## Table of Contents
 
-1. [Plugin Architecture Overview](#1-plugin-architecture-overview)
-2. [Plugin Interface](#2-plugin-interface)
-3. [Plugin Lifecycle](#3-plugin-lifecycle)
-4. [Plugin Execution Flow](#4-plugin-execution-flow)
-5. [Short-Circuit Behavior](#5-short-circuit-behavior)
-6. [Error Handling & Fallbacks](#6-error-handling--fallbacks)
-7. [Building Custom Plugins](#7-building-custom-plugins)
-8. [Plugin Examples](#8-plugin-examples)
-9. [Best Practices](#9-best-practices)
-10. [Plugin Development Guidelines](#10-plugin-development-guidelines)
-11. [Troubleshooting Guide](#11-troubleshooting-guide)
-12. [Performance Optimization](#12-performance-optimization)
+1. [Plugin Loading & Configuration](#1-plugin-loading--configuration)
+2. [Transport Integration](#2-transport-integration)
+3. [Plugin Architecture Overview](#3-plugin-architecture-overview)
+4. [Plugin Interface](#4-plugin-interface)
+5. [Plugin Lifecycle](#5-plugin-lifecycle)
+6. [Plugin Execution Flow](#6-plugin-execution-flow)
+7. [Short-Circuit Behavior](#7-short-circuit-behavior)
+8. [Error Handling & Fallbacks](#8-error-handling--fallbacks)
+9. [Building Custom Plugins](#9-building-custom-plugins)
+10. [Plugin Examples](#10-plugin-examples)
+11. [Best Practices](#11-best-practices)
+12. [Plugin Development Guidelines](#12-plugin-development-guidelines)
+13. [Troubleshooting Guide](#13-troubleshooting-guide)
+14. [Performance Optimization](#14-performance-optimization)
 
-## 1. Plugin Architecture Overview
+## 1. Plugin Loading & Configuration
+
+Bifrost supports **Dynamic Configuration-Based Loading** for plugins
+
+### Dynamic Plugin Loading
+
+Configure plugins in your `config.json` file for automatic Just-In-Time (JIT) compilation and loading:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o-mini"],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "plugins": [
+    {
+      "name": "maxim",
+      "source": "github.com/maximhq/bifrost/plugins/maxim",
+      "type": "remote",
+      "config": {
+        "api_key": "env.MAXIM_API_KEY",
+        "log_repo_id": "env.MAXIM_LOG_REPO_ID"
+      }
+    },
+    {
+      "name": "custom-plugin",
+      "source": "./local-plugins/custom",
+      "type": "local",
+      "config": {
+        "setting": "value"
+      }
+    }
+  ]
+}
+```
+
+#### Plugin Configuration Fields
+
+- **name**: Unique identifier for the plugin
+- **source**: Go module path (for remote) or local directory path (for local)
+- **type**: Either `"remote"` or `"local"`
+- **config**: Plugin-specific configuration (supports `env.VARIABLE_NAME` substitution)
+
+#### Plugin Types
+
+**Remote Plugins**: Go modules hosted on public repositories
+
+```json
+{
+  "name": "maxim",
+  "source": "github.com/maximhq/bifrost/plugins/maxim",
+  "type": "remote",
+  "config": { ... }
+}
+```
+
+**Local Plugins**: Directories containing Go plugin source code
+
+```json
+{
+  "name": "custom-plugin",
+  "source": "./plugins/custom",
+  "type": "local",
+  "config": { ... }
+}
+```
+
+### Environment Variable Support
+
+Plugin configurations support environment variable substitution using the `env.` prefix:
+
+```json
+{
+  "config": {
+    "api_key": "env.MY_API_KEY",
+    "endpoint": "env.MY_ENDPOINT"
+  }
+}
+```
+
+### System Requirements
+
+- **Go 1.21+**: Required for JIT compilation
+- **CGO**: Must be enabled for plugin compilation
+- **Platform**: Linux or macOS (Windows not supported due to Go plugin limitations)
+
+**Windows Users**: Direct Go binary plugin support is not available on Windows due to Go's plugin system limitations. However, Windows users can run Bifrost with full plugin functionality using Docker.
+
+### Docker Usage with Plugins
+
+The Bifrost Docker image fully supports dynamic plugin loading. Here are common usage patterns:
+
+#### Basic Configuration-Based Loading
+
+```bash
+# Run with config file containing plugin definitions
+docker run -d \
+  -v /path/to/config.json:/app/config/config.json \
+  -p 8080:8080 \
+  maximhq/bifrost
+```
+
+#### With Environment Variables
+
+```bash
+# Plugin configs can use environment variables
+docker run -d \
+  -v /path/to/config.json:/app/config/config.json \
+  -e MAXIM_API_KEY=your-api-key \
+  -e MAXIM_LOG_REPO_ID=your-repo-id \
+  -e CUSTOM_PLUGIN_SETTING=value \
+  -p 8080:8080 \
+  maximhq/bifrost
+```
+
+#### Local Plugin Volumes
+
+For local plugins, mount your plugin directories:
+
+```bash
+# Mount local plugins directory
+docker run -d \
+  --name bifrost \
+  -v /path/to/config.json:/app/config/config.json \
+  -v /path/to/your/plugins:/app/plugins:ro \
+  -p 8080:8080 \
+ maximhq/bifrost
+```
+
+**Config for local plugins in Docker:**
+
+```json
+{
+  "plugins": [
+    {
+      "name": "my-local-plugin",
+      "source": "/app/plugins/my-plugin",
+      "type": "local",
+      "config": {
+        "setting": "env.MY_PLUGIN_SETTING"
+      }
+    }
+  ]
+}
+```
+
+#### Version Compatibility
+
+Bifrost uses a hybrid dependency resolution approach:
+
+1. **Development/Local**: Reads local `go.mod` files to determine dependency versions
+2. **Binary/Docker**: Uses `go list` to query runtime dependencies
+
+This ensures plugins are compiled with the same dependency versions as the main Bifrost binary, preventing version conflicts during plugin loading.
+
+## 2. Transport Integration
+
+### HTTP Transport Configuration
+
+The HTTP transport (`bifrost-http`) automatically loads plugins from the configuration file and provides additional transport-specific features:
+
+#### Configuration Options
+
+- **-config**: Path to configuration file (required)
+- **-port**: Server port (default: 8080)
+- **-pool-size**: Initial connection pool size (default: 300)
+- **-drop-excess-requests**: Drop excess requests when pool is full
+- **-prometheus-labels**: Labels to add to Prometheus metrics
+
+#### Built-in Transport Plugins
+
+The HTTP transport includes these built-in plugins:
+
+1. **Prometheus Plugin**: Automatically enabled for metrics collection
+   - Exposes `/metrics` endpoint
+   - Tracks request counts, latencies, and error rates
+   - Configurable via `-prometheus-labels` flag
+
+#### Plugin Loading Process
+
+1. Configuration-based plugins are loaded first
+2. Built-in transport plugins are added automatically
+3. All plugins are initialized with their respective configurations
+
+### Plugin Interface for Dynamic Loading
+
+All plugins must implement the standard interface and provide an `Init` function for dynamic loading:
+
+```go
+package package_name
+
+import (
+    "encoding/json"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Plugin configuration struct
+type MyPluginConfig struct {
+    Setting1 string `json:"setting1"`
+    Setting2 int    `json:"setting2"`
+}
+
+// Required Init function for dynamic loading
+func Init(configData json.RawMessage) (schemas.Plugin, error) {
+    var config MyPluginConfig
+    if err := json.Unmarshal(configData, &config); err != nil {
+        return nil, err
+    }
+
+    // Initialize and return your plugin
+    return NewMyPlugin(config)
+}
+
+// Your plugin implementation
+type MyPlugin struct {
+    config MyPluginConfig
+}
+
+func NewMyPlugin(config MyPluginConfig) *MyPlugin {
+    return &MyPlugin{config: config}
+}
+
+func (p *MyPlugin) GetName() string {
+    return "my-plugin"
+}
+
+func (p *MyPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+    // Your pre-hook logic
+    return req, nil, nil
+}
+
+func (p *MyPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+    // Your post-hook logic
+    return result, err, nil
+}
+
+func (p *MyPlugin) Cleanup() error {
+    // Cleanup logic
+    return nil
+}
+```
+
+## 3. Plugin Architecture Overview
 
 Bifrost plugins follow a **PreHook → Provider → PostHook** pattern with support for short-circuiting and fallback control.
 
@@ -29,7 +280,7 @@ Bifrost plugins follow a **PreHook → Provider → PostHook** pattern with supp
 - **Fallback Control**: Plugins can control whether fallback providers should be tried
 - **Pipeline Symmetry**: Every PreHook execution gets a corresponding PostHook call
 
-## 2. Plugin Interface
+## 4. Plugin Interface
 
 ```go
 type Plugin interface {
@@ -54,7 +305,7 @@ type PluginShortCircuit struct {
 }
 ```
 
-## 3. Plugin Lifecycle
+## 5. Plugin Lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -89,7 +340,7 @@ stateDiagram-v2
     CleanupCall --> [*]: Plugin Destroyed
 ```
 
-## 4. Plugin Execution Flow
+## 6. Plugin Execution Flow
 
 ### Normal Flow (No Short-Circuit)
 
@@ -187,7 +438,7 @@ graph TD
     K --> T["Skip Provider Call"]
 ```
 
-## 5. Short-Circuit Behavior
+## 7. Short-Circuit Behavior
 
 Plugins can short-circuit the normal flow in two ways:
 
@@ -222,7 +473,7 @@ func (p *AuthPlugin) PreHook(ctx *context.Context, req *BifrostRequest) (*Bifros
 }
 ```
 
-## 6. Error Handling & Fallbacks
+## 8. Error Handling & Fallbacks
 
 When plugins return errors, they control whether Bifrost should try fallback providers:
 
@@ -274,22 +525,49 @@ func (p *RetryPlugin) PostHook(ctx *context.Context, result *BifrostResponse, er
 }
 ```
 
-## 7. Building Custom Plugins
+## 9. Building Custom Plugins
 
 ### Basic Plugin Structure
 
+**For Dynamic Loading (Required)**
+
+All plugins must provide an `Init` function for dynamic loading:
+
 ```go
+package plugin_name
+
+import (
+    "encoding/json"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+type CustomPluginConfig struct {
+    Setting1 string `json:"setting1"`
+    Setting2 int    `json:"setting2"`
+}
+
+// Required Init function for dynamic loading
+// Signature: Init(config json.RawMessage) (schemas.Plugin, error)
+func Init(configData json.RawMessage) (schemas.Plugin, error) {
+    var config CustomPluginConfig
+    if err := json.Unmarshal(configData, &config); err != nil {
+        return nil, err
+    }
+
+    return NewCustomPlugin(config), nil
+}
+
 type CustomPlugin struct {
-    config CustomConfig
+    config CustomPluginConfig
     // Add your fields here
 }
 
-func NewCustomPlugin(config CustomConfig) *CustomPlugin {
+func NewCustomPlugin(config CustomPluginConfig) *CustomPlugin {
     return &CustomPlugin{config: config}
 }
 
 func (p *CustomPlugin) GetName() string {
-    return "CustomPlugin"
+    return "custom-plugin"
 }
 
 func (p *CustomPlugin) PreHook(ctx *context.Context, req *BifrostRequest) (*BifrostRequest, *PluginShortCircuit, error) {
@@ -308,16 +586,27 @@ func (p *CustomPlugin) Cleanup() error {
 }
 ```
 
+**For Direct Instantiation (Legacy)**
+
+```go
+// Traditional constructor for direct usage
+func NewCustomPlugin(config CustomPluginConfig) *CustomPlugin {
+    return &CustomPlugin{config: config}
+}
+```
+
 ### Plugin Development Checklist
 
+- [ ] **Implement required Init function** with signature: `Init(config json.RawMessage) (schemas.Plugin, error)`
+- [ ] **Use proper package name** (not `package main`)
 - [ ] Handle nil response and error in PostHook
 - [ ] Set appropriate AllowFallbacks for errors
 - [ ] Implement proper cleanup in Cleanup()
-- [ ] Add configuration validation
-- [ ] Write comprehensive tests
+- [ ] Add configuration validation and JSON tags
+- [ ] Write comprehensive tests including Init function
 - [ ] Document behavior and configuration
 
-## 8. Plugin Examples
+## 10. Plugin Examples
 
 ### Rate Limiting Plugin
 
@@ -440,7 +729,7 @@ func (p *CachePlugin) PostHook(ctx *context.Context, result *BifrostResponse, er
 }
 ```
 
-## 9. Best Practices
+## 11. Best Practices
 
 ### Plugin Design
 
@@ -470,7 +759,7 @@ func (p *CachePlugin) PostHook(ctx *context.Context, result *BifrostResponse, er
 3. **Test fallback control** - Ensure AllowFallbacks works correctly
 4. **Test plugin interactions** - Verify behavior with multiple plugins
 
-## 10. Plugin Development Guidelines
+## 12. Plugin Development Guidelines
 
 ### Plugin Structure Requirements
 
@@ -479,10 +768,44 @@ Each plugin should be organized as follows:
 ```text
 plugins/
 └── your-plugin-name/
-    ├── main.go           # Plugin implementation
-    ├── plugin_test.go    # Comprehensive tests
+    ├── main.go           # Plugin implementation with Init function
+    ├── plugin_test.go    # Comprehensive tests including Init
     ├── README.md         # Documentation with examples
     └── go.mod            # Module definition
+```
+
+### Required Components
+
+**1. Init Function (Mandatory)**
+
+Every plugin must implement the standardized Init function:
+
+```go
+// Signature defined in schemas.Init
+func Init(config json.RawMessage) (schemas.Plugin, error)
+```
+
+**2. Configuration Struct**
+
+Define a configuration struct with JSON tags:
+
+```go
+type YourPluginConfig struct {
+    APIKey    string `json:"api_key"`
+    Timeout   int    `json:"timeout"`
+    EnableX   bool   `json:"enable_x"`
+}
+```
+
+**3. Plugin Implementation**
+
+Implement the schemas.Plugin interface:
+
+```go
+func (p *YourPlugin) GetName() string
+func (p *YourPlugin) PreHook(...) (...)
+func (p *YourPlugin) PostHook(...) (...)
+func (p *YourPlugin) Cleanup() error
 ```
 
 ### Using Plugins
@@ -602,11 +925,38 @@ func TestYourPlugin_PreHook(t *testing.T) {
 }
 ```
 
-## 11. Troubleshooting Guide
+## 13. Troubleshooting Guide
 
 ### Common Issues
 
-#### 1. Plugin Not Being Called
+#### 1. Dynamic Plugin Loading Failures
+
+**Symptoms**: Plugin fails to compile or load dynamically  
+**Solutions**:
+
+```bash
+# Check Go toolchain availability
+go version
+go env CGO_ENABLED
+
+# Verify plugin source exists
+ls -la /path/to/plugin  # for local plugins
+go get github.com/user/plugin  # test remote plugin access
+
+# Debug plugin compilation
+export BIFROST_LOG_LEVEL=debug
+./bifrost-http -config config.json
+```
+
+**Common dynamic loading errors**:
+
+- `plugin was built with a different version`: Version mismatch between main app and plugin dependencies
+- `plugin initialization failed`: Plugin's `Init` function returned an error (check configuration)
+- `go: module not found`: Remote plugin source is inaccessible or doesn't exist
+- `plugin: symbol Init not found`: Plugin missing required `Init` function with correct signature
+- `plugin: Init function signature mismatch`: Init function doesn't match required signature `func(json.RawMessage) (schemas.Plugin, error)`
+
+#### 2. Plugin Not Being Called
 
 **Symptoms**: Plugin hooks are never executed  
 **Solutions**:
@@ -624,7 +974,7 @@ client, err := bifrost.Init(schemas.BifrostConfig{
 var _ schemas.Plugin = (*YourPlugin)(nil)
 ```
 
-#### 2. Short-Circuit Not Working
+#### 3. Short-Circuit Not Working
 
 **Symptoms**: Provider is still called despite returning PluginShortCircuit  
 **Solutions**:
@@ -639,7 +989,7 @@ return req, &schemas.PluginShortCircuit{
 return req, &schemas.PluginShortCircuit{...}, fmt.Errorf("error")
 ```
 
-#### 3. Fallback Behavior Not Working
+#### 4. Fallback Behavior Not Working
 
 **Symptoms**: Fallbacks not tried when expected, or tried when they shouldn't be  
 **Solutions**:
@@ -654,7 +1004,7 @@ return req, &schemas.PluginShortCircuit{
 }, nil
 ```
 
-#### 4. Memory Leaks
+#### 5. Memory Leaks
 
 **Solutions**:
 
@@ -678,7 +1028,7 @@ func (p *YourPlugin) Cleanup() error {
 }
 ```
 
-#### 5. Race Conditions
+#### 6. Race Conditions
 
 **Solutions**:
 
@@ -698,7 +1048,7 @@ func (p *ThreadSafePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 }
 ```
 
-## 12. Performance Optimization
+## 14. Performance Optimization
 
 1. **Minimize Hook Latency**
 

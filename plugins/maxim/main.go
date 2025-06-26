@@ -17,6 +17,29 @@ import (
 // PluginName is the canonical name for the bifrost-maxim plugin.
 const PluginName = "bifrost-maxim"
 
+// MaximConfig represents the configuration for the Maxim plugin
+type MaximConfig struct {
+	APIKey    string `json:"api_key"`
+	LogRepoID string `json:"log_repo_id"`
+}
+
+// Init initializes the Maxim plugin from JSON configuration (for dynamic loading)
+func Init(configData json.RawMessage) (schemas.Plugin, error) {
+	var config MaximConfig
+	if err := json.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("invalid maxim plugin config: %w", err)
+	}
+
+	if config.APIKey == "" {
+		return nil, fmt.Errorf("maxim api_key is required")
+	}
+	if config.LogRepoID == "" {
+		return nil, fmt.Errorf("maxim log_repo_id is required")
+	}
+
+	return NewMaximLoggerPlugin(config.APIKey, config.LogRepoID)
+}
+
 // NewMaximLogger initializes and returns a Plugin instance for Maxim's logger.
 //
 // Parameters:

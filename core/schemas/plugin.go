@@ -1,7 +1,10 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // PluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
 // It can contain either a response (success short-circuit) or an error (error short-circuit).
@@ -60,3 +63,8 @@ type Plugin interface {
 	// Returns any error that occurred during cleanup, which will be logged as a warning by the Bifrost instance.
 	Cleanup() error
 }
+
+// Init defines the standardized constructor signature for all plugins.
+// All plugins should implement: Init(config json.RawMessage) (Plugin, error)
+// This is enforced at development time through documentation and examples.
+type Init func(config json.RawMessage) (Plugin, error)
