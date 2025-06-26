@@ -25,11 +25,20 @@ type ProviderConfig struct {
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
+// PluginConfig represents the configuration for a dynamically loaded plugin
+type PluginConfig struct {
+	Name   string          `json:"name"`   // Plugin name (used for identification)
+	Source string          `json:"source"` // Source path (Go module path or local directory)
+	Type   string          `json:"type"`   // "remote" for Go modules, "local" for local paths
+	Config json.RawMessage `json:"config"` // Plugin-specific configuration as raw JSON
+}
+
 // BifrostHTTPConfig represents the complete configuration structure for Bifrost HTTP transport.
-// It includes both provider configurations and MCP configuration.
+// It includes provider configurations, MCP configuration, and plugin configurations.
 type BifrostHTTPConfig struct {
 	ProviderConfig ConfigMap          `json:"providers"` // Provider configurations
 	MCPConfig      *schemas.MCPConfig `json:"mcp"`       // MCP configuration (optional)
+	Plugins        []PluginConfig     `json:"plugins"`   // Plugin configurations
 }
 
 // ReadMCPKeys reads environment variables from the environment and updates the MCP configurations.

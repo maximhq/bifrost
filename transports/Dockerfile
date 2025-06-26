@@ -29,12 +29,12 @@ RUN upx --best --lzma /app/main
 RUN test -f /app/main || (echo "Build failed" && exit 1)
 
 # --- Second Stage: Minimal runtime image ---
-FROM alpine:3.19
+FROM golang:1.24-alpine
 WORKDIR /app
 
 # Copy necessary files and create structure in one layer
 COPY --from=builder /app/main .
-RUN mkdir -p /app/config && \
+RUN mkdir -p /app/config /app/plugins && \
     adduser -D -s /bin/sh appuser && \
     chown -R appuser:appuser /app
 USER appuser

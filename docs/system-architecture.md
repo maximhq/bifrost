@@ -646,11 +646,14 @@ type Provider interface {
 
 Extensible plugin system for custom functionality:
 
+- **Dynamic Loading**: All plugins must implement `Init(config json.RawMessage) (schemas.Plugin, error)` function
 - **Request Processing**: Modify requests before provider calls
 - **Response Processing**: Transform responses after provider calls
 - **Caching**: Implement custom caching strategies
 - **Monitoring**: Add custom metrics and logging
 - **Authentication**: Implement custom auth mechanisms
+
+For complete plugin development guide, see [Plugin Documentation](./plugins.md).
 
 ---
 

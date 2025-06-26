@@ -156,5 +156,45 @@
         }
       }
     ]
-  }
+  },
+  "plugins": [
+    {
+      "name": "maxim",
+      "source": "../../plugins/maxim",
+      "type": "local",
+      "config": {
+        "api_key": "env.MAXIM_API_KEY",
+        "log_repo_id": "env.MAXIM_LOG_REPO_ID"
+      }
+    },
+    {
+      "name": "mocker",
+      "source": "../../plugins/mocker",
+      "type": "local",
+      "config": {
+        "enabled": true,
+        "default_behavior": "passthrough",
+        "rules": [
+          {
+            "name": "test-mock",
+            "enabled": true,
+            "priority": 1,
+            "probability": 1,
+            "conditions": {
+              "providers": ["openai"]
+            },
+            "responses": [
+              {
+                "type": "success",
+                "weight": 1.0,
+                "content": {
+                  "message": "This is a mock response for testing"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

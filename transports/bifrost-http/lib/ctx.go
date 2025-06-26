@@ -10,7 +10,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
 	"github.com/valyala/fasthttp"
 )
@@ -40,6 +39,9 @@ import (
 //	fastCtx := &fasthttp.RequestCtx{...}
 //	bifrostCtx := ConvertToBifrostContext(fastCtx)
 //	// bifrostCtx now contains any prometheus and maxim header values
+
+type ContextKey string
+
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 	bifrostCtx := context.Background()
 
@@ -55,16 +57,18 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 		if strings.HasPrefix(keyStr, "x-bf-maxim-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-maxim-")
 
-			if labelName == string(maxim.GenerationIDKey) {
-				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			if labelName == "session-id" || labelName == "trace-id" || labelName == "generation-id" {
+				bifrostCtx = context.WithValue(bifrostCtx, ContextKey(labelName), string(value))
+				return
 			}
+		}
 
-			if labelName == string(maxim.TraceIDKey) {
-				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
-			}
+		if strings.HasPrefix(keyStr, "x-bf-maxim-") {
+			labelName := strings.TrimPrefix(keyStr, "x-bf-maxim-")
 
-			if labelName == string(maxim.SessionIDKey) {
-				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			if labelName == "session-id" || labelName == "trace-id" || labelName == "generation-id" {
+				bifrostCtx = context.WithValue(bifrostCtx, ContextKey(labelName), string(value))
+				return
 			}
 		}
 	})

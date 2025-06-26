@@ -2,6 +2,7 @@ package mocker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math/rand"
@@ -15,6 +16,16 @@ import (
 	"github.com/jaswdr/faker/v2"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// Init initializes the Mocker plugin from JSON configuration (for dynamic loading)
+func Init(configData json.RawMessage) (schemas.Plugin, error) {
+	var config MockerConfig
+	if err := json.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("invalid mocker plugin config: %w", err)
+	}
+
+	return NewMockerPlugin(config)
+}
 
 const (
 	PluginName = "bifrost-mocker"

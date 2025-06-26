@@ -254,22 +254,26 @@ If you want to **set up the Bifrost API quickly**, [check the transports documen
 Bifrost is divided into three Go packages: core, plugins, and transports.
 
 1. **core**: This package contains the core implementation of Bifrost as a Go package.
-2. **plugins**: This package serves as an extension to core. You can download individual packages using `go get github.com/maximhq/bifrost/plugins/{plugin-name}` and pass the plugins while initializing Bifrost.
+2. **plugins**: This package serves as an extension to core. Plugins support both traditional instantiation and dynamic loading via configuration files.
 
-```golang
-// go get github.com/maximhq/bifrost/plugins/maxim
+   **Traditional Plugin Usage:**
 
-maximPlugin, err := maxim.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOGGER_ID"))
-if err != nil {
-  return nil, err
-}
+   ```golang
+   // go get github.com/maximhq/bifrost/plugins/maxim
+   maximPlugin, err := maxim.NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOGGER_ID"))
+   if err != nil {
+     return nil, err
+   }
 
-// Initialize Bifrost
-client, err := bifrost.Init(schemas.BifrostConfig{
-  Account: &account,
-  Plugins: []schemas.Plugin{maximPlugin},
-})
-```
+   // Initialize Bifrost
+   client, err := bifrost.Init(schemas.BifrostConfig{
+     Account: &account,
+     Plugins: []schemas.Plugin{maximPlugin},
+   })
+   ```
+
+   **Dynamic Plugin Loading:**
+   All plugins must implement an `Init(config json.RawMessage) (schemas.Plugin, error)` function for dynamic loading via configuration files. See [Plugin Documentation](https://github.com/maximhq/bifrost/blob/main/docs/plugins.md) for details.
 
 3. **transports**: This package contains transport clients like HTTP to expose your Bifrost client. You can either `go get` this package or directly use the independent Dockerfile to quickly spin up your [Bifrost API](https://github.com/maximhq/bifrost/tree/main/transports/README.md) (read more on this).
 
