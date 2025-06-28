@@ -32,35 +32,50 @@ func NewDefaultCircuitBreakerPlugin() *CircuitBreaker {
 	return cb
 }
 
-// ValidateConfig validates the circuit breaker configuration
-func ValidateConfig(config CircuitBreakerConfig) error {
-	if config.FailureRateThreshold < 0 || config.FailureRateThreshold > 1 {
-		return fmt.Errorf("failure rate threshold must be between 0 and 1, got %f", config.FailureRateThreshold)
+// ValidateConfigWithDefaults validates the configuration and returns information about what defaults were applied.
+// It returns the validated config and a slice of strings describing what defaults were applied.
+func ValidateConfigWithDefaults(config CircuitBreakerConfig) (CircuitBreakerConfig, []string) {
+	defaults := DefaultConfig()
+	validated := config
+	var appliedDefaults []string
+
+	// Apply defaults for invalid values and track what was applied
+	if validated.FailureRateThreshold < 0 || validated.FailureRateThreshold > 1 {
+		validated.FailureRateThreshold = defaults.FailureRateThreshold
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("failure rate threshold set to default: %f", defaults.FailureRateThreshold))
 	}
-	if config.SlowCallRateThreshold < 0 || config.SlowCallRateThreshold > 1 {
-		return fmt.Errorf("slow call rate threshold must be between 0 and 1, got %f", config.SlowCallRateThreshold)
+	if validated.SlowCallRateThreshold < 0 || validated.SlowCallRateThreshold > 1 {
+		validated.SlowCallRateThreshold = defaults.SlowCallRateThreshold
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("slow call rate threshold set to default: %f", defaults.SlowCallRateThreshold))
 	}
-	if config.SlowCallDurationThreshold <= 0 {
-		return fmt.Errorf("slow call duration threshold must be positive, got %v", config.SlowCallDurationThreshold)
+	if validated.SlowCallDurationThreshold <= 0 {
+		validated.SlowCallDurationThreshold = defaults.SlowCallDurationThreshold
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("slow call duration threshold set to default: %v", defaults.SlowCallDurationThreshold))
 	}
-	if config.MinimumNumberOfCalls <= 0 {
-		return fmt.Errorf("minimum number of calls must be positive, got %d", config.MinimumNumberOfCalls)
+	if validated.MinimumNumberOfCalls <= 0 {
+		validated.MinimumNumberOfCalls = defaults.MinimumNumberOfCalls
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("minimum number of calls set to default: %d", defaults.MinimumNumberOfCalls))
 	}
-	if config.SlidingWindowSize <= 0 {
-		return fmt.Errorf("sliding window size must be positive, got %d", config.SlidingWindowSize)
+	if validated.SlidingWindowSize <= 0 {
+		validated.SlidingWindowSize = defaults.SlidingWindowSize
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("sliding window size set to default: %d", defaults.SlidingWindowSize))
 	}
-	if config.PermittedNumberOfCallsInHalfOpenState <= 0 {
-		return fmt.Errorf("permitted number of calls in half-open state must be positive, got %d", config.PermittedNumberOfCallsInHalfOpenState)
+	if validated.PermittedNumberOfCallsInHalfOpenState <= 0 {
+		validated.PermittedNumberOfCallsInHalfOpenState = defaults.PermittedNumberOfCallsInHalfOpenState
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("permitted calls in half-open state set to default: %d", defaults.PermittedNumberOfCallsInHalfOpenState))
 	}
-	if config.MaxWaitDurationInHalfOpenState <= 0 {
-		return fmt.Errorf("max wait duration in half-open state must be positive, got %v", config.MaxWaitDurationInHalfOpenState)
+	if validated.MaxWaitDurationInHalfOpenState <= 0 {
+		validated.MaxWaitDurationInHalfOpenState = defaults.MaxWaitDurationInHalfOpenState
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("max wait duration in half-open state set to default: %v", defaults.MaxWaitDurationInHalfOpenState))
 	}
 
 	// Validate sliding window type
-	if config.SlidingWindowType != CountBased && config.SlidingWindowType != TimeBased {
-		return fmt.Errorf("invalid sliding window type: %s, must be either %s or %s", config.SlidingWindowType, CountBased, TimeBased)
+	if validated.SlidingWindowType != CountBased && validated.SlidingWindowType != TimeBased {
+		validated.SlidingWindowType = defaults.SlidingWindowType
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("sliding window type set to default: %s", defaults.SlidingWindowType))
 	}
-	return nil
+
+	return validated, appliedDefaults
 }
 
 // GetState returns the current circuit breaker state for a provider
