@@ -303,7 +303,7 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 			return req, &schemas.PluginShortCircuit{
 				Error: &schemas.BifrostError{
 					Error: schemas.ErrorField{
-						Message: fmt.Sprintf("circuit breaker is OPEN for provider %s", provider),
+						Message: fmt.Sprintf("Service temporarily unavailable: %s circuit breaker is OPEN due to high failure rate (%0.2f%%). Circuit will attempt recovery in %s. Please retry later or use an alternative provider.", provider, p.config.FailureRateThreshold*100, p.config.MaxWaitDurationInHalfOpenState),
 						Type:    func() *string { s := "circuit_breaker_open"; return &s }(),
 					},
 					AllowFallbacks: nil, // Allow fallbacks by default
@@ -321,7 +321,7 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 			return req, &schemas.PluginShortCircuit{
 				Error: &schemas.BifrostError{
 					Error: schemas.ErrorField{
-						Message: fmt.Sprintf("half-open call limit exceeded for provider %s", provider),
+						Message: fmt.Sprintf("Service testing capacity: %s circuit breaker is in HALF_OPEN state with limited capacity (%d/%d calls). Please retry in a moment or use an alternative provider.", provider, atomic.LoadInt32(&circuitState.halfOpenCallsAttempted), atomic.LoadInt32(&circuitState.halfOpenCallsPermitted)),
 						Type:    func() *string { s := "circuit_breaker_half_open_limit"; return &s }(),
 					},
 					AllowFallbacks: nil, // Allow fallbacks by default
