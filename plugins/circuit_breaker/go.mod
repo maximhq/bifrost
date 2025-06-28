@@ -4,7 +4,7 @@ go 1.24.1
 
 toolchain go1.24.4
 
-require github.com/maximhq/bifrost/core v1.1.3
+require github.com/maximhq/bifrost/core v1.1.6
 
 require (
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
@@ -23,9 +23,13 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.19 // indirect
 	github.com/aws/smithy-go v1.22.3 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/mark3labs/mcp-go v0.32.0 // indirect
+	github.com/spf13/cast v1.7.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.60.0 // indirect
+	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/text v0.24.0 // indirect

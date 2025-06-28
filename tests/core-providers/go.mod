@@ -3,7 +3,7 @@ module github.com/maximhq/bifrost/tests/core-providers
 go 1.24.1
 
 require (
-	github.com/maximhq/bifrost/core v1.1.5
+	github.com/maximhq/bifrost/core v1.1.6
 	github.com/stretchr/testify v1.10.0
 )
 
