@@ -29,6 +29,12 @@ import (
 //   - These headers enable trace correlation across service boundaries
 //   - Values are stored using Maxim's context keys for consistency
 //
+// 3. MCP Headers (x-bf-mcp-*):
+//   - Specifically handles 'x-bf-mcp-include-clients', 'x-bf-mcp-exclude-clients', 'x-bf-mcp-include-tools', and 'x-bf-mcp-exclude-tools'
+//   - These headers enable MCP client and tool filtering
+//   - Values are stored using MCP context keys for consistency
+//
+
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
 //
@@ -40,6 +46,9 @@ import (
 //	fastCtx := &fasthttp.RequestCtx{...}
 //	bifrostCtx := ConvertToBifrostContext(fastCtx)
 //	// bifrostCtx now contains any prometheus and maxim header values
+
+type ContextKey string
+
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 	bifrostCtx := context.Background()
 
@@ -65,6 +74,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 
 			if labelName == string(maxim.SessionIDKey) {
 				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
+		}
+
+		if strings.HasPrefix(keyStr, "x-bf-mcp-") {
+			labelName := strings.TrimPrefix(keyStr, "x-bf-mcp-")
+
+			if labelName == "include-clients" || labelName == "exclude-clients" || labelName == "include-tools" || labelName == "exclude-tools" {
+				bifrostCtx = context.WithValue(bifrostCtx, ContextKey("mcp-"+labelName), string(value))
+				return
 			}
 		}
 	})

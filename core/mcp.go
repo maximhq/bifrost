@@ -31,8 +31,10 @@ const (
 	MCPClientConnectionEstablishTimeout = 30 * time.Second   // Timeout for MCP client connection establishment
 
 	// Context keys for client filtering in requests
-	MCPContextKeyIncludeClients = "mcp_include_clients" // Context key for whitelist client filtering
-	MCPContextKeyExcludeClients = "mcp_exclude_clients" // Context key for blacklist client filtering
+	MCPContextKeyIncludeClients = "mcp-include-clients" // Context key for whitelist client filtering
+	MCPContextKeyExcludeClients = "mcp-exclude-clients" // Context key for blacklist client filtering
+	MCPContextKeyIncludeTools   = "mcp-include-tools"   // Context key for whitelist tool filtering
+	MCPContextKeyExcludeTools   = "mcp-exclude-tools"   // Context key for blacklist tool filtering
 )
 
 // ============================================================================
@@ -151,7 +153,11 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.Tool {
 		}
 
 		// Add all tools from this client
-		for _, tool := range client.ToolMap {
+		for toolName, tool := range client.ToolMap {
+			if m.shouldSkipToolForRequest(toolName, ctx) {
+				continue
+			}
+
 			tools = append(tools, tool)
 		}
 	}
@@ -620,6 +626,28 @@ func (m *MCPManager) shouldSkipToolForConfig(toolName string, config schemas.MCP
 	// Check if tool is in skip list
 	for _, skipTool := range config.ToolsToSkip {
 		if skipTool == toolName {
+			return true // Tool should be skipped
+		}
+	}
+
+	return false // Tool is allowed
+}
+
+// shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
+func (m *MCPManager) shouldSkipToolForRequest(toolName string, ctx context.Context) bool {
+	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+	excludeTools := ctx.Value(MCPContextKeyExcludeTools)
+
+	if includeTools != nil {
+		includeToolsList := strings.Split(includeTools.(string), ",")
+		if slices.Contains(includeToolsList, toolName) {
+			return false // Tool is allowed
+		}
+	}
+
+	if excludeTools != nil {
+		excludeToolsList := strings.Split(excludeTools.(string), ",")
+		if slices.Contains(excludeToolsList, toolName) {
 			return true // Tool should be skipped
 		}
 	}
