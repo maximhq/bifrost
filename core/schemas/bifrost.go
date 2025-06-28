@@ -426,7 +426,7 @@ type BifrostError struct {
 	IsBifrostError bool       `json:"is_bifrost_error"`
 	StatusCode     *int       `json:"status_code,omitempty"`
 	Error          ErrorField `json:"error"`
-	AllowFallbacks *bool      `json:"allow_fallbacks,omitempty"` // Optional: Controls fallback behavior (nil = true by default)
+	AllowFallbacks *bool      `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 }
 
 // ErrorField represents detailed error information.

@@ -4,7 +4,6 @@ package schemas
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
 type MCPConfig struct {
-	ServerPort    *int              `json:"server_port,omitempty"`    // Port for local MCP server (only required for local tool setup, defaults to 8181)
 	ClientConfigs []MCPClientConfig `json:"client_configs,omitempty"` // Per-client execution configurations
 }
 

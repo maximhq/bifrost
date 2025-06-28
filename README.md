@@ -16,6 +16,8 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
 
 ### Using Bifrost HTTP Transport
 
+> **📖 For detailed setup guides with multiple providers, advanced configuration, and language examples, see [Quick Start Documentation](./docs/quick-start/README.md)**
+
 1. **Create `config.json`**: This file should contain your provider settings and API keys.
 
    ```json
@@ -40,46 +42,22 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
    export OPENAI_API_KEY=your_openai_api_key
    ```
 
-   Note: Ensure you add all variables stated in your `config.json` file.
+3. **Start the Bifrost HTTP Server**: You can run using Docker or Go binary.
 
-3. **Start the Bifrost HTTP Server**:
+   ```bash
+   # Docker
+   docker pull maximhq/bifrost
+   docker run -p 8080:8080 \
+     -v $(pwd)/config.json:/app/config/config.json \
+     -e OPENAI_API_KEY \
+     maximhq/bifrost
 
-   You can run the server using either a Go Binary or Docker (if Go is not installed).
+   # OR Go Binary
+   go install github.com/maximhq/bifrost/transports/bifrost-http@latest
+   bifrost-http -config config.json -port 8080
+   ```
 
-   #### i) Using Go Binary
-
-   - Install the transport package:
-
-     ```bash
-     go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-     ```
-
-   - Run the server (ensure Go is in your PATH):
-
-     ```bash
-     bifrost-http -config config.json -port 8080 -pool-size 300
-     ```
-
-   #### ii) OR Using Docker
-
-   - Pull the Docker image:
-
-     ```bash
-     docker pull maximhq/bifrost
-     ```
-
-   - Run the Docker container:
-
-     ```bash
-     docker run -p 8080:8080 \
-       -v $(pwd)/config.json:/app/config/config.json \
-       -e OPENAI_API_KEY \
-       maximhq/bifrost
-     ```
-
-     Note: Ensure you mount your config file and add all environment variables referenced in your `config.json` file.
-
-4. **Using the API**: Once the server is running, you can send requests to the HTTP endpoints.
+4. **Test the API**: Send a request to verify it's working.
 
    ```bash
    curl -X POST http://localhost:8080/v1/chat/completions \
@@ -93,9 +71,9 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
    }'
    ```
 
-   **That's it!**, just _4 lines of code_ and you can now use Bifrost to make requests to any provider you have configured.
+   **That's it!** You now have Bifrost running and can make requests to any configured provider.
 
-   > For additional HTTP server configuration options, read [this](https://github.com/maximhq/bifrost/blob/main/transports/README.md).
+   > **📖 Need more advanced setup?** See [HTTP Transport Guide](./docs/quick-start/http-transport.md) for multi-provider configuration, fallbacks, language examples, and production deployment options.
 
 ## 📑 Table of Contents
 
@@ -103,20 +81,20 @@ Bifrost is an open-source middleware that serves as a unified gateway to various
   - [⚡ Quickstart (30 seconds)](#-quickstart-30-seconds)
     - [Prerequisites](#prerequisites)
     - [Using Bifrost HTTP Transport](#using-bifrost-http-transport)
-      - [i) Using Go Binary](#i-using-go-binary)
-      - [ii) OR Using Docker](#ii-or-using-docker)
   - [📑 Table of Contents](#-table-of-contents)
   - [✨ Features](#-features)
   - [🏗️ Repository Structure](#️-repository-structure)
   - [🚀 Getting Started](#-getting-started)
     - [1. As a Go Package (Core Integration)](#1-as-a-go-package-core-integration)
     - [2. As an HTTP API (Transport Layer)](#2-as-an-http-api-transport-layer)
-  - [📊 Benchmarks](#-benchmarks)
-    - [Test Environment](#test-environment)
-      - [1. t3.medium(2 vCPUs, 4GB RAM)](#1-t3medium2-vcpus-4gb-ram)
-      - [2. t3.xlarge(4 vCPUs, 16GB RAM)](#2-t3xlarge4-vcpus-16gb-ram)
-    - [Performance Metrics](#performance-metrics)
-    - [Key Performance Highlights](#key-performance-highlights)
+    - [3. As a Drop-in Replacement (Zero Code Changes)](#3-as-a-drop-in-replacement-zero-code-changes)
+  - [📊 Performance](#-performance)
+    - [🔑 Key Performance Highlights](#-key-performance-highlights)
+  - [📚 Documentation](#-documentation)
+    - [🚀 **Quick Start Guides**](#-quick-start-guides)
+    - [🎯 **Core Features**](#-core-features)
+    - [⚙️ **Advanced Topics**](#️-advanced-topics)
+    - [📱 **Migration \& Guides**](#-migration--guides)
   - [🤝 Contributing](#-contributing)
   - [📄 License](#-license)
 
@@ -171,13 +149,13 @@ The system uses a provider-agnostic approach with well-defined interfaces to eas
 
 ## 🚀 Getting Started
 
-There are two main ways to use Bifrost:
+There are three ways to use Bifrost - choose the one that fits your needs:
 
 ### 1. As a Go Package (Core Integration)
 
-For direct integration into your Go applications, use Bifrost as a package. This provides the most flexibility and control over your AI model interactions.
+For direct integration into your Go applications. Provides maximum performance and control.
 
-> **📖 [Complete Core Package Documentation](./docs/core-package.md)**
+> **📖 [2-Minute Go Package Setup](./docs/quick-start/go-package.md)**
 
 Quick example:
 
@@ -187,87 +165,101 @@ go get github.com/maximhq/bifrost/core
 
 ### 2. As an HTTP API (Transport Layer)
 
-For quick setup and language-agnostic integration, use the HTTP transport layer.
+For language-agnostic integration and microservices architecture.
 
-> **📖 [Complete HTTP Transport Documentation](./transports/README.md)**
+> **📖 [30-Second HTTP Transport Setup](./docs/quick-start/http-transport.md)**
 
 Quick example:
 
 ```bash
+docker pull maximhq/bifrost
 docker run -p 8080:8080 \
   -v $(pwd)/config.json:/app/config/config.json \
   -e OPENAI_API_KEY \
   maximhq/bifrost
 ```
 
+### 3. As a Drop-in Replacement (Zero Code Changes)
+
+Replace existing OpenAI/Anthropic APIs without changing your application code.
+
+> **📖 [1-Minute Drop-in Integration](./docs/quick-start/integrations.md)**
+
+Quick example:
+
+```diff
+- base_url = "https://api.openai.com"
++ base_url = "http://localhost:8080/openai"
+```
+
+**🤔 Not sure which to choose?** Check our **[📊 Feature Comparison Guide](./docs/quick-start/feature-comparison.md)** to find the perfect approach for your use case.
+
 ---
 
-## 📊 Benchmarks
+## 📊 Performance
 
-Bifrost has been tested under high load conditions to ensure optimal performance. The following results were obtained from benchmark tests running at 5000 requests per second (RPS) on different AWS EC2 instances.
+Bifrost sets a new bar for low-latency, high-throughput LLM routing. In our sustained 5,000 RPS benchmark (see full methodology in docs/benchmarks.md) the gateway added only **11 µs** of overhead per request – **less than 0.003 %** of the total end-to-end latency of a GPT-4o call.
 
-### Test Environment
+| Metric                                | t3.medium | t3.xlarge   | Δ                  |
+| ------------------------------------- | --------- | ----------- | ------------------ |
+| Added latency (Bifrost overhead)      | 59 µs     | **11 µs**   | **-81 %**          |
+| Success rate @ 5 k RPS                | 100 %     | 100 %       | No failed requests |
+| Avg. queue wait time                  | 47 µs     | **1.67 µs** | **-96 %**          |
+| Avg. request latency (incl. provider) | 2.12 s    | **1.61 s**  | **-24 %**          |
 
-#### 1. t3.medium(2 vCPUs, 4GB RAM)
+### 🔑 Key Performance Highlights
 
-- Buffer Size: 15,000
-- Initial Pool Size: 10,000
+- **Perfect Success Rate** – 100 % request success rate on both instance types even at 5 k RPS.
+- **Tiny Total Overhead** – < 15 µs additional latency per request on average.
+- **Efficient Queue Management** – just **1.67 µs** average wait time on the t3.xlarge test.
+- **Fast Key Selection** – ~**10 ns** to pick the right weighted API key.
 
-#### 2. t3.xlarge(4 vCPUs, 16GB RAM)
+Bifrost is deliberately configurable so you can dial the **speed ↔ memory** trade-off:
 
-- Buffer Size: 20,000
-- Initial Pool Size: 15,000
+| Config Knob                   | Effect                                                           |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `initial_pool_size`           | How many objects are pre-allocated. Higher = faster, more memory |
+| `buffer_size` & `concurrency` | Queue depth and max parallel workers (can be set per provider)   |
+| Retry / Timeout               | Tune aggressiveness for each provider to meet your SLOs          |
 
-### Performance Metrics
+Choose higher settings (like the t3.xlarge profile above) for raw speed, or lower ones (t3.medium) for reduced memory footprint – or find the sweet spot for your workload.
 
-| Metric                    | t3.medium     | t3.xlarge      |
-| ------------------------- | ------------- | -------------- |
-| Success Rate              | 100.00%       | 100.00%        |
-| Average Request Size      | 0.13 KB       | 0.13 KB        |
-| **Average Response Size** | **`1.37 KB`** | **`10.32 KB`** |
-| Average Latency           | 2.12s         | 1.61s          |
-| Peak Memory Usage         | 1312.79 MB    | 3340.44 MB     |
-| Queue Wait Time           | 47.13 µs      | 1.67 µs        |
-| Key Selection Time        | 16 ns         | 10 ns          |
-| Message Formatting        | 2.19 µs       | 2.11 µs        |
-| Params Preparation        | 436 ns        | 417 ns         |
-| Request Body Preparation  | 2.65 µs       | 2.36 µs        |
-| JSON Marshaling           | 63.47 µs      | 26.80 µs       |
-| Request Setup             | 6.59 µs       | 7.17 µs        |
-| HTTP Request              | 1.56s         | 1.50s          |
-| Error Handling            | 189 ns        | 162 ns         |
-| Response Parsing          | 11.30 ms      | 2.11 ms        |
-| **Bifrost's Overhead**    | **`59 µs\*`** | **`11 µs\*`**  |
+> **Need more numbers?** Dive into the [full benchmark report](./docs/benchmarks.md) for breakdowns of every internal stage (JSON marshalling, HTTP call, parsing, etc.), hardware sizing guides and tuning tips.
 
-_\*Bifrost's overhead is measured at 59 µs on t3.medium and 11 µs on t3.xlarge, excluding the time taken for JSON marshalling and the HTTP call to the LLM, both of which are required in any custom implementation._
+---
 
-**Note**: On the t3.xlarge, we tested with significantly larger response payloads (~10 KB average vs ~1 KB on t3.medium). Even so, response parsing time dropped dramatically thanks to better CPU throughput and Bifrost's optimized memory reuse.
+## 📚 Documentation
 
-### Key Performance Highlights
+Comprehensive documentation for all Bifrost features and use cases:
 
-- **Perfect Success Rate**: 100% request success rate under high load on both instances
-- **Total Overhead**: Less than only _15µs added per request_ on average
-- **Efficient Queue Management**: Minimal queue wait time (1.67 µs on t3.xlarge)
-- **Fast Key Selection**: Near-instantaneous key selection (10 ns on t3.xlarge)
-- **Improved Performance on t3.xlarge**:
-  - 24% faster average latency
-  - 81% faster response parsing
-  - 58% faster JSON marshaling
-  - Significantly reduced queue wait times
+### 🚀 **Quick Start Guides**
 
-One of Bifrost's key strengths is its flexibility in configuration. You can freely decide the tradeoff between memory usage and processing speed by adjusting Bifrost's configurations. This flexibility allows you to optimize Bifrost for your specific use case, whether you prioritize speed, memory efficiency, or a balance between the two.
+- **[📖 Documentation Hub](./docs/README.md)** - Central navigation for all docs
+- **[🔧 Go Package Setup](./docs/quick-start/go-package.md)** - 2-minute Go integration
+- **[🌐 HTTP Transport Setup](./docs/quick-start/http-transport.md)** - 30-second service deployment
+- **[🔄 Drop-in Integration](./docs/quick-start/integrations.md)** - Zero-code provider replacement
+- **[📊 Feature Comparison](./docs/quick-start/feature-comparison.md)** - Choose the right approach
 
-- Higher buffer and pool sizes (like in t3.xlarge) improve speed but use more memory
-- Lower configurations (like in t3.medium) use less memory but may have slightly higher latencies
-- You can fine-tune these parameters based on your specific needs and available resources
+### 🎯 **Core Features**
 
-  - Initial Pool Size: Determines the initial allocation of resources
-  - Buffer and Concurrency Settings: Controls the queue size and maximum number of concurrent requests (adjustable per provider).
-  - Retry and Timeout Configurations: Customizable based on your requirements for each provider.
+- **[🔗 Multi-Provider Support](./docs/features/providers/)** - OpenAI, Anthropic, Bedrock, and more
+- **[🔄 Fallback Systems](./docs/features/fallbacks.md)** - Automatic provider redundancy
+- **[🛠️ MCP Integration](./docs/features/mcp-integration.md)** - External tool integration
+- **[🔌 Plugin System](./docs/features/plugins.md)** - Extensible middleware
+- **[📊 Observability](./docs/features/observability.md)** - Metrics and monitoring
 
-Curious? Run your own benchmarks. The [Bifrost Benchmarking](https://github.com/maximhq/bifrost-benchmarking) repo has everything you need to test it in your own environment.
+### ⚙️ **Advanced Topics**
 
-**🏛️ Curious how we handle scales of 10k+ RPS?** Check out our [System Architecture Documentation](./docs/system-architecture.md) for detailed insights into Bifrost's high-performance design, memory management, and scaling strategies.
+- **[🏗️ Architecture](./docs/architecture/system-overview.md)** - How Bifrost works
+- **[📊 Performance](./docs/benchmarks.md)** - Benchmarks and optimization
+- **[🚀 Production Deployment](./docs/configuration/deployment/)** - Scale for production
+- **[🔧 API Reference](./docs/usage/)** - Complete API documentation
+
+### 📱 **Migration & Guides**
+
+- **[🔄 Migration Guides](./docs/guides/migration/)** - Move from OpenAI, Anthropic, LiteLLM
+- **[🎓 Tutorials](./docs/guides/tutorials/)** - Step-by-step walkthroughs
+- **[❓ FAQ & Troubleshooting](./docs/guides/faq.md)** - Common questions and issues
 
 ---
 
