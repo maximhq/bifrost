@@ -1,6 +1,31 @@
 // Package circuitbreaker provides a circuit breaker plugin for the Bifrost system.
 // The circuit breaker monitors request failures and slow calls to automatically
 // open the circuit when thresholds are exceeded, preventing cascading failures.
+//
+// Configuration:
+// The plugin accepts a CircuitBreakerConfig and automatically applies sensible defaults
+// for any invalid or missing configuration values. This makes the plugin robust and
+// user-friendly, as it will work even with incomplete or invalid configurations.
+//
+// Default Configuration Values:
+// - FailureRateThreshold: 0.5 (50% failure rate threshold)
+// - SlowCallRateThreshold: 0.5 (50% slow call rate threshold)
+// - SlowCallDurationThreshold: 5 seconds
+// - MinimumNumberOfCalls: 10 (minimum calls before evaluation)
+// - SlidingWindowType: "count-based"
+// - SlidingWindowSize: 100 (number of calls in window)
+// - PermittedNumberOfCallsInHalfOpenState: 5
+// - MaxWaitDurationInHalfOpenState: 60 seconds
+//
+// Usage:
+//
+//	config := CircuitBreakerConfig{
+//	    FailureRateThreshold: 0.3,  // Only valid values need to be specified
+//	    // Other values will use defaults
+//	}
+//	plugin, err := NewCircuitBreakerPlugin(config)
+//
+// The plugin will log any default values that were applied during initialization.
 package circuitbreaker
 
 import (
@@ -23,6 +48,20 @@ const (
 	StateOpen
 	StateHalfOpen
 )
+
+// String returns the string representation of the circuit state
+func (s CircuitState) String() string {
+	switch s {
+	case StateClosed:
+		return "CLOSED"
+	case StateOpen:
+		return "OPEN"
+	case StateHalfOpen:
+		return "HALF_OPEN"
+	default:
+		return "UNKNOWN"
+	}
+}
 
 // SlidingWindowType defines the type of sliding window used for metrics collection.
 type SlidingWindowType string
@@ -140,14 +179,23 @@ const (
 )
 
 // NewCircuitBreakerPlugin creates a new circuit breaker plugin with the given configuration.
-// It validates the configuration and returns an error if any parameters are invalid.
+// It validates the configuration and uses default values for any invalid parameters.
 func NewCircuitBreakerPlugin(config CircuitBreakerConfig) (*CircuitBreaker, error) {
-	if err := ValidateConfig(config); err != nil {
-		return nil, fmt.Errorf("invalid circuit breaker configuration: %w", err)
+	// Apply default values for invalid configurations
+	validatedConfig, appliedDefaults := ValidateConfigWithDefaults(config)
+
+	// Log any defaults that were applied (optional - could be made configurable)
+	if len(appliedDefaults) > 0 {
+		// Note: In a real implementation, you might want to use a proper logger here
+		// For now, we'll just use fmt.Printf for demonstration
+		fmt.Printf("Circuit breaker plugin: Applied %d default values:\n", len(appliedDefaults))
+		for _, defaultMsg := range appliedDefaults {
+			fmt.Printf("  - %s\n", defaultMsg)
+		}
 	}
 
 	return &CircuitBreaker{
-		config:    config,
+		config:    validatedConfig,
 		providers: make(map[schemas.ModelProvider]*ProviderCircuitState),
 	}, nil
 }
@@ -234,8 +282,8 @@ func (p *CircuitBreaker) GetProviderState(provider schemas.ModelProvider) (*Prov
 
 // PreHook implements the Plugin interface and is called before each request.
 // It checks the circuit breaker state and either allows the request to proceed
-// or returns an error if the circuit is open or half-open limits are exceeded.
-func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.BifrostResponse, error) {
+// or short-circuits with an error if the circuit is open or half-open limits are exceeded.
+func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	if req == nil {
 		return nil, nil, fmt.Errorf("request cannot be nil")
 	}
@@ -251,7 +299,16 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 	case StateOpen:
 		// Check if wait duration has passed
 		if !p.shouldTransitionToHalfOpen(circuitState) {
-			return req, nil, fmt.Errorf("circuit breaker is OPEN for provider %s", provider)
+			// Short-circuit with error - allow fallbacks to other providers
+			return req, &schemas.PluginShortCircuit{
+				Error: &schemas.BifrostError{
+					Error: schemas.ErrorField{
+						Message: fmt.Sprintf("circuit breaker is OPEN for provider %s", provider),
+						Type:    func() *string { s := "circuit_breaker_open"; return &s }(),
+					},
+					AllowFallbacks: nil, // Allow fallbacks by default
+				},
+			}, nil
 		}
 		// Transition to half-open and continue
 		p.transitionToHalfOpen(circuitState)
@@ -260,7 +317,16 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 	case StateHalfOpen:
 		// Check if we're within permitted call limit
 		if !p.canMakeHalfOpenCall(circuitState) {
-			return req, nil, fmt.Errorf("half-open call limit exceeded for provider %s", provider)
+			// Short-circuit with error - allow fallbacks to other providers
+			return req, &schemas.PluginShortCircuit{
+				Error: &schemas.BifrostError{
+					Error: schemas.ErrorField{
+						Message: fmt.Sprintf("half-open call limit exceeded for provider %s", provider),
+						Type:    func() *string { s := "circuit_breaker_half_open_limit"; return &s }(),
+					},
+					AllowFallbacks: nil, // Allow fallbacks by default
+				},
+			}, nil
 		}
 
 	case StateClosed:
@@ -281,27 +347,27 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 // PostHook implements the Plugin interface and is called after each request.
 // It records the call result, updates metrics, and evaluates state transitions
 // based on the sliding window metrics.
-func (p *CircuitBreaker) PostHook(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *CircuitBreaker) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Extract data from context
 	callStartTime := getCallStartTime(*ctx)
 	circuitState := getCircuitState(*ctx)
 
 	if circuitState == nil {
 		// No circuit state found, return as-is
-		return resp, bifrostErr, nil
+		return result, err, nil
 	}
 
 	// Calculate call duration
 	callDuration := time.Since(callStartTime)
 
 	// Determine if this is a server error (status code 5xx)
-	isServerError := IsServerError(bifrostErr)
+	isServerError := IsServerError(err)
 
 	// Determine call result - only count as failure for server errors (5xx)
 	// Client errors (4xx) and other errors are considered successful for circuit breaker purposes
 	callResult := CallResult{
 		Duration:   callDuration,
-		Success:    (bifrostErr == nil && resp != nil) || !isServerError,
+		Success:    (err == nil && result != nil) || !isServerError,
 		Timestamp:  callStartTime,
 		IsSlowCall: callDuration > p.config.SlowCallDurationThreshold,
 	}
@@ -324,7 +390,7 @@ func (p *CircuitBreaker) PostHook(ctx *context.Context, resp *schemas.BifrostRes
 	// Decrement in-flight counter
 	defer atomic.AddInt32(&circuitState.inFlightCalls, -1)
 
-	return resp, bifrostErr, nil
+	return result, err, nil
 }
 
 // shouldTransitionToHalfOpen checks if enough time has passed to transition from open to half-open.
@@ -552,6 +618,7 @@ func (p *CircuitBreaker) GetMetrics(provider schemas.ModelProvider) (*CircuitBre
 		HalfOpenSuccesses:      int(atomic.LoadInt32(&state.halfOpenSuccesses)),
 	}, nil
 }
+
 // Cleanup implements the Plugin interface
 func (p *CircuitBreaker) Cleanup() error {
 	p.mu.Lock()

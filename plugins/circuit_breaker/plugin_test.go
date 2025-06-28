@@ -110,11 +110,16 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 	}
 
 	// This PreHook should fail because circuit is now open
-	_, _, err = cb.PreHook(&ctx, req)
-	if err == nil {
-		t.Error("Expected PreHook to fail when circuit is open")
+	_, shortCircuit, err := cb.PreHook(&ctx, req)
+	if err != nil {
+		t.Errorf("PreHook should not return error, got: %v", err)
+	}
+	if shortCircuit == nil {
+		t.Error("Expected PreHook to return PluginShortCircuit when circuit is open")
+	} else if shortCircuit.Error == nil {
+		t.Error("Expected PluginShortCircuit to contain error when circuit is open")
 	} else {
-		t.Logf("Got expected error when circuit is open: %v", err)
+		t.Logf("Got expected PluginShortCircuit when circuit is open: %v", shortCircuit.Error.Error.Message)
 	}
 
 	// Check if circuit is now open
@@ -134,20 +139,28 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 	stateBefore, _ := cb.GetState(provider)
 	t.Logf("State before blocked request: %s", stateBefore)
 
-	_, _, err = cb.PreHook(&ctx, req)
-	if err == nil {
-		t.Error("Expected error when circuit is open")
+	_, shortCircuit, err = cb.PreHook(&ctx, req)
+	if err != nil {
+		t.Errorf("PreHook should not return error, got: %v", err)
+	}
+	if shortCircuit == nil {
+		t.Error("Expected PluginShortCircuit when circuit is open")
+	} else if shortCircuit.Error == nil {
+		t.Error("Expected PluginShortCircuit to contain error when circuit is open")
 	} else {
-		t.Logf("Got expected error when circuit is open: %v", err)
+		t.Logf("Got expected PluginShortCircuit when circuit is open: %v", shortCircuit.Error.Error.Message)
 	}
 
 	// Wait for half-open transition
 	time.Sleep(150 * time.Millisecond)
 
 	// Test half-open state - should succeed now
-	_, _, err = cb.PreHook(&ctx, req)
+	_, shortCircuit, err = cb.PreHook(&ctx, req)
 	if err != nil {
 		t.Errorf("PreHook should succeed in half-open state: %v", err)
+	}
+	if shortCircuit != nil {
+		t.Error("Expected no PluginShortCircuit in half-open state when call is permitted")
 	}
 
 	// PostHook with success
@@ -169,9 +182,12 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 		Model:    "test-model",
 	}
 
-	_, _, err = cb.PreHook(&ctx2, req2)
+	_, shortCircuit, err = cb.PreHook(&ctx2, req2)
 	if err != nil {
 		t.Errorf("PreHook should succeed in half-open state: %v", err)
+	}
+	if shortCircuit != nil {
+		t.Error("Expected no PluginShortCircuit in half-open state when call is permitted")
 	}
 
 	_, _, err = cb.PostHook(&ctx2, &schemas.BifrostResponse{}, nil)
@@ -295,6 +311,7 @@ func TestCircuitBreakerSlowCalls(t *testing.T) {
 		t.Errorf("Expected state OPEN with slow calls, got %s", state)
 	}
 }
+
 // TestCircuitBreakerMetrics tests metrics collection
 func TestCircuitBreakerMetrics(t *testing.T) {
 	config := CircuitBreakerConfig{
