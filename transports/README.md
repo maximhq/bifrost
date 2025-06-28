@@ -19,6 +19,7 @@ This package contains clients for various transports that can be used to spin up
     - [Text Completions](#text-completions)
     - [Chat Completions](#chat-completions)
     - [Multi-Turn Conversations with MCP Tools](#multi-turn-conversations-with-mcp-tools)
+    - [Quick Examples](#quick-examples)
   - [🔧 Advanced Features](#-advanced-features)
     - [Prometheus Support](#prometheus-support)
     - [Plugin Support](#plugin-support)
@@ -84,6 +85,10 @@ The same setup applies to keys in meta configs of all providers:
 In this example, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` refer to keys in the environment.
 
 **Please refer to `config.example.json` for examples.**
+
+> **Canonical Setup Examples**  
+> See [docs/usage/examples.md#basic-account-and-config](../docs/usage/examples.md#basic-account-and-config) for the definitive JSON + environment-variable configuration examples.  
+> This section only covers transport-specific runtime flags and environment variables.
 
 ### MCP (Model Context Protocol) Configuration
 
@@ -165,6 +170,9 @@ In this case, Bifrost will verify that `WEATHER_API_KEY` and `DEFAULT_LOCATION` 
 - Connects to a web-search MCP service via HTTP
 
 **For comprehensive MCP documentation including Go package usage, local tool registration, and advanced configurations, see [MCP Integration Guide](../docs/mcp.md).** This section focuses on HTTP transport specific MCP usage.
+
+> **Full MCP configuration samples are maintained in**  
+> [docs/features/mcp-integration.md#http-transport-configuration](../docs/features/mcp-integration.md#http-transport-configuration).
 
 ### Docker Setup
 
@@ -401,7 +409,11 @@ Response includes tool calls:
 
 > 🔧 **For Go package integration and advanced tool execution patterns, see [Implementing Chat Conversations with MCP Tools](../docs/mcp.md#implementing-chat-conversations-with-mcp-tools).**
 
----
+### Quick Examples
+
+> All curl examples (text, chat, and multi-turn tool conversations) are centralized in  
+> [docs/usage/examples.md#curl-examples](../docs/usage/examples.md#curl-examples).  
+> The rest of this section only documents transport-specific nuances (e.g., custom headers for Prometheus).
 
 ## 🔧 Advanced Features
 
