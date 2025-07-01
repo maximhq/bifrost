@@ -2,7 +2,6 @@ package circuitbreaker
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -433,7 +432,6 @@ func TestCircuitBreakerTimeBasedWindow(t *testing.T) {
 		t.Errorf("Failed to get metrics: %v", err)
 	}
 
-	fmt.Println("metrics", metrics.FailedCalls)
 	if metrics.TotalCalls != 0 {
 		t.Errorf("Expected 0 total calls after window expiry, got %d", metrics.TotalCalls)
 	}

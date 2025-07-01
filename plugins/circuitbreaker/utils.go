@@ -1,6 +1,7 @@
 package circuitbreaker
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -20,16 +21,6 @@ func DefaultConfig() CircuitBreakerConfig {
 		PermittedNumberOfCallsInHalfOpenState: 5,                // 5 calls in half-open state
 		MaxWaitDurationInHalfOpenState:        60 * time.Second, // 60 seconds wait time
 	}
-}
-
-// NewDefaultCircuitBreakerPlugin creates a circuit breaker plugin with default configuration
-func NewDefaultCircuitBreakerPlugin() *CircuitBreaker {
-	cb, err := NewCircuitBreakerPlugin(DefaultConfig())
-	if err != nil {
-		// This should never happen with default config, but if it does, panic
-		panic(fmt.Sprintf("failed to create circuit breaker with default config: %v", err))
-	}
-	return cb
 }
 
 // ValidateConfigWithDefaults validates the configuration and returns information about what defaults were applied.
@@ -126,4 +117,138 @@ func IsServerError(bifrostErr *schemas.BifrostError) bool {
 	}
 	statusCode := *bifrostErr.StatusCode
 	return statusCode >= 500 && statusCode < 600
+}
+
+// RecordCall adds a new call result to the count-based sliding window.
+func (w *CountBasedWindow) RecordCall(result CallResult) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.calls[w.position] = result
+	w.position = (w.position + 1) % w.maxSize
+	if !w.full && w.position == 0 {
+		w.full = true
+	}
+}
+
+// GetMetrics calculates and returns metrics for the count-based sliding window.
+func (w *CountBasedWindow) GetMetrics() WindowMetrics {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	var totalCalls, failedCalls, slowCalls int
+	callCount := w.maxSize
+	if !w.full {
+		callCount = w.position
+	}
+
+	for i := 0; i < callCount; i++ {
+		call := w.calls[i]
+		totalCalls++
+		if !call.Success {
+			failedCalls++
+		}
+		if call.IsSlowCall {
+			slowCalls++
+		}
+	}
+
+	var failureRate, slowCallRate float64
+	if totalCalls > 0 {
+		failureRate = float64(failedCalls) / float64(totalCalls)
+		slowCallRate = float64(slowCalls) / float64(totalCalls)
+	}
+
+	return WindowMetrics{
+		TotalCalls:   totalCalls,
+		FailedCalls:  failedCalls,
+		SlowCalls:    slowCalls,
+		FailureRate:  failureRate,
+		SlowCallRate: slowCallRate,
+	}
+}
+
+// Reset clears all call data from the count-based sliding window.
+func (w *CountBasedWindow) Reset() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.calls = make([]CallResult, w.maxSize)
+	w.position = 0
+	w.full = false
+}
+
+// RecordCall adds a new call result to the time-based sliding window.
+func (w *TimeBasedWindow) RecordCall(result CallResult) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.calls = append(w.calls, result)
+	cutoffTime := time.Now().Add(-w.windowDuration)
+	trimIdx := 0
+	for i, call := range w.calls {
+		if call.Timestamp.After(cutoffTime) {
+			trimIdx = i
+			break
+		}
+	}
+	w.calls = w.calls[trimIdx:]
+}
+
+// GetMetrics calculates and returns metrics for the time-based sliding window.
+func (w *TimeBasedWindow) GetMetrics() WindowMetrics {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	var totalCalls, failedCalls, slowCalls int
+	cutoffTime := time.Now().Add(-w.windowDuration)
+
+	for _, call := range w.calls {
+		if call.Timestamp.After(cutoffTime) {
+			totalCalls++
+			if !call.Success {
+				failedCalls++
+			}
+			if call.IsSlowCall {
+				slowCalls++
+			}
+		}
+	}
+
+	var failureRate, slowCallRate float64
+	if totalCalls > 0 {
+		failureRate = float64(failedCalls) / float64(totalCalls)
+		slowCallRate = float64(slowCalls) / float64(totalCalls)
+	}
+
+	return WindowMetrics{
+		TotalCalls:   totalCalls,
+		FailedCalls:  failedCalls,
+		SlowCalls:    slowCalls,
+		FailureRate:  failureRate,
+		SlowCallRate: slowCallRate,
+	}
+}
+
+// Reset clears all call data from the time-based sliding window.
+func (w *TimeBasedWindow) Reset() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.calls = make([]CallResult, 0)
+}
+
+// Utility functions for context extraction
+func GetCallStartTime(ctx context.Context) time.Time {
+	if startTime, ok := ctx.Value(callStartTimeKey).(time.Time); ok {
+		return startTime
+	}
+	return time.Now() // Fallback
+}
+
+func GetCircuitState(ctx context.Context) *ProviderCircuitState {
+	if state, ok := ctx.Value(circuitStateKey).(*ProviderCircuitState); ok {
+		return state
+	}
+	return nil
 }

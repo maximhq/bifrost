@@ -67,7 +67,7 @@ func main() {
 ```
 
 ### State Diagram of Circuit Breaker
-![Circuit Breaker States](./docs/media/plugins/circuit-breaker-states.png)
+![Circuit Breaker States](../../docs/media/plugins/circuit-breaker-states.png)
 
 ### Default Configuration
 

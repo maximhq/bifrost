@@ -173,10 +173,21 @@ type CircuitBreakerMetrics struct {
 type contextKey string
 
 const (
-	callStartTimeKey contextKey = "circuit_breaker_call_start_time"
-	circuitStateKey  contextKey = "circuit_breaker_circuit_state"
-	providerKey      contextKey = "circuit_breaker_provider"
+	callStartTimeKey contextKey = "circuitbreaker_call_start_time"
+	circuitStateKey  contextKey = "circuitbreaker_circuit_state"
+	providerKey      contextKey = "circuitbreaker_provider"
 )
+
+// NewDefaultCircuitBreakerPlugin creates a circuit breaker plugin with default configuration
+func NewDefaultCircuitBreakerPlugin() *CircuitBreaker {
+	cb, err := NewCircuitBreakerPlugin(DefaultConfig())
+	if err != nil {
+		// This should never happen with default config, but if it does, panic
+		panic(fmt.Sprintf("failed to create circuit breaker with default config: %v", err))
+	}
+	return cb
+}
+
 
 // NewCircuitBreakerPlugin creates a new circuit breaker plugin with the given configuration.
 // It validates the configuration and uses default values for any invalid parameters.
@@ -304,7 +315,7 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 				Error: &schemas.BifrostError{
 					Error: schemas.ErrorField{
 						Message: fmt.Sprintf("Service temporarily unavailable: %s circuit breaker is OPEN due to high failure rate (%0.2f%%). Circuit will attempt recovery in %s. Please retry later or use an alternative provider.", provider, p.config.FailureRateThreshold*100, p.config.MaxWaitDurationInHalfOpenState),
-						Type:    func() *string { s := "circuit_breaker_open"; return &s }(),
+						Type:    func() *string { s := "circuitbreaker_open"; return &s }(),
 					},
 					AllowFallbacks: nil, // Allow fallbacks by default
 				},
@@ -322,7 +333,7 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 				Error: &schemas.BifrostError{
 					Error: schemas.ErrorField{
 						Message: fmt.Sprintf("Service testing capacity: %s circuit breaker is in HALF_OPEN state with limited capacity (%d/%d calls). Please retry in a moment or use an alternative provider.", provider, atomic.LoadInt32(&circuitState.halfOpenCallsAttempted), atomic.LoadInt32(&circuitState.halfOpenCallsPermitted)),
-						Type:    func() *string { s := "circuit_breaker_half_open_limit"; return &s }(),
+						Type:    func() *string { s := "circuitbreaker_half_open_limit"; return &s }(),
 					},
 					AllowFallbacks: nil, // Allow fallbacks by default
 				},
@@ -349,8 +360,8 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 // based on the sliding window metrics.
 func (p *CircuitBreaker) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Extract data from context
-	callStartTime := getCallStartTime(*ctx)
-	circuitState := getCircuitState(*ctx)
+	callStartTime := GetCallStartTime(*ctx)
+	circuitState := GetCircuitState(*ctx)
 
 	if circuitState == nil {
 		// No circuit state found, return as-is
@@ -474,124 +485,6 @@ func (p *CircuitBreaker) transitionToHalfOpen(state *ProviderCircuitState) {
 	atomic.StoreInt32(&state.halfOpenCallsAttempted, 0)
 }
 
-// RecordCall adds a new call result to the count-based sliding window.
-func (w *CountBasedWindow) RecordCall(result CallResult) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.calls[w.position] = result
-	w.position = (w.position + 1) % w.maxSize
-	if !w.full && w.position == 0 {
-		w.full = true
-	}
-}
-
-// GetMetrics calculates and returns metrics for the count-based sliding window.
-func (w *CountBasedWindow) GetMetrics() WindowMetrics {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-
-	var totalCalls, failedCalls, slowCalls int
-	callCount := w.maxSize
-	if !w.full {
-		callCount = w.position
-	}
-
-	for i := 0; i < callCount; i++ {
-		call := w.calls[i]
-		totalCalls++
-		if !call.Success {
-			failedCalls++
-		}
-		if call.IsSlowCall {
-			slowCalls++
-		}
-	}
-
-	var failureRate, slowCallRate float64
-	if totalCalls > 0 {
-		failureRate = float64(failedCalls) / float64(totalCalls)
-		slowCallRate = float64(slowCalls) / float64(totalCalls)
-	}
-
-	return WindowMetrics{
-		TotalCalls:   totalCalls,
-		FailedCalls:  failedCalls,
-		SlowCalls:    slowCalls,
-		FailureRate:  failureRate,
-		SlowCallRate: slowCallRate,
-	}
-}
-
-// Reset clears all call data from the count-based sliding window.
-func (w *CountBasedWindow) Reset() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.calls = make([]CallResult, w.maxSize)
-	w.position = 0
-	w.full = false
-}
-
-// RecordCall adds a new call result to the time-based sliding window.
-func (w *TimeBasedWindow) RecordCall(result CallResult) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.calls = append(w.calls, result)
-	cutoffTime := time.Now().Add(-w.windowDuration)
-	trimIdx := 0
-	for i, call := range w.calls {
-		if call.Timestamp.After(cutoffTime) {
-			trimIdx = i
-			break
-		}
-	}
-	w.calls = w.calls[trimIdx:]
-}
-
-// GetMetrics calculates and returns metrics for the time-based sliding window.
-func (w *TimeBasedWindow) GetMetrics() WindowMetrics {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-
-	var totalCalls, failedCalls, slowCalls int
-	cutoffTime := time.Now().Add(-w.windowDuration)
-
-	for _, call := range w.calls {
-		if call.Timestamp.After(cutoffTime) {
-			totalCalls++
-			if !call.Success {
-				failedCalls++
-			}
-			if call.IsSlowCall {
-				slowCalls++
-			}
-		}
-	}
-
-	var failureRate, slowCallRate float64
-	if totalCalls > 0 {
-		failureRate = float64(failedCalls) / float64(totalCalls)
-		slowCallRate = float64(slowCalls) / float64(totalCalls)
-	}
-
-	return WindowMetrics{
-		TotalCalls:   totalCalls,
-		FailedCalls:  failedCalls,
-		SlowCalls:    slowCalls,
-		FailureRate:  failureRate,
-		SlowCallRate: slowCallRate,
-	}
-}
-
-// Reset clears all call data from the time-based sliding window.
-func (w *TimeBasedWindow) Reset() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.calls = make([]CallResult, 0)
-}
 
 // GetMetrics returns metrics for a specific provider.
 func (p *CircuitBreaker) GetMetrics(provider schemas.ModelProvider) (*CircuitBreakerMetrics, error) {
@@ -629,17 +522,3 @@ func (p *CircuitBreaker) Cleanup() error {
 	return nil
 }
 
-// Utility functions for context extraction
-func getCallStartTime(ctx context.Context) time.Time {
-	if startTime, ok := ctx.Value(callStartTimeKey).(time.Time); ok {
-		return startTime
-	}
-	return time.Now() // Fallback
-}
-
-func getCircuitState(ctx context.Context) *ProviderCircuitState {
-	if state, ok := ctx.Value(circuitStateKey).(*ProviderCircuitState); ok {
-		return state
-	}
-	return nil
-}
