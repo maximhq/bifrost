@@ -32,7 +32,10 @@ func TestCircuitBreakerBasicFunctionality(t *testing.T) {
 	}
 
 	// Test default config
-	defaultCB := NewDefaultCircuitBreakerPlugin()
+	defaultCB, err := NewCircuitBreakerPlugin(DefaultConfig())
+	if err != nil {
+		t.Fatalf("Failed to create default circuit breaker: %v", err)
+	}
 	if defaultCB == nil {
 		t.Error("Default circuit breaker should not be nil")
 	}
@@ -58,13 +61,12 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 	provider := schemas.Ollama
 
 	// Clean up any existing state
-	cb.Cleanup()
+	if err := cb.Cleanup(); err != nil {
+		t.Fatalf("Failed to cleanup: %v", err)
+	}
 
 	// Test initial state should be closed
-	state, exists := cb.GetState(provider)
-	if !exists {
-		t.Error("Provider state should exist after first access")
-	}
+	state := cb.GetState(provider)
 	if state != StateClosed {
 		t.Errorf("Expected initial state CLOSED, got %s", state)
 	}
@@ -97,7 +99,7 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 		}
 
 		// Check state after each iteration
-		currentState, _ := cb.GetState(provider)
+		currentState := cb.GetState(provider)
 		t.Logf("State after iteration %d: %s", i, currentState)
 	}
 
@@ -122,7 +124,7 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 	}
 
 	// Check if circuit is now open
-	state, _ = cb.GetState(provider)
+	state = cb.GetState(provider)
 	if state != StateOpen {
 		t.Errorf("Expected state OPEN after failures, got %s", state)
 	}
@@ -135,7 +137,7 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 	}
 
 	// Check state before trying to make request
-	stateBefore, _ := cb.GetState(provider)
+	stateBefore := cb.GetState(provider)
 	t.Logf("State before blocked request: %s", stateBefore)
 
 	_, shortCircuit, err = cb.PreHook(&ctx, req)
@@ -169,7 +171,7 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 	}
 
 	// Check if circuit is still half-open (need more successful calls to close)
-	state, _ = cb.GetState(provider)
+	state = cb.GetState(provider)
 	if state != StateHalfOpen {
 		t.Errorf("Expected state HALF_OPEN after one successful call, got %s", state)
 	}
@@ -195,7 +197,7 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 	}
 
 	// Now circuit should be closed
-	state, _ = cb.GetState(provider)
+	state = cb.GetState(provider)
 	if state != StateClosed {
 		t.Errorf("Expected state CLOSED after two successful calls, got %s", state)
 	}
@@ -221,7 +223,9 @@ func TestCircuitBreakerRecovery(t *testing.T) {
 	provider := schemas.Ollama
 
 	// Clean up any existing state
-	cb.Cleanup()
+	if err := cb.Cleanup(); err != nil {
+		t.Fatalf("Failed to cleanup: %v", err)
+	}
 
 	// First, open the circuit
 	for i := 0; i < 6; i++ {
@@ -242,7 +246,7 @@ func TestCircuitBreakerRecovery(t *testing.T) {
 	}
 
 	// Verify circuit is open
-	state, _ := cb.GetState(provider)
+	state := cb.GetState(provider)
 	if state != StateOpen {
 		t.Errorf("Expected state OPEN, got %s", state)
 	}
@@ -263,7 +267,7 @@ func TestCircuitBreakerRecovery(t *testing.T) {
 	}
 
 	// Verify circuit is now closed
-	state, _ = cb.GetState(provider)
+	state = cb.GetState(provider)
 	if state != StateClosed {
 		t.Errorf("Expected state CLOSED after recovery, got %s", state)
 	}
@@ -305,7 +309,7 @@ func TestCircuitBreakerSlowCalls(t *testing.T) {
 	}
 
 	// Circuit should be open due to slow calls
-	state, _ := cb.GetState(provider)
+	state := cb.GetState(provider)
 	if state != StateOpen {
 		t.Errorf("Expected state OPEN with slow calls, got %s", state)
 	}
@@ -418,7 +422,7 @@ func TestCircuitBreakerTimeBasedWindow(t *testing.T) {
 	}
 
 	// Circuit should be open
-	state, _ := cb.GetState(provider)
+	state := cb.GetState(provider)
 	if state != StateOpen {
 		t.Errorf("Expected state OPEN with time-based window, got %s", state)
 	}
