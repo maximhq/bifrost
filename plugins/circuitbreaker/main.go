@@ -51,7 +51,7 @@ const (
 )
 
 // String returns the string representation of the circuit state
-func (s CircuitState) GetCircuitStateString() string {
+func (s CircuitState) String() string {
 	switch s {
 	case StateClosed:
 		return "CLOSED"
