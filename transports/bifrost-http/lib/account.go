@@ -3,54 +3,62 @@
 package lib
 
 import (
-	"errors"
 	"fmt"
-	"os"
-	"reflect"
-	"strings"
-	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // BaseAccount implements the Account interface for Bifrost.
-// It manages provider configurations and API keys.
+// It manages provider configurations using a bbolt store for persistent storage.
+// All data processing (environment variables, meta configs) is done upfront in the store.
 type BaseAccount struct {
-	Config ConfigMap  // Map of provider configurations
-	mu     sync.Mutex // Mutex to protect Config access
+	store *ConfigStore // bbolt store for persistent configuration
+}
+
+// NewBaseAccount creates a new BaseAccount with the given store
+func NewBaseAccount(store *ConfigStore) *BaseAccount {
+	return &BaseAccount{
+		store: store,
+	}
 }
 
 // GetConfiguredProviders returns a list of all configured providers.
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	baseAccount.mu.Lock()
-	defer baseAccount.mu.Unlock()
-
-	providers := make([]schemas.ModelProvider, 0, len(baseAccount.Config))
-	for provider := range baseAccount.Config {
-		providers = append(providers, provider)
+	if baseAccount.store == nil {
+		return nil, fmt.Errorf("store not initialized")
 	}
-	return providers, nil
+
+	return baseAccount.store.GetAllProviders()
 }
 
 // GetKeysForProvider returns the API keys configured for a specific provider.
+// Keys are already processed (environment variables resolved) by the store.
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetKeysForProvider(providerKey schemas.ModelProvider) ([]schemas.Key, error) {
-	baseAccount.mu.Lock()
-	defer baseAccount.mu.Unlock()
+	if baseAccount.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
 
-	return baseAccount.Config[providerKey].Keys, nil
+	config, err := baseAccount.store.GetProviderConfig(providerKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return config.Keys, nil
 }
 
 // GetConfigForProvider returns the complete configuration for a specific provider.
+// Configuration is already fully processed (environment variables, meta configs) by the store.
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	baseAccount.mu.Lock()
-	defer baseAccount.mu.Unlock()
+	if baseAccount.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
 
-	config, exists := baseAccount.Config[providerKey]
-	if !exists {
-		return nil, errors.New("config for provider not found")
+	config, err := baseAccount.store.GetProviderConfig(providerKey)
+	if err != nil {
+		return nil, err
 	}
 
 	providerConfig := &schemas.ProviderConfig{}
@@ -72,104 +80,4 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}
 
 	return providerConfig, nil
-}
-
-// ReadKeys reads environment variables from the environment and updates the provider configurations.
-// It replaces values starting with "env." in the config with actual values from the environment.
-// Returns an error if any required environment variable is missing.
-func (baseAccount *BaseAccount) ReadKeys() error {
-	// Helper function to check and replace env values
-	replaceEnvValue := func(value string) (string, error) {
-		if strings.HasPrefix(value, "env.") {
-			envKey := strings.TrimPrefix(value, "env.")
-			if envValue := os.Getenv(envKey); envValue != "" {
-				return envValue, nil
-			}
-			return "", fmt.Errorf("environment variable %s not found in the environment", envKey)
-		}
-		return value, nil
-	}
-
-	// Helper function to recursively check and replace env values in a struct
-	var processStruct func(interface{}) error
-	processStruct = func(v interface{}) error {
-		val := reflect.ValueOf(v)
-
-		// Dereference pointer if present
-		if val.Kind() == reflect.Ptr {
-			val = val.Elem()
-		}
-
-		// Handle interface types
-		if val.Kind() == reflect.Interface {
-			val = val.Elem()
-			// If the interface value is a pointer, dereference it
-			if val.Kind() == reflect.Ptr {
-				val = val.Elem()
-			}
-		}
-
-		if val.Kind() != reflect.Struct {
-			return nil
-		}
-
-		typ := val.Type()
-		for i := 0; i < val.NumField(); i++ {
-			field := val.Field(i)
-			fieldType := typ.Field(i)
-
-			// Skip unexported fields
-			if !field.CanSet() {
-				continue
-			}
-
-			switch field.Kind() {
-			case reflect.String:
-				if field.CanSet() {
-					value := field.String()
-					if strings.HasPrefix(value, "env.") {
-						newValue, err := replaceEnvValue(value)
-						if err != nil {
-							return fmt.Errorf("field %s: %w", fieldType.Name, err)
-						}
-						field.SetString(newValue)
-					}
-				}
-			case reflect.Interface:
-				if !field.IsNil() {
-					if err := processStruct(field.Interface()); err != nil {
-						return err
-					}
-				}
-			}
-		}
-		return nil
-	}
-
-	// Lock the config map for the entire update operation
-	baseAccount.mu.Lock()
-	defer baseAccount.mu.Unlock()
-
-	// Check and replace values in provider configs
-	for provider, config := range baseAccount.Config {
-		// Check keys
-		for i, key := range config.Keys {
-			newValue, err := replaceEnvValue(key.Value)
-			if err != nil {
-				return fmt.Errorf("provider %s: %w", provider, err)
-			}
-			config.Keys[i].Value = newValue
-		}
-
-		// Check meta config if it exists
-		if config.MetaConfig != nil {
-			if err := processStruct(config.MetaConfig); err != nil {
-				return fmt.Errorf("provider %s: %w", provider, err)
-			}
-		}
-
-		baseAccount.Config[provider] = config
-	}
-
-	return nil
 }
