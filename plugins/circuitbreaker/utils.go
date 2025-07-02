@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -65,15 +66,19 @@ func ValidateConfigWithDefaults(config CircuitBreakerConfig) (CircuitBreakerConf
 		validated.SlidingWindowType = defaults.SlidingWindowType
 		appliedDefaults = append(appliedDefaults, fmt.Sprintf("sliding window type set to default: %s", defaults.SlidingWindowType))
 	}
+	if validated.Logger == nil {
+		validated.Logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+		appliedDefaults = append(appliedDefaults, fmt.Sprintf("logger set to default with level: %s", schemas.LogLevelInfo))
+	}
 
 	return validated, appliedDefaults
 }
 
 // GetState returns the current circuit breaker state for a provider
-func (p *CircuitBreaker) GetState(provider schemas.ModelProvider) (CircuitState, bool) {
+func (p *CircuitBreaker) GetState(provider schemas.ModelProvider) CircuitState {
 	state := p.getOrCreateProviderState(provider)
 	currentState := CircuitState(atomic.LoadInt32(&state.state))
-	return currentState, true
+	return currentState
 }
 
 // ForceOpen forces the circuit breaker to open state for a provider
@@ -179,24 +184,54 @@ func (w *CountBasedWindow) Reset() {
 }
 
 // RecordCall adds a new call result to the time-based sliding window.
+// using periodic cleanup to improve performance for high-frequency calls.
 func (w *TimeBasedWindow) RecordCall(result CallResult) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	w.calls = append(w.calls, result)
+
+	// Trigger cleanup based on conditions:
+	// 1. If we've exceeded the maximum calls threshold
+	// 2. If we've reached the cleanup threshold and enough time has passed
+	// 3. If we've accumulated too many calls
+	if len(w.calls) >= w.maxCallsBeforeCleanup ||
+		(len(w.calls) >= w.cleanupThreshold && time.Since(w.lastCleanup) > w.windowDuration/4) {
+		w.cleanupExpiredEntries()
+	}
+}
+
+// cleanupExpiredEntries removes expired call results from the sliding window.
+func (w *TimeBasedWindow) cleanupExpiredEntries() {
 	cutoffTime := time.Now().Add(-w.windowDuration)
 	trimIdx := 0
+
+	// Find the first call that's still within the window
 	for i, call := range w.calls {
 		if call.Timestamp.After(cutoffTime) {
 			trimIdx = i
 			break
 		}
 	}
-	w.calls = w.calls[trimIdx:]
+
+	// Remove expired entries
+	if trimIdx > 0 {
+		w.calls = w.calls[trimIdx:]
+	}
+
+	w.lastCleanup = time.Now()
 }
+
 
 // GetMetrics calculates and returns metrics for the time-based sliding window.
 func (w *TimeBasedWindow) GetMetrics() WindowMetrics {
+	// Trigger cleanup if needed before calculating metrics
+	w.mu.Lock()
+	if len(w.calls) > 0 && (len(w.calls) >= w.maxCallsBeforeCleanup || time.Since(w.lastCleanup) > w.windowDuration/2) {
+		w.cleanupExpiredEntries()
+	}
+	w.mu.Unlock()
+
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
@@ -236,6 +271,7 @@ func (w *TimeBasedWindow) Reset() {
 	defer w.mu.Unlock()
 
 	w.calls = make([]CallResult, 0)
+	w.lastCleanup = time.Now()
 }
 
 // Utility functions for context extraction
