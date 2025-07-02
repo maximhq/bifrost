@@ -516,12 +516,6 @@ func (p *LoggerPlugin) matchesFilters(entry *LogEntry, filters *SearchFilters) b
 			}
 		}
 
-		// Search in input text
-		if !found && entry.InputText != nil &&
-			strings.Contains(strings.ToLower(*entry.InputText), searchTerm) {
-			found = true
-		}
-
 		// Search in output message
 		if !found && entry.OutputMessage != nil && entry.OutputMessage.Content.ContentStr != nil &&
 			strings.Contains(strings.ToLower(*entry.OutputMessage.Content.ContentStr), searchTerm) {
