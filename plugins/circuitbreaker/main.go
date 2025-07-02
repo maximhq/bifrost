@@ -35,6 +35,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -50,7 +51,7 @@ const (
 )
 
 // String returns the string representation of the circuit state
-func (s CircuitState) String() string {
+func (s CircuitState) GetCircuitStateString() string {
 	switch s {
 	case StateClosed:
 		return "CLOSED"
@@ -109,9 +110,12 @@ type CountBasedWindow struct {
 // TimeBasedWindow implements a time-based sliding window that maintains
 // call results within a specified time duration.
 type TimeBasedWindow struct {
-	mu             sync.RWMutex
-	calls          []CallResult
-	windowDuration time.Duration
+	mu                    sync.RWMutex
+	calls                 []CallResult
+	windowDuration        time.Duration
+	lastCleanup           time.Time // Last time cleanup was performed
+	cleanupThreshold      int       // Number of calls before triggering cleanup
+	maxCallsBeforeCleanup int       // Maximum calls to accumulate before forcing cleanup
 }
 
 // ProviderCircuitState maintains the circuit breaker state for a specific provider.
@@ -141,6 +145,7 @@ type CircuitBreakerConfig struct {
 	SlidingWindowSize                     int               // Size of sliding window
 	PermittedNumberOfCallsInHalfOpenState int               // Calls allowed in half-open state
 	MaxWaitDurationInHalfOpenState        time.Duration     // Wait time before half-open transition
+	Logger                                schemas.Logger    // Logger for circuit breaker, use default logger if not provided
 }
 
 // CircuitBreaker implements the Bifrost plugin interface to provide circuit breaker
@@ -178,30 +183,17 @@ const (
 	providerKey      contextKey = "circuitbreaker_provider"
 )
 
-// NewDefaultCircuitBreakerPlugin creates a circuit breaker plugin with default configuration
-func NewDefaultCircuitBreakerPlugin() *CircuitBreaker {
-	cb, err := NewCircuitBreakerPlugin(DefaultConfig())
-	if err != nil {
-		// This should never happen with default config, but if it does, panic
-		panic(fmt.Sprintf("failed to create circuit breaker with default config: %v", err))
-	}
-	return cb
-}
-
-
 // NewCircuitBreakerPlugin creates a new circuit breaker plugin with the given configuration.
 // It validates the configuration and uses default values for any invalid parameters.
 func NewCircuitBreakerPlugin(config CircuitBreakerConfig) (*CircuitBreaker, error) {
 	// Apply default values for invalid configurations
 	validatedConfig, appliedDefaults := ValidateConfigWithDefaults(config)
 
-	// Log any defaults that were applied (optional - could be made configurable)
-	if len(appliedDefaults) > 0 {
-		// Note: In a real implementation, you might want to use a proper logger here
-		// For now, we'll just use fmt.Printf for demonstration
-		fmt.Printf("Circuit breaker plugin: Applied %d default values:\n", len(appliedDefaults))
+	// Log any defaults that were applied using the configured logger
+	if len(appliedDefaults) > 0 && validatedConfig.Logger != nil {
+		validatedConfig.Logger.Info(fmt.Sprintf("Circuit breaker plugin: Applied %d default values", len(appliedDefaults)))
 		for _, defaultMsg := range appliedDefaults {
-			fmt.Printf("  - %s\n", defaultMsg)
+			validatedConfig.Logger.Info(fmt.Sprintf("  - %s", defaultMsg))
 		}
 	}
 
@@ -255,16 +247,16 @@ func (p *CircuitBreaker) getOrCreateProviderState(provider schemas.ModelProvider
 func (p *CircuitBreaker) createSlidingWindow() SlidingWindow {
 	switch p.config.SlidingWindowType {
 	case CountBased:
-		return NewCountBasedWindow(p.config.SlidingWindowSize)
+		return newCountBasedWindow(p.config.SlidingWindowSize)
 	case TimeBased:
-		return NewTimeBasedWindow(time.Duration(p.config.SlidingWindowSize) * time.Second)
+		return newTimeBasedWindow(time.Duration(p.config.SlidingWindowSize) * time.Second)
 	default:
-		return NewCountBasedWindow(p.config.SlidingWindowSize)
+		return newCountBasedWindow(p.config.SlidingWindowSize)
 	}
 }
 
 // NewCountBasedWindow creates a new count-based sliding window with the specified size.
-func NewCountBasedWindow(size int) *CountBasedWindow {
+func newCountBasedWindow(size int) *CountBasedWindow {
 	return &CountBasedWindow{
 		calls:    make([]CallResult, size),
 		maxSize:  size,
@@ -274,10 +266,13 @@ func NewCountBasedWindow(size int) *CountBasedWindow {
 }
 
 // NewTimeBasedWindow creates a new time-based sliding window with the specified duration.
-func NewTimeBasedWindow(duration time.Duration) *TimeBasedWindow {
+func newTimeBasedWindow(duration time.Duration) *TimeBasedWindow {
 	return &TimeBasedWindow{
-		calls:          make([]CallResult, 0),
-		windowDuration: duration,
+		calls:                 make([]CallResult, 0),
+		windowDuration:        duration,
+		lastCleanup:           time.Now(),
+		cleanupThreshold:      10,  // Trigger cleanup every 10 calls
+		maxCallsBeforeCleanup: 100, // Force cleanup after 100 calls
 	}
 }
 
@@ -315,9 +310,8 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 				Error: &schemas.BifrostError{
 					Error: schemas.ErrorField{
 						Message: fmt.Sprintf("Service temporarily unavailable: %s circuit breaker is OPEN due to high failure rate (%0.2f%%). Circuit will attempt recovery in %s. Please retry later or use an alternative provider.", provider, p.config.FailureRateThreshold*100, p.config.MaxWaitDurationInHalfOpenState),
-						Type:    func() *string { s := "circuitbreaker_open"; return &s }(),
+						Type:    bifrost.Ptr("circuitbreaker_open"),
 					},
-					AllowFallbacks: nil, // Allow fallbacks by default
 				},
 			}, nil
 		}
@@ -333,7 +327,7 @@ func (p *CircuitBreaker) PreHook(ctx *context.Context, req *schemas.BifrostReque
 				Error: &schemas.BifrostError{
 					Error: schemas.ErrorField{
 						Message: fmt.Sprintf("Service testing capacity: %s circuit breaker is in HALF_OPEN state with limited capacity (%d/%d calls). Please retry in a moment or use an alternative provider.", provider, atomic.LoadInt32(&circuitState.halfOpenCallsAttempted), atomic.LoadInt32(&circuitState.halfOpenCallsPermitted)),
-						Type:    func() *string { s := "circuitbreaker_half_open_limit"; return &s }(),
+						Type:    bifrost.Ptr("circuitbreaker_half_open_limit"),
 					},
 					AllowFallbacks: nil, // Allow fallbacks by default
 				},
@@ -484,7 +478,6 @@ func (p *CircuitBreaker) transitionToHalfOpen(state *ProviderCircuitState) {
 	atomic.StoreInt64(&state.stateTransitionTime, time.Now().UnixNano())
 	atomic.StoreInt32(&state.halfOpenCallsAttempted, 0)
 }
-
 
 // GetMetrics returns metrics for a specific provider.
 func (p *CircuitBreaker) GetMetrics(provider schemas.ModelProvider) (*CircuitBreakerMetrics, error) {
