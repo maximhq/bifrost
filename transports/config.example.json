@@ -1,4 +1,8 @@
 {
+  "client": {
+    "drop_excess_requests": false,
+    "prometheus_labels": ["model", "provider"]
+  },
   "providers": {
     "openai": {
       "keys": [
