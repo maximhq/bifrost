@@ -17,6 +17,7 @@ package main
 
 import (
     "context"
+    "time"
     bifrost "github.com/maximhq/bifrost/core"
     "github.com/maximhq/bifrost/core/schemas"
     circuitbreaker "github.com/maximhq/bifrost/plugins/circuitbreaker"
@@ -69,7 +70,6 @@ func main() {
 ### State Diagram of Circuit Breaker
 ![Circuit Breaker States](../../docs/media/plugins/circuit-breaker-states.png)
 
-
 ## Configuration
 
 ### CircuitBreakerConfig
@@ -84,6 +84,7 @@ func main() {
 | `SlidingWindowSize` | `int` | `100` | Size of sliding window (calls for count-based, seconds for time-based) |
 | `PermittedNumberOfCallsInHalfOpenState` | `int` | `5` | Calls allowed in half-open state |
 | `MaxWaitDurationInHalfOpenState` | `time.Duration` | `60s` | Wait time before half-open transition |
+| `Logger` | `schemas.Logger` | `bifrost.NewDefaultLogger(schemas.LogLevelInfo)` | Logger for circuit breaker operations |
 
 ### Sliding Window Types
 
@@ -135,6 +136,27 @@ config := circuitbreaker.CircuitBreakerConfig{
 }
 ```
 
+### Logging Configuration
+
+The circuit breaker plugin includes comprehensive logging to help you monitor its behavior. By default, it uses Bifrost's default logger with `Info` level logging. You can customize the logger by providing your own implementation:
+
+```go
+// Use custom logger
+customLogger := yourCustomLoggerImplementation
+config := circuitbreaker.CircuitBreakerConfig{
+    FailureRateThreshold: 0.3,
+    // ... other config options
+    Logger: customLogger, // Use your custom logger
+}
+
+// Or use Bifrost's default logger with different log level
+config := circuitbreaker.CircuitBreakerConfig{
+    FailureRateThreshold: 0.3,
+    // ... other config options
+    Logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug), // More verbose logging
+}
+```
+
 ## Circuit States
 
 ### CLOSED (Normal Operation)
@@ -153,6 +175,15 @@ config := circuitbreaker.CircuitBreakerConfig{
 - Success/failure determines next state
 - Success → CLOSED (recovery complete)
 - Failure → OPEN (still failing)
+
+### Error Classification
+
+The circuit breaker distinguishes between different types of errors:
+- **Server Errors (5xx)**: Considered failures that contribute to the failure rate
+- **Rate Limit Errors (429)**: Considered failures that contribute to the failure rate
+- **Other Client Errors (4xx)**: Considered successful for circuit breaker purposes (e.g., invalid requests, authentication errors)
+
+This classification ensures that rate limiting issues and server-side problems trigger circuit breaker protection, while other client-side issues (like invalid API keys or malformed requests) don't.
 
 ## Monitoring
 
@@ -182,6 +213,33 @@ if err == nil {
 }
 ```
 
+## Advanced Operations
+
+### Manual Circuit Control
+
+The circuit breaker provides manual control functions for testing and emergency situations:
+
+```go
+// Force the circuit to open state (blocks all requests)
+err := plugin.ForceOpen(schemas.OpenAI)
+if err != nil {
+    fmt.Printf("Error forcing circuit open: %v\n", err)
+}
+
+// Force the circuit to closed state (allows all requests)
+err = plugin.ForceClose(schemas.OpenAI)
+if err != nil {
+    fmt.Printf("Error forcing circuit closed: %v\n", err)
+}
+
+// Reset the circuit breaker (clears all metrics and returns to closed state)
+err = plugin.Reset(schemas.OpenAI)
+if err != nil {
+    fmt.Printf("Error resetting circuit: %v\n", err)
+}
+```
+
+**Note**: Manual control should be used sparingly and primarily for testing or emergency situations. The automatic circuit breaker logic is designed to handle most scenarios optimally.
 
 ## Performance
 
@@ -199,3 +257,4 @@ The Circuit Breaker plugin is optimized for high-performance scenarios:
 4. **Use Fallbacks**: Combine with Bifrost's fallback providers for maximum resilience
 
 **Need help?** Check the [Bifrost documentation](../../docs/plugins.md) or open an issue on GitHub.
+
