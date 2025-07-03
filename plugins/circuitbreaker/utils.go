@@ -124,6 +124,15 @@ func IsServerError(bifrostErr *schemas.BifrostError) bool {
 	return statusCode >= 500 && statusCode < 600
 }
 
+// checks if a BifrostError represents a "Too Many Requests" (429 status code)
+func IsRateLimitExceeded(bifrostErr *schemas.BifrostError) bool {
+	if bifrostErr == nil || bifrostErr.StatusCode == nil {
+		return false
+	}
+	statusCode := *bifrostErr.StatusCode
+	return statusCode == 429
+}
+
 // RecordCall adds a new call result to the count-based sliding window.
 func (w *CountBasedWindow) RecordCall(result CallResult) {
 	w.mu.Lock()

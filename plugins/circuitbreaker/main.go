@@ -367,12 +367,14 @@ func (p *CircuitBreaker) PostHook(ctx *context.Context, result *schemas.BifrostR
 
 	// Determine if this is a server error (status code 5xx)
 	isServerError := IsServerError(err)
+	// Determine if this is a rate limit exceeded error (status code 429)
+	isRateLimitExceeded := IsRateLimitExceeded(err)
 
-	// Determine call result - only count as failure for server errors (5xx)
+	// Determine call result - count as failure for server errors (5xx) and rate limit exceeded (429)
 	// Client errors (4xx) and other errors are considered successful for circuit breaker purposes
 	callResult := CallResult{
 		Duration:   callDuration,
-		Success:    (err == nil && result != nil) || !isServerError,
+		Success:    (err == nil && result != nil) || !isServerError || !isRateLimitExceeded,
 		Timestamp:  callStartTime,
 		IsSlowCall: callDuration > p.config.SlowCallDurationThreshold,
 	}
