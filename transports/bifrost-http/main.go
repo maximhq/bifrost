@@ -50,6 +50,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -72,12 +73,10 @@ import (
 
 // Command line flags
 var (
-	initialPoolSize    int      // Initial size of the connection pool
-	dropExcessRequests bool     // Drop excess requests
-	port               string   // Port to run the server on
-	configPath         string   // Path to the config file
-	pluginsToLoad      []string // Path to the plugins
-	prometheusLabels   []string // Labels to add to Prometheus metrics (optional)
+	initialPoolSize int      // Initial size of the connection pool
+	port            string   // Port to run the server on
+	configPath      string   // Path to the config file
+	pluginsToLoad   []string // Path to the plugins
 )
 
 // init initializes command line flags and validates required configuration.
@@ -85,34 +84,19 @@ var (
 //   - pool-size: Initial connection pool size (default: 300)
 //   - port: Server port (default: 8080)
 //   - config: Path to config file (required)
-//   - drop-excess-requests: Whether to drop excess requests
 func init() {
 	pluginString := ""
-	var prometheusLabelsString string
 
 	flag.IntVar(&initialPoolSize, "pool-size", 300, "Initial pool size for Bifrost")
 	flag.StringVar(&port, "port", "8080", "Port to run the server on")
 	flag.StringVar(&configPath, "config", "", "Path to the config file")
-	flag.BoolVar(&dropExcessRequests, "drop-excess-requests", false, "Drop excess requests")
 	flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
-	flag.StringVar(&prometheusLabelsString, "prometheus-labels", "", "Labels to add to Prometheus metrics")
 	flag.Parse()
 
 	pluginsToLoad = strings.Split(pluginString, ",")
 
 	if configPath == "" {
 		log.Fatalf("config path is required")
-	}
-
-	if prometheusLabelsString != "" {
-		// Split and filter out empty strings
-		rawLabels := strings.Split(prometheusLabelsString, ",")
-		prometheusLabels = make([]string, 0, len(rawLabels))
-		for _, label := range rawLabels {
-			if trimmed := strings.TrimSpace(label); trimmed != "" {
-				prometheusLabels = append(prometheusLabels, strings.ToLower(trimmed))
-			}
-		}
 	}
 }
 
@@ -144,11 +128,29 @@ func main() {
 	registerCollectorSafely(collectors.NewGoCollector())
 	registerCollectorSafely(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
-	tracking.InitPrometheusMetrics(prometheusLabels)
-
-	log.Println("Prometheus Go/Process collectors registered.")
-
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+	// Define a struct to unmarshal the entire config file
+	var config struct {
+		Client struct {
+			DropExcessRequests bool     `json:"drop_excess_requests"`
+			PrometheusLabels   []string `json:"prometheus_labels"`
+		} `json:"client"`
+		Providers json.RawMessage    `json:"providers"`
+		MCP       *schemas.MCPConfig `json:"mcp"`
+	}
+
+	// Read and parse config
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		log.Fatalf("failed to read config file: %v", err)
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		log.Fatalf("failed to parse config JSON: %v", err)
+	}
+
+	tracking.InitPrometheusMetrics(config.Client.PrometheusLabels)
+	log.Println("Prometheus Go/Process collectors registered.")
 
 	// Initialize high-performance configuration store with caching
 	store, err := lib.NewConfigStore(logger)
@@ -200,7 +202,7 @@ func main() {
 	client, err := bifrost.Init(schemas.BifrostConfig{
 		Account:            account,
 		InitialPoolSize:    initialPoolSize,
-		DropExcessRequests: dropExcessRequests,
+		DropExcessRequests: config.Client.DropExcessRequests,
 		Plugins:            loadedPlugins,
 		MCPConfig:          mcpConfig,
 		Logger:             logger,
@@ -214,6 +216,7 @@ func main() {
 	completionHandler := handlers.NewCompletionHandler(client, logger)
 	mcpHandler := handlers.NewMCPHandler(client, logger)
 	integrationHandler := handlers.NewIntegrationHandler(client)
+	configHandler := handlers.NewConfigHandler(client, logger, configPath)
 
 	r := router.New()
 
@@ -222,6 +225,7 @@ func main() {
 	completionHandler.RegisterRoutes(r)
 	mcpHandler.RegisterRoutes(r)
 	integrationHandler.RegisterRoutes(r)
+	configHandler.RegisterRoutes(r)
 
 	// Add Prometheus /metrics endpoint
 	r.GET("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()))

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers"
@@ -57,9 +58,9 @@ type Bifrost struct {
 	responseChannelPool sync.Pool                                     // Pool for response channels, initial pool size is set in Init
 	errorChannelPool    sync.Pool                                     // Pool for error channels, initial pool size is set in Init
 	logger              schemas.Logger                                // logger instance, default logger is used if not provided
-	dropExcessRequests  bool                                          // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	backgroundCtx       context.Context                               // Shared background context for nil context handling
 	mcpManager          *MCPManager                                   // MCP integration manager (nil if MCP not configured)
+	dropExcessRequests  atomic.Bool                                   // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 }
 
 // PluginPipeline encapsulates the execution of plugin PreHooks and PostHooks, tracks how many plugins ran, and manages short-circuiting and error aggregation.
@@ -281,13 +282,13 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 	}
 
 	bifrost := &Bifrost{
-		account:            config.Account,
-		plugins:            config.Plugins,
-		waitGroups:         make(map[schemas.ModelProvider]*sync.WaitGroup),
-		requestQueues:      make(map[schemas.ModelProvider]chan ChannelMessage),
-		dropExcessRequests: config.DropExcessRequests,
-		backgroundCtx:      context.Background(),
+		account:       config.Account,
+		plugins:       config.Plugins,
+		waitGroups:    make(map[schemas.ModelProvider]*sync.WaitGroup),
+		requestQueues: make(map[schemas.ModelProvider]chan ChannelMessage),
+		backgroundCtx: context.Background(),
 	}
+	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
 
 	// Initialize object pools
 	bifrost.channelMessagePool = sync.Pool{
@@ -576,7 +577,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				}
 				break
 			}
-			
+
 			result, bifrostError = executor(provider, &req, key)
 			if bifrostError != nil && !bifrostError.IsBifrostError {
 				break // Don't retry client errors
@@ -919,7 +920,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		bifrost.releaseChannelMessage(msg)
 		return nil, newBifrostErrorFromMsg("request cancelled while waiting for queue space")
 	default:
-		if bifrost.dropExcessRequests {
+		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
 			return nil, newBifrostErrorFromMsg("request dropped: queue is full")
@@ -956,6 +957,13 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		}
 		return resp, nil
 	}
+}
+
+// UpdateDropExcessRequests updates the DropExcessRequests setting at runtime.
+// This allows for hot-reloading of this configuration value.
+func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
+	bifrost.dropExcessRequests.Store(value)
+	bifrost.logger.Info(fmt.Sprintf("DropExcessRequests updated to: %v", value))
 }
 
 // ExecuteMCPTool executes an MCP tool call and returns the result as a tool message.

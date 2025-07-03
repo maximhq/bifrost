@@ -43,11 +43,9 @@ USER appuser
 # Environment variables with defaults
 ENV APP_PORT=8080 \
     APP_POOL_SIZE=300 \
-    APP_DROP_EXCESS_REQUESTS=false \
-    APP_PLUGINS="" \
-    APP_PROMETHEUS_LABELS=""
+    APP_PLUGINS=""
 
 EXPOSE 8080
 
 # Direct entrypoint with environment variable expansion
-ENTRYPOINT ["/bin/sh", "-c", "exec /app/main -config /app/config/config.json -port \"${APP_PORT}\" -pool-size \"${APP_POOL_SIZE}\" -drop-excess-requests \"${APP_DROP_EXCESS_REQUESTS}\" -plugins \"${APP_PLUGINS}\" -prometheus-labels \"${APP_PROMETHEUS_LABELS}\""]
+ENTRYPOINT ["/bin/sh", "-c", "exec /app/main -config /app/config/config.json -port \"${APP_PORT}\" -pool-size \"${APP_POOL_SIZE}\" -plugins \"${APP_PLUGINS}\""]
