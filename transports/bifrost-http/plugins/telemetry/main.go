@@ -1,7 +1,7 @@
-// Package tracking provides Prometheus metrics collection and monitoring functionality
+// Package telemetry provides Prometheus metrics collection and monitoring functionality
 // for the Bifrost HTTP service. It includes middleware for HTTP request tracking
 // and a plugin for tracking upstream provider metrics.
-package tracking
+package telemetry
 
 import (
 	"context"
@@ -11,6 +11,10 @@ import (
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/prometheus/client_golang/prometheus"
+)
+
+const (
+	PluginName = "bifrost-http-telemetry"
 )
 
 // Define context key type for storing start time
@@ -43,7 +47,7 @@ func NewPrometheusPlugin() *PrometheusPlugin {
 
 // GetName returns the name of the plugin.
 func (p *PrometheusPlugin) GetName() string {
-	return "bifrost-http-prometheus"
+	return PluginName
 }
 
 // PreHook records the start time of the request in the context.

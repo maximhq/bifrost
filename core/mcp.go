@@ -842,7 +842,7 @@ func (m *MCPManager) extractTextFromMCPResponse(toolResponse *mcp.CallToolResult
 		// Handle typed content
 		switch content := contentBlock.(type) {
 		case mcp.TextContent:
-			result.WriteString(fmt.Sprintf("[Text Response: %s]\n", content.Text))
+			result.WriteString(content.Text)
 		case mcp.ImageContent:
 			result.WriteString(fmt.Sprintf("[Image Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
 		case mcp.AudioContent:

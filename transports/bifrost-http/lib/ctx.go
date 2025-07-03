@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
+	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
 	"github.com/valyala/fasthttp"
 )
 
@@ -58,7 +58,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 
 		if strings.HasPrefix(keyStr, "x-bf-prom-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-prom-")
-			bifrostCtx = context.WithValue(bifrostCtx, tracking.PrometheusContextKey(labelName), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, telemetry.PrometheusContextKey(labelName), string(value))
 		}
 
 		if strings.HasPrefix(keyStr, "x-bf-maxim-") {

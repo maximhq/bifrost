@@ -20,6 +20,7 @@ type ProviderConfig struct {
 	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
 	MetaConfig               *schemas.MetaConfig               `json:"-"`                                     // Provider-specific metadata
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
+	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 }
 
 // ConfigMap maps provider names to their configurations.

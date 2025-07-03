@@ -63,7 +63,8 @@ import (
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
+	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
+	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -149,7 +150,7 @@ func main() {
 		log.Fatalf("failed to parse config JSON: %v", err)
 	}
 
-	tracking.InitPrometheusMetrics(config.Client.PrometheusLabels)
+	telemetry.InitPrometheusMetrics(config.Client.PrometheusLabels)
 	log.Println("Prometheus Go/Process collectors registered.")
 
 	// Initialize high-performance configuration store with caching
@@ -196,8 +197,13 @@ func main() {
 		}
 	}
 
-	promPlugin := tracking.NewPrometheusPlugin()
-	loadedPlugins = append(loadedPlugins, promPlugin)
+	promPlugin := telemetry.NewPrometheusPlugin()
+	loggingPlugin, err := logging.NewLoggerPlugin(nil)
+	if err != nil {
+		log.Fatalf("failed to initialize logging plugin: %v", err)
+	}
+
+	loadedPlugins = append(loadedPlugins, promPlugin, loggingPlugin)
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
 		Account:            account,
@@ -219,6 +225,14 @@ func main() {
 	mcpHandler := handlers.NewMCPHandler(client, logger, store)
 	integrationHandler := handlers.NewIntegrationHandler(client)
 	configHandler := handlers.NewConfigHandler(client, logger, configPath)
+	loggingHandler := handlers.NewLoggingHandler(loggingPlugin.GetPluginLogManager(), logger)
+	wsHandler := handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), logger)
+
+	// Set up WebSocket callback for real-time log updates
+	loggingPlugin.SetLogCallback(wsHandler.BroadcastLogUpdate)
+
+	// Start WebSocket heartbeat
+	wsHandler.StartHeartbeat()
 
 	r := router.New()
 
@@ -228,6 +242,8 @@ func main() {
 	mcpHandler.RegisterRoutes(r)
 	integrationHandler.RegisterRoutes(r)
 	configHandler.RegisterRoutes(r)
+	loggingHandler.RegisterRoutes(r)
+	wsHandler.RegisterRoutes(r)
 
 	// Add Prometheus /metrics endpoint
 	r.GET("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()))
@@ -243,7 +259,7 @@ func main() {
 				r.Handler(ctx)
 				return
 			}
-			tracking.PrometheusMiddleware(r.Handler)(ctx)
+			telemetry.PrometheusMiddleware(r.Handler)(ctx)
 		},
 	}
 
