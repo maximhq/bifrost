@@ -69,12 +69,6 @@ func main() {
 ### State Diagram of Circuit Breaker
 ![Circuit Breaker States](../../docs/media/plugins/circuit-breaker-states.png)
 
-### Default Configuration
-
-```go
-// Use default configuration (recommended for most cases)
-plugin := circuitbreaker.NewDefaultCircuitBreakerPlugin()
-```
 
 ## Configuration
 
@@ -165,16 +159,14 @@ config := circuitbreaker.CircuitBreakerConfig{
 ### Get Circuit State
 
 ```go
-state, exists := plugin.GetState(schemas.OpenAI)
-if exists {
-    switch state {
-    case circuitbreaker.StateClosed:
-        fmt.Println("Circuit is CLOSED - normal operation")
-    case circuitbreaker.StateOpen:
-        fmt.Println("Circuit is OPEN - requests blocked")
-    case circuitbreaker.StateHalfOpen:
-        fmt.Println("Circuit is HALF_OPEN - testing recovery")
-    }
+state := plugin.GetState(schemas.OpenAI)
+switch state {
+case circuitbreaker.StateClosed:
+    fmt.Println("Circuit is CLOSED - normal operation")
+case circuitbreaker.StateOpen:
+    fmt.Println("Circuit is OPEN - requests blocked")
+case circuitbreaker.StateHalfOpen:
+    fmt.Println("Circuit is HALF_OPEN - testing recovery")
 }
 ```
 
