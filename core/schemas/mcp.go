@@ -32,3 +32,21 @@ type MCPStdioConfig struct {
 	Args    []string `json:"args"`    // Command line arguments
 	Envs    []string `json:"envs"`    // Environment variables required
 }
+
+type MCPConnectionState string
+
+const (
+	MCPConnectionStateConnected    MCPConnectionState = "connected"    // Client is connected and ready to use
+	MCPConnectionStateDisconnected MCPConnectionState = "disconnected" // Client is not connected
+	MCPConnectionStateError        MCPConnectionState = "error"        // Client is in an error state, and cannot be used
+)
+
+// MCPClient represents a connected MCP client with its configuration and tools,
+// and connection information, after it has been initialized.
+// It is returned by GetMCPClients() method.
+type MCPClient struct {
+	Name   string             `json:"name"`   // Unique name for this client
+	Config MCPClientConfig    `json:"config"` // Tool filtering settings
+	Tools  []string           `json:"tools"`  // Available tools mapped by name
+	State  MCPConnectionState `json:"state"`  // Connection state
+}

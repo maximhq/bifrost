@@ -211,10 +211,12 @@ func main() {
 		log.Fatalf("failed to initialize bifrost: %v", err)
 	}
 
+	store.SetBifrostClient(client)
+
 	// Initialize handlers
 	providerHandler := handlers.NewProviderHandler(store, client, logger)
 	completionHandler := handlers.NewCompletionHandler(client, logger)
-	mcpHandler := handlers.NewMCPHandler(client, logger)
+	mcpHandler := handlers.NewMCPHandler(client, logger, store)
 	integrationHandler := handlers.NewIntegrationHandler(client)
 	configHandler := handlers.NewConfigHandler(client, logger, configPath)
 
