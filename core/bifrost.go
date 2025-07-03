@@ -1031,6 +1031,126 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 	return bifrost.mcpManager.registerTool(name, description, handler, toolSchema)
 }
 
+// IMPORTANT: Running the MCP client management operations (GetMCPClients, AddMCPClient, RemoveMCPClient, EditMCPClientTools)
+// may temporarily increase latency for incoming requests while the operations are being processed.
+// These operations involve network I/O and connection management that require mutex locks
+// which can block briefly during execution.
+
+// GetMCPClients returns all MCP clients managed by the Bifrost instance.
+//
+// Returns:
+//   - []schemas.MCPClient: List of all MCP clients
+//   - error: Any retrieval error
+func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
+	if bifrost.mcpManager == nil {
+		return nil, fmt.Errorf("MCP is not configured in this Bifrost instance")
+	}
+
+	clients, err := bifrost.mcpManager.GetClients()
+	if err != nil {
+		return nil, err
+	}
+
+	clientsInConfig := make([]schemas.MCPClient, 0, len(clients))
+	for _, client := range clients {
+		tools := make([]string, 0, len(client.ToolMap))
+		for toolName := range client.ToolMap {
+			tools = append(tools, toolName)
+		}
+
+		state := schemas.MCPConnectionStateConnected
+		if client.Conn == nil {
+			state = schemas.MCPConnectionStateDisconnected
+		}
+
+		clientsInConfig = append(clientsInConfig, schemas.MCPClient{
+			Name:   client.Name,
+			Config: client.ExecutionConfig,
+			Tools:  tools,
+			State:  state,
+		})
+	}
+
+	return clientsInConfig, nil
+}
+
+// ReconnectMCPClient attempts to reconnect an MCP client if it is disconnected.
+//
+// Parameters:
+//   - name: Name of the client to reconnect
+//
+// Returns:
+//   - error: Any reconnection error
+func (bifrost *Bifrost) ReconnectMCPClient(name string) error {
+	if bifrost.mcpManager == nil {
+		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+	}
+
+	return bifrost.mcpManager.ReconnectClient(name)
+}
+
+// AddMCPClient adds a new MCP client to the Bifrost instance.
+// This allows for dynamic MCP client management at runtime.
+//
+// Parameters:
+//   - config: MCP client configuration
+//
+// Returns:
+//   - error: Any registration error
+//
+// Example:
+//
+//	err := bifrost.AddMCPClient(schemas.MCPClientConfig{
+//	    Name: "my-mcp-client",
+//	    ConnectionType: schemas.MCPConnectionTypeHTTP,
+//	    ConnectionString: &url,
+//	})
+func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
+	if bifrost.mcpManager == nil {
+		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+	}
+
+	return bifrost.mcpManager.AddClient(config)
+}
+
+// RemoveMCPClient removes an MCP client from the Bifrost instance.
+// This allows for dynamic MCP client management at runtime.
+//
+// Parameters:
+//   - name: Name of the client to remove
+//
+// Returns:
+//   - error: Any removal error
+//
+// Example:
+//
+//	err := bifrost.RemoveMCPClient("my-mcp-client")
+//	if err != nil {
+//	    log.Fatalf("Failed to remove MCP client: %v", err)
+//	}
+func (bifrost *Bifrost) RemoveMCPClient(name string) error {
+	if bifrost.mcpManager == nil {
+		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+	}
+
+	return bifrost.mcpManager.RemoveClient(name)
+}
+
+// EditMCPClientTools edits the tools of an MCP client.
+// This allows for dynamic MCP client tool management at runtime.
+//
+// Parameters:
+//   - name: Name of the client to edit
+//   - toolsToAdd: Tools to add to the client
+//   - toolsToRemove: Tools to remove from the client
+func (bifrost *Bifrost) EditMCPClientTools(name string, toolsToAdd []string, toolsToRemove []string) error {
+	if bifrost.mcpManager == nil {
+		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+	}
+
+	return bifrost.mcpManager.EditClientTools(name, toolsToAdd, toolsToRemove)
+}
+
 // Cleanup gracefully stops all workers when triggered.
 // It closes all request channels and waits for workers to exit.
 func (bifrost *Bifrost) Cleanup() {

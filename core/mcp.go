@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -99,29 +100,184 @@ func newMCPManager(config schemas.MCPConfig, logger schemas.Logger) (*MCPManager
 
 	// Process client configs: create client map entries and establish connections
 	for _, clientConfig := range config.ClientConfigs {
-		// Validate client configuration
-		if err := validateMCPClientConfig(&clientConfig); err != nil {
-			return nil, fmt.Errorf("invalid MCP client configuration: %w", err)
-		}
-
-		// Create client map entry
-		manager.clientMap[clientConfig.Name] = &MCPClient{
-			Name:            clientConfig.Name,
-			ExecutionConfig: clientConfig,
-			ToolMap:         make(map[string]schemas.Tool),
-		}
-
-		// Attempt to establish connection
-		err := manager.connectToMCPClient(clientConfig)
-		if err != nil {
-			logger.Warn(fmt.Sprintf("%s Failed to connect to MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
-			// Continue with other connections even if one fails
+		if err := manager.AddClient(clientConfig); err != nil {
+			manager.logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
 		}
 	}
 
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 
 	return manager, nil
+}
+
+// GetClients returns all MCP clients managed by the manager.
+//
+// Returns:
+//   - []*MCPClient: List of all MCP clients
+//   - error: Any retrieval error
+func (m *MCPManager) GetClients() ([]MCPClient, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	clients := make([]MCPClient, 0, len(m.clientMap))
+	for _, client := range m.clientMap {
+		clients = append(clients, *client)
+	}
+
+	return clients, nil
+}
+
+// ReconnectClient attempts to reconnect an MCP client if it is disconnected.
+func (m *MCPManager) ReconnectClient(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	client, ok := m.clientMap[name]
+	if !ok {
+		return fmt.Errorf("client %s not found", name)
+	}
+
+	if client.Conn != nil {
+		return fmt.Errorf("client %s is already connected", name)
+	}
+
+	m.mu.Unlock()
+
+	// connectToMCPClient handles locking internally
+	err := m.connectToMCPClient(client.ExecutionConfig)
+	if err != nil {
+		return fmt.Errorf("failed to connect to MCP client %s: %w", name, err)
+	}
+
+	return nil
+}
+
+// AddClient adds a new MCP client to the manager.
+// It validates the client configuration and establishes a connection.
+//
+// Parameters:
+//   - config: MCP client configuration
+//
+// Returns:
+func (m *MCPManager) AddClient(config schemas.MCPClientConfig) error {
+	if err := validateMCPClientConfig(&config); err != nil {
+		return fmt.Errorf("invalid MCP client configuration: %w", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.clientMap[config.Name]; ok {
+		return fmt.Errorf("client %s already exists", config.Name)
+	}
+
+	// Create placeholder entry
+	m.clientMap[config.Name] = &MCPClient{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		ToolMap:         make(map[string]schemas.Tool),
+	}
+
+	// Temporarily unlock for the connection attempt
+	m.mu.Unlock()
+
+	err := m.connectToMCPClient(config)
+
+	// Re-lock to handle the result
+	m.mu.Lock()
+
+	if err != nil {
+		// Clean up the failed entry
+		delete(m.clientMap, config.Name)
+		return fmt.Errorf("failed to connect to MCP client %s: %w", config.Name, err)
+	}
+
+	return nil
+}
+
+// RemoveClient removes an MCP client from the manager.
+// It handles cleanup for all transport types (HTTP, STDIO, SSE).
+//
+// Parameters:
+//   - name: Name of the client to remove
+func (m *MCPManager) RemoveClient(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.removeClientUnsafe(name)
+}
+
+func (m *MCPManager) removeClientUnsafe(name string) error {
+	client, ok := m.clientMap[name]
+	if !ok {
+		return fmt.Errorf("client %s not found", name)
+	}
+
+	m.logger.Info(fmt.Sprintf("%s Disconnecting MCP client: %s", MCPLogPrefix, name))
+
+	// Cancel SSE context if present (required for proper SSE cleanup)
+	if client.cancelFunc != nil {
+		client.cancelFunc()
+		client.cancelFunc = nil
+	}
+
+	// Close the client transport connection
+	// This handles cleanup for all transport types (HTTP, STDIO, SSE)
+	if client.Conn != nil {
+		if err := client.Conn.Close(); err != nil {
+			m.logger.Error(fmt.Errorf("%s Failed to close MCP client %s: %w", MCPLogPrefix, name, err))
+		}
+		client.Conn = nil
+	}
+
+	// Clear client tool map
+	client.ToolMap = make(map[string]schemas.Tool)
+
+	delete(m.clientMap, name)
+	return nil
+}
+
+func (m *MCPManager) EditClientTools(name string, toolsToAdd []string, toolsToRemove []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	client, ok := m.clientMap[name]
+	if !ok {
+		return fmt.Errorf("client %s not found", name)
+	}
+
+	if client.Conn == nil {
+		return fmt.Errorf("client %s has no active connection", name)
+	}
+
+	// Update the client's execution config with new tool filters
+	config := client.ExecutionConfig
+	config.ToolsToExecute = toolsToAdd
+	config.ToolsToSkip = toolsToRemove
+
+	// Store the updated config
+	client.ExecutionConfig = config
+
+	// Clear current tool map
+	client.ToolMap = make(map[string]schemas.Tool)
+
+	// Temporarily unlock for the network call
+	m.mu.Unlock()
+
+	// Retrieve tools with updated configuration
+	tools, err := m.retrieveExternalTools(context.Background(), client.Conn, config)
+
+	// Re-lock to update the tool map
+	m.mu.Lock()
+
+	if err != nil {
+		return fmt.Errorf("failed to retrieve external tools: %w", err)
+	}
+
+	// Store discovered tools
+	maps.Copy(client.ToolMap, tools)
+
+	return nil
 }
 
 // ============================================================================
@@ -934,26 +1090,10 @@ func (m *MCPManager) cleanup() error {
 	defer m.mu.Unlock()
 
 	// Disconnect all external MCP clients
-	for name, client := range m.clientMap {
-		m.logger.Info(fmt.Sprintf("%s Disconnecting MCP client: %s", MCPLogPrefix, name))
-
-		// Cancel SSE context if present (required for proper SSE cleanup)
-		if client.cancelFunc != nil {
-			client.cancelFunc()
-			client.cancelFunc = nil
+	for name := range m.clientMap {
+		if err := m.removeClientUnsafe(name); err != nil {
+			m.logger.Error(fmt.Errorf("%s Failed to remove MCP client %s: %w", MCPLogPrefix, name, err))
 		}
-
-		// Close the client transport connection
-		// This handles cleanup for all transport types (HTTP, STDIO, SSE)
-		if client.Conn != nil {
-			if err := client.Conn.Close(); err != nil {
-				m.logger.Error(fmt.Errorf("%s Failed to close MCP client %s: %w", MCPLogPrefix, name, err))
-			}
-			client.Conn = nil
-		}
-
-		// Clear client tool map
-		client.ToolMap = make(map[string]schemas.Tool)
 	}
 
 	// Clear the client map

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/meta"
 )
@@ -26,8 +27,10 @@ import (
 //   - Support for all provider-specific meta configurations (Azure, Bedrock, Vertex)
 type ConfigStore struct {
 	mu         sync.RWMutex
+	muMCP      sync.RWMutex
 	logger     schemas.Logger
 	configPath string // Path to the original JSON config file
+	client     *bifrost.Bifrost
 
 	// In-memory storage
 	providers map[schemas.ModelProvider]ProviderConfig
@@ -554,12 +557,114 @@ func (s *ConfigStore) processMCPEnvVars() {
 	}
 }
 
+// SetBifrostClient sets the Bifrost client in the store.
+// This is used to allow the store to access the Bifrost client.
+// This is useful for the MCP handler to access the Bifrost client.
+func (s *ConfigStore) SetBifrostClient(client *bifrost.Bifrost) {
+	s.client = client
+}
+
 // GetMCPConfig retrieves the processed MCP configuration from memory.
 // Returns nil if no MCP configuration was loaded.
 // The returned configuration has all environment variables already processed.
 func (s *ConfigStore) GetMCPConfig() *schemas.MCPConfig {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	return s.mcpConfig
+}
+
+// AddMCPClient adds a new MCP client to the configuration.
+// This method is called when a new MCP client is added via the HTTP API.
+//
+// The method:
+//   - Validates that the MCP client doesn't already exist
+//   - Processes environment variables in the MCP client configuration
+//   - Stores the processed configuration in memory
+func (s *ConfigStore) AddMCPClient(clientConfig schemas.MCPClientConfig) error {
+	if s.client == nil {
+		return fmt.Errorf("bifrost client not set")
+	}
+
+	s.muMCP.Lock()
+	defer s.muMCP.Unlock()
+
+	if s.mcpConfig == nil {
+		s.mcpConfig = &schemas.MCPConfig{}
+	}
+
+	s.mcpConfig.ClientConfigs = append(s.mcpConfig.ClientConfigs, clientConfig)
+	s.processMCPEnvVars()
+
+	// Config with processed env vars
+	if err := s.client.AddMCPClient(s.mcpConfig.ClientConfigs[len(s.mcpConfig.ClientConfigs)-1]); err != nil {
+		s.mcpConfig.ClientConfigs = s.mcpConfig.ClientConfigs[:len(s.mcpConfig.ClientConfigs)-1]
+		return fmt.Errorf("failed to add MCP client: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveMCPClient removes an MCP client from the configuration.
+// This method is called when an MCP client is removed via the HTTP API.
+//
+// The method:
+//   - Validates that the MCP client exists
+//   - Removes the MCP client from the configuration
+//   - Removes the MCP client from the Bifrost client
+func (s *ConfigStore) RemoveMCPClient(name string) error {
+	if s.client == nil {
+		return fmt.Errorf("bifrost client not set")
+	}
+
+	s.muMCP.Lock()
+	defer s.muMCP.Unlock()
+
+	if s.mcpConfig == nil {
+		return fmt.Errorf("no MCP config found")
+	}
+
+	if err := s.client.RemoveMCPClient(name); err != nil {
+		return fmt.Errorf("failed to remove MCP client: %w", err)
+	}
+
+	for i, clientConfig := range s.mcpConfig.ClientConfigs {
+		if clientConfig.Name == name {
+			s.mcpConfig.ClientConfigs = append(s.mcpConfig.ClientConfigs[:i], s.mcpConfig.ClientConfigs[i+1:]...)
+			break
+		}
+	}
+
+	return nil
+}
+
+// EditMCPClientTools edits the tools of an MCP client.
+// This allows for dynamic MCP client tool management at runtime.
+//
+// Parameters:
+//   - name: Name of the client to edit
+//   - toolsToAdd: Tools to add to the client
+//   - toolsToRemove: Tools to remove from the client
+func (s *ConfigStore) EditMCPClientTools(name string, toolsToAdd []string, toolsToRemove []string) error {
+	if s.client == nil {
+		return fmt.Errorf("bifrost client not set")
+	}
+
+	s.muMCP.Lock()
+	defer s.muMCP.Unlock()
+
+	if s.mcpConfig == nil {
+		return fmt.Errorf("no MCP config found")
+	}
+
+	if err := s.client.EditMCPClientTools(name, toolsToAdd, toolsToRemove); err != nil {
+		return fmt.Errorf("failed to edit MCP client tools: %w", err)
+	}
+
+	for i, clientConfig := range s.mcpConfig.ClientConfigs {
+		if clientConfig.Name == name {
+			s.mcpConfig.ClientConfigs[i].ToolsToExecute = toolsToAdd
+			s.mcpConfig.ClientConfigs[i].ToolsToSkip = toolsToRemove
+			break
+		}
+	}
+
+	return nil
 }
