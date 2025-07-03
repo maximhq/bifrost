@@ -195,6 +195,82 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	return nil
 }
 
+// UpdateProviderConcurrency dynamically updates the queue size and concurrency for an existing provider.
+// This method gracefully stops existing workers, creates a new queue with updated settings,
+// and starts new workers with the updated concurrency configuration.
+//
+// Parameters:
+//   - providerKey: The provider to update
+//
+// Returns:
+//   - error: Any error that occurred during the update process
+//
+// Note: This operation will temporarily pause request processing for the specified provider
+// while the transition occurs. In-flight requests will complete before workers are stopped.
+func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvider) error {
+	bifrost.logger.Info(fmt.Sprintf("Updating concurrency configuration for provider %s", providerKey))
+
+	// Get the updated configuration from the account
+	providerConfig, err := bifrost.account.GetConfigForProvider(providerKey)
+	if err != nil {
+		return fmt.Errorf("failed to get updated config for provider %s: %v", providerKey, err)
+	}
+
+	// Check if provider currently exists
+	oldQueue, exists := bifrost.requestQueues[providerKey]
+	if !exists {
+		bifrost.logger.Debug(fmt.Sprintf("Provider %s not currently active, initializing with new configuration", providerKey))
+		// If provider doesn't exist, just prepare it with new configuration
+		return bifrost.prepareProvider(providerKey, providerConfig)
+	}
+
+	// Check if the provider has any keys (skip keyless providers)
+	if providerRequiresKey(providerKey) {
+		keys, err := bifrost.account.GetKeysForProvider(providerKey)
+		if err != nil || len(keys) == 0 {
+			return fmt.Errorf("failed to get keys for provider %s: %v", providerKey, err)
+		}
+	}
+
+	bifrost.logger.Debug(fmt.Sprintf("Gracefully stopping existing workers for provider %s", providerKey))
+
+	// Step 1: Close the existing queue to signal workers to stop processing new requests
+	close(oldQueue)
+
+	// Step 2: Wait for all existing workers to finish processing in-flight requests
+	if waitGroup, exists := bifrost.waitGroups[providerKey]; exists {
+		waitGroup.Wait()
+		bifrost.logger.Debug(fmt.Sprintf("All workers for provider %s have stopped", providerKey))
+	}
+
+	// Step 3: Create new queue with updated buffer size
+	newQueue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize)
+	bifrost.requestQueues[providerKey] = newQueue
+
+	// Step 4: Create new wait group for the updated workers
+	bifrost.waitGroups[providerKey] = &sync.WaitGroup{}
+
+	// Step 5: Create provider instance
+	provider, err := bifrost.createProviderFromProviderKey(providerKey, providerConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create provider instance for %s: %v", providerKey, err)
+	}
+
+	// Step 6: Start new workers with updated concurrency
+	bifrost.logger.Debug(fmt.Sprintf("Starting %d new workers for provider %s with buffer size %d",
+		providerConfig.ConcurrencyAndBufferSize.Concurrency,
+		providerKey,
+		providerConfig.ConcurrencyAndBufferSize.BufferSize))
+
+	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
+		bifrost.waitGroups[providerKey].Add(1)
+		go bifrost.requestWorker(provider, newQueue)
+	}
+
+	bifrost.logger.Info(fmt.Sprintf("Successfully updated concurrency configuration for provider %s", providerKey))
+	return nil
+}
+
 // Init initializes a new Bifrost instance with the given configuration.
 // It sets up the account, plugins, object pools, and initializes providers.
 // Returns an error if initialization fails.

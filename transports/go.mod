@@ -11,6 +11,8 @@ require (
 	google.golang.org/genai v1.4.0
 )
 
+replace github.com/maximhq/bifrost/core => ../core
+
 require (
 	cloud.google.com/go v0.121.0 // indirect
 	cloud.google.com/go/auth v0.16.0 // indirect

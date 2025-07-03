@@ -1,15 +1,31 @@
 // Package http provides an HTTP service using FastHTTP that exposes endpoints
 // for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
 //
-// The HTTP service provides three main endpoints:
+// The HTTP service provides the following main endpoints:
 //   - /v1/text/completions: For text completion requests
 //   - /v1/chat/completions: For chat completion requests
 //   - /v1/mcp/tool/execute: For MCP tool execution requests
+//   - /providers/*: For provider configuration management
 //
-// Configuration is handled through a JSON config file and environment variables:
+// Configuration is handled through a JSON config file, high-performance ConfigStore, and environment variables:
 //   - Use -config flag to specify the config file location
 //   - Use -port flag to specify the server port (default: 8080)
 //   - Use -pool-size flag to specify the initial connection pool size (default: 300)
+//
+// ConfigStore Features:
+//   - Pure in-memory storage for ultra-fast config access
+//   - Environment variable processing for secure configuration management
+//   - Real-time configuration updates via HTTP API
+//   - Explicit persistence control via POST /config/save endpoint
+//   - Provider-specific meta config support (Azure, Bedrock, Vertex)
+//   - Thread-safe operations with concurrent request handling
+//   - Statistics and monitoring endpoints for operational insights
+//
+// Performance Optimizations:
+//   - Configuration data is processed once during startup and stored in memory
+//   - Ultra-fast memory access eliminates I/O overhead on every request
+//   - All environment variable processing done upfront during configuration loading
+//   - Thread-safe concurrent access with read-write mutex protection
 //
 // Example usage:
 //
@@ -28,13 +44,12 @@
 //   - Anthropic: POST /anthropic/v1/messages (accepts Anthropic Messages requests)
 //
 // This allows clients to use their existing integration code without modification while benefiting
-// from Bifrost's unified model routing, fallbacks, and monitoring capabilities.
+// from Bifrost's unified model routing, fallbacks, monitoring capabilities, and high-performance configuration management.
 //
 // NOTE: Streaming is not supported yet so all the flags related to streaming are ignored. (in both bifrost and its integrations)
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -45,11 +60,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/litellm"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
+	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/bifrost-http/tracking"
 	"github.com/prometheus/client_golang/prometheus"
@@ -105,17 +116,6 @@ func init() {
 	}
 }
 
-// CompletionRequest represents a request for either text or chat completion.
-// It includes all necessary fields for both types of completions.
-type CompletionRequest struct {
-	Provider  schemas.ModelProvider    `json:"provider"`  // The AI model provider to use
-	Messages  []schemas.BifrostMessage `json:"messages"`  // Chat messages (for chat completion)
-	Text      string                   `json:"text"`      // Text input (for text completion)
-	Model     string                   `json:"model"`     // Model to use
-	Params    *schemas.ModelParameters `json:"params"`    // Additional model parameters
-	Fallbacks []schemas.Fallback       `json:"fallbacks"` // Fallback providers and models
-}
-
 // registerCollectorSafely attempts to register a Prometheus collector,
 // handling the case where it may already be registered.
 // It logs any errors that occur during registration, except for AlreadyRegisteredError.
@@ -148,16 +148,27 @@ func main() {
 
 	log.Println("Prometheus Go/Process collectors registered.")
 
-	config := lib.ReadConfig(configPath)
-	account := &lib.BaseAccount{Config: config.ProviderConfig}
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
-	if err := account.ReadKeys(); err != nil {
-		log.Printf("warning: failed to read environment variables: %v", err)
+	// Initialize high-performance configuration store with caching
+	store, err := lib.NewConfigStore(logger)
+	if err != nil {
+		log.Fatalf("failed to initialize config store: %v", err)
 	}
 
-	if err := config.ReadMCPKeys(); err != nil {
-		log.Printf("warning: failed to read MCP environment variables: %v", err)
+	// Load configuration from JSON file into the store with full preprocessing
+	// This processes environment variables and stores all configurations in memory for ultra-fast access
+	if err := store.LoadFromConfig(configPath); err != nil {
+		log.Fatalf("failed to load config into store: %v", err)
 	}
+
+	// Create account backed by the high-performance store (all processing is done in LoadFromConfig)
+	// The account interface now benefits from ultra-fast config access times via in-memory storage
+	account := lib.NewBaseAccount(store)
+
+	// Get the processed MCP configuration from the store
+	// All environment variable processing is already done during LoadFromConfig
+	mcpConfig := store.GetMCPConfig()
 
 	loadedPlugins := []schemas.Plugin{}
 
@@ -191,44 +202,32 @@ func main() {
 		InitialPoolSize:    initialPoolSize,
 		DropExcessRequests: dropExcessRequests,
 		Plugins:            loadedPlugins,
-		MCPConfig:          config.MCPConfig,
+		MCPConfig:          mcpConfig,
+		Logger:             logger,
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize bifrost: %v", err)
 	}
 
+	// Initialize handlers
+	providerHandler := handlers.NewProviderHandler(store, client, logger)
+	completionHandler := handlers.NewCompletionHandler(client, logger)
+	mcpHandler := handlers.NewMCPHandler(client, logger)
+	integrationHandler := handlers.NewIntegrationHandler(client)
+
 	r := router.New()
 
-	extensions := []integrations.ExtensionRouter{
-		genai.NewGenAIRouter(client),
-		openai.NewOpenAIRouter(client),
-		anthropic.NewAnthropicRouter(client),
-		litellm.NewLiteLLMRouter(client),
-	}
-
-	r.POST("/v1/text/completions", func(ctx *fasthttp.RequestCtx) {
-		handleCompletion(ctx, client, false)
-	})
-
-	r.POST("/v1/chat/completions", func(ctx *fasthttp.RequestCtx) {
-		handleCompletion(ctx, client, true)
-	})
-
-	r.POST("/v1/mcp/tool/execute", func(ctx *fasthttp.RequestCtx) {
-		handleMCPToolExecution(ctx, client)
-	})
-
-	for _, extension := range extensions {
-		extension.RegisterRoutes(r)
-	}
+	// Register all handler routes
+	providerHandler.RegisterRoutes(r)
+	completionHandler.RegisterRoutes(r)
+	mcpHandler.RegisterRoutes(r)
+	integrationHandler.RegisterRoutes(r)
 
 	// Add Prometheus /metrics endpoint
 	r.GET("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()))
 
 	r.NotFound = func(ctx *fasthttp.RequestCtx) {
-		ctx.SetStatusCode(fasthttp.StatusNotFound)
-		ctx.SetContentType("text/plain")
-		ctx.SetBodyString("Route not found: " + string(ctx.Path()))
+		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()), logger)
 	}
 
 	server := &fasthttp.Server{
@@ -248,127 +247,4 @@ func main() {
 	}
 
 	client.Cleanup()
-}
-
-// handleCompletion processes both text and chat completion requests.
-// It handles request parsing, validation, and response formatting.
-//
-// Parameters:
-//   - ctx: The FastHTTP request context
-//   - client: The Bifrost client instance
-//   - isChat: Whether this is a chat completion request (true) or text completion (false)
-//
-// The function:
-// 1. Parses the request body into a CompletionRequest
-// 2. Validates required fields based on the request type
-// 3. Creates a BifrostRequest with the appropriate input type
-// 4. Calls the appropriate completion method on the client
-// 5. Handles any errors and formats the response
-func handleCompletion(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost, isChat bool) {
-	var req CompletionRequest
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.SetBodyString(fmt.Sprintf("invalid request format: %v", err))
-		return
-	}
-
-	if req.Provider == "" {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.SetBodyString("Provider is required")
-		return
-	}
-
-	bifrostReq := &schemas.BifrostRequest{
-		Provider:  req.Provider,
-		Model:     req.Model,
-		Params:    req.Params,
-		Fallbacks: req.Fallbacks,
-	}
-
-	if isChat {
-		if len(req.Messages) == 0 {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("Messages array is required")
-			return
-		}
-		bifrostReq.Input = schemas.RequestInput{
-			ChatCompletionInput: &req.Messages,
-		}
-	} else {
-		if req.Text == "" {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("Text is required")
-			return
-		}
-		bifrostReq.Input = schemas.RequestInput{
-			TextCompletionInput: &req.Text,
-		}
-	}
-
-	bifrostCtx := lib.ConvertToBifrostContext(ctx)
-
-	var resp *schemas.BifrostResponse
-	var bifrostErr *schemas.BifrostError
-
-	if bifrostCtx == nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString("Failed to convert context")
-		return
-	}
-
-	if isChat {
-		resp, bifrostErr = client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
-	} else {
-		resp, bifrostErr = client.TextCompletionRequest(*bifrostCtx, bifrostReq)
-	}
-
-	if bifrostErr != nil {
-		handleBifrostError(ctx, bifrostErr)
-		return
-	}
-
-	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetContentType("application/json")
-	if encodeErr := json.NewEncoder(ctx).Encode(resp); encodeErr != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString(fmt.Sprintf("failed to encode response: %v", encodeErr))
-	}
-}
-
-func handleMCPToolExecution(ctx *fasthttp.RequestCtx, client *bifrost.Bifrost) {
-	var req schemas.ToolCall
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.SetBodyString(fmt.Sprintf("invalid request format: %v", err))
-		return
-	}
-
-	bifrostCtx := lib.ConvertToBifrostContext(ctx)
-
-	resp, bifrostErr := client.ExecuteMCPTool(*bifrostCtx, req)
-	if bifrostErr != nil {
-		handleBifrostError(ctx, bifrostErr)
-		return
-	}
-
-	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetContentType("application/json")
-	if encodeErr := json.NewEncoder(ctx).Encode(resp); encodeErr != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString(fmt.Sprintf("failed to encode response: %v", encodeErr))
-	}
-}
-
-func handleBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(*bifrostErr.StatusCode)
-	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-	}
-
-	ctx.SetContentType("application/json")
-	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", encodeErr))
-	}
 }
