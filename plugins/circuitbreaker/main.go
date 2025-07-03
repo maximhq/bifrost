@@ -374,7 +374,7 @@ func (p *CircuitBreaker) PostHook(ctx *context.Context, result *schemas.BifrostR
 	// Client errors (4xx) and other errors are considered successful for circuit breaker purposes
 	callResult := CallResult{
 		Duration:   callDuration,
-		Success:    (err == nil && result != nil) || !isServerError || !isRateLimitExceeded,
+		Success:    (err == nil && result != nil) || (!isServerError && !isRateLimitExceeded),
 		Timestamp:  callStartTime,
 		IsSlowCall: callDuration > p.config.SlowCallDurationThreshold,
 	}
