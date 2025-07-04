@@ -57,6 +57,7 @@ type Bifrost struct {
 	channelMessagePool  sync.Pool                                     // Pool for ChannelMessage objects, initial pool size is set in Init
 	responseChannelPool sync.Pool                                     // Pool for response channels, initial pool size is set in Init
 	errorChannelPool    sync.Pool                                     // Pool for error channels, initial pool size is set in Init
+	pluginPipelinePool  sync.Pool                                     // Pool for PluginPipeline objects
 	logger              schemas.Logger                                // logger instance, default logger is used if not provided
 	backgroundCtx       context.Context                               // Shared background context for nil context handling
 	mcpManager          *MCPManager                                   // MCP integration manager (nil if MCP not configured)
@@ -73,14 +74,6 @@ type PluginPipeline struct {
 	// Errors from PreHooks and PostHooks
 	preHookErrors  []error
 	postHookErrors []error
-}
-
-// NewPluginPipeline creates a new pipeline for a given plugin slice and logger.
-func NewPluginPipeline(plugins []schemas.Plugin, logger schemas.Logger) *PluginPipeline {
-	return &PluginPipeline{
-		plugins: plugins,
-		logger:  logger,
-	}
 }
 
 // RunPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
@@ -133,6 +126,28 @@ func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.Bifros
 		return resp, bifrostErr
 	}
 	return resp, nil
+}
+
+// resetPluginPipeline resets a PluginPipeline instance for reuse
+func (p *PluginPipeline) resetPluginPipeline() {
+	p.executedPreHooks = 0
+	p.preHookErrors = p.preHookErrors[:0]
+	p.postHookErrors = p.postHookErrors[:0]
+}
+
+// getPluginPipeline gets a PluginPipeline from the pool and configures it
+func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
+	pipeline := bifrost.pluginPipelinePool.Get().(*PluginPipeline)
+	pipeline.plugins = bifrost.plugins
+	pipeline.logger = bifrost.logger
+	pipeline.resetPluginPipeline()
+	return pipeline
+}
+
+// releasePluginPipeline returns a PluginPipeline to the pool
+func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
+	pipeline.resetPluginPipeline()
+	bifrost.pluginPipelinePool.Put(pipeline)
 }
 
 // createProviderFromProviderKey creates a new provider instance based on the provider key.
@@ -306,6 +321,14 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 			return make(chan schemas.BifrostError, 1)
 		},
 	}
+	bifrost.pluginPipelinePool = sync.Pool{
+		New: func() interface{} {
+			return &PluginPipeline{
+				preHookErrors:  make([]error, 0),
+				postHookErrors: make([]error, 0),
+			}
+		},
+	}
 
 	// Prewarm pools with multiple objects
 	for range config.InitialPoolSize {
@@ -313,6 +336,10 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 		bifrost.channelMessagePool.Put(&ChannelMessage{})
 		bifrost.responseChannelPool.Put(make(chan *schemas.BifrostResponse, 1))
 		bifrost.errorChannelPool.Put(make(chan schemas.BifrostError, 1))
+		bifrost.pluginPipelinePool.Put(&PluginPipeline{
+			preHookErrors:  make([]error, 0),
+			postHookErrors: make([]error, 0),
+		})
 	}
 
 	providerKeys, err := bifrost.account.GetConfiguredProviders()
@@ -391,6 +418,18 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	bifrost.channelMessagePool.Put(msg)
 }
 
+// GetConfiguredProviderFromProviderKey returns the provider instance for a given provider key.
+// Uses the GetProviderKey method of the provider interface to find the provider.
+func (bifrost *Bifrost) GetConfiguredProviderFromProviderKey(key schemas.ModelProvider) (schemas.Provider, error) {
+	for _, provider := range bifrost.providers {
+		if provider.GetProviderKey() == key {
+			return provider, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no provider found for key: %s", key)
+}
+
 // selectKeyFromProviderForModel selects an appropriate API key for a given provider and model.
 // It uses weighted random selection if multiple keys are available.
 func (bifrost *Bifrost) selectKeyFromProviderForModel(providerKey schemas.ModelProvider, model string) (string, error) {
@@ -451,60 +490,29 @@ var retryableStatusCodes = map[int]bool{
 	429: true, // Too Many Requests
 }
 
-// providerRequiresKey returns true if the given provider requires an API key for authentication.
-// Some providers like Vertex and Ollama are keyless and don't require API keys.
-func providerRequiresKey(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Vertex && providerKey != schemas.Ollama
-}
+// getProviderQueue returns the request queue for a given provider key.
+// If the queue doesn't exist, it creates one at runtime and initializes the provider,
+// given the provider config is provided in the account interface implementation.
+func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (chan ChannelMessage, error) {
+	var queue chan ChannelMessage
+	var exists bool
 
-// calculateBackoff implements exponential backoff with jitter for retry attempts.
-func (bifrost *Bifrost) calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration {
-	// Calculate an exponential backoff: initial * 2^attempt
-	backoff := min(config.NetworkConfig.RetryBackoffInitial*time.Duration(1<<uint(attempt)), config.NetworkConfig.RetryBackoffMax)
+	if queue, exists = bifrost.requestQueues[providerKey]; !exists {
+		bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 
-	// Add jitter (±20%)
-	jitter := float64(backoff) * (0.8 + 0.4*rand.Float64())
-
-	return time.Duration(jitter)
-}
-
-// handleTextCompletion executes a text completion request
-func handleTextCompletion(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.TextCompletionInput == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "text not provided for text completion request",
-			},
+		config, err := bifrost.account.GetConfigForProvider(providerKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get config for provider: %v", err)
 		}
-	}
-	return provider.TextCompletion(req.Context, req.Model, key, *req.Input.TextCompletionInput, req.Params)
-}
 
-// handleChatCompletion executes a chat completion request
-func handleChatCompletion(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.ChatCompletionInput == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "chats not provided for chat completion request",
-			},
+		if err := bifrost.prepareProvider(providerKey, config); err != nil {
+			return nil, err
 		}
-	}
-	return provider.ChatCompletion(req.Context, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
-}
 
-// handleEmbedding executes an embedding request
-func handleEmbedding(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.EmbeddingInput == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "input not provided for embedding request",
-			},
-		}
+		queue = bifrost.requestQueues[providerKey]
 	}
-	return provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
+
+	return queue, nil
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
@@ -560,7 +568,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				))
 
 				// Calculate and apply backoff
-				backoff := bifrost.calculateBackoff(attempts-1, config)
+				backoff := calculateBackoff(attempts-1, config)
 				time.Sleep(backoff)
 			}
 
@@ -610,76 +618,55 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 	bifrost.logger.Debug(fmt.Sprintf("Worker for provider %s exiting...", provider.GetProviderKey()))
 }
 
-// GetConfiguredProviderFromProviderKey returns the provider instance for a given provider key.
-// Uses the GetProviderKey method of the provider interface to find the provider.
-func (bifrost *Bifrost) GetConfiguredProviderFromProviderKey(key schemas.ModelProvider) (schemas.Provider, error) {
-	for _, provider := range bifrost.providers {
-		if provider.GetProviderKey() == key {
-			return provider, nil
+// handleTextCompletion executes a text completion request
+func handleTextCompletion(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.TextCompletionInput == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "text not provided for text completion request",
+			},
 		}
 	}
-
-	return nil, fmt.Errorf("no provider found for key: %s", key)
+	return provider.TextCompletion(req.Context, req.Model, key, *req.Input.TextCompletionInput, req.Params)
 }
 
-// getProviderQueue returns the request queue for a given provider key.
-// If the queue doesn't exist, it creates one at runtime and initializes the provider,
-// given the provider config is provided in the account interface implementation.
-func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (chan ChannelMessage, error) {
-	var queue chan ChannelMessage
-	var exists bool
-
-	if queue, exists = bifrost.requestQueues[providerKey]; !exists {
-		bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
-
-		config, err := bifrost.account.GetConfigForProvider(providerKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get config for provider: %v", err)
+// handleChatCompletion executes a chat completion request
+func handleChatCompletion(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.ChatCompletionInput == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "chats not provided for chat completion request",
+			},
 		}
-
-		if err := bifrost.prepareProvider(providerKey, config); err != nil {
-			return nil, err
-		}
-
-		queue = bifrost.requestQueues[providerKey]
 	}
+	return provider.ChatCompletion(req.Context, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+}
 
-	return queue, nil
+// handleEmbedding executes an embedding request
+func handleEmbedding(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.EmbeddingInput == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "input not provided for embedding request",
+			},
+		}
+	}
+	return provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
 }
 
 // TextCompletionRequest sends a text completion request to the specified provider.
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "bifrost request cannot be nil",
-			},
-		}
-	}
-
-	if req.Provider == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "provider is required",
-			},
-		}
-	}
-
-	if req.Model == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "model is required",
-			},
-		}
+	if err := validateRequest(req); err != nil {
+		return nil, err
 	}
 
 	// Try the primary provider first
-	primaryResult, primaryErr := bifrost.tryTextCompletion(req, ctx)
+	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, TextCompletionRequest)
 	if primaryErr == nil {
 		return primaryResult, nil
 	}
@@ -711,7 +698,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 			fallbackReq.Model = fallback.Model
 
 			// Try the fallback provider
-			result, fallbackErr := bifrost.tryTextCompletion(&fallbackReq, ctx)
+			result, fallbackErr := bifrost.tryRequest(&fallbackReq, ctx, TextCompletionRequest)
 			if fallbackErr == nil {
 				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 				return result, nil
@@ -728,30 +715,16 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 	return nil, primaryErr
 }
 
-// tryTextCompletion attempts a text completion request with a single provider.
-// This is a helper function used by TextCompletionRequest to handle individual provider attempts.
-func (bifrost *Bifrost) tryTextCompletion(req *schemas.BifrostRequest, ctx context.Context) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	return bifrost.tryRequest(req, ctx, TextCompletionRequest, true)
-}
-
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req == nil {
-		return nil, newBifrostErrorFromMsg("bifrost request cannot be nil")
-	}
-
-	if req.Provider == "" {
-		return nil, newBifrostErrorFromMsg("provider is required")
-	}
-
-	if req.Model == "" {
-		return nil, newBifrostErrorFromMsg("model is required")
+	if err := validateRequest(req); err != nil {
+		return nil, err
 	}
 
 	// Try the primary provider first
-	primaryResult, primaryErr := bifrost.tryChatCompletion(req, ctx)
+	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, ChatCompletionRequest)
 	if primaryErr == nil {
 		return primaryResult, nil
 	}
@@ -779,7 +752,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 			fallbackReq.Model = fallback.Model
 
 			// Try the fallback provider
-			result, fallbackErr := bifrost.tryChatCompletion(&fallbackReq, ctx)
+			result, fallbackErr := bifrost.tryRequest(&fallbackReq, ctx, ChatCompletionRequest)
 			if fallbackErr == nil {
 				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 				return result, nil
@@ -796,26 +769,12 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 	return nil, primaryErr
 }
 
-// tryChatCompletion attempts a chat completion request with a single provider.
-// This is a helper function used by ChatCompletionRequest to handle individual provider attempts.
-func (bifrost *Bifrost) tryChatCompletion(req *schemas.BifrostRequest, ctx context.Context) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	return bifrost.tryRequest(req, ctx, ChatCompletionRequest, true)
-}
-
 // EmbeddingRequest sends an embedding request to the specified provider.
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req == nil {
-		return nil, newBifrostErrorFromMsg("bifrost request cannot be nil")
-	}
-
-	if req.Provider == "" {
-		return nil, newBifrostErrorFromMsg("provider is required")
-	}
-
-	if req.Model == "" {
-		return nil, newBifrostErrorFromMsg("model is required")
+	if err := validateRequest(req); err != nil {
+		return nil, err
 	}
 
 	if req.Input.EmbeddingInput == nil {
@@ -823,7 +782,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 	}
 
 	// Try the primary provider first
-	primaryResult, primaryErr := bifrost.tryEmbedding(req, ctx)
+	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, EmbeddingRequest)
 	if primaryErr == nil {
 		return primaryResult, nil
 	}
@@ -850,7 +809,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 			fallbackReq.Model = fallback.Model
 
 			// Try the fallback provider
-			result, fallbackErr := bifrost.tryEmbedding(&fallbackReq, ctx)
+			result, fallbackErr := bifrost.tryRequest(&fallbackReq, ctx, EmbeddingRequest)
 			if fallbackErr == nil {
 				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 				return result, nil
@@ -867,26 +826,22 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 	return nil, primaryErr
 }
 
-// tryEmbedding attempts an embedding request with a single provider.
-// This is a helper function used by EmbeddingRequest to handle individual provider attempts.
-func (bifrost *Bifrost) tryEmbedding(req *schemas.BifrostRequest, ctx context.Context) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	return bifrost.tryRequest(req, ctx, EmbeddingRequest, false)
-}
-
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
-func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context, requestType RequestType, includeMCP bool) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context, requestType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	queue, err := bifrost.getProviderQueue(req.Provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
 
 	// Add MCP tools to request if MCP is configured and requested
-	if includeMCP && bifrost.mcpManager != nil {
+	if requestType != EmbeddingRequest && bifrost.mcpManager != nil {
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
-	pipeline := NewPluginPipeline(bifrost.plugins, bifrost.logger)
+	pipeline := bifrost.getPluginPipeline()
+	defer bifrost.releasePluginPipeline(pipeline)
+
 	preReq, shortCircuit, preCount := pipeline.RunPreHooks(&ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
