@@ -176,6 +176,16 @@ config := circuitbreaker.CircuitBreakerConfig{
 - Success → CLOSED (recovery complete)
 - Failure → OPEN (still failing)
 
+### CircuitState Type
+
+The `CircuitState` type is an `int32` enum that represents the three possible states of the circuit breaker. It includes a `String()` method that provides human-readable string representations:
+
+- `StateClosed` → `"CLOSED"`
+- `StateOpen` → `"OPEN"`  
+- `StateHalfOpen` → `"HALF_OPEN"`
+
+This is useful for logging, debugging, and displaying circuit breaker status in monitoring dashboards.
+
 ### Error Classification
 
 The circuit breaker distinguishes between different types of errors:
