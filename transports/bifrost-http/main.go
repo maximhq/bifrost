@@ -112,6 +112,32 @@ func registerCollectorSafely(collector prometheus.Collector) {
 	}
 }
 
+// corsMiddleware handles CORS headers for localhost requests
+func corsMiddleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		origin := string(ctx.Request.Header.Peek("Origin"))
+
+		// Allow requests from localhost on any port
+		if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") ||
+			strings.HasPrefix(origin, "http://127.0.0.1:") || strings.HasPrefix(origin, "https://127.0.0.1:") {
+			ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
+		}
+
+		ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+		ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
+
+		// Handle preflight OPTIONS requests
+		if string(ctx.Method()) == "OPTIONS" {
+			ctx.SetStatusCode(fasthttp.StatusOK)
+			return
+		}
+
+		next(ctx)
+	}
+}
+
 // main is the entry point of the application.
 // It:
 // 1. Initializes Prometheus collectors for monitoring
@@ -253,13 +279,15 @@ func main() {
 	}
 
 	server := &fasthttp.Server{
-		// A custom handler that excludes middleware from /metrics
+		// A custom handler that applies CORS to all routes
 		Handler: func(ctx *fasthttp.RequestCtx) {
 			if string(ctx.Path()) == "/metrics" {
-				r.Handler(ctx)
+				// Apply CORS even to metrics endpoint for monitoring dashboards
+				corsMiddleware(r.Handler)(ctx)
 				return
 			}
-			telemetry.PrometheusMiddleware(r.Handler)(ctx)
+			// Apply CORS middleware for all API routes
+			corsMiddleware(telemetry.PrometheusMiddleware(r.Handler))(ctx)
 		},
 	}
 

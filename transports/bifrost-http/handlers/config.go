@@ -32,13 +32,13 @@ func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, configPath
 // RegisterRoutes registers the configuration-related routes.
 // It adds the `PUT /config` endpoint.
 func (h *ConfigHandler) RegisterRoutes(r *router.Router) {
-	r.PUT("/config", h.handleReloadConfig)
+	r.PUT("/config", h.handleUpdateConfig)
 }
 
-// handleReloadConfig re-reads the configuration file and applies updatable settings.
+// handleUpdateConfig re-reads the configuration file and applies updatable settings.
 // Currently, it supports hot-reloading of the `drop_excess_requests` setting.
 // Note that settings like `prometheus_labels` cannot be changed at runtime.
-func (h *ConfigHandler) handleReloadConfig(ctx *fasthttp.RequestCtx) {
+func (h *ConfigHandler) handleUpdateConfig(ctx *fasthttp.RequestCtx) {
 	var config struct {
 		BifrostSettings struct {
 			DropExcessRequests *bool `json:"drop_excess_requests,omitempty"`

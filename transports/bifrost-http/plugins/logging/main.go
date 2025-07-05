@@ -46,11 +46,10 @@ const (
 type LogEntry struct {
 	ID            string                   `json:"id"`
 	Timestamp     time.Time                `json:"timestamp"`
+	Object        string                   `json:"object"` // text.completion, chat.completion, or embedding
 	Provider      string                   `json:"provider"`
 	Model         string                   `json:"model"`
-	Object        string                   `json:"object"` // text.completion, chat.completion, or embedding
 	InputHistory  []schemas.BifrostMessage `json:"input_history,omitempty"`
-	InputText     *string                  `json:"input_text,omitempty"`
 	OutputMessage *schemas.BifrostMessage  `json:"output_message,omitempty"`
 	Params        *schemas.ModelParameters `json:"params,omitempty"`
 	Tools         *[]schemas.Tool          `json:"tools,omitempty"`
@@ -276,7 +275,6 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 // PostHook is called after a response is received
 func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Extract request metadata from context
-	var requestID string
 	var startTime time.Time
 
 	if ctx != nil {
@@ -285,9 +283,6 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 		}
 	}
 
-	if requestID == "" {
-		requestID = uuid.New().String()
-	}
 	if startTime.IsZero() {
 		startTime = time.Now()
 	}
@@ -297,7 +292,6 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 
 	// Create log entry
 	logEntry := &LogEntry{
-		ID:        requestID,
 		Timestamp: startTime,
 	}
 
@@ -327,11 +321,17 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 		logEntry.Status = "success"
 
 		if result != nil {
+			logEntry.ID = result.ID
+			logEntry.Object = result.Object
 			logEntry.Provider = string(result.ExtraFields.Provider)
 			logEntry.Model = result.Model
 			logEntry.Latency = &latency
 			logEntry.TokenUsage = &result.Usage
 			logEntry.Params = &result.ExtraFields.Params
+
+			if result.ID == "" {
+				logEntry.ID = uuid.New().String()
+			}
 
 			// Extract output message
 			if len(result.Choices) > 0 {
@@ -347,6 +347,12 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			// Extract chat history if available
 			if result.ExtraFields.ChatHistory != nil {
 				logEntry.InputHistory = *result.ExtraFields.ChatHistory
+			} else {
+				if chatHistory, ok := (*ctx).Value(RequestChatHistory).([]schemas.BifrostMessage); ok {
+					logEntry.InputHistory = chatHistory
+				} else {
+					logEntry.InputHistory = []schemas.BifrostMessage{}
+				}
 			}
 
 			// Extract tools from params
