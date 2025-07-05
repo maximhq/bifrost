@@ -1,7 +1,7 @@
-// Package tracking provides Prometheus metrics collection and monitoring functionality
+// Package telemetry provides Prometheus metrics collection and monitoring functionality
 // for the Bifrost HTTP service. This file contains the setup and configuration
 // for Prometheus metrics collection, including HTTP middleware and metric definitions.
-package tracking
+package telemetry
 
 import (
 	"log"

@@ -37,22 +37,26 @@ type AddProviderRequest struct {
 	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
 	MetaConfig               *map[string]interface{}           `json:"meta_config,omitempty"`                 // Provider-specific metadata
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
+	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 }
 
 // UpdateProviderRequest represents the request body for updating a provider
 type UpdateProviderRequest struct {
-	Keys                     *[]schemas.Key                    `json:"keys,omitempty"`                        // API keys for the provider
-	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
-	MetaConfig               *map[string]interface{}           `json:"meta_config,omitempty"`                 // Provider-specific metadata
-	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
+	Keys                     []schemas.Key                    `json:"keys"`                        // API keys for the provider
+	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`              // Network-related settings
+	MetaConfig               *map[string]interface{}          `json:"meta_config,omitempty"`       // Provider-specific metadata
+	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
+	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`      // Proxy configuration
 }
 
 // ProviderResponse represents the response for provider operations
 type ProviderResponse struct {
-	Provider schemas.ModelProvider `json:"provider"`
-	Config   *lib.ProviderConfig   `json:"config,omitempty"`
-	Status   string                `json:"status"`
-	Message  string                `json:"message,omitempty"`
+	Name                     schemas.ModelProvider            `json:"name"`
+	Keys                     []schemas.Key                    `json:"keys"`                        // API keys for the provider
+	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`              // Network-related settings
+	MetaConfig               *schemas.MetaConfig              `json:"meta_config"`                 // Provider-specific metadata
+	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
+	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                // Proxy configuration
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -95,18 +99,12 @@ func (h *ProviderHandler) ListProviders(ctx *fasthttp.RequestCtx) {
 			h.logger.Warn(fmt.Sprintf("Failed to get config for provider %s: %v", provider, err))
 			// Include provider even if config fetch fails
 			providerResponses = append(providerResponses, ProviderResponse{
-				Provider: provider,
-				Status:   "error",
-				Message:  fmt.Sprintf("Failed to get config: %v", err),
+				Name: provider,
 			})
 			continue
 		}
 
-		providerResponses = append(providerResponses, ProviderResponse{
-			Provider: provider,
-			Config:   config,
-			Status:   "active",
-		})
+		providerResponses = append(providerResponses, h.getProviderResponseFromConfig(provider, *config))
 	}
 
 	response := ListProvidersResponse{
@@ -128,11 +126,7 @@ func (h *ProviderHandler) GetProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	response := ProviderResponse{
-		Provider: provider,
-		Config:   config,
-		Status:   "active",
-	}
+	response := h.getProviderResponseFromConfig(provider, *config)
 
 	SendJSON(ctx, response, h.logger)
 }
@@ -152,7 +146,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate required keys
-	if len(req.Keys) == 0 {
+	if len(req.Keys) == 0 && req.Provider != schemas.Vertex && req.Provider != schemas.Ollama {
 		SendError(ctx, fasthttp.StatusBadRequest, "At least one API key is required", h.logger)
 		return
 	}
@@ -201,12 +195,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 
 	h.logger.Info(fmt.Sprintf("Provider %s added successfully", req.Provider))
 
-	response := ProviderResponse{
-		Provider: req.Provider,
-		Config:   &config,
-		Status:   "added",
-		Message:  fmt.Sprintf("Provider %s added successfully", req.Provider),
-	}
+	response := h.getProviderResponseFromConfig(req.Provider, config)
 
 	SendJSON(ctx, response, h.logger)
 }
@@ -241,11 +230,11 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 
 	// Validate required keys (at least one key must be provided)
 	if req.Keys != nil {
-		if len(*req.Keys) == 0 {
+		if len(req.Keys) == 0 && provider != schemas.Vertex && provider != schemas.Ollama {
 			SendError(ctx, fasthttp.StatusBadRequest, "At least one API key is required", h.logger)
 			return
 		}
-		config.Keys = *req.Keys
+		config.Keys = req.Keys
 	}
 
 	// Handle meta config if provided
@@ -259,17 +248,23 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 		config.MetaConfig = metaConfig
 	}
 
-	if req.ConcurrencyAndBufferSize != nil {
-		if req.ConcurrencyAndBufferSize.Concurrency == 0 {
-			SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be greater than 0", h.logger)
-			return
-		}
-		if req.ConcurrencyAndBufferSize.BufferSize == 0 {
-			SendError(ctx, fasthttp.StatusBadRequest, "Buffer size must be greater than 0", h.logger)
-			return
-		}
-		config.ConcurrencyAndBufferSize = req.ConcurrencyAndBufferSize
+	if req.ConcurrencyAndBufferSize.Concurrency == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be greater than 0", h.logger)
+		return
 	}
+	if req.ConcurrencyAndBufferSize.BufferSize == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "Buffer size must be greater than 0", h.logger)
+		return
+	}
+
+	if req.ConcurrencyAndBufferSize.Concurrency > req.ConcurrencyAndBufferSize.BufferSize {
+		SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be less than or equal to buffer size", h.logger)
+		return
+	}
+
+	config.ConcurrencyAndBufferSize = &req.ConcurrencyAndBufferSize
+	config.NetworkConfig = &req.NetworkConfig
+	config.ProxyConfig = req.ProxyConfig
 
 	// Update provider config in store (env vars will be processed by store)
 	if err := h.store.UpdateProviderConfig(provider, config); err != nil {
@@ -278,20 +273,16 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Update concurrency and queue configuration in Bifrost
-	if err := h.client.UpdateProviderConcurrency(provider); err != nil {
-		// Note: Store update succeeded, continue but log the concurrency update failure
-		h.logger.Warn(fmt.Sprintf("Failed to update concurrency for provider %s: %v", provider, err))
+	if config.ConcurrencyAndBufferSize.Concurrency != oldConfig.ConcurrencyAndBufferSize.Concurrency ||
+		config.ConcurrencyAndBufferSize.BufferSize != oldConfig.ConcurrencyAndBufferSize.BufferSize {
+		// Update concurrency and queue configuration in Bifrost
+		if err := h.client.UpdateProviderConcurrency(provider); err != nil {
+			// Note: Store update succeeded, continue but log the concurrency update failure
+			h.logger.Warn(fmt.Sprintf("Failed to update concurrency for provider %s: %v", provider, err))
+		}
 	}
 
-	h.logger.Info(fmt.Sprintf("Provider %s updated successfully", provider))
-
-	response := ProviderResponse{
-		Provider: provider,
-		Config:   &config,
-		Status:   "updated",
-		Message:  fmt.Sprintf("Provider %s updated successfully", provider),
-	}
+	response := h.getProviderResponseFromConfig(provider, config)
 
 	SendJSON(ctx, response, h.logger)
 }
@@ -317,9 +308,7 @@ func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
 	h.logger.Info(fmt.Sprintf("Provider %s removed successfully", provider))
 
 	response := ProviderResponse{
-		Provider: provider,
-		Status:   "removed",
-		Message:  fmt.Sprintf("Provider %s removed successfully", provider),
+		Name: provider,
 	}
 
 	SendJSON(ctx, response, h.logger)
@@ -384,5 +373,23 @@ func (h *ProviderHandler) convertToProviderMetaConfig(provider schemas.ModelProv
 	default:
 		// For providers that don't support meta config, return nil
 		return nil, nil
+	}
+}
+
+func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config lib.ProviderConfig) ProviderResponse {
+	if config.NetworkConfig == nil {
+		config.NetworkConfig = &schemas.DefaultNetworkConfig
+	}
+	if config.ConcurrencyAndBufferSize == nil {
+		config.ConcurrencyAndBufferSize = &schemas.DefaultConcurrencyAndBufferSize
+	}
+
+	return ProviderResponse{
+		Name:                     provider,
+		Keys:                     config.Keys,
+		NetworkConfig:            *config.NetworkConfig,
+		MetaConfig:               config.MetaConfig,
+		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
+		ProxyConfig:              config.ProxyConfig,
 	}
 }
