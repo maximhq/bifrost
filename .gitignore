@@ -7,3 +7,5 @@
 private.*
 .venv
 **/temp/
+/transports/ui
+/transports/bifrost-http/ui
