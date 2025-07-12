@@ -9,10 +9,12 @@ private.*
 
 # Temporary directories
 **/temp/
+/transports/ui
+/transports/bifrost-http/ui
+transports/bifrost-http/logs/
+transports/bifrost-http/tmp/
+node_modules
+/dist
 **/tmp/
 temp/
 tmp/
-
-# Specific transport ignores
-transports/bifrost-http/logs/
-transports/bifrost-http/tmp/

@@ -1,0 +1,221 @@
+name: Transports Release
+
+# Triggers when core dependency updates are merged to main
+on:
+  push:
+    branches: ["main"]
+    paths: ["transports/go.mod"]
+
+# Prevent concurrent runs for the same trigger to avoid conflicts
+concurrency:
+  group: transports-release
+  cancel-in-progress: true
+
+# Docker registry configuration
+env:
+  REGISTRY: docker.io
+  ACCOUNT: maximhq
+  IMAGE_NAME: bifrost
+
+jobs:
+  # Check commit message flags to determine if release should run
+  check-release-flags:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check_flags.outputs.should_release }}
+      skip_reason: ${{ steps.check_flags.outputs.skip_reason }}
+    steps:
+      - name: Check release flags in commit message
+        id: check_flags
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          echo "📝 Commit message: $COMMIT_MSG"
+          
+          # Check for --trigger-release flag
+          if [[ "$COMMIT_MSG" == *"--trigger-release"* ]]; then
+            echo "🚀 Found --trigger-release flag, proceeding with release"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+          else
+            echo "⏸️ No --trigger-release flag found, skipping release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=no trigger-release flag found" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Main job: Create transport tag, build Go binaries, upload to S3
+  build-transports:
+    needs: check-release-flags
+    if: needs.check-release-flags.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Need write access to create tags
+    outputs:
+      # Pass version information to the Docker build job
+      transport_version: ${{ steps.manage_versions.outputs.transport_version }}
+      core_version: ${{ steps.manage_versions.outputs.core_version }}
+    steps:
+      # Checkout with full history and tags for version management
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history needed for git tag operations
+          fetch-tags: true # Ensure all tags are available
+          token: ${{ secrets.GH_TOKEN }} # Personal token for pushing tags
+
+      # Set up Go environment for building binaries and managing dependencies
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.24.1"
+
+      # Set up Node.js for running our CI scripts
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      # Configure Git for automated commits and tagging
+      - name: Configure Git
+        working-directory: ci/scripts
+        run: node git-operations.mjs configure
+
+      # Determine versions and create transport tag
+      - name: Create transport tag
+        id: manage_versions
+        working-directory: ci/scripts
+        run: |
+          # Install dependencies
+          npm ci
+          
+          # Get current core version from go.mod and generate new transport version
+          node manage-versions.mjs transport-release >> "$GITHUB_OUTPUT"
+          
+          # Get the transport version for tagging
+          TRANSPORT_VERSION=$(grep "transport_version=" "$GITHUB_OUTPUT" | cut -d'=' -f2)
+          echo "📦 Creating transport tag: ${TRANSPORT_VERSION}"
+          
+          # Create and push transport tag
+          node git-operations.mjs create-tag "${TRANSPORT_VERSION}"
+
+      # Build the UI from the current repo state
+      - name: Build UI static files
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      # Cross-compile Go binaries for multiple platforms
+      - name: Build Go executables
+        working-directory: transports
+        run: |
+          echo "🔨 Building Go executables..."
+          chmod +x ../ci/scripts/go-executable-build.sh
+          ../ci/scripts/go-executable-build.sh bifrost-http ../dist ./bifrost-http "$(pwd)"
+
+      # Upload the built binaries to S3 for distribution
+      - name: Upload builds to S3
+        working-directory: ci/scripts
+        env:
+          # R2 (Cloudflare S3-compatible storage) credentials
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          # Strip 'transports/' prefix and add 'v' prefix for upload script
+          VERSION_ONLY="${{ steps.manage_versions.outputs.transport_version }}"
+          VERSION_ONLY=${VERSION_ONLY#transports/v}
+          node upload-builds.mjs v${VERSION_ONLY}
+
+  # Second job: Build and push Docker image
+  # Runs after transport build completes successfully
+  build-and-push-docker:
+    needs: [check-release-flags, build-transports]
+    if: needs.check-release-flags.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Only need read access for Docker build
+    steps:
+      # Checkout repository for Docker build context
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Set up QEMU for cross-platform Docker builds (ARM64, AMD64)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Set up Docker Buildx for advanced build features
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Authenticate with Docker Hub for pushing images
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Build and push Docker image using the freshly built UI static files
+      - name: Extract metadata for Docker
+        id: meta
+        run: |
+          # Strip 'transports/' prefix and ensure 'v' prefix for Docker tags
+          VERSION_ONLY="${{ needs.build-transports.outputs.transport_version }}"
+          VERSION_ONLY=${VERSION_ONLY#transports/v}
+
+          cat << 'EOF' >> "$GITHUB_OUTPUT"
+          version=v${VERSION_ONLY}
+          tags<<TAGS
+          ${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION_ONLY}
+          ${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:latest
+          TAGS
+          EOF
+
+      # Generate timestamp for image labels
+      - name: Generate timestamp
+        id: timestamp
+        run: echo "created_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      # Build and push the Docker image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./transports # Build context includes source + UI
+          file: ./transports/Dockerfile # Custom Dockerfile for local builds
+          push: true # Push to Docker Hub
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=Bifrost LLM Gateway (HTTP)
+            org.opencontainers.image.description=The fastest LLM gateway written in Go. Learn more here: https://github.com/maximhq/bifrost
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build-transports.outputs.transport_version }}
+            org.opencontainers.image.created=${{ steps.timestamp.outputs.created_at }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          platforms: linux/amd64,linux/arm64 # Multi-architecture support
+          cache-from: type=gha # Use GitHub Actions cache
+          cache-to: type=gha,mode=max # Save cache for future builds
+
+      # Final success notification with version information
+      - name: Success notification
+        run: |
+          echo "✅ Successfully built and pushed:"
+          echo "🚀 Transport Version: ${{ needs.build-transports.outputs.transport_version }}"
+          echo "🔧 Core Version: ${{ needs.build-transports.outputs.core_version }}"
+          echo "🐳 Docker Tags: ${{ steps.meta.outputs.tags }}"
+
+  # Notification job for skipped releases
+  notify-skipped:
+    needs: check-release-flags
+    if: needs.check-release-flags.outputs.should_release == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify release skipped
+        run: |
+          echo "## 🚫 Transport Release Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "**Reason:** ${{ needs.check-release-flags.outputs.skip_reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### To trigger a release:" >> $GITHUB_STEP_SUMMARY
+          echo "Include \`--trigger-release\` in your commit message when pushing changes to \`transports/go.mod\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Default behavior:" >> $GITHUB_STEP_SUMMARY
+          echo "Changes to \`transports/go.mod\` without \`--trigger-release\` flag will not trigger a release" >> $GITHUB_STEP_SUMMARY 

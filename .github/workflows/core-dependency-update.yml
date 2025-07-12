@@ -1,0 +1,60 @@
+name: Core Dependency Update
+
+# Triggers when core library is tagged
+on:
+  push:
+    tags:
+      - "core/v*"
+
+# Prevent concurrent runs for the same trigger to avoid conflicts
+concurrency:
+  group: core-dependency-update-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update-dependency:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Need write access to create branches and push changes
+      pull-requests: write # Need to create pull requests
+    steps:
+      # Checkout with full history and tags for version management
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history needed for git tag operations
+          fetch-tags: true # Ensure all tags are available
+          token: ${{ secrets.GH_TOKEN }} # Personal token for pushing changes
+
+      # Set up Go environment for building and dependency management
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.24.1"
+
+      # Set up Node.js for running our CI scripts
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      # Configure Git for automated commits
+      - name: Configure Git
+        working-directory: ci/scripts
+        run: node git-operations.mjs configure
+
+      # Extract core version and run the complete pipeline
+      - name: Run core dependency update pipeline
+        working-directory: ci/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # Install dependencies
+          npm ci
+          
+          # Extract core version from tag
+          CORE_VERSION=$(node extract-version.mjs "${GITHUB_REF}" core version)
+          echo "📦 Extracted core version: ${CORE_VERSION}"
+          
+          # Run the complete core dependency update pipeline
+          node run-pipeline.mjs core-dependency-update "${CORE_VERSION}" 
