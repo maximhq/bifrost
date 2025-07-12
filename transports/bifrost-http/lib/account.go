@@ -63,6 +63,10 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 
 	providerConfig := &schemas.ProviderConfig{}
 
+	if config.ProxyConfig != nil {
+		providerConfig.ProxyConfig = config.ProxyConfig
+	}
+
 	if config.NetworkConfig != nil {
 		providerConfig.NetworkConfig = *config.NetworkConfig
 	} else {
