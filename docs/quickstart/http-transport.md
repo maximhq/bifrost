@@ -4,16 +4,15 @@ Get Bifrost running as an HTTP API in **15 seconds** with **zero configuration**
 
 ## 🚀 Zero-Config Setup (15 seconds!)
 
-### 1. Start Bifrost (No config needed!)
+### 1. Start Bifrost (No config needed)
 
 ```bash
-# 🐳 Docker (fastest)
+# 🐳 Docker
 docker pull maximhq/bifrost
 docker run -p 8080:8080 maximhq/bifrost
 
-# 🔧 OR Go Binary (Make sure Go is in your PATH)
-go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-bifrost-http -port 8080
+# 🔧 OR Binary
+npx @maximhq/bifrost  # use -port flag to specify the port
 ```
 
 ### 2. Open the Web Interface
@@ -66,8 +65,8 @@ docker run -p 8080:8080 \
   -e OPENAI_API_KEY \
   maximhq/bifrost
 
-# OR Go Binary with app directory
-bifrost-http -app-dir . -port 8080
+# OR Binary with app directory
+npx @maximhq/bifrost -port 8080
 ```
 
 ---
@@ -80,13 +79,13 @@ The `-app-dir` flag tells Bifrost where to store and look for data:
 
 ```bash
 # Use current directory as app directory
-bifrost-http -app-dir .
+npx @maximhq/bifrost -app-dir .
 
 # Use specific directory as app directory
-bifrost-http -app-dir /path/to/bifrost-data
+npx @maximhq/bifrost -app-dir /path/to/bifrost-data
 
 # Default: current directory if no flag specified
-bifrost-http -port 8080
+npx @maximhq/bifrost -port 8080
 ```
 
 **What Bifrost stores in the app directory:**
@@ -318,7 +317,7 @@ response, err := http.Post(
 | **Zero Config** | No files needed, visual setup, instant start         | Quick testing, demos, new users  |
 | **File-Based**  | Version control, automation, reproducible deployment | Production, CI/CD, team setups   |
 | **Docker**      | No Go installation needed, isolated environment      | Production, CI/CD, quick testing |
-| **Go Binary**   | Direct execution, easier debugging                   | Development, custom builds       |
+| **Binary**   | Direct execution, easier debugging                   | Development, custom builds       |
 
 **Note:** When using file-based config, Bifrost only looks for `config.json` in your specified app directory.
 

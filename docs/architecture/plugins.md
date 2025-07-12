@@ -392,8 +392,8 @@ docker run -p 8080:8080 \
   -e APP_PLUGINS="maxim,custom-plugin" \
   maximhq/bifrost
 
-# Binary deployment
-bifrost-http -config config.json -plugins "maxim,ratelimit"
+# NPM deployment
+npx -y @maximhq/bifrost -plugins "maxim"
 ```
 
 **Future: JSON Configuration System**

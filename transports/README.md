@@ -27,12 +27,11 @@ start http://localhost:8080
 
 **🎉 That's it!** No config files needed. Configure providers, monitor requests, and manage everything through the **built-in web interface**.
 
-### Go Binary
+### Binary
 
 ```bash
-# Install and run locally (Make sure Go is in your PATH)
-go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-bifrost-http -port 8080
+# Install and run locally
+npx -y @maximhq/bifrost
 
 # Open web interface at http://localhost:8080
 ```
@@ -220,7 +219,7 @@ Add custom middleware for analytics, caching, rate limiting:
 
 ```bash
 # Run with plugins
-bifrost-http -app-dir . -plugins "maxim,redis"
+npx -y @maximhq/bifrost -plugins "maxim,redis"
 ```
 
 **Available plugins**: [Plugin Repository](https://github.com/maximhq/bifrost/tree/main/plugins) | [Plugin Guide](../docs/plugins.md)
@@ -239,7 +238,7 @@ curl http://localhost:8080/metrics
 
 ## 🔧 Runtime Configuration
 
-### For Go Binary
+### For Binary
 
 | Flag       | Default | Description                              |
 | ---------- | ------- | ---------------------------------------- |

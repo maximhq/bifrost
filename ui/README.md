@@ -30,15 +30,6 @@ npm run dev
 
 The development server runs on `http://localhost:3000` and connects to your Bifrost HTTP transport backend (default: `http://localhost:8080`).
 
-### Production Build
-
-```bash
-# Build and prepare for integration with Bifrost HTTP transport
-npm run build
-```
-
-This creates a static export in the `out/` directory and automatically copies it to `../transports/bifrost-http/ui` for embedding in the Go binary.
-
 ### Environment Variables
 
 ```bash

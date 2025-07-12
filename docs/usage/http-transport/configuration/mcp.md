@@ -680,7 +680,7 @@ export YOUR_MCP_SERVER_API_KEY="your-key"
 
 ### **Docker with MCP**
 
-> **⚠️ Important:** Docker currently does **NOT** support STDIO connection for MCP. Use Go binary if STDIO connection is required.
+> **⚠️ Important:** Docker currently does **NOT** support STDIO connection for MCP. Use binary if STDIO connection is required.
 
 ```bash
 # For HTTP/SSE MCP connections only
@@ -694,15 +694,14 @@ docker run -p 8080:8080 \
   maximhq/bifrost
 ```
 
-### **Go Binary with MCP (Supports all connection types)**
+### **Binary with MCP (Supports all connection types)**
 
 ```bash
 # All environment variables are picked up automatically
 export OPENAI_API_KEY="your-openai-key"
 export SEARCH_API_KEY="your-search-key"
 
-go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-bifrost-http -config config.json -port 8080 -plugins maxim
+npx -y @maximhq/bifrost -port 8080 -plugins maxim
 ```
 
 ---

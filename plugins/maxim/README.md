@@ -40,7 +40,7 @@ This plugin integrates the Maxim SDK into Bifrost, enabling seamless observabili
 2. Set up flags to add the plugin
    Add `maxim` to the `--plugins` flag
 
-   e.g., `bifrost-http -config config.json -env .env -plugins maxim`
+   e.g., `npx -y @maximhq/bifrost -plugins maxim`
 
    For docker build
 

@@ -18,10 +18,10 @@ Bifrost plugins provide middleware functionality:
 
 ### **Current Plugin Loading (Command-line)**
 
-**Go Binary:**
+**NPM:**
 
 ```bash
-bifrost-http -config config.json -plugins "maxim,custom-plugin"
+npx -y @maximhq/bifrost -plugins "maxim,custom-plugin"
 ```
 
 **Docker:**
@@ -48,7 +48,7 @@ export MAXIM_API_KEY="your-maxim-api-key"
 export MAXIM_LOG_REPO_ID="your-repo-id"
 
 # Start with Maxim plugin
-bifrost-http -config config.json -plugins "maxim"
+npx -y @maximhq/bifrost -plugins "maxim"
 ```
 
 **Features:**
@@ -297,7 +297,7 @@ func TestMyPlugin(t *testing.T) {
 go build -buildmode=plugin -o myplugin.so ./plugins/myplugin
 
 # Test with HTTP transport
-bifrost-http -config config.json -plugins "myplugin"
+npx -y @maximhq/bifrost -plugins "myplugin"
 
 # Send test request
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -318,7 +318,7 @@ Plugins execute in loading order:
 
 ```bash
 # This order: auth -> rate-limit -> maxim -> request
-bifrost-http -plugins "auth,rate-limit,maxim"
+npx -y @maximhq/bifrost -plugins "auth,rate-limit,maxim"
 ```
 
 **Request flow:**

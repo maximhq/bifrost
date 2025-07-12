@@ -125,7 +125,9 @@ jobs:
           # Strip 'transports/' prefix and add 'v' prefix for upload script
           VERSION_ONLY="${{ steps.manage_versions.outputs.transport_version }}"
           VERSION_ONLY=${VERSION_ONLY#transports/v}
-          node upload-builds.mjs v${VERSION_ONLY}
+          npm ci
+          cd ../..
+          node ci/scripts/upload-builds.mjs v${VERSION_ONLY}
 
   # Second job: Build and push Docker image
   # Runs after transport build completes successfully

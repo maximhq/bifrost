@@ -213,11 +213,8 @@ docker run -p 8080:8080 \
 ### **Binary Deployment**
 
 ```bash
-# Install
-go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-
 # Zero config startup (uses current directory)
-bifrost-http -port 8080
+npx -y @maximhq/bifrost -port 8080
 ```
 
 For detailed deployment instructions including app directory setup, Docker volumes, and production best practices, see:

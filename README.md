@@ -19,41 +19,30 @@ Bifrost is a high-performance AI gateway that connects you to 10+ providers (Ope
 **What You Need**
 
 - Any AI provider API key (OpenAI, Anthropic, Bedrock, etc.)
-- Docker **OR** Go 1.23+ installed
-- 30 seconds of your time ⏰
+- Node.js 18+ installed (or use Docker instead via [Docker installation](#using-bifrost-http-transport))
+- 20 seconds of your time ⏰
 
 ### Using Bifrost HTTP Transport
 
-📖 For detailed setup guides with multiple providers, advanced configuration, and language examples, see [Quick Start Documentation](./docs/quickstart/README.md)
+📖 For detailed setup guides with multiple providers, advanced configuration, and language examples, see [Quick Start Documentation](./docs/quickstart/http-transport.md)
 
-**Step 1:** Start Bifrost (choose one)
+**Step 1:** Start Bifrost
 
 ```bash
-# 🐳 Docker (easiest - zero config needed!)
-docker pull maximhq/bifrost
-docker run -p 8080:8080 maximhq/bifrost
-
-# 🔧 Or install Go binary (Make sure Go is in your PATH)
-go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-bifrost-http -port 8080
+# 🔧 Run Bifrost binary
+npx @maximhq/bifrost
 ```
 
-**Step 2:** Open the built-in web interface
+**Step 2:** Open the built-in web interface and configure bifrost
 
 ```bash
-# 🖥️ Configure visually - no config files needed!
+# 🖥️ Open the web interface in your browser
 open http://localhost:8080
 
 # Or simply open http://localhost:8080 manually in your browser
 ```
 
-**Step 3:** Add your provider via the web UI or API
-
-Via Web UI: Just Go to providers tab and click "Add Provider" to configure your provider.
-
-Note: If using environment variables (e.g. `env.OPENAI_API_KEY`), make sure to set the corresponding environment variable in bifrost's session, or pass it as a flag in Docker (`docker run -e OPENAI_API_KEY maximhq/bifrost`).
-
-**Step 4:** Test it works
+**Step 3:** Test it works
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -122,6 +111,8 @@ Bifrost is built with a modular architecture:
 
 ```text
 bifrost/
+├── ci/                   # CI/CD pipeline scripts and npx configuration
+│
 ├── core/                 # Core functionality and shared components
 │   ├── providers/        # Provider-specific implementations
 │   ├── schemas/          # Interfaces and structs used in bifrost
@@ -135,6 +126,9 @@ bifrost/
 │
 ├── transports/           # Interface layers (HTTP, gRPC, etc.)
 │   ├── bifrost-http/     # HTTP transport implementation
+│   └── ...
+│
+├── ui/                  # UI files for the web interface of the HTTP transport
 │   └── ...
 │
 └── plugins/              # Plugin Implementations
@@ -171,11 +165,7 @@ For language-agnostic integration and microservices architecture.
 Quick example:
 
 ```bash
-docker pull maximhq/bifrost
-docker run -p 8080:8080 \
-  -v $(pwd)/config.json:/app/config/config.json \
-  -e OPENAI_API_KEY \
-  maximhq/bifrost
+npx @maximhq/bifrost
 ```
 
 ### 3. As a Drop-in Replacement (Zero Code Changes)

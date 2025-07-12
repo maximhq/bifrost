@@ -44,8 +44,7 @@ docker run -d --name bifrost \
   maximhq/bifrost
 
 # Option B: Binary
-go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-bifrost-http -config config.json -port 8080
+npx -y @maximhq/bifrost -port 8080
 ```
 
 ### **Step 2: Create Configuration (Or Use UI)**

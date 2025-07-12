@@ -521,16 +521,6 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-### **Configuration Validation**
-
-```bash
-# Start Bifrost with config validation
-bifrost-http -config config.json -validate
-
-# Check which providers are loaded
-curl http://localhost:8080/metrics | grep bifrost_providers
-```
-
 ---
 
 ## 📚 Related Documentation
