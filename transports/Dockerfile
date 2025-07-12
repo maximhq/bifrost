@@ -1,4 +1,4 @@
-# --- First Stage: Builder image ---
+# --- Build Stage: Compile the Go binary ---
 FROM golang:1.24-alpine AS builder
 WORKDIR /app
 
@@ -8,13 +8,8 @@ RUN apk add --no-cache upx gcc musl-dev sqlite-dev
 # Set environment for CGO-enabled build (required for go-sqlite3)
 ENV CGO_ENABLED=1 GOOS=linux
 
-# Define build-time variables
-ARG TRANSPORT_TYPE=http
-ARG TAG_VERSION=latest
-
-# Initialize go module and get bifrost with specified tag
-RUN go mod init bifrost-build && \
-    go get github.com/maximhq/bifrost/transports/bifrost-${TRANSPORT_TYPE}@${TAG_VERSION}
+# Copy source code and dependencies
+COPY . .
 
 # Build the binary with CGO enabled and static SQLite linking
 RUN go build \
@@ -22,7 +17,7 @@ RUN go build \
         -a -trimpath \
         -tags "sqlite_static" \
         -o /app/main \
-        github.com/maximhq/bifrost/transports/bifrost-${TRANSPORT_TYPE}
+        ./bifrost-http
 
 # Compress binary with upx
 RUN upx --best --lzma /app/main
@@ -30,7 +25,7 @@ RUN upx --best --lzma /app/main
 # Verify build succeeded
 RUN test -f /app/main || (echo "Build failed" && exit 1)
 
-# --- Second Stage: Minimal runtime image ---
+# --- Runtime Stage: Minimal runtime image ---
 FROM alpine:3.19
 WORKDIR /app
 

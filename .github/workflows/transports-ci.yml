@@ -1,0 +1,200 @@
+name: Transports CI - Build and Deploy
+
+# Triggers on core or transports tags, or manual dispatch
+on:
+  push:
+    tags:
+      - "core/v*" # Trigger when core library is tagged
+      - "transports/v*" # Trigger for direct transport releases
+  workflow_dispatch:
+    inputs:
+      triggered_by:
+        description: "What triggered this workflow"
+        required: false
+        type: string
+
+# Prevent concurrent runs for the same trigger to avoid conflicts
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.triggered_by || 'tag' }}
+  cancel-in-progress: true
+
+# Docker registry configuration
+env:
+  REGISTRY: docker.io
+  ACCOUNT: maximhq
+  IMAGE_NAME: bifrost
+
+jobs:
+  # Main job: Handle version management, build Go binaries, upload to S3
+  build-transports:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Need write access to commit changes and create tags
+    outputs:
+      # Pass version information to the Docker build job
+      transport_version: ${{ steps.manage_versions.outputs.transport_version }}
+      core_version: ${{ steps.manage_versions.outputs.core_version }}
+    steps:
+      # Checkout with full history and tags for version management
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0 # Full history needed for git tag operations
+          fetch-tags: true # Ensure all tags are available
+          token: ${{ secrets.GH_TOKEN }} # Personal token for pushing tags
+
+      # Set up Go environment for building binaries and managing dependencies
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.24.1"
+
+      # Set up Node.js for running our CI scripts
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      # Configure Git for automated commits and tagging
+      # Uses our git-operations script to set up CI user
+      - name: Configure Git
+        working-directory: ci/scripts
+        run: node git-operations.mjs configure
+
+      - name: Determine trigger type and manage versions
+        id: manage_versions
+        working-directory: ci/scripts
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/core/v* ]]; then
+            echo "🔧 Triggered by core tag"
+            # Extract core version from git tag and update dependencies
+            CORE_VERSION=$(node extract-version.mjs "${GITHUB_REF}" core version)
+            node manage-versions.mjs core "$CORE_VERSION" >> $GITHUB_OUTPUT
+          elif [[ "${GITHUB_REF}" == refs/tags/transports/v* ]]; then
+            echo "🚀 Triggered by transports tag"
+            # Use existing dependencies for direct transport releases
+            TRANSPORT_VERSION=$(node extract-version.mjs "${GITHUB_REF}" transports version)
+            node manage-versions.mjs transport "$TRANSPORT_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Unknown trigger"
+            exit 1
+          fi
+
+      # Build the UI from the current repo state
+      - name: Build UI static files
+        working-directory: ui
+        run: |
+          npm install
+          npm run build
+
+      # Cross-compile Go binaries for multiple platforms
+      # Uses existing script that builds for Windows, macOS, Linux (multiple architectures)
+      # Output goes to ../dist/apps/bifrost for upload script
+      - name: Build Go executables
+        working-directory: transports
+        run: |
+          echo "🔨 Building Go executables..."
+          chmod +x ../ci/scripts/go-executable-build.sh
+          ../ci/scripts/go-executable-build.sh bifrost-http ../dist/apps/bifrost ./bifrost-http $(pwd)
+
+      # Upload the built binaries to S3 for distribution
+      # Makes them available for download by users
+      - name: Upload builds to S3
+        working-directory: ci/scripts
+        env:
+          # R2 (Cloudflare S3-compatible storage) credentials
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          # Install AWS SDK for S3 operations
+          npm install @aws-sdk/client-s3
+          # Strip 'transports/' prefix and add 'v' prefix for upload script
+          VERSION_ONLY="${{ steps.manage_versions.outputs.transport_version }}"
+          VERSION_ONLY=${VERSION_ONLY#transports/v}
+          node upload-builds.mjs v${VERSION_ONLY}
+
+      # Commit dependency changes and create transport tag (when triggered by core)
+      - name: Commit and tag changes (if needed)
+        working-directory: ci/scripts
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/core/v* ]]; then
+            COMMIT_MSG="chore: update transport's core dependency to ${{ steps.manage_versions.outputs.core_version }}"
+            node git-operations.mjs commit-and-tag "${COMMIT_MSG}" "${{ steps.manage_versions.outputs.transport_version }}"
+          fi
+
+  # Second job: Build and push Docker image
+  # Runs after transport build completes successfully
+  build-and-push-docker:
+    needs: build-transports
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Only need read access for Docker build
+    steps:
+      # Checkout repository for Docker build context
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Set up QEMU for cross-platform Docker builds (ARM64, AMD64)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Set up Docker Buildx for advanced build features
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Authenticate with Docker Hub for pushing images
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Build and push Docker image using the freshly built UI static files
+      - name: Extract metadata for Docker
+        id: meta
+        run: |
+          # Strip 'transports/' prefix and ensure 'v' prefix for Docker tags
+          VERSION_ONLY="${{ needs.build-transports.outputs.transport_version }}"
+          VERSION_ONLY=${VERSION_ONLY#transports/v}
+
+          echo "version=v${VERSION_ONLY}" >> $GITHUB_OUTPUT
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          echo "${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION_ONLY}" >> $GITHUB_OUTPUT
+          echo "${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      # Generate timestamp for image labels
+      - name: Generate timestamp
+        id: timestamp
+        run: echo "created_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
+      # Build and push the Docker image
+      # Uses local source code and UI files (not remote dependencies)
+      # Builds for both ARM64 and AMD64 architectures
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./transports # Build context includes source + UI
+          file: ./transports/Dockerfile # Custom Dockerfile for local builds
+          push: true # Push to Docker Hub
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=Bifrost LLM Gateway (HTTP)
+            org.opencontainers.image.description=The fastest LLM gateway written in Go. Learn more here: https://github.com/maximhq/bifrost
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build-transports.outputs.transport_version }}
+            org.opencontainers.image.created=${{ steps.timestamp.outputs.created_at }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          platforms: linux/amd64,linux/arm64 # Multi-architecture support
+          cache-from: type=gha # Use GitHub Actions cache
+          cache-to: type=gha,mode=max # Save cache for future builds
+
+      # Final success notification with version information
+      - name: Success notification
+        run: |
+          echo "✅ Successfully built and pushed:"
+          echo "🚀 Transport Version: ${{ needs.build-transports.outputs.transport_version }}"
+          echo "🔧 Core Version: ${{ needs.build-transports.outputs.core_version }}"
+          echo "🐳 Docker Tags: ${{ steps.meta.outputs.tags }}"
