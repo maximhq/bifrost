@@ -19,57 +19,28 @@ Bifrost is a high-performance AI gateway that connects you to 8+ providers (Open
 **What You Need**
 
 - Any AI provider API key (OpenAI, Anthropic, Bedrock, etc.)
-- Docker **OR** Go 1.23+ installed
-- 30 seconds of your time ⏰
+- Node.js 18+ installed (or you can go ahead with [Docker installation](#using-bifrost-http-transport))
+- 20 seconds of your time ⏰
 
 ### Using Bifrost HTTP Transport
 
-📖 For detailed setup guides with multiple providers, advanced configuration, and language examples, see [Quick Start Documentation](./docs/quickstart/README.md)
+📖 For detailed setup guides with multiple providers, advanced configuration, and language examples, see [Quick Start Documentation](./docs/quickstart/http-transport.md)
 
-**Step 1:** Start Bifrost (choose one)
+**Step 1:** Start Bifrost
 
 ```bash
-# 🐳 Docker (easiest - zero config needed!)
-docker pull maximhq/bifrost
-docker run -p 8080:8080 maximhq/bifrost
-
-# 🔧 Or install Go binary (Make sure Go is in your PATH)
-go install github.com/maximhq/bifrost/transports/bifrost-http@latest
-bifrost-http -port 8080
+# 🔧 Run Bifrost binary
+npx bifrost@latest
 ```
 
-**Step 2:** Open the built-in web interface
+**Step 2:** Open the built-in web interface and configure bifrost
 
 ```bash
-# 🖥️ Configure visually - no config files needed!
-# macOS:
+# 🖥️ Open the web interface in your browser
 open http://localhost:8080
-
-# Linux:
-xdg-open http://localhost:8080
-
-# Windows:
-start http://localhost:8080
-
-# Or simply open http://localhost:8080 manually in your browser
 ```
 
-**Step 3:** Add your provider via the web UI or API
-
-```bash
-# Via Web UI: Just click "Add Provider" and enter your OpenAI API key
-# Or via API:
-curl -X POST http://localhost:8080/providers \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider": "openai",
-    "keys": [{"value": "env.OPENAI_API_KEY", "models": ["gpt-4o-mini"], "weight": 1.0}]
-  }'
-
-# Make sure to set the environment variable OPENAI_API_KEY in bifrost's session, or pass it as a flag in Docker (docker run -e OPENAI_API_KEY maximhq/bifrost).
-```
-
-**Step 4:** Test it works
+**Step 3:** Test it works
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -138,6 +109,8 @@ Bifrost is built with a modular architecture:
 
 ```text
 bifrost/
+├── ci/                   # CI/CD pipeline scripts and npx configuration
+│
 ├── core/                 # Core functionality and shared components
 │   ├── providers/        # Provider-specific implementations
 │   ├── schemas/          # Interfaces and structs used in bifrost
@@ -151,6 +124,9 @@ bifrost/
 │
 ├── transports/           # Interface layers (HTTP, gRPC, etc.)
 │   ├── bifrost-http/     # HTTP transport implementation
+│   └── ...
+│
+├── ui/                  # UI files for the web interface of the HTTP transport
 │   └── ...
 │
 └── plugins/              # Plugin Implementations
@@ -187,11 +163,7 @@ For language-agnostic integration and microservices architecture.
 Quick example:
 
 ```bash
-docker pull maximhq/bifrost
-docker run -p 8080:8080 \
-  -v $(pwd)/config.json:/app/config/config.json \
-  -e OPENAI_API_KEY \
-  maximhq/bifrost
+npx bifrost@latest
 ```
 
 ### 3. As a Drop-in Replacement (Zero Code Changes)
