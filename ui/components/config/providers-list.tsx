@@ -83,7 +83,7 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
         </CardTitle>
         <CardDescription>Manage AI model providers, their API keys, and configuration settings.</CardDescription>
       </CardHeader>
-      <div className="rounded-md border">
+      <div className="rounded-sm border">
         <Table>
           <TableHeader>
             <TableRow>

@@ -12,15 +12,15 @@ import { MCPClient } from '@/lib/types/mcp'
 import { Pencil, Plus, RefreshCcw, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
 } from '../ui/alert-dialog'
 
 interface MCPClientsListProps {
@@ -112,7 +112,7 @@ export default function MCPClientsList({ mcpClients }: MCPClientsListProps) {
         </CardTitle>
         <CardDescription>Manage clients that can connect to the MCP Tools endpoint.</CardDescription>
       </CardHeader>
-      <div className="rounded-md border">
+      <div className="rounded-sm border">
         <Table>
           <TableHeader>
             <TableRow>
