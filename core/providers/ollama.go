@@ -5,6 +5,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,7 @@ func releaseOllamaResponse(resp *OllamaResponse) {
 type OllamaProvider struct {
 	logger        schemas.Logger        // Logger for provider operations
 	client        *fasthttp.Client      // HTTP client for API requests
+	streamClient  *http.Client          // HTTP client for streaming requests
 	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
@@ -63,6 +65,11 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
+	}
+
+	// Initialize streaming HTTP client
+	streamClient := &http.Client{
+		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 	}
 
 	// Pre-warm response pools
@@ -83,6 +90,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	return &OllamaProvider{
 		logger:        logger,
 		client:        client,
+		streamClient:  streamClient,
 		networkConfig: config.NetworkConfig,
 	}, nil
 }
@@ -170,7 +178,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model, key s
 		Choices: response.Choices,
 		Model:   response.Model,
 		Created: response.Created,
-		Usage:   response.Usage,
+		Usage:   &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.Ollama,
 			RawResponse: rawResponse,
@@ -187,4 +195,44 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model, key s
 // Embedding is not supported by the Ollama provider.
 func (provider *OllamaProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "ollama")
+}
+
+// ChatCompletionStream performs a streaming chat completion request to the Ollama API.
+// It supports real-time streaming of responses using Server-Sent Events (SSE).
+// Uses Ollama's OpenAI-compatible streaming format.
+// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
+func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":    model,
+		"messages": formattedMessages,
+		"stream":   true,
+	}, preparedParams)
+
+	// Prepare Ollama headers (Ollama typically doesn't require authorization, but we include it if provided)
+	headers := map[string]string{
+		"Content-Type":  "application/json",
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	// Only add Authorization header if key is provided (Ollama can run without auth)
+	if key != "" {
+		headers["Authorization"] = "Bearer " + key
+	}
+
+	// Use shared OpenAI-compatible streaming logic
+	return handleOpenAIStreaming(
+		ctx,
+		provider.streamClient,
+		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		requestBody,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Ollama,
+		params,
+		postHookRunner,
+		provider.logger,
+	)
 }

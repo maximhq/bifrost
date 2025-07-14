@@ -37,6 +37,14 @@ func NewGenAIRouter(client *bifrost.Bifrost) *GenAIRouter {
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return DeriveGeminiErrorFromBifrostError(err)
 			},
+			StreamConfig: &integrations.StreamConfig{
+				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+					return DeriveGeminiStreamFromBifrostResponse(resp), nil
+				},
+				ErrorConverter: func(err *schemas.BifrostError) interface{} {
+					return DeriveGeminiStreamFromBifrostError(err)
+				},
+			},
 			PreCallback: extractAndSetModelFromURL,
 		},
 	}
@@ -54,6 +62,10 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, req interface{}) error 
 	}
 
 	modelStr := model.(string)
+
+	// Check if this is a streaming request
+	isStreaming := strings.HasSuffix(modelStr, ":streamGenerateContent")
+
 	// Remove Google GenAI API endpoint suffixes if present
 	for _, sfx := range []string{
 		":streamGenerateContent",
@@ -74,9 +86,10 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, req interface{}) error 
 		processedModel = "google/" + modelStr
 	}
 
-	// Set the model in the request
+	// Set the model and streaming flag in the request
 	if geminiReq, ok := req.(*GeminiChatRequest); ok {
 		geminiReq.Model = processedModel
+		geminiReq.Stream = isStreaming
 		return nil
 	}
 

@@ -1,10 +1,60 @@
+// Package integrations provides a generic router framework for handling different LLM provider APIs.
+//
+// CENTRALIZED STREAMING ARCHITECTURE:
+//
+// This package implements a centralized streaming approach where all stream handling logic
+// is consolidated in the GenericRouter, eliminating the need for provider-specific StreamHandler
+// implementations. The key components are:
+//
+// 1. StreamConfig: Defines streaming configuration for each route, including:
+//   - ResponseConverter: Converts BifrostResponse to provider-specific streaming format
+//   - ErrorConverter: Converts BifrostError to provider-specific streaming error format
+//
+// 2. Centralized Stream Processing: The GenericRouter handles all streaming logic:
+//   - SSE header management
+//   - Stream channel processing
+//   - Error handling and conversion
+//   - Response formatting and flushing
+//   - Stream closure (handled automatically by provider implementation)
+//
+// 3. Provider-Specific Type Conversion: Integration types.go files only handle type conversion:
+//   - Derive{Provider}StreamFromBifrostResponse: Convert responses to streaming format
+//   - Derive{Provider}StreamFromBifrostError: Convert errors to streaming error format
+//
+// BENEFITS:
+// - Eliminates code duplication across provider-specific stream handlers
+// - Centralizes streaming logic for consistency and maintainability
+// - Separates concerns: routing logic vs type conversion
+// - Automatic stream closure management by provider implementations
+// - Consistent error handling across all providers
+//
+// USAGE EXAMPLE:
+//
+//	routes := []RouteConfig{
+//	  {
+//	    Path: "/openai/chat/completions",
+//	    Method: "POST",
+//	    // ... other configs ...
+//	    StreamConfig: &StreamConfig{
+//	      ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+//	        return DeriveOpenAIStreamFromBifrostResponse(resp), nil
+//	      },
+//	      ErrorConverter: func(err *schemas.BifrostError) interface{} {
+//	        return DeriveOpenAIStreamFromBifrostError(err)
+//	      },
+//	    },
+//	  },
+//	}
 package integrations
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
+
+	"bufio"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -19,6 +69,11 @@ type ExtensionRouter interface {
 	RegisterRoutes(r *router.Router)
 }
 
+// StreamingRequest interface for requests that support streaming
+type StreamingRequest interface {
+	IsStreamingRequested() bool
+}
+
 // RequestConverter is a function that converts integration-specific requests to Bifrost format.
 // It takes the parsed request object and returns a BifrostRequest ready for processing.
 type RequestConverter func(req interface{}) (*schemas.BifrostRequest, error)
@@ -27,9 +82,17 @@ type RequestConverter func(req interface{}) (*schemas.BifrostRequest, error)
 // It takes a BifrostResponse and returns the format expected by the specific integration.
 type ResponseConverter func(*schemas.BifrostResponse) (interface{}, error)
 
+// StreamResponseConverter is a function that converts Bifrost responses to integration-specific streaming format.
+// It takes a BifrostResponse and returns the streaming format expected by the specific integration.
+type StreamResponseConverter func(*schemas.BifrostResponse) (interface{}, error)
+
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
 type ErrorConverter func(*schemas.BifrostError) interface{}
+
+// StreamErrorConverter is a function that converts BifrostError to integration-specific streaming error format.
+// It takes a BifrostError and returns the streaming error format expected by the specific integration.
+type StreamErrorConverter func(*schemas.BifrostError) interface{}
 
 // PreRequestCallback is called before processing the request.
 // It can be used to modify the request object (e.g., extract model from URL parameters)
@@ -41,8 +104,33 @@ type PreRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}) error
 // If it returns an error, an error response is sent instead of the success response.
 type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp *schemas.BifrostResponse) error
 
-// RouteConfig defines configuration for a single HTTP route in an integration.
-// Each route specifies how to handle requests for a specific endpoint.
+// StreamConfig defines streaming-specific configuration for an integration
+//
+// SSE FORMAT BEHAVIOR:
+//
+// The ResponseConverter and ErrorConverter functions in StreamConfig can return either:
+//
+// 1. OBJECTS (interface{} that's not a string):
+//   - Will be JSON marshaled and sent as standard SSE: data: {json}\n\n
+//   - Use this for most providers (OpenAI, Google, etc.)
+//   - Example: return map[string]interface{}{"delta": {"content": "hello"}}
+//   - Result: data: {"delta":{"content":"hello"}}\n\n
+//
+// 2. STRINGS:
+//   - Will be sent directly as-is without any modification
+//   - Use this for providers requiring custom SSE event types (Anthropic, etc.)
+//   - Example: return "event: content_block_delta\ndata: {\"type\":\"text\"}\n\n"
+//   - Result: event: content_block_delta
+//     data: {"type":"text"}
+//
+// Choose the appropriate return type based on your provider's SSE specification.
+type StreamConfig struct {
+	ResponseConverter StreamResponseConverter // Function to convert BifrostResponse to streaming format
+	ErrorConverter    StreamErrorConverter    // Function to convert BifrostError to streaming error format
+}
+
+// RouteConfig defines the configuration for a single route in an integration.
+// It specifies the path, method, and handlers for request/response conversion.
 type RouteConfig struct {
 	Path                   string              // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                 string              // HTTP method (POST, GET, PUT, DELETE)
@@ -50,8 +138,9 @@ type RouteConfig struct {
 	RequestConverter       RequestConverter    // Function to convert request to BifrostRequest (SHOULD NOT BE NIL)
 	ResponseConverter      ResponseConverter   // Function to convert BifrostResponse to integration format (SHOULD NOT BE NIL)
 	ErrorConverter         ErrorConverter      // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
+	StreamConfig           *StreamConfig       // Optional: Streaming configuration (if nil, streaming not supported)
 	PreCallback            PreRequestCallback  // Optional: called before request processing
-	PostCallback           PostRequestCallback // Optional: called after request processing
+	PostCallback           PostRequestCallback // Optional: called after request processing (not supported for streaming)
 }
 
 // GenericRouter provides a reusable router implementation for all integrations.
@@ -120,7 +209,7 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router) {
 // 1. Parse JSON request body into the configured request type (for methods that expect bodies)
 // 2. Execute pre-callback (if configured) for request modification/validation
 // 3. Convert request to BifrostRequest using the configured converter
-// 4. Execute the request through Bifrost
+// 4. Execute the request through Bifrost (streaming or non-streaming)
 // 5. Execute post-callback (if configured) for response modification
 // 6. Convert and send the response using the configured response converter
 func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandler {
@@ -167,34 +256,277 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			return
 		}
 
+		// Check if streaming is requested
+		isStreaming := false
+		if streamingReq, ok := req.(StreamingRequest); ok {
+			isStreaming = streamingReq.IsStreamingRequested()
+		}
+
 		// Execute the request through Bifrost
 		bifrostCtx := lib.ConvertToBifrostContext(ctx)
-		result, bifrostErr := g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
-		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+
+		if isStreaming {
+			g.handleStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx)
+		} else {
+			g.handleNonStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx)
+		}
+	}
+}
+
+// handleNonStreamingRequest handles regular (non-streaming) requests
+func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
+	result, bifrostErr := g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		g.sendError(ctx, config.ErrorConverter, bifrostErr)
+		return
+	}
+
+	// Execute post-request callback if configured
+	// This is typically used for response modification or additional processing
+	if config.PostCallback != nil {
+		if err := config.PostCallback(ctx, req, result); err != nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
 			return
 		}
-		// Execute post-request callback if configured
-		// This is typically used for response modification or additional processing
-		if config.PostCallback != nil {
-			if err := config.PostCallback(ctx, req, result); err != nil {
-				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+	}
+
+	if result == nil {
+		g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+		return
+	}
+
+	// Convert Bifrost response to integration-specific format and send
+	response, err := config.ResponseConverter(result)
+	if err != nil {
+		g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to encode response"))
+		return
+	}
+	g.sendSuccess(ctx, config.ErrorConverter, response)
+}
+
+// handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
+func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
+	// Set common SSE headers
+	ctx.SetContentType("text/event-stream")
+	ctx.Response.Header.Set("Cache-Control", "no-cache")
+	ctx.Response.Header.Set("Connection", "keep-alive")
+	ctx.Response.Header.Set("Access-Control-Allow-Origin", "*")
+
+	// Get the streaming channel from Bifrost
+	stream, bifrostErr := g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		// Send error in SSE format
+		g.sendStreamError(ctx, config, bifrostErr)
+		return
+	}
+
+	// Check if streaming is configured for this route
+	if config.StreamConfig == nil {
+		g.sendStreamError(ctx, config, newBifrostError(nil, "streaming is not supported for this integration"))
+		return
+	}
+
+	// Handle streaming using the centralized approach
+	g.handleStreaming(ctx, config, stream)
+}
+
+// handleStreaming processes a stream of BifrostResponse objects and sends them as Server-Sent Events (SSE).
+// It handles both successful responses and errors in the streaming format.
+//
+// SSE FORMAT HANDLING:
+//
+// By default, all responses and errors are sent in the standard SSE format:
+//
+//	data: {"response": "content"}\n\n
+//
+// However, some providers (like Anthropic) require custom SSE event formats with explicit event types:
+//
+//	event: content_block_delta
+//	data: {"type": "content_block_delta", "delta": {...}}
+//
+//	event: message_stop
+//	data: {"type": "message_stop"}
+//
+// STREAMCONFIG CONVERTER BEHAVIOR:
+//
+// The StreamConfig.ResponseConverter and StreamConfig.ErrorConverter functions can return:
+//
+// 1. OBJECTS (default behavior):
+//   - Return any Go struct/map/interface{}
+//   - Will be JSON marshaled and wrapped as: data: {json}\n\n
+//   - Example: return map[string]interface{}{"content": "hello"}
+//   - Result: data: {"content":"hello"}\n\n
+//
+// 2. STRINGS (custom SSE format):
+//   - Return a complete SSE string with custom event types and formatting
+//   - Will be sent directly without any wrapping or modification
+//   - Example: return "event: content_block_delta\ndata: {\"type\":\"text\"}\n\n"
+//   - Result: event: content_block_delta
+//     data: {"type":"text"}
+//
+// IMPLEMENTATION GUIDELINES:
+//
+// For standard providers (OpenAI, etc.): Return objects from converters
+// For custom SSE providers (Anthropic, etc.): Return pre-formatted SSE strings
+//
+// When returning strings, ensure they:
+// - Include proper event: lines (if needed)
+// - Include data: lines with JSON content
+// - End with \n\n for proper SSE formatting
+// - Follow the provider's specific SSE event specification
+func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteConfig, streamChan chan *schemas.BifrostStream) {
+	// Use streaming response writer
+	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer w.Flush()
+
+		// Process streaming responses
+		for response := range streamChan {
+			if response == nil {
+				continue
+			}
+
+			// Check for context cancellation
+			select {
+			case <-ctx.Done():
 				return
+			default:
+			}
+
+			// Handle errors
+			if response.BifrostError != nil {
+				var errorResponse interface{}
+				var errorJSON []byte
+				var err error
+
+				// Use stream error converter if available, otherwise fallback to regular error converter
+				if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
+					errorResponse = config.StreamConfig.ErrorConverter(response.BifrostError)
+				} else if config.ErrorConverter != nil {
+					errorResponse = config.ErrorConverter(response.BifrostError)
+				} else {
+					// Default error response
+					errorResponse = map[string]interface{}{
+						"error": map[string]interface{}{
+							"type":    "internal_error",
+							"message": "An error occurred while processing your request",
+						},
+					}
+				}
+
+				// Check if the error converter returned a raw SSE string or JSON object
+				if sseErrorString, ok := errorResponse.(string); ok {
+					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
+					// This is used by providers like Anthropic that need custom event types
+					// Example: "event: error\ndata: {...}\n\n"
+					if _, err := fmt.Fprint(w, sseErrorString); err != nil {
+						return
+					}
+				} else {
+					// STANDARD SSE FORMAT: The converter returned an object
+					// This will be JSON marshaled and wrapped as "data: {json}\n\n"
+					// Used by most providers (OpenAI, Google, etc.)
+					errorJSON, err = json.Marshal(errorResponse)
+					if err != nil {
+						// Fallback to basic error if marshaling fails
+						basicError := map[string]interface{}{
+							"error": map[string]interface{}{
+								"type":    "internal_error",
+								"message": "An error occurred while processing your request",
+							},
+						}
+						if errorJSON, err = json.Marshal(basicError); err != nil {
+							return // Can't even send basic error
+						}
+					}
+
+					// Send error as SSE data
+					if _, err := fmt.Fprintf(w, "data: %s\n\n", errorJSON); err != nil {
+						return
+					}
+				}
+
+				// Flush and return on error
+				if err := w.Flush(); err != nil {
+					return
+				}
+				return // End stream on error
+			}
+
+			// Handle successful responses
+			if response.BifrostResponse != nil {
+				// Convert response to integration-specific streaming format
+				var convertedResponse interface{}
+				var err error
+
+				if config.StreamConfig.ResponseConverter != nil {
+					convertedResponse, err = config.StreamConfig.ResponseConverter(response.BifrostResponse)
+				} else {
+					// Fallback to regular response converter
+					convertedResponse, err = config.ResponseConverter(response.BifrostResponse)
+				}
+
+				if err != nil {
+					// Log conversion error but continue processing
+					log.Printf("Failed to convert streaming response: %v", err)
+					continue
+				}
+
+				// Check if the converter returned a raw SSE string or JSON object
+				if sseString, ok := convertedResponse.(string); ok {
+					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
+					// This is used by providers like Anthropic that need custom event types
+					// Example: "event: content_block_delta\ndata: {...}\n\n"
+					if _, err := fmt.Fprint(w, sseString); err != nil {
+						return // Network error, stop streaming
+					}
+				} else {
+					// STANDARD SSE FORMAT: The converter returned an object
+					// This will be JSON marshaled and wrapped as "data: {json}\n\n"
+					// Used by most providers (OpenAI, Google, etc.)
+					responseJSON, err := json.Marshal(convertedResponse)
+					if err != nil {
+						// Log JSON marshaling error but continue processing
+						log.Printf("Failed to marshal streaming response: %v", err)
+						continue
+					}
+
+					// Send as SSE data
+					if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
+						return // Network error, stop streaming
+					}
+				}
+
+				// Flush immediately to send the chunk
+				if err := w.Flush(); err != nil {
+					return // Network error, stop streaming
+				}
 			}
 		}
+	})
+}
 
-		if result == nil {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
-			return
-		}
+// sendStreamError sends an error in streaming format using the stream error converter if available
+func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostErr *schemas.BifrostError) {
+	var errorResponse interface{}
 
-		// Convert Bifrost response to integration-specific format and send
-		response, err := config.ResponseConverter(result)
-		if err != nil {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to encode response"))
-			return
-		}
-		g.sendSuccess(ctx, config.ErrorConverter, response)
+	// Use stream error converter if available, otherwise fallback to regular error converter
+	if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
+		errorResponse = config.StreamConfig.ErrorConverter(bifrostErr)
+	} else {
+		errorResponse = config.ErrorConverter(bifrostErr)
+	}
+
+	errorJSON, err := json.Marshal(map[string]interface{}{
+		"error": errorResponse,
+	})
+	if err != nil {
+		log.Printf("Failed to marshal error for SSE: %v", err)
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		return
+	}
+
+	if _, err := fmt.Fprintf(ctx, "data: %s\n\n", errorJSON); err != nil {
+		log.Printf("Failed to write SSE error: %v", err)
 	}
 }
 

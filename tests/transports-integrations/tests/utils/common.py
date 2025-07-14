@@ -89,6 +89,21 @@ MULTIPLE_TOOL_CALL_MESSAGES = [
     {"role": "user", "content": "What's the weather in New York and calculate 15 * 23?"}
 ]
 
+# Streaming Test Messages
+STREAMING_CHAT_MESSAGES = [
+    {
+        "role": "user",
+        "content": "Tell me a short story about a robot learning to paint. Keep it under 200 words.",
+    }
+]
+
+STREAMING_TOOL_CALL_MESSAGES = [
+    {
+        "role": "user",
+        "content": "What's the weather like in San Francisco? Please use the get_weather function.",
+    }
+]
+
 # Image Test Data
 IMAGE_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
 
@@ -635,6 +650,186 @@ def assert_error_propagation(error_response: Any, integration: str):
     return True
 
 
+def assert_valid_streaming_response(
+    chunk: Any, integration: str, is_final: bool = False
+):
+    """
+    Assert that a streaming response chunk is valid for the given integration.
+
+    Args:
+        chunk: Individual streaming response chunk
+        integration: The integration name (openai, anthropic, etc.)
+        is_final: Whether this is expected to be the final chunk
+    """
+    assert chunk is not None, "Streaming chunk should not be None"
+
+    if integration.lower() == "openai":
+        # OpenAI streaming format
+        assert hasattr(chunk, "choices"), "OpenAI streaming chunk should have choices"
+        assert (
+            len(chunk.choices) > 0
+        ), "OpenAI streaming chunk should have at least one choice"
+
+        choice = chunk.choices[0]
+        assert hasattr(choice, "delta"), "OpenAI streaming choice should have delta"
+
+        # Check for content or tool calls in delta
+        has_content = (
+            hasattr(choice.delta, "content") and choice.delta.content is not None
+        )
+        has_tool_calls = (
+            hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls is not None
+        )
+        has_role = hasattr(choice.delta, "role") and choice.delta.role is not None
+
+        # Allow empty deltas for final chunks (they just signal completion)
+        if not is_final:
+            assert (
+                has_content or has_tool_calls or has_role
+            ), "OpenAI delta should have content, tool_calls, or role (except for final chunks)"
+
+        if is_final:
+            assert hasattr(
+                choice, "finish_reason"
+            ), "Final chunk should have finish_reason"
+            assert (
+                choice.finish_reason is not None
+            ), "Final chunk finish_reason should not be None"
+
+    elif integration.lower() == "anthropic":
+        # Anthropic streaming format
+        assert hasattr(chunk, "type"), "Anthropic streaming chunk should have type"
+
+        if chunk.type == "content_block_delta":
+            assert hasattr(
+                chunk, "delta"
+            ), "Content block delta should have delta field"
+
+            # Validate based on delta type
+            if hasattr(chunk.delta, "type"):
+                if chunk.delta.type == "text_delta":
+                    assert hasattr(
+                        chunk.delta, "text"
+                    ), "Text delta should have text field"
+                elif chunk.delta.type == "thinking_delta":
+                    assert hasattr(
+                        chunk.delta, "thinking"
+                    ), "Thinking delta should have thinking field"
+                elif chunk.delta.type == "input_json_delta":
+                    assert hasattr(
+                        chunk.delta, "partial_json"
+                    ), "Input JSON delta should have partial_json field"
+            else:
+                # Fallback: if no type specified, assume text_delta for backward compatibility
+                assert hasattr(
+                    chunk.delta, "text"
+                ), "Content delta should have text field"
+        elif chunk.type == "message_delta" and is_final:
+            assert hasattr(chunk, "usage"), "Final message delta should have usage"
+
+    elif integration.lower() in ["google", "gemini", "genai"]:
+        # Google streaming format
+        assert hasattr(
+            chunk, "candidates"
+        ), "Google streaming chunk should have candidates"
+        assert (
+            len(chunk.candidates) > 0
+        ), "Google streaming chunk should have at least one candidate"
+
+        candidate = chunk.candidates[0]
+        assert hasattr(candidate, "content"), "Google candidate should have content"
+
+        if is_final:
+            assert hasattr(
+                candidate, "finish_reason"
+            ), "Final chunk should have finish_reason"
+
+
+def collect_streaming_content(
+    stream, integration: str, timeout: int = 30
+) -> tuple[str, int, bool]:
+    """
+    Collect content from a streaming response and validate the stream.
+
+    Args:
+        stream: The streaming response iterator
+        integration: The integration name (openai, anthropic, etc.)
+        timeout: Maximum time to wait for stream completion
+
+    Returns:
+        tuple: (collected_content, chunk_count, tool_calls_detected)
+    """
+    import time
+
+    content_parts = []
+    chunk_count = 0
+    tool_calls_detected = False
+    start_time = time.time()
+
+    for chunk in stream:
+        chunk_count += 1
+
+        # Check timeout
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Streaming took longer than {timeout} seconds")
+
+        # Validate chunk
+        is_final = False
+        if integration.lower() == "openai":
+            is_final = (
+                hasattr(chunk, "choices")
+                and len(chunk.choices) > 0
+                and hasattr(chunk.choices[0], "finish_reason")
+                and chunk.choices[0].finish_reason is not None
+            )
+
+        assert_valid_streaming_response(chunk, integration, is_final)
+
+        # Extract content based on integration
+        if integration.lower() == "openai":
+            choice = chunk.choices[0]
+            if hasattr(choice.delta, "content") and choice.delta.content:
+                content_parts.append(choice.delta.content)
+            if hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls:
+                tool_calls_detected = True
+
+        elif integration.lower() == "anthropic":
+            if chunk.type == "content_block_delta":
+                if hasattr(chunk.delta, "text") and chunk.delta.text:
+                    content_parts.append(chunk.delta.text)
+                elif hasattr(chunk.delta, "thinking") and chunk.delta.thinking:
+                    content_parts.append(chunk.delta.thinking)
+                # Note: partial_json from input_json_delta is not user-visible content
+            elif chunk.type == "content_block_start":
+                # Check for tool use content blocks
+                if (
+                    hasattr(chunk, "content_block")
+                    and hasattr(chunk.content_block, "type")
+                    and chunk.content_block.type == "tool_use"
+                ):
+                    tool_calls_detected = True
+
+        elif integration.lower() in ["google", "gemini", "genai"]:
+            if hasattr(chunk, "candidates") and len(chunk.candidates) > 0:
+                candidate = chunk.candidates[0]
+                if (
+                    hasattr(candidate.content, "parts")
+                    and len(candidate.content.parts) > 0
+                ):
+                    for part in candidate.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            content_parts.append(part.text)
+
+        # Safety check
+        if chunk_count > 500:
+            raise ValueError(
+                "Received too many streaming chunks, something might be wrong"
+            )
+
+    content = "".join(content_parts)
+    return content, chunk_count, tool_calls_detected
+
+
 # Test Categories
 class TestCategories:
     """Constants for test categories"""
@@ -647,6 +842,7 @@ class TestCategories:
     AUTO_FUNCTION = "auto_function"
     IMAGE_URL = "image_url"
     IMAGE_BASE64 = "image_base64"
+    STREAMING = "streaming"
     MULTIPLE_IMAGES = "multiple_images"
     COMPLEX_E2E = "complex_e2e"
     INTEGRATION_SPECIFIC = "integration_specific"

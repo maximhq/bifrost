@@ -17,6 +17,7 @@ import (
 type TestScenarios struct {
 	TextCompletion        bool
 	SimpleChat            bool
+	ChatCompletionStream  bool
 	MultiTurnConversation bool
 	ToolCalls             bool
 	MultipleToolCalls     bool
@@ -243,6 +244,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -265,6 +267,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -287,6 +290,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported for Claude
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -309,6 +313,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -331,6 +336,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -353,6 +359,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -397,14 +404,15 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
-			ImageURL:              false,
-			ImageBase64:           false,
-			MultipleImages:        false,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
 		},

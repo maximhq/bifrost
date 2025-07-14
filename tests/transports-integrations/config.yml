@@ -73,6 +73,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: false
+    streaming: true
     max_tokens: 4096
     context_window: 4096
 
@@ -80,6 +81,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: false
+    streaming: true
     max_tokens: 8192
     context_window: 8192
 
@@ -87,6 +89,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: true
+    streaming: true
     max_tokens: 4096
     context_window: 128000
 
@@ -94,6 +97,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: true
+    streaming: true
     max_tokens: 4096
     context_window: 128000
 
@@ -102,6 +106,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: true
+    streaming: true
     max_tokens: 4096
     context_window: 200000
 
@@ -109,6 +114,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: true
+    streaming: true
     max_tokens: 4096
     context_window: 200000
 
@@ -116,6 +122,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: true
+    streaming: true
     max_tokens: 4096
     context_window: 200000
 
@@ -124,6 +131,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: false
+    streaming: true
     max_tokens: 8192
     context_window: 32768
 
@@ -131,6 +139,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: true
+    streaming: true
     max_tokens: 8192
     context_window: 32768
 
@@ -138,6 +147,7 @@ model_capabilities:
     chat: true
     tools: true
     vision: true
+    streaming: true
     max_tokens: 8192
     context_window: 1000000
 

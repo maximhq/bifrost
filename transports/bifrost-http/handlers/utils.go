@@ -48,3 +48,19 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 	}
 }
+
+// SendSSEError sends an error in Server-Sent Events format
+func SendSSEError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError, logger schemas.Logger) {
+	errorJSON, err := json.Marshal(map[string]interface{}{
+		"error": bifrostErr,
+	})
+	if err != nil {
+		logger.Error(fmt.Errorf("failed to marshal error for SSE: %w", err))
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		return
+	}
+
+	if _, err := fmt.Fprintf(ctx, "data: %s\n\n", errorJSON); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to write SSE error: %v", err))
+	}
+}

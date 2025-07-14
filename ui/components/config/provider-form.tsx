@@ -12,16 +12,16 @@ import { DEFAULT_NETWORK_CONFIG, DEFAULT_PERFORMANCE_CONFIG } from '@/lib/consta
 import { ProviderIconType, renderProviderIcon } from '@/lib/constants/icons'
 import { PROVIDER_LABELS, PROVIDERS as Providers } from '@/lib/constants/logs'
 import {
-	AddProviderRequest,
-	ConcurrencyAndBufferSize,
-	Key as KeyType,
-	MetaConfig,
-	ModelProvider,
-	NetworkConfig,
-	ProviderResponse,
-	ProxyConfig,
-	ProxyType,
-	UpdateProviderRequest,
+  AddProviderRequest,
+  ConcurrencyAndBufferSize,
+  Key as KeyType,
+  MetaConfig,
+  ModelProvider,
+  NetworkConfig,
+  ProviderResponse,
+  ProxyConfig,
+  ProxyType,
+  UpdateProviderRequest,
 } from '@/lib/types/config'
 import { cn } from '@/lib/utils'
 import { Validator } from '@/lib/utils/validation'
@@ -397,7 +397,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
             </TooltipProvider>
           )}
 
-          <div className="flex h-full w-full flex-col px-2">
+          <div className="flex h-full w-full flex-col justify-between px-2">
             <Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
               <TabsList className={`grid h-10 w-full grid-cols-${tabs.length} mb-4`}>
                 {tabs.map((tab) => (
@@ -418,7 +418,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                 >
                   {/* API Keys Tab */}
                   {keysRequired && selectedTab === 'api-keys' && (
-                    <div className="space-y-4 animate-in fade-in-0 slide-in-from-right-2 duration-300">
+                    <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 duration-300">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <h3 className="text-base font-medium">API Keys</h3>
@@ -431,8 +431,8 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                               </TooltipTrigger>
                               <TooltipContent className="max-w-fit">
                                 <p>
-                                  Use <code className="rounded bg-neutral-100 px-1 py-0.5 text-neutral-800">env.&lt;VAR&gt;</code> to read the
-                                  value from an environment variable.
+                                  Use <code className="rounded bg-neutral-100 px-1 py-0.5 text-neutral-800">env.&lt;VAR&gt;</code> to read
+                                  the value from an environment variable.
                                 </p>
                               </TooltipContent>
                             </Tooltip>
@@ -445,7 +445,11 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                       </div>
                       <div className="space-y-4">
                         {keys.map((key, index) => (
-                          <div key={index} className="space-y-4 rounded-md border p-4 animate-in fade-in-0 slide-in-from-left-2 duration-300" style={{ animationDelay: `${index * 50}ms` }}>
+                          <div
+                            key={index}
+                            className="animate-in fade-in-0 slide-in-from-left-2 space-y-4 rounded-md border p-4 duration-300"
+                            style={{ animationDelay: `${index * 50}ms` }}
+                          >
                             <div className="flex gap-4">
                               <div className="flex-1">
                                 <div className="text-sm font-medium">API Key</div>
@@ -508,7 +512,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                               />
                             </div>
                             {keys.length > 1 && (
-                              <Button type="button" variant="destructive" size="sm" onClick={() => removeKey(index)} className="mt-2 transition-all duration-200 ease-in-out">
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => removeKey(index)}
+                                className="mt-2 transition-all duration-200 ease-in-out"
+                              >
                                 <X className="h-4 w-4" />
                                 Remove Key
                               </Button>
@@ -520,15 +530,22 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                   )}
 
                   {/* Meta Config Tab */}
-                  {selectedProvider !== 'anthropic' && selectedProvider !== 'openai' && selectedProvider !== 'cohere' && selectedTab === 'meta-config' && (
-                    <div className="animate-in fade-in-0 slide-in-from-right-2 duration-300">
-                      <MetaConfigRenderer provider={selectedProvider} metaConfig={metaConfig} onMetaConfigChange={handleMetaConfigChange} />
-                    </div>
-                  )}
+                  {selectedProvider !== 'anthropic' &&
+                    selectedProvider !== 'openai' &&
+                    selectedProvider !== 'cohere' &&
+                    selectedTab === 'meta-config' && (
+                      <div className="animate-in fade-in-0 slide-in-from-right-2 duration-300">
+                        <MetaConfigRenderer
+                          provider={selectedProvider}
+                          metaConfig={metaConfig}
+                          onMetaConfigChange={handleMetaConfigChange}
+                        />
+                      </div>
+                    )}
 
                   {/* Network Tab */}
                   {selectedTab === 'network' && (
-                    <div className="space-y-6 animate-in fade-in-0 slide-in-from-right-2 duration-300">
+                    <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-6 duration-300">
                       {/* Network Configuration */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2">
@@ -607,7 +624,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                             </Select>
                           </div>
 
-                          <div 
+                          <div
                             className="overflow-hidden transition-all duration-300 ease-in-out"
                             style={{
                               maxHeight: proxyConfig.type !== 'none' && proxyConfig.type !== 'environment' ? '300px' : '0px',
@@ -654,12 +671,12 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
                   {/* Performance Tab */}
                   {selectedTab === 'performance' && (
-                    <div className="space-y-4 animate-in fade-in-0 slide-in-from-right-2 duration-300">
+                    <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 duration-300">
                       <div className="flex items-center gap-2">
                         <Zap className="h-4 w-4" />
                         <h3 className="text-base font-medium">Performance Settings</h3>
                       </div>
-                      <div 
+                      <div
                         className="overflow-hidden transition-all duration-300 ease-in-out"
                         style={{
                           maxHeight: performanceChanged ? '200px' : '0px',
@@ -721,7 +738,12 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span>
-                          <Button type="submit" disabled={!validator.isValid() || isLoading} isLoading={isLoading} className="transition-all duration-200 ease-in-out">
+                          <Button
+                            type="submit"
+                            disabled={!validator.isValid() || isLoading}
+                            isLoading={isLoading}
+                            className="transition-all duration-200 ease-in-out"
+                          >
                             <Save className="h-4 w-4" />
                             {isLoading ? 'Saving...' : 'Save Provider'}
                           </Button>

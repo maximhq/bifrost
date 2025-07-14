@@ -190,6 +190,74 @@ sequenceDiagram
     Bifrost-->>Client: Cached Response
 ```
 
+#### **Streaming Response Flow**
+
+For streaming responses, the plugin pipeline executes post-hooks for every delta/chunk received from the provider:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Bifrost
+    participant Plugin1
+    participant Plugin2
+    participant Provider
+
+    Client->>Bifrost: Stream Request
+    Bifrost->>Plugin1: PreHook(request)
+    Plugin1-->>Bifrost: modified request
+    Bifrost->>Plugin2: PreHook(request)
+    Plugin2-->>Bifrost: modified request
+    Bifrost->>Provider: Stream API Call
+
+    loop For Each Delta
+        Provider-->>Bifrost: stream delta
+        Bifrost->>Plugin2: PostHook(delta)
+        Plugin2-->>Bifrost: modified delta
+        Bifrost->>Plugin1: PostHook(delta)
+        Plugin1-->>Bifrost: modified delta
+        Bifrost-->>Client: Send Delta
+    end
+
+    Provider-->>Bifrost: final chunk (finish reason)
+    Bifrost->>Plugin2: PostHook(final)
+    Plugin2-->>Bifrost: modified final
+    Bifrost->>Plugin1: PostHook(final)
+    Plugin1-->>Bifrost: modified final
+    Bifrost-->>Client: Final Chunk
+```
+
+**Streaming Execution Characteristics:**
+
+1. **Delta Processing:**
+   - Each stream delta (chunk) goes through all post-hooks
+   - Plugins can modify/transform each delta before it reaches the client
+   - Deltas can contain: text content, tool calls, role changes, or usage info
+
+2. **Special Delta Types:**
+   - **Start Event:** Initial delta with role information
+   - **Content Delta:** Regular text or tool call content
+   - **Usage Update:** Token usage statistics (if enabled)
+   - **Final Chunk:** Contains finish reason and any final metadata
+
+3. **Plugin Considerations:**
+   - Plugins must handle streaming responses efficiently
+   - Each delta should be processed quickly to maintain stream responsiveness
+   - Plugins can track state across deltas using context
+   - Heavy processing should be done asynchronously
+
+4. **Error Handling:**
+   - If a post-hook returns an error, it's sent as an error stream chunk
+   - Stream is terminated after error chunks
+   - Plugins can recover from errors by providing valid responses
+
+5. **Performance Optimization:**
+   - Lightweight delta processing to minimize latency
+   - Object pooling for common data structures
+   - Non-blocking operations for logging and metrics
+   - Efficient memory management for stream processing
+
+> **📖 Streaming Details:** [HTTP Transport →](../usage/http-transport/endpoints.md#streaming-responses)
+
 **Short-Circuit Rules:**
 
 - **Provider Skipped:** When plugin returns short-circuit response/error

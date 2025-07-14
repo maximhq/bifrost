@@ -32,12 +32,16 @@ from ..utils.common import (
     IMAGE_URL,
     BASE64_IMAGE,
     INVALID_ROLE_MESSAGES,
+    STREAMING_CHAT_MESSAGES,
+    STREAMING_TOOL_CALL_MESSAGES,
     WEATHER_TOOL,
     CALCULATOR_TOOL,
     assert_valid_chat_response,
     assert_valid_image_response,
     assert_valid_error_response,
     assert_error_propagation,
+    assert_valid_streaming_response,
+    collect_streaming_content,
     get_api_key,
     skip_if_no_api_key,
     COMPARISON_KEYWORDS,
@@ -438,6 +442,49 @@ class TestGoogleIntegration:
         error = exc_info.value
         assert_valid_error_response(error, "tester")
         assert_error_propagation(error, "google")
+
+    @skip_if_no_api_key("google")
+    def test_13_streaming(self, google_client, test_config):
+        """Test Case 13: Streaming chat completion using Google GenAI SDK"""
+
+        # Use the correct Google GenAI SDK streaming method
+        stream = google_client.models.generate_content_stream(
+            model=get_model("google", "chat"),
+            contents="Tell me a short story about a robot",
+        )
+
+        content = ""
+        chunk_count = 0
+
+        # Collect streaming content
+        for chunk in stream:
+            chunk_count += 1
+            if chunk.text:
+                content += chunk.text
+
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(content) > 10, "Should receive substantial content"
+
+        # Check for robot-related terms (the story might not use the exact word "robot")
+        robot_terms = [
+            "robot",
+            "metallic",
+            "programmed",
+            "unit",
+            "custodian",
+            "mechanical",
+            "android",
+            "machine",
+        ]
+        has_robot_content = any(term in content.lower() for term in robot_terms)
+        assert (
+            has_robot_content
+        ), f"Content should relate to robots. Found content: {content[:200]}..."
+
+        print(
+            f"✅ Streaming test passed: {chunk_count} chunks, {len(content)} characters"
+        )
 
 
 # Additional helper functions specific to Google GenAI

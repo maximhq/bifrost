@@ -46,7 +46,7 @@
 // This allows clients to use their existing integration code without modification while benefiting
 // from Bifrost's unified model routing, fallbacks, monitoring capabilities, and high-performance configuration management.
 //
-// NOTE: Streaming is not supported yet so all the flags related to streaming are ignored. (in both bifrost and its integrations)
+// NOTE: Streaming is supported for chat completions via Server-Sent Events (SSE)
 package main
 
 import (

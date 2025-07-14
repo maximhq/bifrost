@@ -27,6 +27,11 @@ type OpenAIChatRequest struct {
 	Seed             *int                     `json:"seed,omitempty"`
 }
 
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *OpenAIChatRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
+}
+
 // OpenAIChatResponse represents an OpenAI chat completion response
 type OpenAIChatResponse struct {
 	ID                string                          `json:"id"`
@@ -59,6 +64,32 @@ type OpenAIChatErrorStruct struct {
 	Message string      `json:"message"`  // Error message
 	Param   interface{} `json:"param"`    // Parameter that caused the error
 	EventID string      `json:"event_id"` // Event ID for tracking
+}
+
+// OpenAIStreamChoice represents a choice in a streaming response chunk
+type OpenAIStreamChoice struct {
+	Index        int                `json:"index"`
+	Delta        *OpenAIStreamDelta `json:"delta,omitempty"`
+	FinishReason *string            `json:"finish_reason,omitempty"`
+	LogProbs     *schemas.LogProbs  `json:"logprobs,omitempty"`
+}
+
+// OpenAIStreamDelta represents the incremental content in a streaming chunk
+type OpenAIStreamDelta struct {
+	Role      *string             `json:"role,omitempty"`
+	Content   *string             `json:"content,omitempty"`
+	ToolCalls *[]schemas.ToolCall `json:"tool_calls,omitempty"`
+}
+
+// OpenAIStreamResponse represents a single chunk in the OpenAI streaming response
+type OpenAIStreamResponse struct {
+	ID                string               `json:"id"`
+	Object            string               `json:"object"`
+	Created           int                  `json:"created"`
+	Model             string               `json:"model"`
+	SystemFingerprint *string              `json:"system_fingerprint,omitempty"`
+	Choices           []OpenAIStreamChoice `json:"choices"`
+	Usage             *schemas.LLMUsage    `json:"usage,omitempty"`
 }
 
 // ConvertToBifrostRequest converts an OpenAI chat request to Bifrost format
@@ -145,7 +176,7 @@ func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *Open
 		Created:           bifrostResp.Created,
 		Model:             bifrostResp.Model,
 		Choices:           bifrostResp.Choices,
-		Usage:             &bifrostResp.Usage,
+		Usage:             bifrostResp.Usage,
 		ServiceTier:       bifrostResp.ServiceTier,
 		SystemFingerprint: bifrostResp.SystemFingerprint,
 	}
@@ -196,4 +227,92 @@ func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAI
 		Type:    errorType,
 		Error:   errorStruct,
 	}
+}
+
+// DeriveOpenAIStreamFromBifrostError derives an OpenAI streaming error from a BifrostError
+func DeriveOpenAIStreamFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAIChatError {
+	// For streaming, we use the same error format as regular OpenAI errors
+	return DeriveOpenAIErrorFromBifrostError(bifrostErr)
+}
+
+// DeriveOpenAIStreamFromBifrostResponse converts a Bifrost response to OpenAI streaming format
+func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIStreamResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	streamResp := &OpenAIStreamResponse{
+		ID:                bifrostResp.ID,
+		Object:            "chat.completion.chunk",
+		Created:           bifrostResp.Created,
+		Model:             bifrostResp.Model,
+		SystemFingerprint: bifrostResp.SystemFingerprint,
+		Usage:             bifrostResp.Usage,
+	}
+
+	// Convert choices to streaming format
+	for _, choice := range bifrostResp.Choices {
+		streamChoice := OpenAIStreamChoice{
+			Index:        choice.Index,
+			FinishReason: choice.FinishReason,
+		}
+
+		var delta *OpenAIStreamDelta
+
+		// Handle streaming vs non-streaming choices
+		if choice.BifrostStreamResponseChoice != nil {
+			// This is a streaming response - use the delta directly
+			delta = &OpenAIStreamDelta{}
+
+			// Only set fields that are not nil
+			if choice.BifrostStreamResponseChoice.Delta.Role != nil {
+				delta.Role = choice.BifrostStreamResponseChoice.Delta.Role
+			}
+			if choice.BifrostStreamResponseChoice.Delta.Content != nil {
+				delta.Content = choice.BifrostStreamResponseChoice.Delta.Content
+			}
+			if len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0 {
+				delta.ToolCalls = &choice.BifrostStreamResponseChoice.Delta.ToolCalls
+			}
+		} else if choice.BifrostNonStreamResponseChoice != nil {
+			// This is a non-streaming response - convert message to delta format
+			delta = &OpenAIStreamDelta{}
+
+			// Convert role
+			role := string(choice.BifrostNonStreamResponseChoice.Message.Role)
+			delta.Role = &role
+
+			// Convert content
+			if choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr != nil {
+				delta.Content = choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr
+			}
+
+			// Convert tool calls if present (from AssistantMessage)
+			if choice.BifrostNonStreamResponseChoice.Message.AssistantMessage != nil &&
+				choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls != nil {
+				delta.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls
+			}
+
+			// Set LogProbs from non-streaming choice
+			if choice.BifrostNonStreamResponseChoice.LogProbs != nil {
+				streamChoice.LogProbs = choice.BifrostNonStreamResponseChoice.LogProbs
+			}
+		}
+
+		// Ensure we have a valid delta with at least one field set
+		// If all fields are nil, we should skip this chunk or set an empty content
+		if delta != nil {
+			hasValidField := (delta.Role != nil) || (delta.Content != nil) || (delta.ToolCalls != nil)
+			if !hasValidField {
+				// Set empty content to ensure we have at least one field
+				emptyContent := ""
+				delta.Content = &emptyContent
+			}
+			streamChoice.Delta = delta
+		}
+
+		streamResp.Choices = append(streamResp.Choices, streamChoice)
+	}
+
+	return streamResp
 }

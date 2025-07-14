@@ -3,11 +3,13 @@
 package providers
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +77,7 @@ func releaseOpenAIResponse(resp *OpenAIResponse) {
 type OpenAIProvider struct {
 	logger        schemas.Logger        // Logger for provider operations
 	client        *fasthttp.Client      // HTTP client for API requests
+	streamClient  *http.Client          // HTTP client for streaming requests
 	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
@@ -88,6 +91,11 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.Concurrency,
+	}
+
+	// Initialize streaming HTTP client
+	streamClient := &http.Client{
+		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 	}
 
 	// Pre-warm response pools
@@ -107,6 +115,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	return &OpenAIProvider{
 		logger:        logger,
 		client:        client,
+		streamClient:  streamClient,
 		networkConfig: config.NetworkConfig,
 	}
 }
@@ -209,7 +218,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model, key s
 		Created:           response.Created,
 		ServiceTier:       response.ServiceTier,
 		SystemFingerprint: response.SystemFingerprint,
-		Usage:             response.Usage,
+		Usage:             &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.OpenAI,
 			RawResponse: rawResponse,
@@ -378,7 +387,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 		Object:            response.Object,
 		Model:             response.Model,
 		Created:           response.Created,
-		Usage:             response.Usage,
+		Usage:             &response.Usage,
 		ServiceTier:       response.ServiceTier,
 		SystemFingerprint: response.SystemFingerprint,
 		ExtraFields: schemas.BifrostResponseExtraFields{
@@ -455,4 +464,270 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 	}
 
 	return bifrostResponse, nil
+}
+
+func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":    model,
+		"messages": formattedMessages,
+		"stream":   true,
+	}, preparedParams)
+
+	// Prepare OpenAI headers
+	headers := map[string]string{
+		"Content-Type":  "application/json",
+		"Authorization": "Bearer " + key,
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	// Use shared streaming logic
+	return handleOpenAIStreaming(
+		ctx,
+		provider.streamClient,
+		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		requestBody,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		schemas.OpenAI,
+		params,
+		postHookRunner,
+		provider.logger,
+	)
+}
+
+// performOpenAICompatibleStreaming handles streaming for OpenAI-compatible APIs (OpenAI, Azure).
+// This shared function reduces code duplication between providers that use the same SSE format.
+func handleOpenAIStreaming(
+	ctx context.Context,
+	httpClient *http.Client,
+	url string,
+	requestBody map[string]interface{},
+	headers map[string]string,
+	extraHeaders map[string]string,
+	providerType schemas.ModelProvider,
+	params *schemas.ModelParameters,
+	postHookRunner schemas.PostHookRunner,
+	logger schemas.Logger,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   err,
+			},
+		}
+	}
+
+	// Create HTTP request for streaming
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "failed to create HTTP request",
+				Error:   err,
+			},
+		}
+	}
+
+	// Set headers
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	// Set any extra headers from network config
+	setExtraHeadersHTTP(req, extraHeaders, nil)
+
+	// Make the request
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderRequest,
+				Error:   err,
+			},
+		}
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &resp.StatusCode,
+			Error: schemas.ErrorField{
+				Message: fmt.Sprintf("HTTP error from %s: %d", providerType, resp.StatusCode),
+			},
+		}
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer close(responseChan)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Skip empty lines and comments
+			if line == "" || strings.HasPrefix(line, ":") {
+				continue
+			}
+
+			// Check for end of stream
+			if line == "data: [DONE]" {
+				break
+			}
+
+			var jsonData string
+			var isDataLine bool
+
+			// Parse SSE data
+			if strings.HasPrefix(line, "data: ") {
+				jsonData = strings.TrimPrefix(line, "data: ")
+				isDataLine = true
+			} else {
+				// Handle raw JSON errors (without "data: " prefix)
+				jsonData = line
+				isDataLine = false
+			}
+
+			// Skip empty data
+			if strings.TrimSpace(jsonData) == "" {
+				continue
+			}
+
+			// First, check if this is an error response
+			var errorCheck map[string]interface{}
+			if err := json.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to parse stream data as JSON: %v", err))
+				continue
+			}
+
+			// Handle error responses
+			if _, hasError := errorCheck["error"]; hasError {
+				var openAIError OpenAIError
+				if err := json.Unmarshal([]byte(jsonData), &openAIError); err != nil {
+					logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
+					continue
+				}
+
+				// Send error through channel
+				errorResponse := &schemas.BifrostStream{
+					BifrostError: &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: schemas.ErrorField{
+							Type:    &openAIError.Error.Type,
+							Code:    &openAIError.Error.Code,
+							Message: openAIError.Error.Message,
+							Param:   openAIError.Error.Param,
+						},
+					},
+				}
+
+				if openAIError.EventID != "" {
+					errorResponse.BifrostError.EventID = &openAIError.EventID
+				}
+				if openAIError.Error.EventID != "" {
+					errorResponse.BifrostError.Error.EventID = &openAIError.Error.EventID
+				}
+
+				select {
+				case responseChan <- errorResponse:
+				case <-ctx.Done():
+				}
+				return // Stop processing on error
+			}
+
+			// Only process as regular response if it's a proper data line
+			if !isDataLine {
+				logger.Warn(fmt.Sprintf("Received non-data line that's not an error: %s", line))
+				continue
+			}
+
+			// Parse into bifrost response
+			var response schemas.BifrostResponse
+			if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				continue
+			}
+
+			// Handle usage-only chunks (when stream_options include_usage is true)
+			if len(response.Choices) == 0 && response.Usage != nil {
+				// This is a usage information chunk at the end of stream
+				if params != nil {
+					response.ExtraFields.Params = *params
+				}
+				response.ExtraFields.Provider = providerType
+
+				ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				continue
+			}
+
+			// Skip empty responses or responses without choices
+			if len(response.Choices) == 0 {
+				continue
+			}
+
+			// Handle finish reason in the final chunk
+			choice := response.Choices[0]
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				// This is the final chunk with finish reason
+				if params != nil {
+					response.ExtraFields.Params = *params
+				}
+				response.ExtraFields.Provider = providerType
+
+				ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+
+				// End stream processing after finish reason
+				break
+			}
+
+			// Handle regular content chunks
+			if choice.Delta.Content != nil || len(choice.Delta.ToolCalls) > 0 {
+				if params != nil {
+					response.ExtraFields.Params = *params
+				}
+				response.ExtraFields.Provider = providerType
+
+				ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+			}
+		}
+
+		// Handle scanner errors
+		if err := scanner.Err(); err != nil {
+			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+
+			// Send scanner error through channel
+			errorResponse := &schemas.BifrostStream{
+				BifrostError: &schemas.BifrostError{
+					IsBifrostError: true,
+					Error: schemas.ErrorField{
+						Message: "Error reading stream",
+						Error:   err,
+					},
+				},
+			}
+
+			select {
+			case responseChan <- errorResponse:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	return responseChan, nil
 }

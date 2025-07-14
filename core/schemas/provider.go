@@ -14,6 +14,7 @@ const (
 	DefaultRequestTimeoutInSeconds = 30
 	DefaultBufferSize              = 100
 	DefaultConcurrency             = 10
+	DefaultStreamBufferSize        = 100
 )
 
 // Pre-defined errors for provider operations
@@ -150,6 +151,8 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 	}
 }
 
+type PostHookRunner func(ctx *context.Context, result *BifrostResponse, err *BifrostError) (*BifrostResponse, *BifrostError)
+
 // Provider defines the interface for AI model providers.
 type Provider interface {
 	// GetProviderKey returns the provider's identifier
@@ -158,6 +161,8 @@ type Provider interface {
 	TextCompletion(ctx context.Context, model, key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
 	// ChatCompletion performs a chat completion request
 	ChatCompletion(ctx context.Context, model, key string, messages []BifrostMessage, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	// ChatCompletionStream performs a chat completion stream request
+	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, model, key string, messages []BifrostMessage, params *ModelParameters) (chan *BifrostStream, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx context.Context, model string, key string, input *EmbeddingInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
 }

@@ -9,7 +9,7 @@ import (
 )
 
 // OpenAIRouter holds route registrations for OpenAI endpoints.
-// It supports standard chat completions and image-enabled vision capabilities.
+// It supports standard chat completions and streaming capabilities with OpenAI-specific formatting.
 type OpenAIRouter struct {
 	*integrations.GenericRouter
 }
@@ -34,6 +34,14 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return DeriveOpenAIErrorFromBifrostError(err)
+			},
+			StreamConfig: &integrations.StreamConfig{
+				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+					return DeriveOpenAIStreamFromBifrostResponse(resp), nil
+				},
+				ErrorConverter: func(err *schemas.BifrostError) interface{} {
+					return DeriveOpenAIStreamFromBifrostError(err)
+				},
 			},
 		},
 	}

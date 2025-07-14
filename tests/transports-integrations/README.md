@@ -27,14 +27,14 @@ The Bifrost integration tests use a centralized configuration system that routes
 - **🌉 Bifrost Gateway Integration**: All integrations route through Bifrost proxy
 - **🤖 Centralized Configuration**: YAML-based configuration with environment variable support
 - **🔧 Integration-Specific Clients**: Type-safe, integration-optimized implementations
-- **📋 Comprehensive Test Coverage**: 11 categories covering all major AI functionality
+- **📋 Comprehensive Test Coverage**: 13 categories covering all major AI functionality
 - **⚙️ Flexible Execution**: Selective test running with command-line flags
 - **🛡️ Robust Error Handling**: Graceful error handling and detailed error reporting
 - **🎯 Production-Ready**: Async support, timeouts, retries, and logging
 
 ## 📋 Test Categories
 
-Our test suite covers 12 comprehensive scenarios for each integration:
+Our test suite covers 13 comprehensive scenarios for each integration:
 
 1. **Simple Chat** - Basic single-message conversations
 2. **Multi-turn Conversation** - Conversation history and context retention
@@ -48,6 +48,7 @@ Our test suite covers 12 comprehensive scenarios for each integration:
 10. **Complex End-to-End** - Comprehensive multimodal workflows
 11. **Integration-Specific Features** - Integration-unique capabilities
 12. **Error Handling** - Invalid request error processing and propagation
+13. **Streaming** - Real-time streaming responses and tool calls
 
 ## 📁 Directory Structure
 

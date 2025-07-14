@@ -11,7 +11,7 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 import { apiService } from '@/lib/api'
 import type { BifrostMessage, ContentBlock, LogEntry, LogFilters, LogStats, MessageContent, Pagination } from '@/lib/types/logs'
 import { AlertCircle, BarChart, CheckCircle, Clock, Hash } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 
 export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -23,6 +23,9 @@ export default function LogsPage() {
   const [showEmptyState, setShowEmptyState] = useState(false)
 
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
+
+  // Debouncing for streaming updates (client-side)
+  const streamingUpdateTimeouts = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   const [filters, setFilters] = useState<LogFilters>({
     providers: [],
@@ -37,65 +40,178 @@ export default function LogsPage() {
     order: 'desc',
   })
 
-  const handleNewLog = useCallback(
-    (log: LogEntry) => {
+  const handleLogMessage = useCallback(
+    (log: LogEntry, operation: 'create' | 'update') => {
       // If we were in empty state, exit it since we now have logs
       if (showEmptyState) {
         setShowEmptyState(false)
       }
 
-      // Only prepend the new log if we're on the first page and sorted by timestamp desc
-      if (pagination.offset === 0 && pagination.sort_by === 'timestamp' && pagination.order === 'desc') {
-        // Check if the log matches current filters
-        if (!matchesFilters(log, filters)) {
-          return
+      if (operation === 'create') {
+        // Handle new log creation
+        // Only prepend the new log if we're on the first page and sorted by timestamp desc
+        if (pagination.offset === 0 && pagination.sort_by === 'timestamp' && pagination.order === 'desc') {
+          // Check if the log matches current filters
+          if (!matchesFilters(log, filters)) {
+            return
+          }
+
+          setLogs((prevLogs: LogEntry[]) => {
+            // Check if log already exists (prevent duplicates)
+            if (prevLogs.some((existingLog) => existingLog.id === log.id)) {
+              return prevLogs
+            }
+
+            // Remove the last log if we're at the page limit
+            const updatedLogs = [log, ...prevLogs]
+            if (updatedLogs.length > pagination.limit) {
+              updatedLogs.pop()
+            }
+            return updatedLogs
+          })
+
+          // Update selectedLog if it matches (for detail sheet real-time updates)
+          setSelectedLog((prevSelectedLog) => {
+            if (prevSelectedLog && prevSelectedLog.id === log.id) {
+              return log
+            }
+            return prevSelectedLog
+          })
+
+          setTotalItems((prev: number) => prev + 1)
+
+          setStats((prevStats) => {
+            if (!prevStats) return prevStats
+
+            const newStats = { ...prevStats }
+            newStats.total_requests += 1
+
+            // Update success rate
+            const successCount = (prevStats.success_rate / 100) * prevStats.total_requests
+            const newSuccessCount = log.status === 'success' ? successCount + 1 : successCount
+            newStats.success_rate = (newSuccessCount / newStats.total_requests) * 100
+
+            // Update average latency
+            if (log.latency) {
+              const totalLatency = prevStats.average_latency * prevStats.total_requests
+              newStats.average_latency = (totalLatency + log.latency) / newStats.total_requests
+            }
+
+            // Update total tokens
+            if (log.token_usage) {
+              newStats.total_tokens += log.token_usage.total_tokens
+            }
+
+            return newStats
+          })
         }
+      } else if (operation === 'update') {
+        // Handle log updates with debouncing for streaming
 
-        setLogs((prevLogs: LogEntry[]) => {
-          // Remove the last log if we're at the page limit
-          const updatedLogs = [log, ...prevLogs]
-          if (updatedLogs.length > pagination.limit) {
-            updatedLogs.pop()
+        // Check if the log exists in our current list
+        const logExists = logs.some((existingLog) => existingLog.id === log.id)
+
+        if (!logExists) {
+          // Fallback: if log doesn't exist, treat as create (e.g., user was on different page when created)
+          if (pagination.offset === 0 && pagination.sort_by === 'timestamp' && pagination.order === 'desc') {
+            // Check if the log matches current filters
+            if (matchesFilters(log, filters)) {
+              setLogs((prevLogs: LogEntry[]) => {
+                // Double-check it doesn't exist (race condition protection)
+                if (prevLogs.some((existingLog) => existingLog.id === log.id)) {
+                  return prevLogs.map((existingLog) => (existingLog.id === log.id ? log : existingLog))
+                }
+
+                // Add as new log
+                const updatedLogs = [log, ...prevLogs]
+                if (updatedLogs.length > pagination.limit) {
+                  updatedLogs.pop()
+                }
+                return updatedLogs
+              })
+            }
           }
-          return updatedLogs
-        })
-        setTotalItems((prev: number) => prev + 1)
+        } else {
+          // Normal update flow for existing logs
+          if (log.stream) {
+            // For streaming logs, debounce updates to avoid UI thrashing
+            const existingTimeout = streamingUpdateTimeouts.current.get(log.id)
+            if (existingTimeout) {
+              clearTimeout(existingTimeout)
+            }
 
-        setStats((prevStats) => {
-          if (!prevStats) return prevStats
+            const timeout = setTimeout(() => {
+              updateExistingLog(log)
+              streamingUpdateTimeouts.current.delete(log.id)
+            }, 100) // 100ms debounce for streaming updates
 
-          const newStats = { ...prevStats }
-          newStats.total_requests += 1
-
-          // Update success rate
-          const successCount = (prevStats.success_rate / 100) * prevStats.total_requests
-          const newSuccessCount = log.status === 'success' ? successCount + 1 : successCount
-          newStats.success_rate = (newSuccessCount / newStats.total_requests) * 100
-
-          // Update average latency
-          if (log.latency) {
-            const totalLatency = prevStats.average_latency * prevStats.total_requests
-            newStats.average_latency = (totalLatency + log.latency) / newStats.total_requests
+            streamingUpdateTimeouts.current.set(log.id, timeout)
+          } else {
+            // For non-streaming updates, update immediately
+            updateExistingLog(log)
           }
-
-          // Update total tokens
-          if (log.token_usage) {
-            newStats.total_tokens += log.token_usage.total_tokens
-          }
-
-          return newStats
-        })
+        }
       }
     },
-    [pagination.offset, pagination.sort_by, pagination.order, pagination.limit, filters, showEmptyState],
+    [pagination.offset, pagination.sort_by, pagination.order, pagination.limit, filters, showEmptyState, logs],
   )
+
+  const updateExistingLog = useCallback((updatedLog: LogEntry) => {
+    setLogs((prevLogs: LogEntry[]) => {
+      return prevLogs.map((existingLog) => (existingLog.id === updatedLog.id ? updatedLog : existingLog))
+    })
+
+    // Update selectedLog if it matches the updated log (for real-time detail sheet updates)
+    setSelectedLog((prevSelectedLog) => {
+      if (prevSelectedLog && prevSelectedLog.id === updatedLog.id) {
+        return updatedLog
+      }
+      return prevSelectedLog
+    })
+
+    // Update stats for completed requests
+    if (updatedLog.status === 'success' || updatedLog.status === 'error') {
+      setStats((prevStats) => {
+        if (!prevStats) return prevStats
+
+        const newStats = { ...prevStats }
+
+        // Recalculate success rate (this is an approximation)
+        const successCount = (prevStats.success_rate / 100) * prevStats.total_requests
+        const newSuccessCount = updatedLog.status === 'success' ? successCount + 1 : successCount
+        newStats.success_rate = (newSuccessCount / newStats.total_requests) * 100
+
+        // Update average latency
+        if (updatedLog.latency) {
+          // This is an approximation - for exact stats, we'd need to refetch
+          const totalLatency = prevStats.average_latency * prevStats.total_requests
+          newStats.average_latency = (totalLatency + updatedLog.latency) / newStats.total_requests
+        }
+
+        // Update total tokens
+        if (updatedLog.token_usage) {
+          newStats.total_tokens += updatedLog.token_usage.total_tokens
+        }
+
+        return newStats
+      })
+    }
+  }, [])
 
   const { isConnected: isSocketConnected, setMessageHandler } = useWebSocket()
 
   // Set up the message handler when the component mounts
   useEffect(() => {
-    setMessageHandler(handleNewLog)
-  }, [handleNewLog, setMessageHandler])
+    setMessageHandler(handleLogMessage)
+  }, [handleLogMessage, setMessageHandler])
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      streamingUpdateTimeouts.current.forEach((timeout) => clearTimeout(timeout))
+      streamingUpdateTimeouts.current.clear()
+    }
+  }, [])
 
   const fetchLogs = useCallback(async () => {
     setFetchingLogs(true)

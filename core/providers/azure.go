@@ -5,6 +5,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -115,6 +116,7 @@ func releaseAzureTextResponse(resp *AzureTextResponse) {
 type AzureProvider struct {
 	logger        schemas.Logger        // Logger for provider operations
 	client        *fasthttp.Client      // HTTP client for API requests
+	streamClient  *http.Client          // HTTP client for streaming requests
 	meta          schemas.MetaConfig    // Azure-specific configuration
 	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
@@ -135,6 +137,11 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.Concurrency,
 	}
 
+	// Initialize streaming HTTP client
+	streamClient := &http.Client{
+		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+	}
+
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		azureChatResponsePool.Put(&AzureChatResponse{})
@@ -148,6 +155,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 	return &AzureProvider{
 		logger:        logger,
 		client:        client,
+		streamClient:  streamClient,
 		meta:          config.MetaConfig,
 		networkConfig: config.NetworkConfig,
 	}, nil
@@ -290,16 +298,18 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 	if len(response.Choices) > 0 {
 		choices = append(choices, schemas.BifrostResponseChoice{
 			Index: 0,
-			Message: schemas.BifrostMessage{
-				Role: schemas.ModelChatMessageRoleAssistant,
-				Content: schemas.MessageContent{
-					ContentStr: &response.Choices[0].Text,
+			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+				Message: schemas.BifrostMessage{
+					Role: schemas.ModelChatMessageRoleAssistant,
+					Content: schemas.MessageContent{
+						ContentStr: &response.Choices[0].Text,
+					},
+				},
+				LogProbs: &schemas.LogProbs{
+					Text: response.Choices[0].LogProbs,
 				},
 			},
 			FinishReason: response.Choices[0].FinishReason,
-			LogProbs: &schemas.LogProbs{
-				Text: response.Choices[0].LogProbs,
-			},
 		})
 	}
 
@@ -310,7 +320,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 		Model:             response.Model,
 		Created:           response.Created,
 		SystemFingerprint: response.SystemFingerprint,
-		Usage:             response.Usage,
+		Usage:             &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.Azure,
 			RawResponse: rawResponse,
@@ -357,7 +367,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key st
 		Model:             response.Model,
 		Created:           response.Created,
 		SystemFingerprint: response.SystemFingerprint,
-		Usage:             response.Usage,
+		Usage:             &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.Azure,
 			RawResponse: rawResponse,
@@ -422,7 +432,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 		ID:                response.ID,
 		Object:            response.Object,
 		Model:             response.Model,
-		Usage:             response.Usage,
+		Usage:             &response.Usage,
 		SystemFingerprint: response.SystemFingerprint,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.Azure,
@@ -477,4 +487,85 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 	}
 
 	return bifrostResponse, nil
+}
+
+// ChatCompletionStream performs a streaming chat completion request to Azure's OpenAI API.
+// It supports real-time streaming of responses using Server-Sent Events (SSE).
+// Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
+// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
+func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+
+	// Merge additional parameters and set stream to true
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":    model,
+		"messages": formattedMessages,
+		"stream":   true,
+	}, preparedParams)
+
+	// Construct Azure-specific URL with deployment
+	if provider.meta.GetEndpoint() == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "endpoint not set",
+			},
+		}
+	}
+
+	baseURL := *provider.meta.GetEndpoint()
+	var fullURL string
+
+	if provider.meta.GetDeployments() != nil {
+		deployment := provider.meta.GetDeployments()[model]
+		if deployment == "" {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: schemas.ErrorField{
+					Message: fmt.Sprintf("deployment not found for model %s", model),
+				},
+			}
+		}
+
+		apiVersion := provider.meta.GetAPIVersion()
+		if apiVersion == nil {
+			apiVersion = StrPtr("2024-02-01")
+		}
+
+		fullURL = fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", baseURL, deployment, *apiVersion)
+	} else {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "deployments not set",
+			},
+		}
+	}
+
+	// Prepare Azure-specific headers
+	headers := make(map[string]string)
+	headers["Content-Type"] = "application/json"
+	headers["Accept"] = "text/event-stream"
+	headers["Cache-Control"] = "no-cache"
+
+	// Set Azure authentication - either Bearer token or api-key
+	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
+		headers["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
+	} else {
+		headers["api-key"] = key
+	}
+
+	// Use shared streaming logic from OpenAI
+	return handleOpenAIStreaming(
+		ctx,
+		provider.streamClient,
+		fullURL,
+		requestBody,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Azure, // Provider type
+		params,
+		postHookRunner,
+		provider.logger,
+	)
 }

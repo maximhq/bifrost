@@ -49,7 +49,7 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 
   return (
     <div className="relative">
-      <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
+      <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
         {showLanguageSelect && onLanguageChange && (
           <Select value={language} onValueChange={onLanguageChange}>
             <SelectTrigger className="h-8 w-fit text-xs">
@@ -218,7 +218,7 @@ const response = await completion({
         </div>
 
         <Tabs defaultValue="curl" className="w-full rounded-lg border">
-          <TabsList className="grid h-10 w-full grid-cols-5 rounded-t-lg rounded-b-none">
+          <TabsList className="grid h-10 w-full grid-cols-5 rounded-b-none rounded-t-lg">
             <TabsTrigger value="curl">cURL</TabsTrigger>
             <TabsTrigger value="openai">OpenAI SDK</TabsTrigger>
             <TabsTrigger value="anthropic">Anthropic SDK</TabsTrigger>

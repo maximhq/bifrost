@@ -75,6 +75,11 @@ type AnthropicMessageRequest struct {
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *AnthropicMessageRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
+}
+
 // AnthropicMessageResponse represents an Anthropic messages API response
 type AnthropicMessageResponse struct {
 	ID           string                  `json:"id"`
@@ -103,6 +108,41 @@ type AnthropicMessageError struct {
 type AnthropicMessageErrorStruct struct {
 	Type    string `json:"type"`    // Error type
 	Message string `json:"message"` // Error message
+}
+
+// AnthropicStreamResponse represents a single chunk in the Anthropic streaming response
+// This matches the format expected by Anthropic's streaming API clients
+type AnthropicStreamResponse struct {
+	Type         string                  `json:"type"`
+	ID           *string                 `json:"id,omitempty"`
+	Model        *string                 `json:"model,omitempty"`
+	Index        *int                    `json:"index,omitempty"`
+	Message      *AnthropicStreamMessage `json:"message,omitempty"`
+	ContentBlock *AnthropicContentBlock  `json:"content_block,omitempty"`
+	Delta        *AnthropicStreamDelta   `json:"delta,omitempty"`
+	Usage        *AnthropicUsage         `json:"usage,omitempty"`
+}
+
+// AnthropicStreamMessage represents the message structure in streaming events
+type AnthropicStreamMessage struct {
+	ID           string                  `json:"id"`
+	Type         string                  `json:"type"`
+	Role         string                  `json:"role"`
+	Content      []AnthropicContentBlock `json:"content"`
+	Model        string                  `json:"model"`
+	StopReason   *string                 `json:"stop_reason,omitempty"`
+	StopSequence *string                 `json:"stop_sequence,omitempty"`
+	Usage        *AnthropicUsage         `json:"usage,omitempty"`
+}
+
+// AnthropicStreamDelta represents the incremental content in a streaming chunk
+type AnthropicStreamDelta struct {
+	Type         string  `json:"type"`
+	Text         *string `json:"text,omitempty"`
+	Thinking     *string `json:"thinking,omitempty"`
+	PartialJSON  *string `json:"partial_json,omitempty"`
+	StopReason   *string `json:"stop_reason,omitempty"`
+	StopSequence *string `json:"stop_sequence,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshalling for MessageContent.
@@ -402,7 +442,7 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 	}
 
 	// Convert usage information
-	if bifrostResp.Usage != (schemas.LLMUsage{}) {
+	if bifrostResp.Usage != nil {
 		anthropicResp.Usage = &AnthropicUsage{
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
@@ -477,6 +517,134 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 	return anthropicResp
 }
 
+// DeriveAnthropicStreamFromBifrostResponse converts a Bifrost streaming response to Anthropic SSE string format
+func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse) string {
+	if bifrostResp == nil {
+		return ""
+	}
+
+	streamResp := &AnthropicStreamResponse{}
+
+	// Handle different streaming event types based on the response content
+	if len(bifrostResp.Choices) > 0 {
+		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
+
+		// Handle streaming responses
+		if choice.BifrostStreamResponseChoice != nil {
+			delta := choice.BifrostStreamResponseChoice.Delta
+
+			// Handle text content deltas
+			if delta.Content != nil {
+				streamResp.Type = "content_block_delta"
+				streamResp.Index = &choice.Index
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type: "text_delta",
+					Text: delta.Content,
+				}
+			} else if delta.Thought != nil {
+				// Handle thinking content deltas
+				streamResp.Type = "content_block_delta"
+				streamResp.Index = &choice.Index
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type:     "thinking_delta",
+					Thinking: delta.Thought,
+				}
+			} else if len(delta.ToolCalls) > 0 {
+				// Handle tool call deltas
+				toolCall := delta.ToolCalls[0] // Take first tool call
+
+				if toolCall.Function.Name != nil && *toolCall.Function.Name != "" {
+					// Tool use start event
+					streamResp.Type = "content_block_start"
+					streamResp.Index = &choice.Index
+					streamResp.ContentBlock = &AnthropicContentBlock{
+						Type: "tool_use",
+						ID:   toolCall.ID,
+						Name: toolCall.Function.Name,
+					}
+				} else if toolCall.Function.Arguments != "" {
+					// Tool input delta
+					streamResp.Type = "content_block_delta"
+					streamResp.Index = &choice.Index
+					streamResp.Delta = &AnthropicStreamDelta{
+						Type:        "input_json_delta",
+						PartialJSON: &toolCall.Function.Arguments,
+					}
+				}
+			} else if choice.FinishReason != nil && *choice.FinishReason != "" {
+				// Handle finish reason
+				streamResp.Type = "message_delta"
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type:       "message_delta",
+					StopReason: choice.FinishReason,
+				}
+			}
+
+		} else if choice.BifrostNonStreamResponseChoice != nil {
+			// Handle non-streaming response converted to streaming format
+			streamResp.Type = "message_start"
+
+			// Create message start event
+			streamMessage := &AnthropicStreamMessage{
+				ID:    bifrostResp.ID,
+				Type:  "message",
+				Role:  string(choice.BifrostNonStreamResponseChoice.Message.Role),
+				Model: bifrostResp.Model,
+			}
+
+			// Convert content
+			var content []AnthropicContentBlock
+			if choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr != nil {
+				content = append(content, AnthropicContentBlock{
+					Type: "text",
+					Text: choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr,
+				})
+			}
+
+			streamMessage.Content = content
+			streamResp.Message = streamMessage
+		}
+	}
+
+	// Handle usage information
+	if bifrostResp.Usage != nil {
+		if streamResp.Type == "" {
+			streamResp.Type = "message_delta"
+		}
+		streamResp.Usage = &AnthropicUsage{
+			InputTokens:  bifrostResp.Usage.PromptTokens,
+			OutputTokens: bifrostResp.Usage.CompletionTokens,
+		}
+	}
+
+	// Set common fields
+	if bifrostResp.ID != "" {
+		streamResp.ID = &bifrostResp.ID
+	}
+	if bifrostResp.Model != "" {
+		streamResp.Model = &bifrostResp.Model
+	}
+
+	// Default to empty content_block_delta if no specific type was set
+	if streamResp.Type == "" {
+		streamResp.Type = "content_block_delta"
+		streamResp.Index = bifrost.Ptr(0)
+		streamResp.Delta = &AnthropicStreamDelta{
+			Type: "text_delta",
+			Text: bifrost.Ptr(""),
+		}
+	}
+
+	// Marshal to JSON and format as SSE
+	jsonData, err := json.Marshal(streamResp)
+	if err != nil {
+		return ""
+	}
+
+	// Format as Anthropic SSE
+	return fmt.Sprintf("event: %s\ndata: %s\n\n", streamResp.Type, jsonData)
+}
+
 // DeriveAnthropicErrorFromBifrostError derives a AnthropicMessageError from a BifrostError
 func DeriveAnthropicErrorFromBifrostError(bifrostErr *schemas.BifrostError) *AnthropicMessageError {
 	if bifrostErr == nil {
@@ -503,4 +671,21 @@ func DeriveAnthropicErrorFromBifrostError(bifrostErr *schemas.BifrostError) *Ant
 		Type:  errorType,
 		Error: errorStruct,
 	}
+}
+
+// DeriveAnthropicStreamFromBifrostError derives an Anthropic streaming error from a BifrostError in SSE format
+func DeriveAnthropicStreamFromBifrostError(bifrostErr *schemas.BifrostError) string {
+	errorResp := DeriveAnthropicErrorFromBifrostError(bifrostErr)
+	if errorResp == nil {
+		return ""
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(errorResp)
+	if err != nil {
+		return ""
+	}
+
+	// Format as Anthropic SSE error event
+	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }

@@ -134,6 +134,12 @@ type GeminiChatRequest struct {
 	Labels             map[string]string          `json:"labels,omitempty"`
 	CachedContent      string                     `json:"cachedContent,omitempty"`
 	ResponseModalities []string                   `json:"responseModalities,omitempty"`
+	Stream             bool                       `json:"-"` // Internal field to track streaming requests
+}
+
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *GeminiChatRequest) IsStreamingRequested() bool {
+	return r.Stream
 }
 
 // GeminiChatRequestError represents a Gemini chat completion error response
@@ -475,7 +481,7 @@ func DeriveGenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *genai
 		Candidates: make([]*genai_sdk.Candidate, len(bifrostResp.Choices)),
 	}
 
-	if bifrostResp.Usage != (schemas.LLMUsage{}) {
+	if bifrostResp.Usage != nil {
 		genaiResp.UsageMetadata = &genai_sdk.GenerateContentResponseUsageMetadata{
 			PromptTokenCount:     int32(bifrostResp.Usage.PromptTokens),
 			CandidatesTokenCount: int32(bifrostResp.Usage.CompletionTokens),
@@ -491,7 +497,7 @@ func DeriveGenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *genai
 			candidate.FinishReason = genai_sdk.FinishReason(*choice.FinishReason)
 		}
 
-		if bifrostResp.Usage != (schemas.LLMUsage{}) {
+		if bifrostResp.Usage != nil {
 			candidate.TokenCount = int32(bifrostResp.Usage.CompletionTokens)
 		}
 
@@ -579,6 +585,112 @@ func DeriveGenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *genai
 	return genaiResp
 }
 
+// DeriveGeminiStreamFromBifrostResponse converts a Bifrost streaming response to Google GenAI streaming format
+func DeriveGeminiStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *genai_sdk.GenerateContentResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	genaiResp := &genai_sdk.GenerateContentResponse{
+		Candidates: make([]*genai_sdk.Candidate, len(bifrostResp.Choices)),
+	}
+
+	// Set usage metadata if available
+	if bifrostResp.Usage != nil {
+		genaiResp.UsageMetadata = &genai_sdk.GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     int32(bifrostResp.Usage.PromptTokens),
+			CandidatesTokenCount: int32(bifrostResp.Usage.CompletionTokens),
+			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
+		}
+	}
+
+	// Convert choices to streaming format
+	for i, choice := range bifrostResp.Choices {
+		candidate := &genai_sdk.Candidate{
+			Index: int32(choice.Index),
+		}
+
+		// Set finish reason if present
+		if choice.FinishReason != nil {
+			candidate.FinishReason = genai_sdk.FinishReason(*choice.FinishReason)
+		}
+
+		// Set token count if available
+		if bifrostResp.Usage != nil {
+			candidate.TokenCount = int32(bifrostResp.Usage.CompletionTokens)
+		}
+
+		// Handle streaming response delta
+		var parts []*genai_sdk.Part
+
+		if choice.BifrostStreamResponseChoice != nil {
+			// Convert streaming delta to parts
+			delta := choice.BifrostStreamResponseChoice.Delta
+
+			// Handle text content delta
+			if delta.Content != nil && *delta.Content != "" {
+				parts = append(parts, &genai_sdk.Part{
+					Text: *delta.Content,
+				})
+			}
+
+			// Handle thinking content delta
+			if delta.Thought != nil && *delta.Thought != "" {
+				parts = append(parts, &genai_sdk.Part{
+					Text:    *delta.Thought,
+					Thought: true,
+				})
+			}
+
+			// Handle tool call deltas
+			if len(delta.ToolCalls) > 0 {
+				for _, toolCall := range delta.ToolCalls {
+					if toolCall.Function.Name != nil && *toolCall.Function.Name != "" {
+						// Convert tool call arguments from JSON string to map
+						argsMap := make(map[string]interface{})
+						if toolCall.Function.Arguments != "" {
+							json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
+						}
+
+						fc := &genai_sdk.FunctionCall{
+							Name: *toolCall.Function.Name,
+							Args: argsMap,
+						}
+						if toolCall.ID != nil {
+							fc.ID = *toolCall.ID
+						}
+
+						parts = append(parts, &genai_sdk.Part{
+							FunctionCall: fc,
+						})
+					}
+				}
+			}
+
+		}
+
+		// Set content if we have parts
+		if len(parts) > 0 {
+			candidate.Content = &genai_sdk.Content{
+				Parts: parts,
+				Role:  string(schemas.ModelChatMessageRoleAssistant), // Streaming responses are typically from assistant
+			}
+		}
+
+		genaiResp.Candidates[i] = candidate
+	}
+
+	// Set response metadata
+	if bifrostResp.ID != "" {
+		genaiResp.ResponseID = bifrostResp.ID
+	}
+	if bifrostResp.Model != "" {
+		genaiResp.ModelVersion = bifrostResp.Model
+	}
+
+	return genaiResp
+}
+
 // DeriveGeminiErrorFromBifrostError derives a GeminiChatRequestError from a BifrostError
 func DeriveGeminiErrorFromBifrostError(bifrostErr *schemas.BifrostError) *GeminiChatRequestError {
 	if bifrostErr == nil {
@@ -603,6 +715,12 @@ func DeriveGeminiErrorFromBifrostError(bifrostErr *schemas.BifrostError) *Gemini
 			Status:  status,
 		},
 	}
+}
+
+// DeriveGeminiStreamFromBifrostError derives a Gemini streaming error from a BifrostError
+func DeriveGeminiStreamFromBifrostError(bifrostErr *schemas.BifrostError) *GeminiChatRequestError {
+	// For streaming, we use the same error format as regular Gemini errors
+	return DeriveGeminiErrorFromBifrostError(bifrostErr)
 }
 
 // isImageMimeType checks if a MIME type represents an image format

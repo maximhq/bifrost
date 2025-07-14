@@ -5,6 +5,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,7 @@ func releaseMistralResponse(resp *MistralResponse) {
 type MistralProvider struct {
 	logger        schemas.Logger        // Logger for provider operations
 	client        *fasthttp.Client      // HTTP client for API requests
+	streamClient  *http.Client          // HTTP client for streaming requests
 	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
@@ -77,6 +79,11 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.Concurrency,
+	}
+
+	// Initialize streaming HTTP client
+	streamClient := &http.Client{
+		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 	}
 
 	// Pre-warm response pools
@@ -96,6 +103,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	return &MistralProvider{
 		logger:        logger,
 		client:        client,
+		streamClient:  streamClient,
 		networkConfig: config.NetworkConfig,
 	}
 }
@@ -181,7 +189,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model, key 
 		Choices: response.Choices,
 		Model:   response.Model,
 		Created: response.Created,
-		Usage:   response.Usage,
+		Usage:   &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.Mistral,
 			RawResponse: rawResponse,
@@ -226,7 +234,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 			// Map to Mistral's parameter name
 			requestBody["output_dtype"] = *params.EncodingFormat
 		}
-		
+
 		// Map dimensions to Mistral's parameter name
 		if params.Dimensions != nil {
 			requestBody["output_dimension"] = *params.Dimensions
@@ -322,7 +330,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 		Object:            mistralResp.Object,
 		Embedding:         embeddings,
 		Model:             mistralResp.Model,
-		Usage:             mistralResp.Usage,
+		Usage:             &mistralResp.Usage,
 		SystemFingerprint: mistralResp.SystemFingerprint,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:    schemas.Mistral,
@@ -335,4 +343,40 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 	}
 
 	return bifrostResponse, nil
+}
+
+// ChatCompletionStream performs a streaming chat completion request to the Mistral API.
+// It supports real-time streaming of responses using Server-Sent Events (SSE).
+// Uses Mistral's OpenAI-compatible streaming format.
+// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
+func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":    model,
+		"messages": formattedMessages,
+		"stream":   true,
+	}, preparedParams)
+
+	// Prepare Mistral headers
+	headers := map[string]string{
+		"Content-Type":  "application/json",
+		"Authorization": "Bearer " + key,
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	// Use shared OpenAI-compatible streaming logic
+	return handleOpenAIStreaming(
+		ctx,
+		provider.streamClient,
+		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		requestBody,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Mistral,
+		params,
+		postHookRunner,
+		provider.logger,
+	)
 }

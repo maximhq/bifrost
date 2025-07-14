@@ -23,6 +23,7 @@ func TestAzure(t *testing.T) {
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -33,9 +34,6 @@ func TestAzure(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
-		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 		},
 	}
 

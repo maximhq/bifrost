@@ -3,6 +3,7 @@
 package providers
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"slices"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+
+	"net/http"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -63,9 +66,8 @@ type CohereToolCall struct {
 // CohereChatResponse represents the response from Cohere's chat API.
 // It includes the response ID, generated text, chat history, and usage statistics.
 type CohereChatResponse struct {
-	ResponseID   string `json:"response_id"`   // Unique identifier for the response
-	Text         string `json:"text"`          // Generated text response
 	GenerationID string `json:"generation_id"` // ID of the generation
+	Text         string `json:"text"`          // Generated text response
 	ChatHistory  []struct {
 		Role      schemas.ModelChatMessageRole `json:"role"`       // Role of the message sender
 		Message   string                       `json:"message"`    // Content of the message
@@ -105,7 +107,36 @@ type CohereEmbeddingResponse struct {
 type CohereProvider struct {
 	logger        schemas.Logger        // Logger for provider operations
 	client        *fasthttp.Client      // HTTP client for API requests
+	streamClient  *http.Client          // HTTP client for streaming requests
 	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+}
+
+// CohereStreamStartEvent represents the start of a stream event.
+type CohereStreamStartEvent struct {
+	EventType    string `json:"event_type"`    // stream-start
+	GenerationID string `json:"generation_id"` // ID of the generation
+}
+
+// CohereStreamTextEvent represents the text generation event.
+type CohereStreamTextEvent struct {
+	EventType string `json:"event_type"` // text-generation
+	Text      string `json:"text"`       // Text content being generated
+}
+
+// CohereStreamToolEvent represents the tool use event.
+type CohereStreamToolCallEvent struct {
+	EventType string `json:"event_type"` // tool-use
+	ToolCall  struct {
+		ID         string `json:"id"`         // ID of the tool call
+		Parameters string `json:"parameters"` // Parameters of the tool being called
+	} `json:"tool_call"` // Tool call information
+	Text *string `json:"text"` // Text content being generated
+}
+
+// CohereStreamStopEvent represents the end of a stream event.
+type CohereStreamStopEvent struct {
+	EventType string             `json:"event_type"` // stream-end
+	Response  CohereChatResponse `json:"response"`   // Response information
 }
 
 // NewCohereProvider creates a new Cohere provider instance.
@@ -118,6 +149,11 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		MaxConnsPerHost: config.ConcurrencyAndBufferSize.Concurrency,
+	}
+
+	// Initialize streaming HTTP client
+	streamClient := &http.Client{
+		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 	}
 
 	// Pre-warm response pools
@@ -135,6 +171,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 	return &CohereProvider{
 		logger:        logger,
 		client:        client,
+		streamClient:  streamClient,
 		networkConfig: config.NetworkConfig,
 	}
 }
@@ -154,6 +191,156 @@ func (provider *CohereProvider) TextCompletion(ctx context.Context, model, key, 
 // It formats the request, sends it to Cohere, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Prepare request body using shared function
+	requestBody, err := prepareCohereChatRequest(messages, params, model, false)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "failed to prepare Cohere chat request",
+				Error:   err,
+			},
+		}
+	}
+
+	// Marshal request body
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   err,
+			},
+		}
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat")
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	req.SetBody(jsonBody)
+
+	// Make request
+	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from cohere provider: %s", string(resp.Body())))
+
+		var errorResp CohereError
+
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = errorResp.Message
+
+		return nil, bifrostErr
+	}
+
+	// Read response body
+	responseBody := resp.Body()
+
+	// Create response object from pool
+	response := acquireCohereResponse()
+	defer releaseCohereResponse(response)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Transform tool calls if present
+	var toolCalls []schemas.ToolCall
+	if response.ToolCalls != nil {
+		for _, tool := range response.ToolCalls {
+			function := schemas.FunctionCall{
+				Name: &tool.Name,
+			}
+
+			args, err := json.Marshal(tool.Parameters)
+			if err != nil {
+				function.Arguments = fmt.Sprintf("%v", tool.Parameters)
+			} else {
+				function.Arguments = string(args)
+			}
+
+			toolCalls = append(toolCalls, schemas.ToolCall{
+				Function: function,
+			})
+		}
+	}
+
+	// Get role and content from the last message in chat history
+	var role schemas.ModelChatMessageRole
+	var content string
+	if len(response.ChatHistory) > 0 {
+		lastMsg := response.ChatHistory[len(response.ChatHistory)-1]
+		role = lastMsg.Role
+		content = lastMsg.Message
+	} else {
+		role = schemas.ModelChatMessageRoleChatbot
+		content = response.Text
+	}
+
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID: response.GenerationID,
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: role,
+						Content: schemas.MessageContent{
+							ContentStr: &content,
+						},
+						AssistantMessage: &schemas.AssistantMessage{
+							ToolCalls: &toolCalls,
+						},
+					},
+				},
+				FinishReason: &response.FinishReason,
+			},
+		},
+		Usage: &schemas.LLMUsage{
+			PromptTokens:     int(response.Meta.Tokens.InputTokens),
+			CompletionTokens: int(response.Meta.Tokens.OutputTokens),
+			TotalTokens:      int(response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens),
+		},
+		Model: model,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Cohere,
+			BilledUsage: &schemas.BilledLLMUsage{
+				PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
+				CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
+			},
+			ChatHistory: convertChatHistory(response.ChatHistory),
+			RawResponse: rawResponse,
+		},
+	}
+
+	if params != nil {
+		bifrostResponse.ExtraFields.Params = *params
+	}
+
+	return bifrostResponse, nil
+}
+
+// prepareCohereChatRequest prepares the request body for Cohere chat completion requests.
+// It transforms the messages into Cohere format and handles tools, parameters, and content formatting.
+func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters, model string, stream bool) (map[string]interface{}, error) {
 	// Get the last message and chat history
 	lastMessage := messages[len(messages)-1]
 	chatHistory := messages[:len(messages)-1]
@@ -281,7 +468,11 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 		"model":        model,
 	}, preparedParams)
 
-	// Handle the last message content based on whether it supports vision
+	// Add stream parameter if streaming
+	if stream {
+		requestBody["stream"] = true
+	}
+
 	if lastMessage.Content.ContentStr != nil {
 		requestBody["message"] = *lastMessage.Content.ContentStr
 	} else if lastMessage.Content.ContentBlocks != nil {
@@ -327,6 +518,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 		}
 		requestBody["tools"] = tools
 	}
+
 	// Add tool choice if present
 	if params != nil && params.ToolChoice != nil {
 		if params.ToolChoice.ToolChoiceStr != nil {
@@ -338,165 +530,20 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 		}
 	}
 
-	// Marshal request body
-	jsonBody, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
-	}
-
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from cohere provider: %s", string(resp.Body())))
-
-		var errorResp CohereError
-
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = errorResp.Message
-
-		return nil, bifrostErr
-	}
-
-	// Read response body
-	responseBody := resp.Body()
-
-	// Create response object from pool
-	response := acquireCohereResponse()
-	defer releaseCohereResponse(response)
-
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Transform tool calls if present
-	var toolCalls []schemas.ToolCall
-	if response.ToolCalls != nil {
-		for _, tool := range response.ToolCalls {
-			function := schemas.FunctionCall{
-				Name: &tool.Name,
-			}
-
-			args, err := json.Marshal(tool.Parameters)
-			if err != nil {
-				function.Arguments = fmt.Sprintf("%v", tool.Parameters)
-			} else {
-				function.Arguments = string(args)
-			}
-
-			toolCalls = append(toolCalls, schemas.ToolCall{
-				Function: function,
-			})
-		}
-	}
-
-	// Get role and content from the last message in chat history
-	var role schemas.ModelChatMessageRole
-	var content string
-	if len(response.ChatHistory) > 0 {
-		lastMsg := response.ChatHistory[len(response.ChatHistory)-1]
-		role = lastMsg.Role
-		content = lastMsg.Message
-	} else {
-		role = schemas.ModelChatMessageRoleChatbot
-		content = response.Text
-	}
-
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID: response.ResponseID,
-		Choices: []schemas.BifrostResponseChoice{
-			{
-				Index: 0,
-				Message: schemas.BifrostMessage{
-					Role: role,
-					Content: schemas.MessageContent{
-						ContentStr: &content,
-					},
-					AssistantMessage: &schemas.AssistantMessage{
-						ToolCalls: &toolCalls,
-					},
-				},
-				FinishReason: &response.FinishReason,
-			},
-		},
-		Usage: schemas.LLMUsage{
-			PromptTokens:     int(response.Meta.Tokens.InputTokens),
-			CompletionTokens: int(response.Meta.Tokens.OutputTokens),
-			TotalTokens:      int(response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens),
-		},
-		Model: model,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Cohere,
-			BilledUsage: &schemas.BilledLLMUsage{
-				PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
-				CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
-			},
-			ChatHistory: convertChatHistory(response.ChatHistory),
-			RawResponse: rawResponse,
-		},
-	}
-
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
-	}
-
-	return bifrostResponse, nil
+	return requestBody, nil
 }
 
 // processImageContent processes image content for Cohere API format.
-// It creates a copy of the image content, normalizes and formats it, then returns the properly formatted map.
-// This prevents unintended mutations to the original image content.
+// NOTE: Cohere v1 does not support image content, so this function is a placeholder.
+// It returns nil since image processing is not available.
 func processImageContent(imageContent *schemas.ImageURLStruct) map[string]interface{} {
 	if imageContent == nil {
 		return nil
 	}
 
-	sanitizedURL, _ := SanitizeImageURL(imageContent.URL)
-	urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
-
-	formattedImgContent := AnthropicImageContent{
-		Type: urlTypeInfo.Type,
-		URL:  sanitizedURL,
-	}
-
-	if urlTypeInfo.MediaType != nil {
-		formattedImgContent.MediaType = *urlTypeInfo.MediaType
-	}
-
-	return map[string]interface{}{
-		"type": "image_url",
-		"image_url": map[string]interface{}{
-			"url": formattedImgContent.URL,
-		},
-	}
+	// Cohere v1 does not support image content
+	// Return nil to skip image processing
+	return nil
 }
 
 // convertChatHistory converts Cohere's chat history format to Bifrost's format for standardization.
@@ -553,10 +600,10 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 
 	// Prepare request body with default values
 	requestBody := map[string]interface{}{
-		"texts":            input.Texts,
-		"model":            model,
-		"input_type":       "search_document", // Default input type - can be overridden via ExtraParams
-		"embedding_types":  []string{"float"}, // Default to float embeddings
+		"texts":           input.Texts,
+		"model":           model,
+		"input_type":      "search_document", // Default input type - can be overridden via ExtraParams
+		"embedding_types": []string{"float"}, // Default to float embeddings
 	}
 
 	// Apply additional parameters if provided
@@ -660,7 +707,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 		ID:        cohereResp.ID,
 		Embedding: cohereResp.Embeddings.Float,
 		Model:     model,
-		Usage: schemas.LLMUsage{
+		Usage: &schemas.LLMUsage{
 			PromptTokens: totalInputTokens,
 			TotalTokens:  totalInputTokens,
 		},
@@ -675,4 +722,301 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 	}
 
 	return bifrostResponse, nil
+}
+
+// ChatCompletionStream performs a streaming chat completion request to the Cohere API.
+// It supports real-time streaming of responses using Server-Sent Events (SSE).
+// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
+func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	// Prepare request body using shared function
+	requestBody, err := prepareCohereChatRequest(messages, params, model, true)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "failed to prepare Cohere chat request",
+				Error:   err,
+			},
+		}
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   err,
+			},
+		}
+	}
+
+	// Create HTTP request for streaming
+	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v1/chat", strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "failed to create HTTP request",
+				Error:   err,
+			},
+		}
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	// Set any extra headers from network config
+	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Make the request
+	resp, err := provider.streamClient.Do(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderRequest,
+				Error:   err,
+			},
+		}
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &resp.StatusCode,
+			Error: schemas.ErrorField{
+				Message: fmt.Sprintf("HTTP error from Cohere: %d", resp.StatusCode),
+			},
+		}
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer close(responseChan)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		var responseID string
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Skip empty lines and comments
+			if line == "" || strings.HasPrefix(line, ":") {
+				continue
+			}
+
+			// Parse SSE data
+			if strings.HasPrefix(line, "data: ") {
+				jsonData := strings.TrimPrefix(line, "data: ")
+
+				// Parse the streaming event
+				var streamEvent map[string]interface{}
+				if err := json.Unmarshal([]byte(jsonData), &streamEvent); err != nil {
+					provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere stream event: %v", err))
+					continue
+				}
+
+				eventType, exists := streamEvent["event_type"].(string)
+				if !exists {
+					continue
+				}
+
+				switch eventType {
+				case "stream-start":
+					var startEvent CohereStreamStartEvent
+					if err := json.Unmarshal([]byte(jsonData), &startEvent); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere stream-start event: %v", err))
+						continue
+					}
+
+					responseID = startEvent.GenerationID
+
+					// Send empty message to signal stream start
+					streamResponse := &schemas.BifrostResponse{
+						ID:     responseID,
+						Object: "chat.completion.chunk",
+						Model:  model,
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{
+										Role: StrPtr(string(schemas.ModelChatMessageRoleAssistant)),
+									},
+								},
+							},
+						},
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							Provider: schemas.Cohere,
+						},
+					}
+
+					if params != nil {
+						streamResponse.ExtraFields.Params = *params
+					}
+
+					// Use utility function to process and send response
+					ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+
+				case "text-generation":
+					var textEvent CohereStreamTextEvent
+					if err := json.Unmarshal([]byte(jsonData), &textEvent); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere text-generation event: %v", err))
+						continue
+					}
+
+					// Create response for this text chunk
+					response := &schemas.BifrostResponse{
+						ID:     responseID,
+						Object: "chat.completion.chunk",
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{
+										Content: &textEvent.Text,
+									},
+								},
+								FinishReason: nil, // Not finished yet
+							},
+						},
+						Model: model,
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							Provider: schemas.Cohere,
+						},
+					}
+
+					if params != nil {
+						response.ExtraFields.Params = *params
+					}
+
+					// Use utility function to process and send response
+					ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
+
+				case "tool-calls-chunk":
+					var toolEvent CohereStreamToolCallEvent
+					if err := json.Unmarshal([]byte(jsonData), &toolEvent); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere tool-use event: %v", err))
+						continue
+					}
+
+					toolCall := schemas.ToolCall{
+						ID: &toolEvent.ToolCall.ID,
+						Function: schemas.FunctionCall{
+							Name:      &toolEvent.ToolCall.ID,
+							Arguments: toolEvent.ToolCall.Parameters,
+						},
+					}
+
+					// Create response for tool calls
+					response := &schemas.BifrostResponse{
+						ID:     responseID,
+						Object: "chat.completion.chunk",
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{
+										ToolCalls: []schemas.ToolCall{toolCall},
+										Content:   toolEvent.Text,
+									},
+								},
+								FinishReason: nil,
+							},
+						},
+						Model: model,
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							Provider: schemas.Cohere,
+						},
+					}
+
+					if params != nil {
+						response.ExtraFields.Params = *params
+					}
+
+					// Use utility function to process and send response
+					ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
+
+				case "stream-end":
+					var stopEvent CohereStreamStopEvent
+					if err := json.Unmarshal([]byte(jsonData), &stopEvent); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere stream-end event: %v", err))
+						continue
+					}
+
+					// Convert tool calls from the final response
+					var toolCalls []schemas.ToolCall
+					for _, toolCall := range stopEvent.Response.ToolCalls {
+						function := schemas.FunctionCall{
+							Name: &toolCall.Name,
+						}
+
+						args, err := json.Marshal(toolCall.Parameters)
+						if err != nil {
+							function.Arguments = fmt.Sprintf("%v", toolCall.Parameters)
+						} else {
+							function.Arguments = string(args)
+						}
+
+						toolCalls = append(toolCalls, schemas.ToolCall{
+							Function: function,
+						})
+					}
+
+					// Send final response with complete content from the stopEvent
+					response := &schemas.BifrostResponse{
+						ID:     responseID,
+						Object: "chat.completion.chunk",
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{
+										Role:      StrPtr(string(schemas.ModelChatMessageRoleAssistant)),
+										Content:   &stopEvent.Response.Text,
+										ToolCalls: toolCalls,
+									},
+								},
+								FinishReason: &stopEvent.Response.FinishReason,
+							},
+						},
+						Model: model,
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							Provider: schemas.Cohere,
+						},
+					}
+
+					if params != nil {
+						response.ExtraFields.Params = *params
+					}
+
+					// Use utility function to process and send response
+					ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
+
+					return // End of stream
+
+				default:
+					// Unknown event type, log and continue
+					provider.logger.Debug(fmt.Sprintf("Unknown Cohere stream event type: %s", eventType))
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			provider.logger.Warn(fmt.Sprintf("Error reading Cohere stream: %v", err))
+		}
+	}()
+
+	return responseChan, nil
 }

@@ -8,8 +8,7 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 )
 
-// AnthropicRouter holds route registrations for Anthropic endpoints.
-// It supports standard chat completions and image-enabled vision capabilities.
+// AnthropicRouter handles Anthropic-compatible API endpoints
 type AnthropicRouter struct {
 	*integrations.GenericRouter
 }
@@ -34,6 +33,14 @@ func NewAnthropicRouter(client *bifrost.Bifrost) *AnthropicRouter {
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return DeriveAnthropicErrorFromBifrostError(err)
+			},
+			StreamConfig: &integrations.StreamConfig{
+				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+					return DeriveAnthropicStreamFromBifrostResponse(resp), nil
+				},
+				ErrorConverter: func(err *schemas.BifrostError) interface{} {
+					return DeriveAnthropicStreamFromBifrostError(err)
+				},
 			},
 		},
 	}

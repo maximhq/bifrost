@@ -125,12 +125,20 @@ func (h *WebSocketHandler) HandleLogStream(ctx *fasthttp.RequestCtx) {
 
 // BroadcastLogUpdate sends a log update to all connected WebSocket clients
 func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logging.LogEntry) {
+	// Determine operation type based on log status and timestamp
+	operationType := "update"
+	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
+		operationType = "create"
+	}
+
 	message := struct {
-		Type    string            `json:"type"`
-		Payload *logging.LogEntry `json:"payload"`
+		Type      string            `json:"type"`
+		Operation string            `json:"operation"` // "create" or "update"
+		Payload   *logging.LogEntry `json:"payload"`
 	}{
-		Type:    "log",
-		Payload: logEntry,
+		Type:      "log",
+		Operation: operationType,
+		Payload:   logEntry,
 	}
 
 	data, err := json.Marshal(message)

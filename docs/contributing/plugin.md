@@ -805,6 +805,253 @@ func (p *AsyncPlugin) PostHook(
 }
 ```
 
+### **Handling Streaming Responses**
+
+When implementing plugins, it's crucial to handle both streaming and non-streaming responses correctly. The PostHook method will be called differently depending on the response type:
+
+```go
+func (p *YourPlugin) PostHook(
+    ctx *context.Context,
+    result *schemas.BifrostResponse,
+    err *schemas.BifrostError,
+) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+    // First check if this is a streaming response
+    isStreaming := false
+    if result != nil && len(result.Choices) > 0 {
+        // Check if any choice has BifrostStreamResponseChoice
+        for _, choice := range result.Choices {
+            if choice.BifrostStreamResponseChoice != nil {
+                isStreaming = true
+                break
+            }
+        }
+    }
+
+    if isStreaming {
+        // Handle streaming response - this will be called for EACH delta
+        // Each delta can contain:
+        // 1. Role changes (initial delta)
+        // 2. Content chunks
+        // 3. Tool call chunks
+        // 4. Usage information
+        // 5. Finish reason (final delta)
+
+        if result != nil && len(result.Choices) > 0 {
+            choice := result.Choices[0]
+            if choice.BifrostStreamResponseChoice != nil {
+                delta := choice.BifrostStreamResponseChoice.Delta
+
+                // Handle different delta types
+                switch {
+                case delta.Role != nil:
+                    // Initial delta with role
+                    p.handleRoleDelta(delta.Role)
+
+                case delta.Content != nil:
+                    // Content delta
+                    p.handleContentDelta(delta.Content)
+
+                case len(delta.ToolCalls) > 0:
+                    // Tool call delta
+                    p.handleToolCallDelta(delta.ToolCalls)
+
+                case choice.FinishReason != nil:
+                    // Final delta with finish reason
+                    p.handleFinishDelta(choice.FinishReason)
+                }
+            }
+        }
+    } else {
+        // Handle regular non-streaming response
+        // This is called once with the complete response
+        if result != nil {
+            p.handleCompleteResponse(result)
+        }
+    }
+
+    return result, err, nil
+}
+
+// Example delta handlers
+func (p *YourPlugin) handleRoleDelta(role *string) {
+    // Handle initial role delta
+    // This is the first delta in a stream, indicating the start
+    if role != nil {
+        // Initialize any stream-specific state
+        p.streamState = NewStreamState(*role)
+    }
+}
+
+func (p *YourPlugin) handleContentDelta(content *string) {
+    // Handle content delta
+    // This contains the actual streamed text
+    if content != nil {
+        // Process the content chunk
+        // Remember: each chunk is a small piece of the full response
+        p.streamState.AppendContent(*content)
+    }
+}
+
+func (p *YourPlugin) handleToolCallDelta(toolCalls []schemas.ToolCall) {
+    // Handle tool call delta
+    // This contains function call information
+    for _, call := range toolCalls {
+        if call.Function.Name != nil {
+            // Process function name
+            p.streamState.AddToolCall(*call.Function.Name)
+        }
+        if call.Function.Arguments != "" {
+            // Process function arguments
+            // Note: Arguments might come in multiple chunks
+            p.streamState.AppendToolCallArgs(call.Function.Arguments)
+        }
+    }
+}
+
+func (p *YourPlugin) handleFinishDelta(reason *string) {
+    // Handle finish reason delta
+    // This is the last delta in a stream
+    if reason != nil {
+        // Finalize any stream processing
+        p.streamState.Complete(*reason)
+    }
+}
+```
+
+**Key Considerations for Streaming Plugins:**
+
+1. **Performance Critical:**
+   - PostHook runs for EVERY delta in streaming responses
+   - Keep processing lightweight and efficient
+   - Use object pooling for frequently allocated structures
+   - Avoid blocking operations
+
+2. **State Management:**
+   - Use context to maintain state across deltas
+   - Consider using sync.Pool for stream state objects
+   - Clean up state when finish reason is received
+   - Handle unexpected stream termination
+
+3. **Error Handling:**
+   - Return errors only for critical failures
+   - Consider recovering from non-critical errors
+   - Maintain stream integrity during error recovery
+   - Document error handling behavior
+
+4. **Testing:**
+
+   ```go
+   func TestStreamingPlugin(t *testing.T) {
+       plugin := NewYourPlugin()
+       ctx := context.Background()
+
+       // Test role delta
+       roleDelta := createStreamResponse("assistant", nil, nil)
+       result, err, _ := plugin.PostHook(&ctx, roleDelta, nil)
+       assert.NotNil(t, result)
+       assert.Nil(t, err)
+
+       // Test content delta
+       contentDelta := createStreamResponse("", stringPtr("Hello"), nil)
+       result, err, _ = plugin.PostHook(&ctx, contentDelta, nil)
+       assert.NotNil(t, result)
+       assert.Nil(t, err)
+
+       // Test finish delta
+       finishDelta := createStreamResponse("", nil, stringPtr("stop"))
+       result, err, _ = plugin.PostHook(&ctx, finishDelta, nil)
+       assert.NotNil(t, result)
+       assert.Nil(t, err)
+   }
+
+   func createStreamResponse(role string, content *string, finish *string) *schemas.BifrostResponse {
+       resp := &schemas.BifrostResponse{
+           Choices: []schemas.BifrostResponseChoice{
+               {
+                   BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+                       Delta: schemas.BifrostStreamDelta{},
+                   },
+               },
+           },
+       }
+
+       if role != "" {
+           resp.Choices[0].BifrostStreamResponseChoice.Delta.Role = &role
+       }
+       if content != nil {
+           resp.Choices[0].BifrostStreamResponseChoice.Delta.Content = content
+       }
+       if finish != nil {
+           resp.Choices[0].FinishReason = finish
+       }
+
+       return resp
+   }
+   ```
+
+5. **Documentation:**
+   - Document streaming behavior in plugin README
+   - Explain state management approach
+   - List supported delta types
+   - Provide streaming-specific examples
+
+> **💡 Tip**: Use the `isStreamingResponse` helper to reliably detect streaming responses:
+
+> ```go
+> func isStreamingResponse(result *schemas.BifrostResponse) bool {
+>     if result == nil || len(result.Choices) == 0 {
+>         return false
+>     }
+>     for _, choice := range result.Choices {
+>         if choice.BifrostStreamResponseChoice != nil {
+>             return true
+>         }
+>     }
+>     return false
+> }
+> ```
+
+---
+
+## 🔒 **Security Best Practices**
+
+### **1. Input Validation**
+
+- **Request Validation** - Ensure all incoming requests are valid and contain necessary fields.
+- **API Key Management** - Securely manage and validate API keys.
+- **Rate Limiting** - Implement robust rate limiting to prevent abuse.
+
+### **2. Output Protection**
+
+- **Sensitive Data** - Do not log or expose sensitive data in plugin logs.
+- **Error Messages** - Return generic error messages to the user, not detailed technical errors.
+- **Response Integrity** - Ensure responses are not tampered with and are in the expected format.
+
+### **3. Resource Management**
+
+- **Memory** - Be mindful of memory usage. Use object pooling for frequently allocated structures.
+- **Connections** - Manage open connections to providers and external services.
+- **Cleanup** - Properly clean up resources in the `Cleanup()` method.
+
+### **4. Error Handling**
+
+- **Graceful Degradation** - Implement graceful degradation for critical errors.
+- **Recovery** - Use fallback mechanisms and retry strategies for transient failures.
+- **Documentation** - Clearly document error handling patterns and recovery mechanisms.
+
+### **5. Logging**
+
+- **Contextual Information** - Log relevant information (request ID, user ID, etc.) for debugging.
+- **Sensitive Data** - Do not log sensitive data (API keys, tokens, etc.).
+- **Performance** - Log performance metrics and latency.
+
+### **6. Testing**
+
+- **Unit Tests** - Comprehensive test coverage for error scenarios.
+- **Integration Tests** - Tests with real Bifrost instance to verify error handling.
+- **Error Scenarios** - Tests for various error conditions and recovery paths.
+
+
 ---
 
 ## ✅ **Plugin Submission Checklist**

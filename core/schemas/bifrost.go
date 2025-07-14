@@ -87,8 +87,8 @@ type Fallback struct {
 // your request to the model. Bifrost follows a standard set of parameters which
 // mapped to the provider's parameters.
 type ModelParameters struct {
-	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`
-	Tools             *[]Tool     `json:"tools,omitempty"`
+	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
+	Tools             *[]Tool     `json:"tools,omitempty"`               // Tools to use
 	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
 	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
 	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
@@ -300,13 +300,13 @@ type BifrostResponse struct {
 	ID                string                     `json:"id,omitempty"`
 	Object            string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
 	Choices           []BifrostResponseChoice    `json:"choices,omitempty"`
+	Embedding         [][]float32                `json:"data,omitempty"` // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
 	Model             string                     `json:"model,omitempty"`
 	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
 	ServiceTier       *string                    `json:"service_tier,omitempty"`
 	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
-	Usage             LLMUsage                   `json:"usage,omitempty"`
+	Usage             *LLMUsage                  `json:"usage,omitempty"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
-	Embedding         [][]float32                `json:"data,omitempty"` // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
 }
 
 // LLMUsage represents token usage information
@@ -401,13 +401,37 @@ type Annotation struct {
 	Citation Citation `json:"url_citation"`
 }
 
-// BifrostResponseChoice represents a choice in the completion result
+// BifrostResponseChoice represents a choice in the completion result.
+// This struct can represent either a streaming or non-streaming response choice.
+// IMPORTANT: Only one of BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
+// should be non-nil at a time.
 type BifrostResponseChoice struct {
-	Index        int            `json:"index"`
-	Message      BifrostMessage `json:"message"`
-	FinishReason *string        `json:"finish_reason,omitempty"`
-	StopString   *string        `json:"stop,omitempty"`
-	LogProbs     *LogProbs      `json:"log_probs,omitempty"`
+	Index        int     `json:"index"`
+	FinishReason *string `json:"finish_reason,omitempty"`
+
+	*BifrostNonStreamResponseChoice
+	*BifrostStreamResponseChoice
+}
+
+// BifrostNonStreamResponseChoice represents a choice in the non-stream response
+type BifrostNonStreamResponseChoice struct {
+	Message    BifrostMessage `json:"message"`
+	StopString *string        `json:"stop,omitempty"`
+	LogProbs   *LogProbs      `json:"log_probs,omitempty"`
+}
+
+// BifrostStreamResponseChoice represents a choice in the stream response
+type BifrostStreamResponseChoice struct {
+	Delta BifrostStreamDelta `json:"delta"` // Partial message info
+}
+
+// BifrostStreamDelta represents a delta in the stream response
+type BifrostStreamDelta struct {
+	Role      *string    `json:"role,omitempty"`       // Only in the first chunk
+	Content   *string    `json:"content,omitempty"`    // May be empty string or null
+	Thought   *string    `json:"thought,omitempty"`    // May be empty string or null
+	Refusal   *string    `json:"refusal,omitempty"`    // Refusal content if any
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
 }
 
 // BifrostResponseExtraFields contains additional fields in a response.
@@ -423,6 +447,11 @@ type BifrostResponseExtraFields struct {
 const (
 	RequestCancelled = "request_cancelled"
 )
+
+type BifrostStream struct {
+	*BifrostResponse
+	*BifrostError
+}
 
 // BifrostError represents an error from the Bifrost system.
 //

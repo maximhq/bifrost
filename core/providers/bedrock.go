@@ -19,6 +19,8 @@ import (
 
 	"github.com/goccy/go-json"
 
+	"bufio"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -140,6 +142,53 @@ type BedrockAnthropicToolSpec struct {
 // BedrockError represents the error response structure from Bedrock's API.
 type BedrockError struct {
 	Message string `json:"message"` // Error message
+}
+
+// BedrockStreamMessageStartEvent is emitted when the assistant message starts.
+type BedrockStreamMessageStartEvent struct {
+	MessageStart struct {
+		Role string `json:"role"` // e.g. "assistant"
+	} `json:"messageStart"`
+}
+
+// BedrockStreamContentBlockDeltaEvent is sent for each content delta chunk (text, reasoning, tool use).
+type BedrockStreamContentBlockDeltaEvent struct {
+	ContentBlockDelta struct {
+		Delta struct {
+			Text             string          `json:"text,omitempty"`
+			ReasoningContent json.RawMessage `json:"reasoningContent,omitempty"`
+			ToolUse          json.RawMessage `json:"toolUse,omitempty"`
+		} `json:"delta"`
+		ContentBlockIndex int `json:"contentBlockIndex"`
+	} `json:"contentBlockDelta"`
+}
+
+// BedrockStreamContentBlockStopEvent indicates the end of a content block.
+type BedrockStreamContentBlockStopEvent struct {
+	ContentBlockStop struct {
+		ContentBlockIndex int `json:"contentBlockIndex"`
+	} `json:"contentBlockStop"`
+}
+
+// BedrockStreamMessageStopEvent marks the end of the assistant message.
+type BedrockStreamMessageStopEvent struct {
+	MessageStop struct {
+		StopReason string `json:"stopReason"` // e.g. "stop", "max_tokens", "tool_use"
+	} `json:"messageStop"`
+}
+
+// BedrockStreamMetadataEvent contains metadata after streaming ends.
+type BedrockStreamMetadataEvent struct {
+	Metadata struct {
+		Usage struct {
+			InputTokens  int `json:"inputTokens"`
+			OutputTokens int `json:"outputTokens"`
+			TotalTokens  int `json:"totalTokens"`
+		} `json:"usage"`
+		Metrics struct {
+			LatencyMs float64 `json:"latencyMs"`
+		} `json:"metrics"`
+	} `json:"metadata"`
 }
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
@@ -344,14 +393,16 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index: 0,
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
-							ContentStr: &response.Completion,
+					BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+						Message: schemas.BifrostMessage{
+							Role: schemas.ModelChatMessageRoleAssistant,
+							Content: schemas.MessageContent{
+								ContentStr: &response.Completion,
+							},
 						},
+						StopString: &response.Stop,
 					},
 					FinishReason: &response.StopReason,
-					StopString:   &response.Stop,
 				},
 			},
 			Model: model,
@@ -384,10 +435,12 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 		for i, output := range response.Outputs {
 			choices = append(choices, schemas.BifrostResponseChoice{
 				Index: i,
-				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentStr: &output.Text,
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: schemas.ModelChatMessageRoleAssistant,
+						Content: schemas.MessageContent{
+							ContentStr: &output.Text,
+						},
 					},
 				},
 				FinishReason: &output.StopReason,
@@ -971,12 +1024,14 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 	choices := []schemas.BifrostResponseChoice{
 		{
 			Index: 0,
-			Message: schemas.BifrostMessage{
-				Role: schemas.ModelChatMessageRoleAssistant,
-				Content: schemas.MessageContent{
-					ContentBlocks: &contentBlocks,
+			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+				Message: schemas.BifrostMessage{
+					Role: schemas.ModelChatMessageRoleAssistant,
+					Content: schemas.MessageContent{
+						ContentBlocks: &contentBlocks,
+					},
+					AssistantMessage: assistantMessage,
 				},
-				AssistantMessage: assistantMessage,
 			},
 			FinishReason: &response.StopReason,
 		},
@@ -987,7 +1042,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 	// Create final response
 	bifrostResponse := &schemas.BifrostResponse{
 		Choices: choices,
-		Usage: schemas.LLMUsage{
+		Usage: &schemas.LLMUsage{
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.TotalTokens,
@@ -1169,7 +1224,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 	bifrostResponse := &schemas.BifrostResponse{
 		Embedding: [][]float32{titanResp.Embedding},
 		Model:     model,
-		Usage: schemas.LLMUsage{
+		Usage: &schemas.LLMUsage{
 			PromptTokens: titanResp.InputTextTokenCount,
 			TotalTokens:  titanResp.InputTextTokenCount,
 		},
@@ -1233,7 +1288,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 		Embedding: cohereResp.Embeddings,
 		ID:        cohereResp.ID,
 		Model:     model,
-		Usage: schemas.LLMUsage{
+		Usage: &schemas.LLMUsage{
 			PromptTokens: totalInputTokens,
 			TotalTokens:  totalInputTokens,
 		},
@@ -1248,4 +1303,416 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 	}
 
 	return bifrostResponse, nil
+}
+
+// ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
+// It formats the request, sends it to Bedrock, and processes the streaming response.
+// Returns a channel for streaming BifrostResponse objects or an error if the request fails.
+func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
+	if err != nil {
+		return nil, err
+	}
+
+	preparedParams := prepareParams(params)
+
+	// Transform tools if present
+	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+		preparedParams["toolConfig"] = map[string]interface{}{
+			"tools": provider.getChatCompletionTools(params, model),
+		}
+	} else {
+		// Check if conversation history contains tool use/result blocks
+		// Bedrock requires toolConfig when such blocks are present
+		hasToolContent, toolsFromHistory := provider.extractToolsFromHistory(messages)
+
+		// If conversation contains tool content but no tools provided in current request,
+		// include the extracted tools to satisfy Bedrock's toolConfig requirement
+		if hasToolContent && len(toolsFromHistory) > 0 {
+			preparedParams["toolConfig"] = map[string]interface{}{
+				"tools": toolsFromHistory,
+			}
+		}
+	}
+
+	requestBody := mergeConfig(messageBody, preparedParams)
+
+	// Format the path with proper model identifier for streaming
+	path := fmt.Sprintf("%s/converse-stream", model)
+
+	if provider.meta != nil && provider.meta.GetInferenceProfiles() != nil {
+		if inferenceProfileId, ok := provider.meta.GetInferenceProfiles()[model]; ok {
+			if provider.meta.GetARN() != nil {
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *provider.meta.GetARN(), inferenceProfileId))
+				path = fmt.Sprintf("%s/converse-stream", encodedModelIdentifier)
+			}
+		}
+	}
+
+	if provider.meta == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "meta config for bedrock is not provided",
+			},
+		}
+	}
+
+	region := "us-east-1"
+	if provider.meta.GetRegion() != nil {
+		region = *provider.meta.GetRegion()
+	}
+
+	// Create the streaming request
+	jsonBody, jsonErr := json.Marshal(requestBody)
+	if jsonErr != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderJSONMarshaling,
+				Error:   jsonErr,
+			},
+		}
+	}
+
+	// Create HTTP request for streaming
+	req, reqErr := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), strings.NewReader(string(jsonBody)))
+	if reqErr != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: "error creating request",
+				Error:   reqErr,
+			},
+		}
+	}
+
+	// Set any extra headers from network config
+	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Sign the request for AWS
+	if provider.meta.GetSecretAccessKey() != nil {
+		if signErr := signAWSRequest(req, key, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); signErr != nil {
+			return nil, signErr
+		}
+	} else {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "secret access key not set",
+			},
+		}
+	}
+
+	// Make the request
+	resp, respErr := provider.client.Do(req)
+	if respErr != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderRequest,
+				Error:   respErr,
+			},
+		}
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &resp.StatusCode,
+			Error: schemas.ErrorField{
+				Message: fmt.Sprintf("HTTP error from Bedrock: %d", resp.StatusCode),
+			},
+		}
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer close(responseChan)
+		defer resp.Body.Close()
+
+		// Create a buffer scanner to process the AWS Event Stream format
+		scanner := bufio.NewScanner(resp.Body)
+		var messageID string
+
+		// AWS Event Streaming can have large buffers
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Skip empty lines
+			if line == "" {
+				continue
+			}
+
+			// AWS Event Stream format embeds JSON within binary data
+			// Look for JSON objects in the stream data
+			jsonStart := strings.Index(line, "{")
+			if jsonStart == -1 {
+				continue
+			}
+
+			// Extract the JSON part from the line
+			jsonData := line[jsonStart:]
+
+			// Find the end of the JSON object by counting braces
+			braceCount := 0
+			jsonEnd := -1
+			for i, char := range jsonData {
+				if char == '{' {
+					braceCount++
+				} else if char == '}' {
+					braceCount--
+					if braceCount == 0 {
+						jsonEnd = i + 1
+						break
+					}
+				}
+			}
+
+			if jsonEnd == -1 {
+				continue
+			}
+
+			// Extract the complete JSON object
+			jsonStr := jsonData[:jsonEnd]
+
+			// Parse the JSON event
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(jsonStr), &event); err != nil {
+				provider.logger.Debug(fmt.Sprintf("Failed to parse JSON from stream: %v, data: %s", err, jsonStr))
+				continue
+			}
+
+			// Determine event type and handle accordingly
+			switch {
+			case event["contentBlockIndex"] != nil && event["delta"] != nil:
+				// This is a contentBlockDelta event
+				contentBlockIndex := 0
+				if idx, ok := event["contentBlockIndex"].(float64); ok {
+					contentBlockIndex = int(idx)
+				}
+
+				delta, ok := event["delta"].(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				switch {
+				case delta["text"] != nil:
+					// Handle text delta
+					if text, ok := delta["text"].(string); ok && text != "" {
+						// Create streaming response for this delta
+						streamResponse := &schemas.BifrostResponse{
+							ID:     messageID,
+							Object: "chat.completion.chunk",
+							Model:  model,
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									Index: contentBlockIndex,
+									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+										Delta: schemas.BifrostStreamDelta{
+											Content: &text,
+										},
+									},
+								},
+							},
+							ExtraFields: schemas.BifrostResponseExtraFields{
+								Provider: schemas.Bedrock,
+							},
+						}
+
+						if params != nil {
+							streamResponse.ExtraFields.Params = *params
+						}
+
+						// Use utility function to process and send response
+						ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					}
+
+				case delta["toolUse"] != nil:
+					// Handle tool use delta
+					if toolUse, ok := delta["toolUse"].(map[string]interface{}); ok {
+						// Parse the tool use structure properly
+						var toolCall schemas.ToolCall
+						toolCall.Type = func() *string { s := "function"; return &s }()
+
+						// Extract toolUseId
+						if toolUseID, hasID := toolUse["toolUseId"].(string); hasID {
+							toolCall.ID = &toolUseID
+						}
+
+						// Extract name
+						if name, hasName := toolUse["name"].(string); hasName {
+							toolCall.Function.Name = &name
+						}
+
+						// Extract and marshal input as arguments
+						if input, hasInput := toolUse["input"].(map[string]interface{}); hasInput {
+							inputBytes, err := json.Marshal(input)
+							if err != nil {
+								toolCall.Function.Arguments = "{}"
+							} else {
+								toolCall.Function.Arguments = string(inputBytes)
+							}
+						} else {
+							toolCall.Function.Arguments = "{}"
+						}
+
+						// Create streaming response for tool delta
+						streamResponse := &schemas.BifrostResponse{
+							ID:     messageID,
+							Object: "chat.completion.chunk",
+							Model:  model,
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									Index: contentBlockIndex,
+									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+										Delta: schemas.BifrostStreamDelta{
+											ToolCalls: []schemas.ToolCall{toolCall},
+										},
+									},
+								},
+							},
+							ExtraFields: schemas.BifrostResponseExtraFields{
+								Provider: schemas.Bedrock,
+							},
+						}
+
+						if params != nil {
+							streamResponse.ExtraFields.Params = *params
+						}
+
+						// Use utility function to process and send response
+						ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					}
+				}
+
+			case event["role"] != nil:
+				// This is a messageStart event
+				if role, ok := event["role"].(string); ok {
+					messageID = fmt.Sprintf("bedrock-%d", time.Now().UnixNano())
+
+					// Send empty response to signal start
+					streamResponse := &schemas.BifrostResponse{
+						ID:     messageID,
+						Object: "chat.completion.chunk",
+						Model:  model,
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{
+										Role: &role,
+									},
+								},
+							},
+						},
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							Provider: schemas.Bedrock,
+						},
+					}
+
+					if params != nil {
+						streamResponse.ExtraFields.Params = *params
+					}
+
+					// Use utility function to process and send response
+					ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+				}
+
+			case event["stopReason"] != nil:
+				// This is a messageStop event
+				if stopReason, ok := event["stopReason"].(string); ok {
+					// Send a final streaming response with finish reason
+					finalResponse := &schemas.BifrostResponse{
+						ID:     messageID,
+						Object: "chat.completion.chunk",
+						Model:  model,
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index:        0,
+								FinishReason: &stopReason,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{}, // Empty delta for final chunk
+								},
+							},
+						},
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							Provider: schemas.Bedrock,
+						},
+					}
+
+					if params != nil {
+						finalResponse.ExtraFields.Params = *params
+					}
+
+					// Use utility function to process and send response
+					ProcessAndSendResponse(ctx, postHookRunner, finalResponse, responseChan)
+					return
+				}
+
+			case event["usage"] != nil:
+				// This is a metadata event with usage information
+				if usage, ok := event["usage"].(map[string]interface{}); ok {
+					inputTokens := 0
+					outputTokens := 0
+					totalTokens := 0
+
+					if val, exists := usage["inputTokens"].(float64); exists {
+						inputTokens = int(val)
+					}
+					if val, exists := usage["outputTokens"].(float64); exists {
+						outputTokens = int(val)
+					}
+					if val, exists := usage["totalTokens"].(float64); exists {
+						totalTokens = int(val)
+					}
+
+					// Send usage information
+					usageResponse := &schemas.BifrostResponse{
+						ID:     messageID,
+						Object: "chat.completion.chunk",
+						Model:  model,
+						Usage: &schemas.LLMUsage{
+							PromptTokens:     inputTokens,
+							CompletionTokens: outputTokens,
+							TotalTokens:      totalTokens,
+						},
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{}, // Empty delta for usage update
+								},
+							},
+						},
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							Provider: schemas.Bedrock,
+						},
+					}
+
+					if params != nil {
+						usageResponse.ExtraFields.Params = *params
+					}
+
+					// Use utility function to process and send response
+					ProcessAndSendResponse(ctx, postHookRunner, usageResponse, responseChan)
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			provider.logger.Warn(fmt.Sprintf("Error reading Bedrock stream: %v", err))
+		}
+	}()
+
+	return responseChan, nil
 }

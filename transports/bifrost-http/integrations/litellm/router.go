@@ -21,6 +21,21 @@ type LiteLLMRequestWrapper struct {
 	Provider      schemas.ModelProvider `json:"-"`
 }
 
+// IsStreamingRequested implements the StreamingRequest interface
+// by delegating to the underlying provider-specific request
+func (w *LiteLLMRequestWrapper) IsStreamingRequested() bool {
+	if w.ActualRequest == nil {
+		return false
+	}
+
+	// Delegate to the actual request's streaming method
+	if streamingReq, ok := w.ActualRequest.(integrations.StreamingRequest); ok {
+		return streamingReq.IsStreamingRequested()
+	}
+
+	return false
+}
+
 // LiteLLMRouter holds route registrations for LiteLLM endpoints.
 // It supports standard chat completions and image-enabled vision capabilities.
 // LiteLLM is fully OpenAI-compatible, so we reuse OpenAI types
@@ -153,6 +168,42 @@ func NewLiteLLMRouter(client *bifrost.Bifrost) *LiteLLMRouter {
 		}
 	}
 
+	streamResponseConverter := func(resp *schemas.BifrostResponse) (interface{}, error) {
+		if resp == nil {
+			return nil, errors.New("response is nil")
+		}
+
+		provider := resp.ExtraFields.Provider
+		if provider == "" && resp.Model != "" {
+			provider = integrations.GetProviderFromModel(resp.Model)
+		}
+
+		// Route to the appropriate provider's streaming converter based on provider type
+		switch provider {
+		case schemas.OpenAI, schemas.Azure:
+			return openai.DeriveOpenAIStreamFromBifrostResponse(resp), nil
+		case schemas.Anthropic:
+			return anthropic.DeriveAnthropicStreamFromBifrostResponse(resp), nil
+		case schemas.Vertex:
+			return genai.DeriveGeminiStreamFromBifrostResponse(resp), nil
+		default:
+			return resp, nil
+		}
+	}
+
+	streamErrorConverter := func(err *schemas.BifrostError) interface{} {
+		switch err.Provider {
+		case schemas.OpenAI, schemas.Azure:
+			return openai.DeriveOpenAIStreamFromBifrostError(err)
+		case schemas.Anthropic:
+			return anthropic.DeriveAnthropicStreamFromBifrostError(err)
+		case schemas.Vertex:
+			return genai.DeriveGeminiStreamFromBifrostError(err)
+		default:
+			return err
+		}
+	}
+
 	routes := []integrations.RouteConfig{}
 	for _, path := range paths {
 		routes = append(routes, integrations.RouteConfig{
@@ -162,7 +213,11 @@ func NewLiteLLMRouter(client *bifrost.Bifrost) *LiteLLMRouter {
 			RequestConverter:       requestConverter,
 			ResponseConverter:      responseConverter,
 			ErrorConverter:         errorConverter,
-			PreCallback:            preHook,
+			StreamConfig: &integrations.StreamConfig{
+				ResponseConverter: streamResponseConverter,
+				ErrorConverter:    streamErrorConverter,
+			},
+			PreCallback: preHook,
 		})
 	}
 

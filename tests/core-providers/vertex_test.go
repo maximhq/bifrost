@@ -23,6 +23,7 @@ func TestVertex(t *testing.T) {
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,

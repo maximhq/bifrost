@@ -37,6 +37,8 @@ from ..utils.common import (
     MULTIPLE_IMAGES_MESSAGES,
     COMPLEX_E2E_MESSAGES,
     INVALID_ROLE_MESSAGES,
+    STREAMING_CHAT_MESSAGES,
+    STREAMING_TOOL_CALL_MESSAGES,
     WEATHER_TOOL,
     CALCULATOR_TOOL,
     mock_tool_response,
@@ -45,6 +47,8 @@ from ..utils.common import (
     assert_valid_image_response,
     assert_valid_error_response,
     assert_error_propagation,
+    assert_valid_streaming_response,
+    collect_streaming_content,
     extract_tool_calls,
     get_api_key,
     skip_if_no_api_key,
@@ -407,3 +411,42 @@ class TestOpenAIIntegration:
         error = exc_info.value
         assert_valid_error_response(error, "tester")
         assert_error_propagation(error, "openai")
+
+    @skip_if_no_api_key("openai")
+    def test_13_streaming(self, openai_client, test_config):
+        """Test Case 13: Streaming chat completion"""
+        # Test basic streaming
+        stream = openai_client.chat.completions.create(
+            model=get_model("openai", "chat"),
+            messages=STREAMING_CHAT_MESSAGES,
+            max_tokens=200,
+            stream=True,
+        )
+
+        content, chunk_count, tool_calls_detected = collect_streaming_content(
+            stream, "openai", timeout=30
+        )
+
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(content) > 10, "Should receive substantial content"
+        assert not tool_calls_detected, "Basic streaming shouldn't have tool calls"
+
+        # Test streaming with tool calls
+        stream_with_tools = openai_client.chat.completions.create(
+            model=get_model("openai", "tools"),
+            messages=STREAMING_TOOL_CALL_MESSAGES,
+            max_tokens=150,
+            tools=convert_to_openai_tools([WEATHER_TOOL]),
+            stream=True,
+        )
+
+        content_tools, chunk_count_tools, tool_calls_detected_tools = (
+            collect_streaming_content(stream_with_tools, "openai", timeout=30)
+        )
+
+        # Validate tool streaming results
+        assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
+        assert (
+            tool_calls_detected_tools
+        ), "Should detect tool calls in streaming response"

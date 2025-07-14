@@ -288,7 +288,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model, key s
 			Created:           response.Created,
 			ServiceTier:       response.ServiceTier,
 			SystemFingerprint: response.SystemFingerprint,
-			Usage:             response.Usage,
+			Usage:             &response.Usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Provider:    schemas.Vertex,
 				RawResponse: rawResponse,
@@ -306,4 +306,103 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model, key s
 // Embedding is not supported by the Vertex provider.
 func (provider *VertexProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "vertex")
+}
+
+// ChatCompletionStream performs a streaming chat completion request to the Vertex API.
+// It supports both OpenAI-style streaming (for non-Claude models) and Anthropic-style streaming (for Claude models).
+// Returns a channel of BifrostResponse objects for streaming results or an error if the request fails.
+func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	projectID := provider.meta.GetProjectID()
+	if projectID == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "project ID is not set",
+			},
+		}
+	}
+
+	region := provider.meta.GetRegion()
+	if region == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "region is not set in meta config",
+			},
+		}
+	}
+
+	if strings.Contains(model, "claude") {
+		// Use Anthropic-style streaming for Claude models
+		formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
+
+		requestBody := mergeConfig(map[string]interface{}{
+			"messages": formattedMessages,
+			"stream":   true,
+		}, preparedParams)
+
+		if _, exists := requestBody["anthropic_version"]; !exists {
+			requestBody["anthropic_version"] = "vertex-2023-10-16"
+		}
+
+		delete(requestBody, "model")
+		delete(requestBody, "region")
+
+		url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", *region, *projectID, *region, model)
+
+		// Prepare headers for Vertex Anthropic
+		headers := map[string]string{
+			"Content-Type":  "application/json",
+			"Accept":        "text/event-stream",
+			"Cache-Control": "no-cache",
+		}
+
+		// Use shared Anthropic streaming logic
+		return handleAnthropicStreaming(
+			ctx,
+			provider.client,
+			url,
+			requestBody,
+			headers,
+			provider.networkConfig.ExtraHeaders,
+			schemas.Vertex,
+			params,
+			postHookRunner,
+			provider.logger,
+		)
+	} else {
+		// Use OpenAI-style streaming for non-Claude models
+		formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+
+		requestBody := mergeConfig(map[string]interface{}{
+			"model":    model,
+			"messages": formattedMessages,
+			"stream":   true,
+		}, preparedParams)
+
+		delete(requestBody, "region")
+
+		url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", *region, *projectID, *region)
+
+		// Prepare headers for Vertex OpenAI-compatible
+		headers := map[string]string{
+			"Content-Type":  "application/json",
+			"Accept":        "text/event-stream",
+			"Cache-Control": "no-cache",
+		}
+
+		// Use shared OpenAI streaming logic
+		return handleOpenAIStreaming(
+			ctx,
+			provider.client,
+			url,
+			requestBody,
+			headers,
+			provider.networkConfig.ExtraHeaders,
+			schemas.Vertex,
+			params,
+			postHookRunner,
+			provider.logger,
+		)
+	}
 }

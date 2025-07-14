@@ -23,6 +23,7 @@ func TestCohere(t *testing.T) {
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,

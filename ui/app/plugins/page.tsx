@@ -150,7 +150,7 @@ export default function PluginsPage() {
                 return (
                   <Card
                     key={plugin.name}
-                    className="group hover:border-primary/50 border-1 shadow-none transition-all duration-300 hover:shadow-xl"
+                    className="hover:border-primary/50 border-1 group shadow-none transition-all duration-300 hover:shadow-xl"
                   >
                     <CardHeader>
                       <div className="flex items-start justify-between">
@@ -186,7 +186,7 @@ export default function PluginsPage() {
                     <CardContent className="flex h-full flex-col justify-between gap-6">
                       <div className="space-y-6">
                         <div className="space-y-3">
-                          <h4 className="text-muted-foreground text-sm font-semibold tracking-wide uppercase">Key Features</h4>
+                          <h4 className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">Key Features</h4>
                           <div className="grid gap-2">
                             {plugin.capabilities.slice(0, 3).map((capability) => (
                               <div key={capability} className="flex items-center gap-2 text-sm">

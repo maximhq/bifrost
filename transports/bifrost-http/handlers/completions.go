@@ -3,6 +3,8 @@
 package handlers
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -35,6 +37,7 @@ type CompletionRequest struct {
 	Text      string                   `json:"text"`      // Text input (for text completion)
 	Params    *schemas.ModelParameters `json:"params"`    // Additional model parameters
 	Fallbacks []string                 `json:"fallbacks"` // Fallback providers and models in "provider/model" format
+	Stream    *bool                    `json:"stream"`    // Whether to stream the response
 }
 
 type CompletionType string
@@ -132,7 +135,16 @@ func (h *CompletionHandler) handleCompletion(ctx *fasthttp.RequestCtx, completio
 		return
 	}
 
-	// Execute request
+	// Check if streaming is requested
+	isStreaming := req.Stream != nil && *req.Stream
+
+	// Handle streaming for chat completions only
+	if isStreaming && completionType == CompletionTypeChat {
+		h.handleStreamingChatCompletion(ctx, bifrostReq, bifrostCtx)
+		return
+	}
+
+	// Handle non-streaming requests
 	var resp *schemas.BifrostResponse
 	var bifrostErr *schemas.BifrostError
 
@@ -151,4 +163,57 @@ func (h *CompletionHandler) handleCompletion(ctx *fasthttp.RequestCtx, completio
 
 	// Send successful response
 	SendJSON(ctx, resp, h.logger)
+}
+
+// handleStreamingChatCompletion handles streaming chat completion requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingChatCompletion(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
+	// Set SSE headers
+	ctx.SetContentType("text/event-stream")
+	ctx.Response.Header.Set("Cache-Control", "no-cache")
+	ctx.Response.Header.Set("Connection", "keep-alive")
+	ctx.Response.Header.Set("Access-Control-Allow-Origin", "*")
+
+	// Get the streaming channel from Bifrost
+	stream, bifrostErr := h.client.ChatCompletionStreamRequest(*bifrostCtx, req)
+	if bifrostErr != nil {
+		// Send error in SSE format
+		SendSSEError(ctx, bifrostErr, h.logger)
+		return
+	}
+
+	// Use streaming response writer
+	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer w.Flush()
+
+		// Process streaming responses
+		for response := range stream {
+			if response == nil {
+				continue
+			}
+
+			// Convert response to JSON
+			responseJSON, err := json.Marshal(response)
+			if err != nil {
+				h.logger.Warn(fmt.Sprintf("Failed to marshal streaming response: %v", err))
+				continue
+			}
+
+			// Send as SSE data
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
+				h.logger.Warn(fmt.Sprintf("Failed to write SSE data: %v", err))
+				break
+			}
+
+			// Flush immediately to send the chunk
+			if err := w.Flush(); err != nil {
+				h.logger.Warn(fmt.Sprintf("Failed to flush SSE data: %v", err))
+				break
+			}
+		}
+
+		// Send the [DONE] marker to indicate the end of the stream
+		if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+			h.logger.Warn(fmt.Sprintf("Failed to write SSE done marker: %v", err))
+		}
+	})
 }

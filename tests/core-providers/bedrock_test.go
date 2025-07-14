@@ -23,6 +23,7 @@ func TestBedrock(t *testing.T) {
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported for Claude
 			SimpleChat:            true,
+			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
@@ -33,9 +34,6 @@ func TestBedrock(t *testing.T) {
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
-		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 		},
 	}
 

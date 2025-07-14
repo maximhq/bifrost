@@ -25,14 +25,14 @@ func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Ti
 	INSERT INTO logs (
 		id, provider, model, object_type, status,
 		input_history, tools, params, content_summary,
-		created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		stream, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := p.db.Exec(query,
 		requestID, data.Provider, data.Model,
 		data.Object, "processing",
 		string(inputHistoryJSON), string(toolsJSON), string(paramsJSON),
-		contentSummary, timestamp.UnixNano())
+		contentSummary, false, timestamp.UnixNano())
 
 	if err != nil {
 		return fmt.Errorf("failed to insert initial log entry: %w", err)
@@ -134,6 +134,242 @@ func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, dat
 	return nil
 }
 
+// processStreamUpdate handles streaming delta updates efficiently with minimal database operations
+func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time, data *StreamUpdateData) error {
+	// Handle error case first
+	if data.ErrorDetails != nil {
+		// For errors, we should also calculate latency
+		// Get created_at timestamp to calculate latency
+		var createdAtUnix int64
+		err := p.db.QueryRow("SELECT created_at FROM logs WHERE id = ?", requestID).Scan(&createdAtUnix)
+		if err != nil {
+			// If we can't get created_at, just update status and error
+			query := "UPDATE logs SET status = ?, error_details = ? WHERE id = ?"
+			errorDetailsJSON, _ := json.Marshal(data.ErrorDetails)
+			_, execErr := p.db.Exec(query, "error", string(errorDetailsJSON), requestID)
+			return execErr
+		}
+
+		createdAt := time.Unix(createdAtUnix/1e9, createdAtUnix%1e9)
+		latency := float64(timestamp.Sub(createdAt).Milliseconds())
+
+		query := "UPDATE logs SET status = ?, error_details = ?, latency = ?, timestamp = ? WHERE id = ?"
+		errorDetailsJSON, _ := json.Marshal(data.ErrorDetails)
+		_, err = p.db.Exec(query, "error", string(errorDetailsJSON), latency, timestamp.UnixNano(), requestID)
+		return err
+	}
+
+	// For streaming updates, we need to calculate latency when the stream finishes
+	var needsLatency bool
+	var latency float64
+
+	if data.FinishReason != nil {
+		// Stream is finishing, calculate latency
+		var createdAtUnix int64
+		err := p.db.QueryRow("SELECT created_at FROM logs WHERE id = ?", requestID).Scan(&createdAtUnix)
+		if err != nil {
+			return fmt.Errorf("failed to get created_at for latency calculation: %w", err)
+		}
+
+		createdAt := time.Unix(createdAtUnix/1e9, createdAtUnix%1e9)
+		latency = float64(timestamp.Sub(createdAt).Milliseconds())
+		needsLatency = true
+	}
+
+	// Build dynamic UPDATE query for streaming data
+	var setParts []string
+	var args []interface{}
+
+	// Always mark as streaming and update timestamp
+	setParts = append(setParts, "stream = ?, timestamp = ?")
+	args = append(args, true, timestamp.UnixNano())
+
+	// Add latency if this is the final chunk
+	if needsLatency {
+		setParts = append(setParts, "latency = ?")
+		args = append(args, latency)
+	}
+
+	// Update model if provided
+	if data.Model != "" {
+		setParts = append(setParts, "model = ?")
+		args = append(args, data.Model)
+	}
+
+	// Update object type if provided
+	if data.Object != "" {
+		setParts = append(setParts, "object_type = ?")
+		args = append(args, data.Object)
+	}
+
+	// Update token usage if provided
+	if data.TokenUsage != nil {
+		setParts = append(setParts, "prompt_tokens = ?, completion_tokens = ?, total_tokens = ?")
+		args = append(args, data.TokenUsage.PromptTokens, data.TokenUsage.CompletionTokens, data.TokenUsage.TotalTokens)
+	}
+
+	// Handle finish reason - if present, mark as complete
+	if data.FinishReason != nil {
+		setParts = append(setParts, "status = ?")
+		args = append(args, "success")
+	}
+
+	// Process delta content and tool calls if present
+	if data.Delta != nil {
+		if err := p.appendDeltaToEntry(requestID, data.Delta, &setParts, &args); err != nil {
+			return fmt.Errorf("failed to append delta: %w", err)
+		}
+	}
+
+	// Only perform update if there's something to update
+	if len(setParts) > 0 {
+		// Add WHERE clause parameter
+		args = append(args, requestID)
+
+		query := fmt.Sprintf("UPDATE logs SET %s WHERE id = ?", strings.Join(setParts, ", "))
+		_, err := p.db.Exec(query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to update streaming log entry: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// appendDeltaToEntry efficiently appends streaming delta content to existing database entry
+func (p *LoggerPlugin) appendDeltaToEntry(requestID string, delta *schemas.BifrostStreamDelta, setParts *[]string, args *[]interface{}) error {
+	// Only fetch existing content if we have content or tool calls to append
+	if (delta.Content == nil || *delta.Content == "") && len(delta.ToolCalls) == 0 && delta.Refusal == nil {
+		return nil
+	}
+
+	// Get only the necessary fields from existing entry
+	var outputMessageJSON sql.NullString
+	err := p.db.QueryRow("SELECT output_message FROM logs WHERE id = ?", requestID).Scan(&outputMessageJSON)
+	if err != nil {
+		return fmt.Errorf("failed to get existing output message: %w", err)
+	}
+
+	// Parse existing message or create new one
+	var outputMessage *schemas.BifrostMessage
+	if outputMessageJSON.Valid && outputMessageJSON.String != "null" && outputMessageJSON.String != "" {
+		outputMessage = &schemas.BifrostMessage{}
+		if err := json.Unmarshal([]byte(outputMessageJSON.String), outputMessage); err != nil {
+			// If unmarshaling fails, create new message
+			outputMessage = &schemas.BifrostMessage{
+				Role:    schemas.ModelChatMessageRoleAssistant,
+				Content: schemas.MessageContent{},
+			}
+		}
+	} else {
+		// Create new message
+		outputMessage = &schemas.BifrostMessage{
+			Role:    schemas.ModelChatMessageRoleAssistant,
+			Content: schemas.MessageContent{},
+		}
+	}
+
+	// Handle role (usually in first chunk)
+	if delta.Role != nil {
+		outputMessage.Role = schemas.ModelChatMessageRole(*delta.Role)
+	}
+
+	// Append content
+	if delta.Content != nil && *delta.Content != "" {
+		p.appendContentToMessage(outputMessage, *delta.Content)
+	}
+
+	// Handle refusal
+	if delta.Refusal != nil && *delta.Refusal != "" {
+		if outputMessage.AssistantMessage == nil {
+			outputMessage.AssistantMessage = &schemas.AssistantMessage{}
+		}
+		if outputMessage.AssistantMessage.Refusal == nil {
+			outputMessage.AssistantMessage.Refusal = delta.Refusal
+		} else {
+			*outputMessage.AssistantMessage.Refusal += *delta.Refusal
+		}
+	}
+
+	// Accumulate tool calls
+	if len(delta.ToolCalls) > 0 {
+		p.accumulateToolCallsInMessage(outputMessage, delta.ToolCalls)
+	}
+
+	// Update the database fields
+	updatedMessageJSON, _ := json.Marshal(outputMessage)
+	*setParts = append(*setParts, "output_message = ?")
+	*args = append(*args, string(updatedMessageJSON))
+
+	// Also update tool_calls field for backward compatibility
+	if outputMessage.AssistantMessage != nil && outputMessage.AssistantMessage.ToolCalls != nil {
+		toolCallsJSON, _ := json.Marshal(outputMessage.AssistantMessage.ToolCalls)
+		*setParts = append(*setParts, "tool_calls = ?")
+		*args = append(*args, string(toolCallsJSON))
+	}
+
+	return nil
+}
+
+// appendContentToMessage efficiently appends content to a message
+func (p *LoggerPlugin) appendContentToMessage(message *schemas.BifrostMessage, newContent string) {
+	if message.Content.ContentStr != nil {
+		// Append to existing string content
+		*message.Content.ContentStr += newContent
+	} else if message.Content.ContentBlocks != nil {
+		// Find the last text block and append, or create new one
+		blocks := *message.Content.ContentBlocks
+		if len(blocks) > 0 && blocks[len(blocks)-1].Type == schemas.ContentBlockTypeText && blocks[len(blocks)-1].Text != nil {
+			// Append to last text block
+			*blocks[len(blocks)-1].Text += newContent
+		} else {
+			// Create new text block
+			blocks = append(blocks, schemas.ContentBlock{
+				Type: schemas.ContentBlockTypeText,
+				Text: &newContent,
+			})
+			message.Content.ContentBlocks = &blocks
+		}
+	} else {
+		// Initialize with string content
+		message.Content.ContentStr = &newContent
+	}
+}
+
+// accumulateToolCallsInMessage efficiently accumulates tool calls in a message
+func (p *LoggerPlugin) accumulateToolCallsInMessage(message *schemas.BifrostMessage, deltaToolCalls []schemas.ToolCall) {
+	if message.AssistantMessage == nil {
+		message.AssistantMessage = &schemas.AssistantMessage{}
+	}
+
+	if message.AssistantMessage.ToolCalls == nil {
+		message.AssistantMessage.ToolCalls = &[]schemas.ToolCall{}
+	}
+
+	existingToolCalls := *message.AssistantMessage.ToolCalls
+
+	for _, deltaToolCall := range deltaToolCalls {
+		// Find existing tool call with same ID or create new one
+		found := false
+		for i := range existingToolCalls {
+			if existingToolCalls[i].ID != nil && deltaToolCall.ID != nil &&
+				*existingToolCalls[i].ID == *deltaToolCall.ID {
+				// Append arguments to existing tool call
+				existingToolCalls[i].Function.Arguments += deltaToolCall.Function.Arguments
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// Add new tool call
+			existingToolCalls = append(existingToolCalls, deltaToolCall)
+		}
+	}
+
+	message.AssistantMessage.ToolCalls = &existingToolCalls
+}
+
 // createContentSummaryFromInitialData creates a searchable content summary from initial log data
 func (p *LoggerPlugin) createContentSummaryFromInitialData(data *InitialLogData) string {
 	var parts []string
@@ -154,7 +390,7 @@ func (p *LoggerPlugin) getLogEntry(requestID string) (*LogEntry, error) {
 	SELECT id, timestamp, provider, model, object_type, status, latency,
 		   prompt_tokens, completion_tokens, total_tokens,
 		   input_history, output_message, tools, tool_calls,
-		   params, error_details, created_at
+		   params, error_details, stream, created_at
 	FROM logs WHERE id = ?`
 
 	var entry LogEntry
@@ -163,13 +399,14 @@ func (p *LoggerPlugin) getLogEntry(requestID string) (*LogEntry, error) {
 	var paramsJSON, errorDetailsJSON sql.NullString
 	var promptTokens, completionTokens, totalTokensRow sql.NullInt64
 	var latency sql.NullFloat64
+	var stream sql.NullBool
 
 	err := p.db.QueryRow(query, requestID).Scan(
 		&entry.ID, &timestampUnix, &entry.Provider, &entry.Model,
 		&entry.Object, &entry.Status, &latency,
 		&promptTokens, &completionTokens, &totalTokensRow,
 		&inputHistoryJSON, &outputMessageJSON, &toolsJSON, &toolCallsJSON,
-		&paramsJSON, &errorDetailsJSON,
+		&paramsJSON, &errorDetailsJSON, &stream,
 		&createdAtUnix,
 	)
 	if err != nil {
@@ -183,6 +420,11 @@ func (p *LoggerPlugin) getLogEntry(requestID string) (*LogEntry, error) {
 	// Handle latency
 	if latency.Valid {
 		entry.Latency = &latency.Float64
+	}
+
+	// Handle stream flag
+	if stream.Valid {
+		entry.Stream = stream.Bool
 	}
 
 	// Handle token usage

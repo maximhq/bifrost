@@ -66,3 +66,18 @@ func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 		},
 	}
 }
+
+// newBifrostMessageChan creates a channel that sends a bifrost response.
+// It is used to send a bifrost response to the client.
+func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.BifrostStream {
+	ch := make(chan *schemas.BifrostStream)
+
+	go func() {
+		defer close(ch)
+		ch <- &schemas.BifrostStream{
+			BifrostResponse: message,
+		}
+	}()
+
+	return ch
+}

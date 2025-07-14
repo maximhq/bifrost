@@ -29,33 +29,15 @@ type ContextKey string
 type LogOperation string
 
 const (
-	LogOperationCreate LogOperation = "create"
-	LogOperationUpdate LogOperation = "update"
+	LogOperationCreate       LogOperation = "create"
+	LogOperationUpdate       LogOperation = "update"
+	LogOperationStreamUpdate LogOperation = "stream_update"
 )
 
 // Context keys for logging optimization
 const (
 	DroppedCreateContextKey ContextKey = "bifrost-logging-dropped"
 )
-
-// LogMessage represents a message in the logging queue
-type LogMessage struct {
-	Operation   LogOperation
-	RequestID   string
-	Timestamp   time.Time       // Of the preHook/postHook call
-	InitialData *InitialLogData // For create operations
-	UpdateData  *UpdateLogData  // For update operations
-}
-
-// InitialLogData contains data for initial log entry creation
-type InitialLogData struct {
-	Provider     string
-	Model        string
-	Object       string
-	InputHistory []schemas.BifrostMessage
-	Params       *schemas.ModelParameters
-	Tools        *[]schemas.Tool
-}
 
 // UpdateLogData contains data for log entry updates
 type UpdateLogData struct {
@@ -66,6 +48,36 @@ type UpdateLogData struct {
 	ErrorDetails  *schemas.BifrostError
 	Model         string // May be different from request
 	Object        string // May be different from request
+}
+
+// StreamUpdateData contains lightweight data for streaming delta updates
+type StreamUpdateData struct {
+	ErrorDetails *schemas.BifrostError
+	Model        string // May be different from request
+	Object       string // May be different from request
+	TokenUsage   *schemas.LLMUsage
+	Delta        *schemas.BifrostStreamDelta // The actual streaming delta
+	FinishReason *string                     // If the stream is finished
+}
+
+// LogMessage represents a message in the logging queue
+type LogMessage struct {
+	Operation        LogOperation
+	RequestID        string
+	Timestamp        time.Time         // Of the preHook/postHook call
+	InitialData      *InitialLogData   // For create operations
+	UpdateData       *UpdateLogData    // For update operations
+	StreamUpdateData *StreamUpdateData // For stream update operations
+}
+
+// InitialLogData contains data for initial log entry creation
+type InitialLogData struct {
+	Provider     string
+	Model        string
+	Object       string
+	InputHistory []schemas.BifrostMessage
+	Params       *schemas.ModelParameters
+	Tools        *[]schemas.Tool
 }
 
 // LogEntry represents a complete log entry for a request/response cycle
@@ -84,6 +96,7 @@ type LogEntry struct {
 	TokenUsage    *schemas.LLMUsage        `json:"token_usage,omitempty"`
 	Status        string                   `json:"status"` // "processing", "success", or "error"
 	ErrorDetails  *schemas.BifrostError    `json:"error_details,omitempty"`
+	Stream        bool                     `json:"stream"` // true if this was a streaming response
 	CreatedAt     time.Time                `json:"created_at"`
 }
 
@@ -143,6 +156,8 @@ type LoggerPlugin struct {
 	droppedRequests atomic.Int64
 	cleanupTicker   *time.Ticker // Ticker for cleaning up old processing logs
 	logMsgPool      sync.Pool    // Pool for reusing LogMessage structs
+	updateDataPool  sync.Pool    // Pool for reusing UpdateLogData structs
+	streamDataPool  sync.Pool    // Pool for reusing StreamUpdateData structs
 }
 
 // NewLoggerPlugin creates a new logging plugin
@@ -187,11 +202,23 @@ func NewLoggerPlugin(config *Config, logger schemas.Logger) (*LoggerPlugin, erro
 				return &LogMessage{}
 			},
 		},
+		updateDataPool: sync.Pool{
+			New: func() interface{} {
+				return &UpdateLogData{}
+			},
+		},
+		streamDataPool: sync.Pool{
+			New: func() interface{} {
+				return &StreamUpdateData{}
+			},
+		},
 	}
 
-	// Prewarm the log message pool
+	// Prewarm the pools for better performance at startup
 	for range 1000 {
-		plugin.getLogMessage()
+		plugin.logMsgPool.Put(&LogMessage{})
+		plugin.updateDataPool.Put(&UpdateLogData{})
+		plugin.streamDataPool.Put(&StreamUpdateData{})
 	}
 
 	// Create tables and indexes
@@ -234,6 +261,9 @@ func (p *LoggerPlugin) createTables() error {
 		
 		-- For content search
 		content_summary TEXT,
+		
+		-- Stream indicator
+		stream BOOLEAN DEFAULT FALSE,
 		
 		-- Timestamps for tracking
 		created_at INTEGER NOT NULL
@@ -317,6 +347,19 @@ func (p *LoggerPlugin) migrateTableSchema() error {
 		}
 	}
 
+	// Check if stream column exists
+	columnExists = false
+	err = p.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('logs') WHERE name = 'stream'").Scan(&columnExists)
+	if err != nil {
+		return fmt.Errorf("failed to check for stream column: %w", err)
+	}
+
+	if !columnExists {
+		if _, err := p.db.Exec("ALTER TABLE logs ADD COLUMN stream BOOLEAN DEFAULT FALSE"); err != nil {
+			return fmt.Errorf("failed to add stream column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -366,9 +409,50 @@ func (p *LoggerPlugin) putLogMessage(msg *LogMessage) {
 	msg.RequestID = ""
 	msg.Timestamp = time.Time{}
 	msg.InitialData = nil
+
+	// Don't reset UpdateData and StreamUpdateData here since they're returned
+	// to their own pools in the defer function - just clear the pointers
 	msg.UpdateData = nil
+	msg.StreamUpdateData = nil
 
 	p.logMsgPool.Put(msg)
+}
+
+// getUpdateLogData gets an UpdateLogData from the pool
+func (p *LoggerPlugin) getUpdateLogData() *UpdateLogData {
+	return p.updateDataPool.Get().(*UpdateLogData)
+}
+
+// putUpdateLogData returns an UpdateLogData to the pool after resetting it
+func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
+	// Reset all fields to avoid memory leaks
+	data.Status = ""
+	data.TokenUsage = nil
+	data.OutputMessage = nil
+	data.ToolCalls = nil
+	data.ErrorDetails = nil
+	data.Model = ""
+	data.Object = ""
+
+	p.updateDataPool.Put(data)
+}
+
+// getStreamUpdateData gets a StreamUpdateData from the pool
+func (p *LoggerPlugin) getStreamUpdateData() *StreamUpdateData {
+	return p.streamDataPool.Get().(*StreamUpdateData)
+}
+
+// putStreamUpdateData returns a StreamUpdateData to the pool after resetting it
+func (p *LoggerPlugin) putStreamUpdateData(data *StreamUpdateData) {
+	// Reset all fields to avoid memory leaks
+	data.ErrorDetails = nil
+	data.Model = ""
+	data.Object = ""
+	data.TokenUsage = nil
+	data.Delta = nil
+	data.FinishReason = nil
+
+	p.streamDataPool.Put(data)
 }
 
 // SetLogCallback sets a callback function that will be called for each log entry
@@ -426,6 +510,27 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		defer p.putLogMessage(logMsg) // Return to pool when done
 		if err := p.insertInitialLogEntry(logMsg.RequestID, logMsg.Timestamp, logMsg.InitialData); err != nil {
 			p.logger.Error(fmt.Errorf("failed to insert initial log entry for request %s: %w", logMsg.RequestID, err))
+		} else {
+			// Call callback for initial log creation (WebSocket "create" message)
+			// Construct LogEntry directly from data we have to avoid database query
+			p.mu.Lock()
+			if p.logCallback != nil {
+				initialEntry := &LogEntry{
+					ID:           logMsg.RequestID,
+					Timestamp:    logMsg.Timestamp,
+					Object:       logMsg.InitialData.Object,
+					Provider:     logMsg.InitialData.Provider,
+					Model:        logMsg.InitialData.Model,
+					InputHistory: logMsg.InitialData.InputHistory,
+					Params:       logMsg.InitialData.Params,
+					Tools:        logMsg.InitialData.Tools,
+					Status:       "processing",
+					Stream:       false, // Initially false, will be updated if streaming
+					CreatedAt:    logMsg.Timestamp,
+				}
+				p.logCallback(initialEntry)
+			}
+			p.mu.Unlock()
 		}
 	}(logMsg)
 
@@ -454,61 +559,124 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 		return result, err, nil
 	}
 
-	// Queue the log update message (non-blocking)
+	// Check if this is a streaming response
+	isStreaming := p.isStreamingResponse(result)
+
+	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
-	logMsg.Operation = LogOperationUpdate
 	logMsg.RequestID = requestID
 	logMsg.Timestamp = time.Now()
 
-	// Prepare update data (latency will be calculated in background worker)
-	updateData := &UpdateLogData{}
+	if isStreaming {
+		// Handle streaming response with lightweight async pattern
+		logMsg.Operation = LogOperationStreamUpdate
 
-	if err != nil {
-		// Error case
-		updateData.Status = "error"
-		updateData.ErrorDetails = err
-	} else if result != nil {
-		// Success case
-		updateData.Status = "success"
+		// Prepare lightweight streaming update data
+		streamUpdateData := p.getStreamUpdateData()
 
-		// Update model if different from request
-		if result.Model != "" {
-			updateData.Model = result.Model
-		}
+		if err != nil {
+			// Error case
+			streamUpdateData.ErrorDetails = err
+		} else if result != nil {
+			// Update model if different from request
+			if result.Model != "" {
+				streamUpdateData.Model = result.Model
+			}
 
-		// Update object type if available
-		if result.Object != "" {
-			updateData.Object = result.Object
-		}
+			// Update object type if available
+			if result.Object != "" {
+				streamUpdateData.Object = result.Object
+			}
 
-		// Token usage
-		if result.Usage.TotalTokens > 0 {
-			updateData.TokenUsage = &result.Usage
-		}
+			// Token usage
+			if result.Usage != nil && result.Usage.TotalTokens > 0 {
+				streamUpdateData.TokenUsage = result.Usage
+			}
 
-		// Output message and tool calls
-		if len(result.Choices) > 0 {
-			updateData.OutputMessage = &result.Choices[0].Message
-
-			// Extract tool calls if present
-			if result.Choices[0].Message.AssistantMessage != nil &&
-				result.Choices[0].Message.AssistantMessage.ToolCalls != nil {
-				updateData.ToolCalls = result.Choices[0].Message.AssistantMessage.ToolCalls
+			// Extract delta and finish reason from streaming response
+			if len(result.Choices) > 0 {
+				choice := result.Choices[0]
+				if choice.BifrostStreamResponseChoice != nil {
+					streamUpdateData.Delta = &choice.BifrostStreamResponseChoice.Delta
+				}
+				streamUpdateData.FinishReason = choice.FinishReason
 			}
 		}
+
+		logMsg.StreamUpdateData = streamUpdateData
+	} else {
+		// Handle regular response
+		logMsg.Operation = LogOperationUpdate
+
+		// Prepare update data (latency will be calculated in background worker)
+		updateData := p.getUpdateLogData()
+
+		if err != nil {
+			// Error case
+			updateData.Status = "error"
+			updateData.ErrorDetails = err
+		} else if result != nil {
+			// Success case
+			updateData.Status = "success"
+
+			// Update model if different from request
+			if result.Model != "" {
+				updateData.Model = result.Model
+			}
+
+			// Update object type if available
+			if result.Object != "" {
+				updateData.Object = result.Object
+			}
+
+			// Token usage
+			if result.Usage != nil && result.Usage.TotalTokens > 0 {
+				updateData.TokenUsage = result.Usage
+			}
+
+			// Output message and tool calls
+			if len(result.Choices) > 0 {
+				updateData.OutputMessage = &result.Choices[0].Message
+
+				// Extract tool calls if present
+				if result.Choices[0].Message.AssistantMessage != nil &&
+					result.Choices[0].Message.AssistantMessage.ToolCalls != nil {
+					updateData.ToolCalls = result.Choices[0].Message.AssistantMessage.ToolCalls
+				}
+			}
+		}
+
+		logMsg.UpdateData = updateData
 	}
 
-	logMsg.UpdateData = updateData
-
+	// Both streaming and regular updates now use the same async pattern
 	go func(logMsg *LogMessage) {
 		defer p.putLogMessage(logMsg) // Return to pool when done
-		if err := p.updateLogEntry(logMsg.RequestID, logMsg.Timestamp, logMsg.UpdateData); err != nil {
-			p.logger.Error(fmt.Errorf("failed to update log entry for request %s: %w", logMsg.RequestID, err))
+
+		// Return pooled data structures to their respective pools
+		defer func() {
+			if logMsg.UpdateData != nil {
+				p.putUpdateLogData(logMsg.UpdateData)
+			}
+			if logMsg.StreamUpdateData != nil {
+				p.putStreamUpdateData(logMsg.StreamUpdateData)
+			}
+		}()
+
+		var processingErr error
+		if logMsg.Operation == LogOperationStreamUpdate {
+			processingErr = p.processStreamUpdate(logMsg.RequestID, logMsg.Timestamp, logMsg.StreamUpdateData)
 		} else {
-			// Call callback if set (for real-time updates)
+			processingErr = p.updateLogEntry(logMsg.RequestID, logMsg.Timestamp, logMsg.UpdateData)
+		}
+
+		if processingErr != nil {
+			p.logger.Error(fmt.Errorf("failed to process log update for request %s: %w", logMsg.RequestID, processingErr))
+		} else {
+			// Call callback immediately for both streaming and regular updates
+			// UI will handle debouncing if needed
 			p.mu.Lock()
 			if p.logCallback != nil {
-				// Get the updated log entry for callback
 				if updatedEntry, getErr := p.getLogEntry(logMsg.RequestID); getErr == nil {
 					p.logCallback(updatedEntry)
 				}
@@ -517,9 +685,23 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 		}
 	}(logMsg)
 
-	// p.putLogMessage(logMsg)
-
 	return result, err, nil
+}
+
+// isStreamingResponse checks if the response is a streaming delta
+func (p *LoggerPlugin) isStreamingResponse(result *schemas.BifrostResponse) bool {
+	if result == nil || len(result.Choices) == 0 {
+		return false
+	}
+
+	// Check if any choice has BifrostStreamResponseChoice (indicating streaming)
+	for _, choice := range result.Choices {
+		if choice.BifrostStreamResponseChoice != nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Cleanup is called when the plugin is being shut down

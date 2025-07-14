@@ -560,7 +560,7 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 // - Short texts
 // - Different languages and tokenization methods
 // - Various model-specific tokenizers
-// 
+//
 // The actual token count may vary significantly based on tokenization method,
 // language, and text structure. Consider omitting token metrics when precise
 // counts are unavailable to avoid misleading usage information.
@@ -574,4 +574,40 @@ func approximateTokenCount(texts []string) int {
 		totalInputTokens += len(text) / 4
 	}
 	return totalInputTokens
+}
+
+// processAndSendResponse handles post-hook processing and sends the response to the channel.
+// This utility reduces code duplication across streaming implementations by encapsulating
+// the common pattern of running post hooks, handling errors, and sending responses with
+// proper context cancellation handling.
+func ProcessAndSendResponse(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	response *schemas.BifrostResponse,
+	responseChan chan *schemas.BifrostStream,
+) {
+	// Run post hooks on the response
+	processedResponse, bifrostErr := postHookRunner(&ctx, response, nil)
+	if bifrostErr != nil {
+		// Send error response and close channel
+		errorResponse := &schemas.BifrostStream{
+			BifrostError: bifrostErr,
+		}
+
+		// Try to send error response before closing
+		select {
+		case responseChan <- errorResponse:
+		case <-ctx.Done():
+		}
+		return
+	}
+
+	// Send the response
+	select {
+	case responseChan <- &schemas.BifrostStream{
+		BifrostResponse: processedResponse,
+	}:
+	case <-ctx.Done():
+		return
+	}
 }
