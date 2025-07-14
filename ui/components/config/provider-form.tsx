@@ -12,29 +12,28 @@ import { DEFAULT_NETWORK_CONFIG, DEFAULT_PERFORMANCE_CONFIG } from '@/lib/consta
 import { ProviderIconType, renderProviderIcon } from '@/lib/constants/icons'
 import { PROVIDER_LABELS, PROVIDERS as Providers } from '@/lib/constants/logs'
 import {
-  AddProviderRequest,
-  AzureKeyConfig,
-  ConcurrencyAndBufferSize,
-  Key as KeyType,
-  MetaConfig,
-  ModelProvider,
-  NetworkConfig,
-  ProviderResponse,
-  ProxyConfig,
-  ProxyType,
-  UpdateProviderRequest,
-  VertexKeyConfig,
+    AddProviderRequest,
+    AzureKeyConfig,
+    ConcurrencyAndBufferSize,
+    Key as KeyType,
+    MetaConfig,
+    ModelProvider,
+    NetworkConfig,
+    ProviderResponse,
+    ProxyConfig,
+    ProxyType,
+    UpdateProviderRequest,
+    VertexKeyConfig,
 } from '@/lib/types/config'
 import { cn } from '@/lib/utils'
-import { Validator } from '@/lib/utils/validation'
-import { isRedacted, isValidVertexAuthCredentials, isValidAzureDeployments } from '@/lib/utils/validation'
+import { isRedacted, isValidAzureDeployments, isValidVertexAuthCredentials, Validator } from '@/lib/utils/validation'
 import isEqual from 'lodash.isequal'
 import { AlertTriangle, Globe, Info, Plus, Save, X, Zap } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '../ui/alert'
-import MetaConfigRenderer from './meta-config-renderer'
 import { Textarea } from '../ui/textarea'
+import MetaConfigRenderer from './meta-config-renderer'
 
 interface ProviderFormProps {
   provider?: ProviderResponse | null
@@ -462,7 +461,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                   <Tooltip key={p}>
                     <TooltipTrigger
                       className={cn(
-                        'flex w-full items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-all duration-200 ease-in-out',
+                        'flex w-full items-center gap-2 rounded-sm border px-4 py-2 text-sm transition-all duration-200 ease-in-out',
                         selectedProvider === p
                           ? 'bg-secondary opacity-100 hover:opacity-100'
                           : availableProviders.includes(p)
@@ -539,7 +538,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                         {keys.map((key, index) => (
                           <div
                             key={index}
-                            className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 rounded-md border p-4 duration-300"
+                            className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 rounded-sm border p-4 duration-300"
                             style={{ animationDelay: `${index * 50}ms` }}
                           >
                             <div className="flex gap-4">

@@ -52,6 +52,7 @@ package main
 import (
 	"embed"
 	"flag"
+	"fmt"
 	"log"
 	"mime"
 	"os"
@@ -233,6 +234,21 @@ func uiHandler(ctx *fasthttp.RequestCtx) {
 //   - POST /v1/chat/completions: For chat completion requests
 //   - GET /metrics: For Prometheus metrics
 func main() {
+	fmt.Print(`
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  ██████╗ ██╗███████╗██████╗  ██████╗ ███████╗████████╗        │
+│  ██╔══██╗██║██╔════╝██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝        │
+│  ██████╔╝██║█████╗  ██████╔╝██║   ██║███████╗   ██║           │
+│  ██╔══██╗██║██╔══╝  ██╔══██╗██║   ██║╚════██║   ██║           │
+│  ██████╔╝██║██║     ██║  ██║╚██████╔╝███████║   ██║           │
+│  ╚═════╝ ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝           │
+│                                                               │
+│  From Maxim AI (https://getmaxim.ai)                          │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+`)
+
 	// Ensure app directory exists
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		log.Fatalf("failed to create app directory %s: %v", appDir, err)
@@ -253,7 +269,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize config store: %v", err)
 	}
-
+	
 	// Load configuration from JSON file into the store with full preprocessing
 	// This processes environment variables and stores all configurations in memory for ultra-fast access
 	if err := store.LoadFromConfig(configPath); err != nil {

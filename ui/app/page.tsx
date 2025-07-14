@@ -11,7 +11,7 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 import { apiService } from '@/lib/api'
 import type { BifrostMessage, ContentBlock, LogEntry, LogFilters, LogStats, MessageContent, Pagination } from '@/lib/types/logs'
 import { AlertCircle, BarChart, CheckCircle, Clock, Hash } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([])

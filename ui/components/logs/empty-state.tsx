@@ -217,8 +217,8 @@ const response = await completion({
           </div>
         </div>
 
-        <Tabs defaultValue="curl" className="w-full rounded-lg border">
-          <TabsList className="grid h-10 w-full grid-cols-5 rounded-b-none rounded-t-lg">
+        <Tabs defaultValue="curl" className="w-full rounded-sm border">
+          <TabsList className="grid h-10 w-full grid-cols-5 rounded-b-none rounded-t-sm">
             <TabsTrigger value="curl">cURL</TabsTrigger>
             <TabsTrigger value="openai">OpenAI SDK</TabsTrigger>
             <TabsTrigger value="anthropic">Anthropic SDK</TabsTrigger>

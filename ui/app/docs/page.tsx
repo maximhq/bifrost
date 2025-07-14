@@ -1,10 +1,9 @@
-import Header from '@/components/header'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { BookOpen, ExternalLink, Zap, Settings, Code, Users, FileText, Play, GitBranch } from 'lucide-react'
-import Link from 'next/link'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import GradientHeader from '@/components/ui/gradient-header'
+import { BookOpen, Code, ExternalLink, FileText, GitBranch, Play, Settings, Users, Zap } from 'lucide-react'
+import Link from 'next/link'
 
 const docSections = [
   {
@@ -92,7 +91,7 @@ export default function DocsPage() {
                 <Card key={section.title} className="group transition-all duration-200 hover:shadow-lg">
                   <CardHeader>
                     <div className="flex items-center justify-between">
-                      <div className="bg-primary/10 group-hover:bg-primary/20 mb-4 flex h-12 w-12 items-center justify-center rounded-lg transition-colors">
+                      <div className="bg-primary/10 group-hover:bg-primary/20 mb-4 flex h-12 w-12 items-center justify-center rounded-sm transition-colors">
                         <Icon className="text-primary h-6 w-6" />
                       </div>
                       {section.badge && (

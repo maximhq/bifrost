@@ -43,7 +43,7 @@ install-air: ## Install air for hot reloading (if not already installed)
 	@which air > /dev/null || (echo "$(YELLOW)Installing air for hot reloading...$(NC)" && go install github.com/air-verse/air@latest)
 	@echo "$(GREEN)Air is ready$(NC)"
 
-dev-http: install-ui install-air ## Start complete development environment (UI + API with proxy)
+dev: install-ui install-air ## Start complete development environment (UI + API with proxy)
 	@echo "$(GREEN)Starting Bifrost complete development environment...$(NC)"
 	@echo "$(YELLOW)This will start:$(NC)"
 	@echo "  1. UI development server (localhost:3000)"
@@ -53,6 +53,13 @@ dev-http: install-ui install-air ## Start complete development environment (UI +
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
 	@cd ui && npm run dev &
 	@sleep 3
+	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
+	@cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
+		-port "$(PORT)" \
+		-plugins "$(PLUGINS)" \
+		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
+
+dev-http: install-air
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
 	@cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
 		-port "$(PORT)" \

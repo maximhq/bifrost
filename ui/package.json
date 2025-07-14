@@ -46,6 +46,7 @@
 		"next-themes": "^0.4.6",
 		"react": "^19.0.0",
 		"react-dom": "^19.0.0",
+		"reactflow": "^11.11.4",
 		"recharts": "^3.0.2",
 		"sonner": "^2.0.5",
 		"tailwind-merge": "^3.3.1"
