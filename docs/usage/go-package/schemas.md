@@ -559,6 +559,7 @@ providers := []schemas.ModelProvider{
     schemas.Cohere,      // Cohere models
     schemas.Mistral,     // Mistral models
     schemas.Ollama,      // Local Ollama
+    schemas.Groq,        // Groq models
 }
 
 // Popular model choices

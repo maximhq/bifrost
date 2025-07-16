@@ -45,6 +45,7 @@ const (
 	Vertex    ModelProvider = "vertex"
 	Mistral   ModelProvider = "mistral"
 	Ollama    ModelProvider = "ollama"
+	Groq      ModelProvider = "groq"
 )
 
 //* Request Structs

@@ -347,7 +347,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
   return (
     <Dialog open={true} onOpenChange={onCancel}>
       <DialogContent className="custom-scrollbar max-h-[90vh] overflow-y-auto p-0 sm:max-w-4xl" showCloseButton={false}>
-        <DialogHeader className="px-6 pt-6">
+        <DialogHeader className="z-10 px-6 pt-6">
           <DialogTitle>
             {provider ? (
               <div className="flex items-center gap-2">
@@ -399,7 +399,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
           <div className="flex h-full w-full flex-col justify-between px-2">
             <Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
-              <TabsList className={`grid h-10 w-full grid-cols-${tabs.length} mb-4`}>
+              <TabsList style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }} className={`mb-4 grid h-10 w-full`}>
                 {tabs.map((tab) => (
                   <TabsTrigger key={tab.id} value={tab.id} className="flex items-center gap-2 transition-all duration-200 ease-in-out">
                     {tab.label}

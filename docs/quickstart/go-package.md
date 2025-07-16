@@ -202,7 +202,7 @@ response, err := client.ChatCompletionRequest(context.Background(), schemas.Chat
 | What You Want                | Where to Go                                             | Time      |
 | ---------------------------- | ------------------------------------------------------- | --------- |
 | **Complete setup guide**     | [📖 Go Package Usage](../usage/go-package/)             | 10 min    |
-| **Add all 8+ providers**     | [🔗 Providers](../providers.md)                         | 5 min     |
+| **Add all 10+ providers**     | [🔗 Providers](../providers.md)                         | 5 min     |
 | **Production configuration** | [👤 Account Management](../usage/go-package/account.md) | 15 min    |
 | **Custom plugins**           | [🔌 Plugins](../usage/go-package/plugins.md)            | 20 min    |
 | **MCP integration**          | [🛠️ MCP](../usage/go-package/mcp.md)                    | 15 min    |

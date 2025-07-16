@@ -4,7 +4,7 @@
 
 **The fastest way to build AI applications that never go down.**
 
-Bifrost is a high-performance AI gateway that connects you to 8+ providers (OpenAI, Anthropic, Bedrock, and more) through a single API. Get automatic failover, load balancing, and zero-downtime deployments in under 30 seconds.
+Bifrost is a high-performance AI gateway that connects you to 10+ providers (OpenAI, Anthropic, Bedrock, and more) through a single API. Get automatic failover, load balancing, and zero-downtime deployments in under 30 seconds.
 
 ![Bifrost](./docs/media/cover.png)
 
@@ -260,7 +260,7 @@ Choose higher settings (like the t3.xlarge profile above) for raw speed, or lowe
 <details>
 <summary><strong>🎯 I want to understand what Bifrost can do</strong></summary>
 
-- **[🔗 Multi-Provider Support](./docs/usage/providers.md)** - Connect to 8+ AI providers with one API
+- **[🔗 Multi-Provider Support](./docs/usage/providers.md)** - Connect to 10+ AI providers with one API
 - **[🛡️ Fallback & Reliability](./docs/usage/providers.md#fallback-mechanisms)** - Never lose a request with automatic failover
 - **[🛠️ MCP Tool Integration](./docs/usage/http-transport/configuration/mcp.md)** - Give your AI external capabilities
 - **[🔌 Plugin Ecosystem](./docs/usage/http-transport/configuration/plugins.md)** - Extend Bifrost with custom middleware
