@@ -260,6 +260,8 @@ export NO_PROXY=localhost,127.0.0.1,.company.com
 
 </details>
 
+> Please note that the proxy configuration is not supported for **streaming requests**, and for **Bedrock** and **Vertex** Providers.
+
 ---
 
 ## ⏱️ Timeout & Retry Configuration

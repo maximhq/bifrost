@@ -13,6 +13,7 @@ This directory contains comprehensive tests for all Bifrost AI providers, ensuri
 - **Mistral** - Mistral AI models with vision capabilities
 - **Ollama** - Local LLM serving platform
 - **Groq** - Groq models
+- **SGLang** - SGLang models
 
 ## 🏃‍♂️ Running Tests
 

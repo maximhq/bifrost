@@ -1358,9 +1358,13 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType Re
 	msg := bifrost.channelMessagePool.Get().(*ChannelMessage)
 	msg.BifrostRequest = req
 	msg.Response = responseChan
-	msg.ResponseStream = make(chan chan *schemas.BifrostStream, 1) // Initialize the ResponseStream channel
 	msg.Err = errorChan
 	msg.Type = reqType
+
+	// Conditionally allocate ResponseStream for streaming requests only
+	if reqType == ChatCompletionStreamRequest {
+		msg.ResponseStream = make(chan chan *schemas.BifrostStream, 1)
+	}
 
 	return msg
 }
