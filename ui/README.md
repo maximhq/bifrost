@@ -90,7 +90,7 @@ The main dashboard provides comprehensive request monitoring:
 
 Manage all your AI providers from a unified interface:
 
-- **Supported Providers**: OpenAI, Azure OpenAI, Anthropic, AWS Bedrock, Cohere, Google Vertex AI, Mistral, Ollama, Groq
+- **Supported Providers**: OpenAI, Azure OpenAI, Anthropic, AWS Bedrock, Cohere, Google Vertex AI, Mistral, Ollama, Groq, SGLang
 - **Key Management**: Multiple API keys with weights and model assignments
 - **Network Configuration**: Custom base URLs, timeouts, retry policies, proxy settings
 - **Provider-specific Settings**: Azure deployments, Bedrock regions, Vertex projects

@@ -14,7 +14,8 @@ Multi-provider support with unified API across all AI providers. Switch between 
 | **Cohere**         | Command, Embed, Rerank                 | Enterprise NLP, multilingual        | ✅         |
 | **Mistral**        | Mistral Large, Medium, Small           | European AI, cost-effective         | ✅         |
 | **Ollama**         | Llama, Mistral, CodeLlama              | Local deployment, privacy           | ✅         |
-| **Groq**           | Mixtral, Llama, Gemma              | Enterprise AI platform              | ✅         |
+| **Groq**           | Mixtral, Llama, Gemma                  | Enterprise AI platform              | ✅         |
+| **SGLang**         | Qwen                 | Enterprise AI platform              | ✅         |
 
 ---
 
