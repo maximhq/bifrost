@@ -53,7 +53,7 @@ docker run -p 8080:8080 -v $(pwd)/data:/app/data maximhq/bifrost
 | Feature                       | Description                                                         | Learn More                                                 |
 | ----------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------- |
 | **🖥️ Built-in Web UI**        | Visual configuration, live monitoring, request logs, and analytics  | Open `http://localhost:8080` after startup                 |
-| **🔄 Multi-Provider Support** | OpenAI, Anthropic, Azure, Bedrock, Vertex, Cohere, Mistral, Ollama, Groq | [Provider Setup](../docs/usage/providers.md)               |
+| **🔄 Multi-Provider Support** | OpenAI, Anthropic, Azure, Bedrock, Vertex, Cohere, Mistral, Ollama, Groq, SGLang | [Provider Setup](../docs/usage/providers.md)               |
 | **🔌 Drop-in Compatibility**  | Replace OpenAI/Anthropic/GenAI APIs with zero code changes          | [Integrations](../docs/usage/http-transport/integrations/) |
 | **🛠️ MCP Tool Calling**       | Enable AI models to use external tools (filesystem, web, databases) | [MCP Guide](../docs/mcp.md)                                |
 | **⚡ Plugin System**          | Add analytics, caching, rate limiting, custom logic                 | [Plugin System](../docs/plugins.md)                        |

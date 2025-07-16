@@ -43,7 +43,7 @@ interface ProviderFormProps {
 const createInitialState = (provider?: ProviderResponse | null, defaultProvider?: string): Omit<ProviderFormData, 'isDirty'> => {
   const isNewProvider = !provider
   const providerName = provider?.name || defaultProvider || ''
-  const keysRequired = !['vertex', 'ollama'].includes(providerName)
+  const keysRequired = !['vertex', 'ollama', 'sgl'].includes(providerName)
 
   return {
     selectedProvider: providerName,
@@ -91,8 +91,8 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
   const { selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, isDirty } = formData
 
-  const baseURLRequired = selectedProvider === 'ollama'
-  const keysRequired = !['vertex', 'ollama'].includes(selectedProvider)
+  const baseURLRequired = selectedProvider === 'ollama' || selectedProvider === 'sgl'
+  const keysRequired = !['vertex', 'ollama', 'sgl'].includes(selectedProvider)
   const keysValid = !keysRequired || keys.every((k) => k.value.trim() !== '')
   const keysPresent = !keysRequired || keys.length > 0
 

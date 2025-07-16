@@ -153,7 +153,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate required keys
-	if len(req.Keys) == 0 && req.Provider != schemas.Vertex && req.Provider != schemas.Ollama {
+	if len(req.Keys) == 0 && req.Provider != schemas.Vertex && req.Provider != schemas.Ollama && req.Provider != schemas.SGL {
 		SendError(ctx, fasthttp.StatusBadRequest, "At least one API key is required", h.logger)
 		return
 	}
@@ -250,7 +250,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 
 	// Validate and process keys
 	if req.Keys != nil {
-		if len(req.Keys) == 0 && provider != schemas.Vertex && provider != schemas.Ollama {
+		if len(req.Keys) == 0 && provider != schemas.Vertex && provider != schemas.Ollama && provider != schemas.SGL {
 			SendError(ctx, fasthttp.StatusBadRequest, "At least one API key is required", h.logger)
 			return
 		}

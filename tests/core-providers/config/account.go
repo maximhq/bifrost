@@ -64,6 +64,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Ollama,
 		schemas.Mistral,
 		schemas.Groq,
+		schemas.SGL,
 	}, nil
 }
 
@@ -242,6 +243,17 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Groq:
 		return &schemas.ProviderConfig{
 			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	case schemas.SGL:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("SGL_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
 	default:
