@@ -140,7 +140,7 @@ type RouteConfig struct {
 	ErrorConverter         ErrorConverter      // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
 	StreamConfig           *StreamConfig       // Optional: Streaming configuration (if nil, streaming not supported)
 	PreCallback            PreRequestCallback  // Optional: called before request processing
-	PostCallback           PostRequestCallback // Optional: called after request processing (not supported for streaming)
+	PostCallback           PostRequestCallback // Optional: called after request processing
 }
 
 // GenericRouter provides a reusable router implementation for all integrations.

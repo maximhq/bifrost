@@ -21,7 +21,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: 'Bifrost - The fastest LLM gateway',
   description:
-    'Production-ready fastest LLM gateway that connects to 8+ providers through a single API. Get automatic failover, load balancing, mcp support and zero-downtime deployments.',
+    'Production-ready fastest LLM gateway that connects to 10+ providers through a single API. Get automatic failover, load balancing, mcp support and zero-downtime deployments.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -34,7 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <WebSocketProvider>
               <SidebarProvider>
                 <Sidebar />
-                <main className="custom-scrollbar relative mx-auto flex min-h-screen w-5xl flex-col py-12 px-4">{children}</main>
+                <main className="custom-scrollbar w-5xl relative mx-auto flex min-h-screen flex-col px-4 py-12">{children}</main>
               </SidebarProvider>
             </WebSocketProvider>
           </ThemeProvider>

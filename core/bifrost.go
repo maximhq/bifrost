@@ -818,6 +818,10 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelP
 		return providers.NewMistralProvider(config, bifrost.logger), nil
 	case schemas.Ollama:
 		return providers.NewOllamaProvider(config, bifrost.logger)
+	case schemas.Groq:
+		return providers.NewGroqProvider(config, bifrost.logger)
+	case schemas.SGL:
+		return providers.NewSGLProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}

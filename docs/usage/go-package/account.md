@@ -479,7 +479,7 @@ func TestAccountWithBifrost(t *testing.T) {
 ## 📚 Related Documentation
 
 - **[🤖 Bifrost Client](./bifrost-client.md)** - Using your Account with the client
-- **[🔗 Provider Configuration](../providers.md)** - Settings for all 8+ providers
+- **[🔗 Provider Configuration](../providers.md)** - Settings for all 10+ providers
 - **[🔑 Key Management](../key-management.md)** - Advanced key rotation and distribution
 - **[🌐 HTTP Transport](../../quickstart/http-transport.md)** - JSON-based configuration alternative
 

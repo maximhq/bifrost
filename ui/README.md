@@ -90,7 +90,7 @@ The main dashboard provides comprehensive request monitoring:
 
 Manage all your AI providers from a unified interface:
 
-- **Supported Providers**: OpenAI, Azure OpenAI, Anthropic, AWS Bedrock, Cohere, Google Vertex AI, Mistral, Ollama
+- **Supported Providers**: OpenAI, Azure OpenAI, Anthropic, AWS Bedrock, Cohere, Google Vertex AI, Mistral, Ollama, Groq, SGLang
 - **Key Management**: Multiple API keys with weights and model assignments
 - **Network Configuration**: Custom base URLs, timeouts, retry policies, proxy settings
 - **Provider-specific Settings**: Azure deployments, Bedrock regions, Vertex projects
@@ -143,17 +143,17 @@ The UI communicates with the Bifrost HTTP transport backend through a typed API 
 
 ```typescript
 // Example API usage
-import { apiService } from '@/lib/api';
+import { apiService } from '@/lib/api'
 
 // Get real-time logs
-const [logs, error] = await apiService.getLogs(filters, pagination);
+const [logs, error] = await apiService.getLogs(filters, pagination)
 
 // Configure provider
 const [result, error] = await apiService.createProvider({
   provider: 'openai',
   keys: [{ value: 'sk-...', models: ['gpt-4'], weight: 1 }],
   // ... other config
-});
+})
 ```
 
 ### Component Guidelines
@@ -179,20 +179,22 @@ The UI supports comprehensive provider configuration:
 
 ```typescript
 interface ProviderConfig {
-  keys: Key[];                           // API keys with model assignments
-  network_config: NetworkConfig;         // URLs, timeouts, retries
-  meta_config?: MetaConfig;             // Provider-specific settings
-  concurrency_and_buffer_size: {        // Performance tuning
-    concurrency: number;
-    buffer_size: number;
-  };
-  proxy_config?: ProxyConfig;           // Proxy settings
+  keys: Key[] // API keys with model assignments
+  network_config: NetworkConfig // URLs, timeouts, retries
+  meta_config?: MetaConfig // Provider-specific settings
+  concurrency_and_buffer_size: {
+    // Performance tuning
+    concurrency: number
+    buffer_size: number
+  }
+  proxy_config?: ProxyConfig // Proxy settings
 }
 ```
 
 ### Real-time Features
 
 WebSocket connection provides:
+
 - Live log streaming
 - Connection status monitoring
 - Automatic reconnection
@@ -237,4 +239,4 @@ Licensed under the same terms as the main Bifrost project. See [LICENSE](../LICE
 
 ---
 
-*Built with ♥️ by [Maxim AI](https://getmaxim.ai)*
+_Built with ♥️ by [Maxim AI](https://getmaxim.ai)_

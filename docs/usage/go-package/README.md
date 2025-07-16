@@ -161,7 +161,7 @@ If you need to use Bifrost from non-Go languages (Python, Node.js, etc.) or in m
 ### **Production Setup**
 
 - [Error Handling](../errors.md) - Error types and recovery patterns
-- [Provider Configuration](../providers.md) - All 8+ providers setup
+- [Provider Configuration](../providers.md) - All 10+ providers setup
 
 ### **Development**
 

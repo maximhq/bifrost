@@ -84,6 +84,40 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+### **Streaming Responses**
+
+To receive a stream of partial responses, set `"stream": true` in your request. The response will be a `text/event-stream` of Server-Sent Events (SSE).
+
+**Request with Streaming:**
+
+```json
+{
+  "model": "openai/gpt-4o-mini",
+  "messages": [{"role": "user", "content": "Write a short story."}],
+  "stream": true
+}
+```
+
+**SSE Event Stream:**
+
+Each event in the stream is a JSON object prefixed with `data: `. The stream is terminated by a `[DONE]` message.
+
+```
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Once"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":" upon"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":" a"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":" time"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
 ### **POST /v1/text/completions**
 
 Text completion endpoint for simple text generation.

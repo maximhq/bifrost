@@ -63,6 +63,8 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Vertex,
 		schemas.Ollama,
 		schemas.Mistral,
+		schemas.Groq,
+		schemas.SGL,
 	}, nil
 }
 
@@ -122,6 +124,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(providerKey schemas.
 			{
 				Value:  os.Getenv("MISTRAL_API_KEY"),
 				Models: []string{"mistral-large-2411", "pixtral-12b-latest"},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.Groq:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("GROQ_API_KEY"),
+				Models: []string{"llama-3.3-70b-versatile"},
 				Weight: 1.0,
 			},
 		}, nil
@@ -228,6 +238,22 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Mistral:
 		return &schemas.ProviderConfig{
 			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	case schemas.Groq:
+		return &schemas.ProviderConfig{
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	case schemas.SGL:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("SGL_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
 	default:
@@ -403,6 +429,29 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		TextModel: "", // Ollama focuses on chat
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
+			SimpleChat:            true,
+			ChatCompletionStream:  true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			ProviderSpecific:      true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  schemas.Groq,
+		ChatModel: "llama-3.3-70b-versatile",
+		TextModel: "", // Groq doesn't support text completion
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			ChatCompletionStream:  true,
 			MultiTurnConversation: true,

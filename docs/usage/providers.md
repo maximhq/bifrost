@@ -6,14 +6,16 @@ Multi-provider support with unified API across all AI providers. Switch between 
 
 | Provider              | Models                                 | Features                            | Enterprise |
 | --------------------- | -------------------------------------- | ----------------------------------- | ---------- |
-| **🤖 OpenAI**         | GPT-4o, GPT-4 Turbo, GPT-4, GPT-3.5    | Function calling, streaming, vision | ✅         |
-| **🧠 Anthropic**      | Claude 3.5 Sonnet, Claude 3 Opus/Haiku | Tool use, vision, 200K context      | ✅         |
-| **☁️ Azure OpenAI**   | Enterprise GPT deployment              | Private networks, compliance        | ✅         |
-| **🏛️ Amazon Bedrock** | Claude, Titan, Cohere, Meta            | Multi-model platform, VPC           | ✅         |
-| **🔍 Google Vertex**  | Gemini Pro, PaLM, Codey                | Enterprise AI platform              | ✅         |
-| **💬 Cohere**         | Command, Embed, Rerank                 | Enterprise NLP, multilingual        | ✅         |
-| **🌟 Mistral**        | Mistral Large, Medium, Small           | European AI, cost-effective         | ✅         |
-| **🏠 Ollama**         | Llama, Mistral, CodeLlama              | Local deployment, privacy           | ✅         |
+| **OpenAI**         | GPT-4o, GPT-4 Turbo, GPT-4, GPT-3.5    | Function calling, streaming, vision | ✅         |
+| **Anthropic**      | Claude 3.5 Sonnet, Claude 3 Opus/Haiku | Tool use, vision, 200K context      | ✅         |
+| **Azure OpenAI**   | Enterprise GPT deployment              | Private networks, compliance        | ✅         |
+| **Amazon Bedrock** | Claude, Titan, Cohere, Meta            | Multi-model platform, VPC           | ✅         |
+| **Google Vertex**  | Gemini Pro, PaLM, Codey                | Enterprise AI platform              | ✅         |
+| **Cohere**         | Command, Embed, Rerank                 | Enterprise NLP, multilingual        | ✅         |
+| **Mistral**        | Mistral Large, Medium, Small           | European AI, cost-effective         | ✅         |
+| **Ollama**         | Llama, Mistral, CodeLlama              | Local deployment, privacy           | ✅         |
+| **Groq**           | Mixtral, Llama, Gemma                  | Enterprise AI platform              | ✅         |
+| **SGLang**         | Qwen                 | Enterprise AI platform              | ✅         |
 
 ---
 
@@ -457,15 +459,15 @@ func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schema
 
 ## 📋 Provider Features Matrix
 
-| Feature              | OpenAI | Anthropic | Azure | Bedrock | Vertex | Cohere | Mistral | Ollama |
-| -------------------- | ------ | --------- | ----- | ------- | ------ | ------ | ------- | ------ |
-| **Chat Completion**  | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     |
-| **Function Calling** | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     |
-| **Streaming**        | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     |
-| **Vision**           | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     |
-| **JSON Mode**        | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     |
-| **Custom Base URL**  | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     |
-| **Proxy Support**    | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     |
+| Feature              | OpenAI | Anthropic | Azure | Bedrock | Vertex | Cohere | Mistral | Ollama | Groq   |
+| -------------------- | ------ | --------- | ----- | ------- | ------ | ------ | ------- | ------ | ------ |
+| **Chat Completion**  | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     |
+| **Function Calling** | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     |
+| **Streaming**        | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     |
+| **Vision**           | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ❌     |
+| **JSON Mode**        | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     |
+| **Custom Base URL**  | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     |
+| **Proxy Support**    | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     |
 
 ---
 
