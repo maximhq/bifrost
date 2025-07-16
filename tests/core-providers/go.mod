@@ -3,7 +3,7 @@ module github.com/maximhq/bifrost/tests/core-providers
 go 1.24.1
 
 require (
-	github.com/maximhq/bifrost/core v1.1.5
+	github.com/maximhq/bifrost/core v1.1.8
 	github.com/stretchr/testify v1.10.0
 )
 
@@ -38,5 +38,3 @@ require (
 	golang.org/x/text v0.24.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/maximhq/bifrost/core => ../../core

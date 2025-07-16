@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jaswdr/faker/v2"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -734,14 +735,16 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	// Create mock response with proper structure
 	mockResponse := &schemas.BifrostResponse{
 		Model: req.Model,
-		Usage: usage,
+		Usage: &usage,
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index: 0,
-				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentStr: &message,
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: schemas.ModelChatMessageRoleAssistant,
+						Content: schemas.MessageContent{
+							ContentStr: &message,
+						},
 					},
 				},
 				FinishReason: finishReason,
@@ -891,7 +894,7 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 		return req, &schemas.PluginShortCircuit{
 			Response: &schemas.BifrostResponse{
 				Model: req.Model,
-				Usage: schemas.LLMUsage{
+				Usage: &schemas.LLMUsage{
 					PromptTokens:     5,
 					CompletionTokens: 10,
 					TotalTokens:      15,
@@ -899,10 +902,12 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 				Choices: []schemas.BifrostResponseChoice{
 					{
 						Index: 0,
-						Message: schemas.BifrostMessage{
-							Role: schemas.ModelChatMessageRoleAssistant,
-							Content: schemas.MessageContent{
-								ContentStr: func() *string { s := "Mock plugin default response"; return &s }(),
+						BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+							Message: schemas.BifrostMessage{
+								Role: schemas.ModelChatMessageRoleAssistant,
+								Content: schemas.MessageContent{
+									ContentStr: bifrost.Ptr("Mock plugin default response"),
+								},
 							},
 						},
 						FinishReason: &finishReason,
