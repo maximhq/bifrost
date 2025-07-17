@@ -76,7 +76,7 @@ const response = await model.generateContent("Hello!");
 | **Multi-turn Chat**     | ✅ Full    | Conversation history            |
 | **System Instructions** | ✅ Full    | Model behavior control          |
 | **Vision/Multimodal**   | ✅ Full    | Images, videos, documents       |
-| **Streaming**           | ⚠️ Planned | Currently returns full response |
+| **Streaming**           | ✅ Full    | Currently returns full response |
 | **Safety Settings**     | ✅ Full    | Content filtering               |
 | **Generation Config**   | ✅ Full    | Temperature, top-k, etc.        |
 | **Function Calling**    | ✅ Full    | Google + MCP tools              |
@@ -101,20 +101,20 @@ const response = await model.generateContent("Hello!");
 # Use Google provider
 curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro:generateContent \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GOOGLE_API_KEY" \
   -d '{
     "contents": [{
-      "parts": [{"text": "What is the capital of France?"}]
+      "parts": [{"text": "What is the capital of France?"}],
+      "role": "user"
     }]
   }'
 
 # Use OpenAI provider via GenAI SDK format
 curl -X POST http://localhost:8080/genai/v1beta/models/openai/gpt-4o-mini:generateContent \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GOOGLE_API_KEY" \
   -d '{
     "contents": [{
-      "parts": [{"text": "What is the capital of France?"}]
+      "parts": [{"text": "What is the capital of France?"}],
+      "role": "user"
     }]
   }'
 ```
@@ -150,7 +150,6 @@ curl -X POST http://localhost:8080/genai/v1beta/models/openai/gpt-4o-mini:genera
 ```bash
 curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro:generateContent \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GOOGLE_API_KEY" \
   -d '{
     "contents": [
       {
@@ -174,7 +173,6 @@ curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro:generateConten
 ```bash
 curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro-vision:generateContent \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GOOGLE_API_KEY" \
   -d '{
     "contents": [{
       "parts": [
@@ -185,7 +183,8 @@ curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro-vision:generat
             "data": "/9j/4AAQSkZJRgABAQEAYABgAAD..."
           }
         }
-      ]
+      ],
+      "role": "user"
     }]
   }'
 ```
@@ -195,10 +194,10 @@ curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro-vision:generat
 ```bash
 curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro:generateContent \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GOOGLE_API_KEY" \
   -d '{
     "contents": [{
-      "parts": [{"text": "What is the weather like in Paris?"}]
+      "parts": [{"text": "What is the weather like in Paris?"}],
+      "role": "user"
     }],
     "tools": [{
       "functionDeclarations": [{
@@ -419,58 +418,7 @@ response3 = client.models.generate_content(
     model="anthropic/claude-3-sonnet-20240229",
     contents="Hello!"
 )
-```
-
-### **Multi-provider Fallbacks**
-
-Configure fallbacks in Bifrost config.json:
-
-```json
-{
-  "providers": {
-    "vertex": {
-      "meta_config": {
-        "project_id": "env.VERTEX_PROJECT_ID",
-        "region": "us-central1"
-      }
-    },
-    "openai": {
-      "keys": [
-        {
-          "value": "env.OPENAI_API_KEY",
-          "models": ["gpt-4o-mini"],
-          "weight": 1.0
-        }
-      ]
-    }
-  }
-}
-```
-
-Requests automatically fallback to OpenAI if Google fails:
-
-```python
-# This request tries Google first, falls back to OpenAI if needed
-model = genai.GenerativeModel('gemini-pro')  # Will fallback to gpt-4o-mini
-response = model.generate_content("Hello!")
-```
-
-### **Load Balancing**
-
-Multiple Google Cloud projects automatically load balanced:
-
-```json
-{
-  "providers": {
-    "vertex": {
-      "keys": [
-        { "value": "env.GOOGLE_API_KEY_1", "weight": 0.7 },
-        { "value": "env.GOOGLE_API_KEY_2", "weight": 0.3 }
-      ]
-    }
-  }
-}
-```
+````
 
 ---
 

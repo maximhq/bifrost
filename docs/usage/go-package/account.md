@@ -54,7 +54,7 @@ func (a *SimpleAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]sc
 
         return []schemas.Key{{
             Value:  apiKey,
-            Models: []string{"gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"},
+            Models: []string{"gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"}, // Keep Models empty to use any model
             Weight: 1.0,
         }}, nil
     }
@@ -171,9 +171,9 @@ func (a *MultiProviderAccount) GetConfigForProvider(provider schemas.ModelProvid
                 RetryBackoffMax:                10 * time.Second,
             },
             ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-            MetaConfig: &schemas.AzureMetaConfig{
+            MetaConfig: &meta.AzureMetaConfig{
                 Endpoint:     os.Getenv("AZURE_ENDPOINT"),
-                APIVersion:   "2024-08-01-preview",
+                APIVersion: bifrost.Ptr("2024-08-01-preview"),
                 Deployments: map[string]string{
                     "gpt-4o": "gpt-4o-deployment",
                 },
@@ -184,9 +184,9 @@ func (a *MultiProviderAccount) GetConfigForProvider(provider schemas.ModelProvid
         return &schemas.ProviderConfig{
             NetworkConfig:            schemas.DefaultNetworkConfig,
             ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-            MetaConfig: &schemas.BedrockMetaConfig{
+            MetaConfig: &meta.BedrockMetaConfig{
                 SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
-                Region:          "us-east-1",
+                Region:          bifrost.Ptr("us-east-1"),
             },
         }, nil
 
@@ -194,7 +194,7 @@ func (a *MultiProviderAccount) GetConfigForProvider(provider schemas.ModelProvid
         return &schemas.ProviderConfig{
             NetworkConfig:            schemas.DefaultNetworkConfig,
             ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-            MetaConfig: &schemas.VertexMetaConfig{
+            MetaConfig: &meta.VertexMetaConfig{
                 ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
                 Region:          "us-central1",
                 AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
@@ -453,10 +453,10 @@ func TestAccount(t *testing.T) {
 func TestAccountWithBifrost(t *testing.T) {
     account := &MyAccount{}
 
-    client, err := bifrost.Init(schemas.BifrostConfig{
+    client, initErr := bifrost.Init(schemas.BifrostConfig{
         Account: account,
     })
-    assert.NoError(t, err)
+    assert.NoError(t, initErr)
     defer client.Cleanup()
 
     // Test that configuration works

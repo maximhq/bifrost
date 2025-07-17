@@ -18,7 +18,7 @@ Bifrost's logging system provides:
 
 ```go
 // Configure custom logger
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
     Logger:  customLogger, // Your logger implementation
 })
@@ -92,7 +92,7 @@ func (l *StandardLogger) levelToString(level schemas.LogLevel) string {
 
 // Usage
 logger := NewStandardLogger(schemas.LogLevelInfo)
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
     Logger:  logger,
 })
@@ -185,7 +185,7 @@ func (l *JSONLogger) levelToString(level schemas.LogLevel) string {
 
 // Usage
 logger := NewJSONLogger(schemas.LogLevelInfo, "my-app", "1.0.0")
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
     Logger:  logger,
 })
@@ -502,7 +502,7 @@ func NewDefaultLogger() schemas.Logger {
 }
 
 // Usage
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
     Logger:  createLogger(),
 })
@@ -705,11 +705,11 @@ func (l *MockLogger) Clear() {
 func TestLogging(t *testing.T) {
     mockLogger := NewMockLogger()
 
-    client, err := bifrost.Init(schemas.BifrostConfig{
+    client, initErr := bifrost.Init(schemas.BifrostConfig{
         Account: &TestAccount{},
         Logger:  mockLogger,
     })
-    require.NoError(t, err)
+    require.Nil(t, initErr)
     defer client.Cleanup()
 
     // Make a request

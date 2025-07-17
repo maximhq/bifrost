@@ -86,7 +86,7 @@ const response = await anthropic.messages.create({
 | **Tool Use**        | ✅ Full    | Native + MCP tools              |
 | **System Messages** | ✅ Full    | Anthropic system prompts        |
 | **Vision/Images**   | ✅ Full    | Image analysis                  |
-| **Streaming**       | ⚠️ Planned | Currently returns full response |
+| **Streaming**       | ✅ Full | Currently returns full response |
 | **Max Tokens**      | ✅ Full    | Token limit control             |
 | **Temperature**     | ✅ Full    | Sampling control                |
 | **Stop Sequences**  | ✅ Full    | Custom stop tokens              |
@@ -111,8 +111,6 @@ const response = await anthropic.messages.create({
 # Use Anthropic provider
 curl -X POST http://localhost:8080/anthropic/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "claude-3-sonnet-20240229",
     "max_tokens": 1000,
@@ -124,8 +122,6 @@ curl -X POST http://localhost:8080/anthropic/v1/messages \
 # Use OpenAI provider via Anthropic SDK format
 curl -X POST http://localhost:8080/anthropic/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "openai/gpt-4o-mini",
     "max_tokens": 1000,
@@ -163,8 +159,6 @@ curl -X POST http://localhost:8080/anthropic/v1/messages \
 ```bash
 curl -X POST http://localhost:8080/anthropic/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "claude-3-sonnet-20240229",
     "max_tokens": 1000,
@@ -180,8 +174,6 @@ curl -X POST http://localhost:8080/anthropic/v1/messages \
 ```bash
 curl -X POST http://localhost:8080/anthropic/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "claude-3-sonnet-20240229",
     "max_tokens": 1000,
@@ -391,46 +383,6 @@ response = client.messages.create(
 # Response may include automatic tool use
 if response.content[0].type == "tool_use":
     print(f"Called MCP tool: {response.content[0].name}")
-```
-
-### **Multi-provider Fallbacks**
-
-Configure fallbacks in Bifrost config.json:
-
-```json
-{
-  "providers": {
-    "anthropic": {
-      "keys": [
-        {
-          "value": "env.ANTHROPIC_API_KEY",
-          "models": ["claude-3-sonnet-20240229"],
-          "weight": 1.0
-        }
-      ]
-    },
-    "openai": {
-      "keys": [
-        {
-          "value": "env.OPENAI_API_KEY",
-          "models": ["gpt-4o-mini"],
-          "weight": 1.0
-        }
-      ]
-    }
-  }
-}
-```
-
-Requests automatically fallback to OpenAI if Anthropic fails:
-
-```python
-# This request tries Anthropic first, falls back to OpenAI if needed
-response = client.messages.create(
-    model="claude-3-sonnet-20240229",  # Will fallback to gpt-4o-mini
-    max_tokens=1000,
-    messages=[{"role": "user", "content": "Hello!"}]
-)
 ```
 
 ### **Load Balancing**

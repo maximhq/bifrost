@@ -733,7 +733,7 @@ Create comprehensive documentation including:
 ### Basic Chat Completion
 
 ```go
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &account,
 })
 

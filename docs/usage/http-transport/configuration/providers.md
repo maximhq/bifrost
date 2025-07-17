@@ -6,7 +6,9 @@ Complete guide to configuring AI providers in Bifrost HTTP transport through `co
 
 ---
 
-## 📋 Configuration Overview
+## 📋 Configuration Overview (File Based)
+
+> You can directly use the UI (`http://localhost:{port}/providers`) to configure the providers.
 
 Provider configuration in `config.json` defines:
 

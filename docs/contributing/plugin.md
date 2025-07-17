@@ -35,7 +35,7 @@ import (
     "github.com/your-org/your-plugin"
 )
 
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &yourAccount,
     Plugins: []schemas.Plugin{
         your_plugin.NewYourPlugin(config),
@@ -661,8 +661,8 @@ func TestPluginIntegration(t *testing.T) {
         },
     }
 
-    client, err := bifrost.Init(config)
-    require.NoError(t, err)
+    client, initErr := bifrost.Init(config)
+    require.Nil(t, initErr)
     defer client.Cleanup()
 
     // Test authenticated request

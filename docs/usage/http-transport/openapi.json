@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Bifrost HTTP Transport API",
-    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n\nBifrost provides standardized **OpenAI Compatible** endpoints for text and chat completions with built-in fallback support and comprehensive monitoring.\n\n**MCP Integration**: Includes Model Context Protocol (MCP) support for external tool integration. Configure MCP servers to automatically add tools to model requests and execute them via dedicated endpoints.",
+    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n• groq\n• sgl\n\nBifrost provides:\n\n**Core Features:**\n• Standardized **OpenAI Compatible** endpoints for text and chat completions\n• Built-in fallback support across providers\n• Comprehensive monitoring and logging\n• Real-time WebSocket streaming\n\n**MCP Integration:**\n• Model Context Protocol (MCP) support for external tool integration\n• Dynamic MCP client management (add/remove/edit clients)\n• STDIO, HTTP, and SSE connection types\n• Automatic tool discovery and execution\n\n**Management APIs:**\n• Provider configuration management (CRUD operations)\n• System configuration hot-reloading\n• Application logs with advanced filtering\n• Dropped request monitoring\n\n**Integration Endpoints:**\n• OpenAI-compatible: `/openai/chat/completions`\n• Anthropic-compatible: `/anthropic/v1/messages`\n• Google Gemini-compatible: `/genai/v1beta/models/{model}`\n• LiteLLM-compatible: `/chat/completions`",
     "version": "1.1.2",
     "contact": {
       "name": "Bifrost API Support",
@@ -96,14 +96,8 @@
                       }
                     ],
                     "fallbacks": [
-                      {
-                        "provider": "anthropic",
-                        "model": "claude-3-sonnet-20240229"
-                      },
-                      {
-                        "provider": "cohere",
-                        "model": "command"
-                      }
+                      "anthropic/claude-3-sonnet-20240229",
+                      "cohere/command"
                     ]
                   }
                 },
@@ -254,7 +248,7 @@
                 "simple_text": {
                   "summary": "Simple text completion",
                   "value": {
-                    "model": "openai/gpt-3.5-turbo-instruct",
+                    "model": "anthropic/claude-2.1",
                     "text": "The future of artificial intelligence is",
                     "params": {
                       "max_tokens": 100,
@@ -265,8 +259,8 @@
                 "with_stop_sequences": {
                   "summary": "Text completion with stop sequences",
                   "value": {
-                    "provider": "cohere",
-                    "model": "command",
+                    "provider": "anthropic",
+                    "model": "claude-2.1",
                     "text": "Write a short story about a robot:",
                     "params": {
                       "max_tokens": 200,
@@ -303,7 +297,7 @@
                           "finish_reason": "stop"
                         }
                       ],
-                      "model": "gpt-3.5-turbo-instruct",
+                      "model": "claude-2.1",
                       "created": 1677652288,
                       "usage": {
                         "prompt_tokens": 8,
@@ -311,7 +305,7 @@
                         "total_tokens": 40
                       },
                       "extra_fields": {
-                        "provider": "openai",
+                        "provider": "anthropic",
                         "model_params": {
                           "max_tokens": 100,
                           "temperature": 0.7
@@ -421,6 +415,889 @@
         }
       }
     },
+    "/api/mcp/clients": {
+      "get": {
+        "summary": "List MCP Clients",
+        "description": "Get information about all configured MCP (Model Context Protocol) clients including their connection state, available tools, and configuration.",
+        "operationId": "listMCPClients",
+        "tags": ["MCP Management"],
+        "responses": {
+          "200": {
+            "description": "List of MCP clients",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPClient"
+                  }
+                },
+                "examples": {
+                  "mcp_clients": {
+                    "summary": "MCP clients list",
+                    "value": [
+                      {
+                        "name": "filesystem",
+                        "config": {
+                          "name": "filesystem",
+                          "connection_type": "stdio",
+                          "stdio_config": {
+                            "command": "npx",
+                            "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+                          },
+                          "tools_to_execute": ["read_file", "list_directory"]
+                        },
+                        "tools": ["read_file", "list_directory", "write_file"],
+                        "state": "connected"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/mcp/client": {
+      "post": {
+        "summary": "Add MCP Client",
+        "description": "Add a new MCP client configuration and establish connection. Supports STDIO, HTTP, and SSE connection types.",
+        "operationId": "addMCPClient",
+        "tags": ["MCP Management"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPClientConfig"
+              },
+              "examples": {
+                "stdio_client": {
+                  "summary": "STDIO MCP Client",
+                  "value": {
+                    "name": "filesystem",
+                    "connection_type": "stdio",
+                    "stdio_config": {
+                      "command": "npx",
+                      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                      "envs": ["HOME"]
+                    },
+                    "tools_to_execute": ["read_file", "list_directory"]
+                  }
+                },
+                "http_client": {
+                  "summary": "HTTP MCP Client",
+                  "value": {
+                    "name": "remote-api",
+                    "connection_type": "http",
+                    "connection_string": "https://api.example.com/mcp"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MCP client added successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{name}": {
+      "put": {
+        "summary": "Edit MCP Client Tools",
+        "description": "Modify which tools are available from an MCP client by updating tool filters.",
+        "operationId": "editMCPClientTools",
+        "tags": ["MCP Management"],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Name of the MCP client to edit"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPClientToolsEdit"
+              },
+              "examples": {
+                "whitelist_tools": {
+                  "summary": "Allow only specific tools",
+                  "value": {
+                    "tools_to_execute": ["read_file", "list_directory"]
+                  }
+                },
+                "blacklist_tools": {
+                  "summary": "Block dangerous tools",
+                  "value": {
+                    "tools_to_skip": ["delete_file", "write_file"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MCP client tools updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove MCP Client",
+        "description": "Remove an MCP client configuration and disconnect it from the system.",
+        "operationId": "removeMCPClient",
+        "tags": ["MCP Management"],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Name of the MCP client to remove"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP client removed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{name}/reconnect": {
+      "post": {
+        "summary": "Reconnect MCP Client",
+        "description": "Reconnect a disconnected or errored MCP client.",
+        "operationId": "reconnectMCPClient",
+        "tags": ["MCP Management"],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Name of the MCP client to reconnect"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP client reconnected successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/providers": {
+      "get": {
+        "summary": "List Providers",
+        "description": "Get a list of all configured AI providers with their settings and capabilities.",
+        "operationId": "listProviders",
+        "tags": ["Provider Management"],
+        "responses": {
+          "200": {
+            "description": "List of providers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListProvidersResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "summary": "Add Provider",
+        "description": "Add a new AI provider configuration with API keys, network settings, and concurrency options.",
+        "operationId": "addProvider",
+        "tags": ["Provider Management"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddProviderRequest"
+              },
+              "examples": {
+                "openai_provider": {
+                  "summary": "Add OpenAI Provider",
+                  "value": {
+                    "provider": "openai",
+                    "keys": [
+                      {
+                        "value": "env.OPENAI_API_KEY",
+                        "weight": 1.0,
+                        "models": ["gpt-4o", "gpt-4o-mini"]
+                      }
+                    ],
+                    "concurrency_and_buffer_size": {
+                      "concurrency": 10,
+                      "buffer_size": 100
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Provider added successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/providers/{provider}": {
+      "get": {
+        "summary": "Get Provider",
+        "description": "Get detailed configuration for a specific AI provider.",
+        "operationId": "getProvider",
+        "tags": ["Provider Management"],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ModelProvider"
+            },
+            "description": "Provider name"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Provider",
+        "description": "Update an existing AI provider's configuration including API keys, network settings, and concurrency options.",
+        "operationId": "updateProvider",
+        "tags": ["Provider Management"],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ModelProvider"
+            },
+            "description": "Provider name"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProviderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Provider updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "description": "Provider not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Provider",
+        "description": "Remove an AI provider configuration from the system.",
+        "operationId": "deleteProvider",
+        "tags": ["Provider Management"],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ModelProvider"
+            },
+            "description": "Provider name"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "summary": "Get Configuration",
+        "description": "Get the current system configuration including logging, pool size, and other runtime settings.",
+        "operationId": "getConfig",
+        "tags": ["Configuration"],
+        "responses": {
+          "200": {
+            "description": "Current configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientConfig"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Configuration",
+        "description": "Update system configuration settings. Supports hot-reloading of certain settings like drop_excess_requests.",
+        "operationId": "updateConfig",
+        "tags": ["Configuration"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/logs": {
+      "get": {
+        "summary": "Get Application Logs",
+        "description": "Retrieve application logs with filtering, search, and pagination. Supports filtering by provider, model, status, time range, latency, tokens, and content search.",
+        "operationId": "getLogs",
+        "tags": ["Logging"],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated list of providers to filter by"
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated list of models to filter by"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated list of statuses to filter by (success, error)"
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated list of object types to filter by (chat.completion, text.completion)"
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Start time for filtering (RFC3339 format)"
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "End time for filtering (RFC3339 format)"
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "schema": {
+              "type": "number"
+            },
+            "description": "Minimum latency in seconds"
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "schema": {
+              "type": "number"
+            },
+            "description": "Maximum latency in seconds"
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Minimum token count"
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Maximum token count"
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Search term for message content"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 50
+            },
+            "description": "Number of logs to return (1-1000)"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": "Number of logs to skip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Application logs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogSearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/logs/dropped": {
+      "get": {
+        "summary": "Get Dropped Requests",
+        "description": "Get information about requests that were dropped due to queue overflow or other capacity limits.",
+        "operationId": "getDroppedRequests",
+        "tags": ["Logging"],
+        "responses": {
+          "200": {
+            "description": "Dropped requests information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DroppedRequestsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/ws/logs": {
+      "get": {
+        "summary": "WebSocket Log Stream",
+        "description": "Establish a WebSocket connection for real-time log streaming. Supports filtering similar to the /api/logs endpoint via query parameters.",
+        "operationId": "logWebSocket",
+        "tags": ["WebSocket"],
+        "parameters": [
+          {
+            "name": "Upgrade",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": ["websocket"]
+            }
+          },
+          {
+            "name": "Connection",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": ["Upgrade"]
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket connection established",
+            "headers": {
+              "Upgrade": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["websocket"]
+                }
+              },
+              "Connection": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Upgrade"]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/openai/chat/completions": {
+      "post": {
+        "summary": "OpenAI Compatible Chat Completions",
+        "description": "OpenAI-compatible chat completions endpoint that converts requests to Bifrost format and returns OpenAI-compatible responses.",
+        "operationId": "openaiChatCompletions",
+        "tags": ["Integration - OpenAI"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OpenAI-compatible chat completion response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/anthropic/v1/messages": {
+      "post": {
+        "summary": "Anthropic Compatible Messages",
+        "description": "Anthropic-compatible messages endpoint that converts requests to Bifrost format and returns Anthropic-compatible responses.",
+        "operationId": "anthropicMessages",
+        "tags": ["Integration - Anthropic"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Anthropic-compatible message response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/genai/v1beta/models/{model}": {
+      "post": {
+        "summary": "Google Gemini Compatible Completions",
+        "description": "Google Gemini-compatible completions endpoint that converts requests to Bifrost format and returns Gemini-compatible responses.",
+        "operationId": "geminiCompletions",
+        "tags": ["Integration - Gemini"],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Model name"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Gemini-compatible completion response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/chat/completions": {
+      "post": {
+        "summary": "LiteLLM Compatible Chat Completions",
+        "description": "LiteLLM-compatible chat completions endpoint that automatically detects the provider from the model name and converts requests accordingly.",
+        "operationId": "litellmChatCompletions",
+        "tags": ["Integration - LiteLLM"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "LiteLLM-compatible chat completion response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
     "/metrics": {
       "get": {
         "summary": "Get Prometheus Metrics",
@@ -481,8 +1358,8 @@
         "properties": {
           "model": {
             "type": "string",
-            "description": "Model identifier in 'provider/model' format (e.g., 'openai/gpt-3.5-turbo-instruct', 'anthropic/claude-3-haiku-20240307')",
-            "example": "openai/gpt-3.5-turbo-instruct"
+            "description": "Model identifier in 'provider/model' format (e.g., 'anthropic/claude-2.1')",
+            "example": "anthropic/claude-2.1"
           },
           "text": {
             "type": "string",
@@ -515,7 +1392,9 @@
           "cohere",
           "vertex",
           "mistral",
-          "ollama"
+          "ollama",
+          "groq",
+          "sgl"
         ],
         "description": "AI model provider",
         "example": "openai"
@@ -883,20 +1762,6 @@
           }
         }
       },
-      "Fallback": {
-        "type": "object",
-        "required": ["provider", "model"],
-        "properties": {
-          "provider": {
-            "$ref": "#/components/schemas/ModelProvider"
-          },
-          "model": {
-            "type": "string",
-            "description": "Fallback model name",
-            "example": "claude-3-sonnet-20240229"
-          }
-        }
-      },
       "BifrostResponse": {
         "type": "object",
         "properties": {
@@ -1202,6 +2067,480 @@
             "example": "evt_123"
           }
         }
+      },
+      "MCPClient": {
+        "type": "object",
+        "required": ["name", "config", "tools", "state"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique name for this MCP client",
+            "example": "filesystem"
+          },
+          "config": {
+            "$ref": "#/components/schemas/MCPClientConfig"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Available tools from this client",
+            "example": ["read_file", "list_directory", "write_file"]
+          },
+          "state": {
+            "$ref": "#/components/schemas/MCPConnectionState"
+          }
+        }
+      },
+      "MCPClientConfig": {
+        "type": "object",
+        "required": ["name", "connection_type"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Client name",
+            "example": "filesystem"
+          },
+          "connection_type": {
+            "$ref": "#/components/schemas/MCPConnectionType"
+          },
+          "connection_string": {
+            "type": "string",
+            "description": "HTTP or SSE URL (required for HTTP or SSE connections)",
+            "example": "https://api.example.com/mcp"
+          },
+          "stdio_config": {
+            "$ref": "#/components/schemas/MCPStdioConfig"
+          },
+          "tools_to_skip": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools to exclude from this client",
+            "example": ["delete_file", "write_file"]
+          },
+          "tools_to_execute": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools to include from this client (if specified, only these are used)",
+            "example": ["read_file", "list_directory"]
+          }
+        }
+      },
+      "MCPConnectionType": {
+        "type": "string",
+        "enum": ["http", "stdio", "sse"],
+        "description": "Communication protocol for MCP connections",
+        "example": "stdio"
+      },
+      "MCPStdioConfig": {
+        "type": "object",
+        "required": ["command", "args"],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Executable command to run",
+            "example": "npx"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Command line arguments",
+            "example": ["-y", "@modelcontextprotocol/server-filesystem"]
+          },
+          "envs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Environment variables required",
+            "example": ["HOME", "USER"]
+          }
+        }
+      },
+      "MCPConnectionState": {
+        "type": "string",
+        "enum": ["connected", "disconnected", "error"],
+        "description": "Connection state of MCP client",
+        "example": "connected"
+      },
+      "MCPClientToolsEdit": {
+        "type": "object",
+        "properties": {
+          "tools_to_execute": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools to allow from this client (whitelist)",
+            "example": ["read_file", "list_directory"]
+          },
+          "tools_to_skip": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools to block from this client (blacklist)",
+            "example": ["delete_file", "write_file"]
+          }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["status", "message"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["success"],
+            "description": "Operation status",
+            "example": "success"
+          },
+          "message": {
+            "type": "string",
+            "description": "Success message",
+            "example": "Operation completed successfully"
+          }
+        }
+      },
+      "AddProviderRequest": {
+        "type": "object",
+        "required": ["provider", "keys"],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Key"
+            },
+            "description": "API keys for the provider"
+          },
+          "network_config": {
+            "$ref": "#/components/schemas/NetworkConfig"
+          },
+          "meta_config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Provider-specific metadata"
+          },
+          "concurrency_and_buffer_size": {
+            "$ref": "#/components/schemas/ConcurrencyAndBufferSize"
+          },
+          "proxy_config": {
+            "$ref": "#/components/schemas/ProxyConfig"
+          }
+        }
+      },
+      "UpdateProviderRequest": {
+        "type": "object",
+        "required": ["keys", "network_config", "concurrency_and_buffer_size"],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Key"
+            },
+            "description": "API keys for the provider"
+          },
+          "network_config": {
+            "$ref": "#/components/schemas/NetworkConfig"
+          },
+          "meta_config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Provider-specific metadata"
+          },
+          "concurrency_and_buffer_size": {
+            "$ref": "#/components/schemas/ConcurrencyAndBufferSize"
+          },
+          "proxy_config": {
+            "$ref": "#/components/schemas/ProxyConfig"
+          }
+        }
+      },
+      "ProviderResponse": {
+        "type": "object",
+        "required": ["name", "keys", "network_config", "concurrency_and_buffer_size"],
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Key"
+            },
+            "description": "API keys for the provider"
+          },
+          "network_config": {
+            "$ref": "#/components/schemas/NetworkConfig"
+          },
+          "meta_config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Provider-specific metadata"
+          },
+          "concurrency_and_buffer_size": {
+            "$ref": "#/components/schemas/ConcurrencyAndBufferSize"
+          },
+          "proxy_config": {
+            "$ref": "#/components/schemas/ProxyConfig"
+          }
+        }
+      },
+      "ListProvidersResponse": {
+        "type": "object",
+        "required": ["providers", "total"],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderResponse"
+            },
+            "description": "List of configured providers"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Total number of providers",
+            "example": 3
+          }
+        }
+      },
+      "Key": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "API key value or environment variable reference",
+            "example": "env.OPENAI_API_KEY"
+          },
+          "weight": {
+            "type": "number",
+            "description": "Weight for load balancing",
+            "example": 1.0
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Models this key can access",
+            "example": ["gpt-4o", "gpt-4o-mini"]
+          }
+        }
+      },
+      "NetworkConfig": {
+        "type": "object",
+        "properties": {
+          "timeout": {
+            "type": "integer",
+            "description": "Request timeout in seconds",
+            "example": 30
+          },
+          "max_retries": {
+            "type": "integer",
+            "description": "Maximum number of retries",
+            "example": 3
+          }
+        }
+      },
+      "ConcurrencyAndBufferSize": {
+        "type": "object",
+        "properties": {
+          "concurrency": {
+            "type": "integer",
+            "description": "Maximum concurrent requests",
+            "example": 10
+          },
+          "buffer_size": {
+            "type": "integer",
+            "description": "Request buffer size",
+            "example": 100
+          }
+        }
+      },
+      "ProxyConfig": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Proxy URL",
+            "example": "http://proxy.example.com:8080"
+          },
+          "username": {
+            "type": "string",
+            "description": "Proxy username"
+          },
+          "password": {
+            "type": "string",
+            "description": "Proxy password"
+          }
+        }
+      },
+      "ClientConfig": {
+        "type": "object",
+        "properties": {
+          "initial_pool_size": {
+            "type": "integer",
+            "description": "Initial pool size for sync pools",
+            "example": 100
+          },
+          "drop_excess_requests": {
+            "type": "boolean",
+            "description": "Whether to drop requests when queue is full",
+            "example": false
+          },
+          "enable_logging": {
+            "type": "boolean",
+            "description": "Whether logging is enabled",
+            "example": true
+          },
+          "prometheus_labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Prometheus metric labels",
+            "example": ["environment", "service"]
+          }
+        }
+      },
+      "LogSearchResponse": {
+        "type": "object",
+        "required": ["logs", "total", "limit", "offset"],
+        "properties": {
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            },
+            "description": "Array of log entries"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Total number of matching logs",
+            "example": 156
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Number of logs per page",
+            "example": 50
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Number of logs skipped",
+            "example": 0
+          }
+        }
+      },
+      "LogEntry": {
+        "type": "object",
+        "required": ["id", "timestamp", "level", "message"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique log entry ID",
+            "example": "log_123"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Log entry timestamp",
+            "example": "2023-12-01T10:30:00Z"
+          },
+          "level": {
+            "type": "string",
+            "enum": ["debug", "info", "warn", "error"],
+            "description": "Log level",
+            "example": "info"
+          },
+          "message": {
+            "type": "string",
+            "description": "Log message",
+            "example": "Request completed successfully"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model name used",
+            "example": "gpt-4o"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["success", "error"],
+            "description": "Request status",
+            "example": "success"
+          },
+          "latency": {
+            "type": "number",
+            "description": "Request latency in seconds",
+            "example": 1.234
+          },
+          "tokens": {
+            "type": "integer",
+            "description": "Total tokens used",
+            "example": 87
+          },
+          "object": {
+            "type": "string",
+            "enum": ["chat.completion", "text.completion"],
+            "description": "Request object type",
+            "example": "chat.completion"
+          }
+        }
+      },
+      "DroppedRequestsResponse": {
+        "type": "object",
+        "required": ["total_dropped", "recent_drops"],
+        "properties": {
+          "total_dropped": {
+            "type": "integer",
+            "description": "Total number of dropped requests",
+            "example": 5
+          },
+          "recent_drops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DroppedRequest"
+            },
+            "description": "Recent dropped requests"
+          }
+        }
+      },
+      "DroppedRequest": {
+        "type": "object",
+        "required": ["timestamp", "reason"],
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the request was dropped",
+            "example": "2023-12-01T10:30:00Z"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason for dropping the request",
+            "example": "Queue overflow"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model name requested",
+            "example": "gpt-4o"
+          }
+        }
       }
     },
     "responses": {
@@ -1293,6 +2632,42 @@
     {
       "name": "MCP Tools",
       "description": "Execute MCP tools"
+    },
+    {
+      "name": "MCP Management",
+      "description": "Manage MCP client configurations and connections"
+    },
+    {
+      "name": "Provider Management",
+      "description": "Manage AI provider configurations"
+    },
+    {
+      "name": "Configuration",
+      "description": "System configuration management"
+    },
+    {
+      "name": "Logging",
+      "description": "Application logs and dropped requests"
+    },
+    {
+      "name": "WebSocket",
+      "description": "Real-time WebSocket connections"
+    },
+    {
+      "name": "Integration - OpenAI",
+      "description": "OpenAI-compatible endpoints"
+    },
+    {
+      "name": "Integration - Anthropic",
+      "description": "Anthropic-compatible endpoints"
+    },
+    {
+      "name": "Integration - Gemini",
+      "description": "Google Gemini-compatible endpoints"
+    },
+    {
+      "name": "Integration - LiteLLM",
+      "description": "LiteLLM-compatible endpoints"
     },
     {
       "name": "Monitoring",

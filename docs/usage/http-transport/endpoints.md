@@ -199,7 +199,6 @@ Drop-in replacement for OpenAI API:
 ```bash
 curl -X POST http://localhost:8080/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [
@@ -217,8 +216,6 @@ Drop-in replacement for Anthropic API:
 ```bash
 curl -X POST http://localhost:8080/anthropic/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "claude-3-sonnet-20240229",
     "max_tokens": 1000,
@@ -237,7 +234,6 @@ Drop-in replacement for Google GenAI API:
 ```bash
 curl -X POST http://localhost:8080/genai/v1beta/models/gemini-pro:generateContent \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GOOGLE_API_KEY" \
   -d '{
     "contents": [{
       "parts": [{"text": "Hello!"}]

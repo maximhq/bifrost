@@ -109,7 +109,6 @@ const response = await openai.chat.completions.create({
 # Use OpenAI provider
 curl -X POST http://localhost:8080/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [
@@ -120,7 +119,6 @@ curl -X POST http://localhost:8080/openai/v1/chat/completions \
 # Use Anthropic provider via OpenAI SDK format
 curl -X POST http://localhost:8080/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{
     "model": "anthropic/claude-3-sonnet-20240229",
     "messages": [
@@ -160,7 +158,6 @@ curl -X POST http://localhost:8080/openai/v1/chat/completions \
 ```bash
 curl -X POST http://localhost:8080/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [
@@ -327,45 +324,6 @@ response = client.chat.completions.create(
 if response.choices[0].message.tool_calls:
     for tool_call in response.choices[0].message.tool_calls:
         print(f"Called: {tool_call.function.name}")
-```
-
-### **Multi-provider Fallbacks**
-
-Configure fallbacks in Bifrost config.json:
-
-```json
-{
-  "providers": {
-    "openai": {
-      "keys": [
-        {
-          "value": "env.OPENAI_API_KEY",
-          "models": ["gpt-4o-mini"],
-          "weight": 1.0
-        }
-      ]
-    },
-    "anthropic": {
-      "keys": [
-        {
-          "value": "env.ANTHROPIC_API_KEY",
-          "models": ["claude-3-sonnet-20240229"],
-          "weight": 1.0
-        }
-      ]
-    }
-  }
-}
-```
-
-Requests automatically fallback to Anthropic if OpenAI fails:
-
-```python
-# This request tries OpenAI first, falls back to Anthropic if needed
-response = client.chat.completions.create(
-    model="gpt-4o-mini",  # Will fallback to claude-3-sonnet-20240229
-    messages=[{"role": "user", "content": "Hello!"}]
-)
 ```
 
 ### **Load Balancing**

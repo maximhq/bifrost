@@ -44,7 +44,7 @@ func main() {
     }
 
     // Initialize Bifrost with the plugin
-    client, err := bifrost.Init(schemas.BifrostConfig{
+    client, initErr := bifrost.Init(schemas.BifrostConfig{
         Account: &yourAccount,
         Plugins: []schemas.Plugin{plugin},
     })
@@ -165,7 +165,7 @@ if err != nil {
 ### Adding to Bifrost
 
 ```go
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &yourAccount,
     Plugins: []schemas.Plugin{
         plugin, // Add your mocker plugin
@@ -1269,7 +1269,7 @@ Min: 2500 * time.Nanosecond,       // 2500 nanoseconds (rarely used)
 Enable debug logging to troubleshoot issues:
 
 ```go
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &account,
     Plugins: []schemas.Plugin{plugin},
     Logger:  bifrost.NewDefaultLogger(schemas.LogLevelDebug), // Enable debug logs

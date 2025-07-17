@@ -6,7 +6,9 @@ Complete guide to configuring Model Context Protocol (MCP) integration in Bifros
 
 ---
 
-## 📋 MCP Overview
+## 📋 MCP Overview (File Based)
+
+> You can directly use the UI (`http://localhost:{port}/mcp-clients`) to configure the MCP clients.
 
 MCP (Model Context Protocol) configuration enables:
 
@@ -410,6 +412,246 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "mcp-include-tools": ["read_file", "list_directory"],
     "mcp-exclude-tools": ["delete_file", "write_file"]
   }'
+```
+
+---
+
+## 🌐 MCP Management API Endpoints
+
+Bifrost HTTP transport provides REST API endpoints for dynamic MCP client management.
+
+### **GET /api/mcp/clients - List All MCP Clients**
+
+Get information about all configured MCP clients:
+
+```bash
+curl -X GET http://localhost:8080/api/mcp/clients
+
+# Response
+[
+  {
+    "name": "filesystem",
+    "config": {
+      "name": "filesystem",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+      },
+      "tools_to_execute": ["read_file", "list_directory"]
+    },
+    "tools": ["read_file", "list_directory", "write_file"],
+    "state": "connected"
+  },
+  {
+    "name": "web-search",
+    "config": {
+      "name": "web-search", 
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-web-search"]
+      }
+    },
+    "tools": [],
+    "state": "error"
+  }
+]
+```
+
+### **POST /api/mcp/client - Add New MCP Client**
+
+Add a new MCP client at runtime:
+
+```bash
+# Add STDIO client
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "git-tools",
+    "connection_type": "stdio",
+    "stdio_config": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-git"],
+      "envs": ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"]
+    },
+    "tools_to_execute": ["git_log", "git_status"]
+  }'
+
+# Add HTTP client
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "remote-api",
+    "connection_type": "http",
+    "connection_string": "https://api.example.com/mcp"
+  }'
+
+# Add SSE client
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "realtime-data",
+    "connection_type": "sse", 
+    "connection_string": "https://api.example.com/mcp/sse"
+  }'
+
+# Success Response
+{
+  "status": "success",
+  "message": "MCP client added successfully"
+}
+```
+
+### **PUT /api/mcp/client/{name} - Edit Client Tools**
+
+Modify which tools are available from a client:
+
+```bash
+# Allow only specific tools (whitelist)
+curl -X PUT http://localhost:8080/api/mcp/client/filesystem \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tools_to_execute": ["read_file", "list_directory"]
+  }'
+
+# Block specific tools (blacklist)
+curl -X PUT http://localhost:8080/api/mcp/client/filesystem \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tools_to_skip": ["delete_file", "write_file"]
+  }'
+
+# Clear all restrictions (allow all tools)
+curl -X PUT http://localhost:8080/api/mcp/client/filesystem \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tools_to_execute": [],
+    "tools_to_skip": []
+  }'
+
+# Success Response
+{
+  "status": "success", 
+  "message": "MCP client tools edited successfully"
+}
+```
+
+### **DELETE /api/mcp/client/{name} - Remove MCP Client**
+
+Remove an MCP client and disconnect it:
+
+```bash
+curl -X DELETE http://localhost:8080/api/mcp/client/filesystem
+
+# Success Response
+{
+  "status": "success",
+  "message": "MCP client removed successfully"
+}
+```
+
+### **POST /api/mcp/client/{name}/reconnect - Reconnect Client**
+
+Reconnect a disconnected or errored MCP client:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/filesystem/reconnect
+
+# Success Response
+{
+  "status": "success",
+  "message": "MCP client reconnected successfully"
+}
+```
+
+### **POST /v1/mcp/tool/execute - Execute MCP Tool**
+
+Execute an MCP tool directly (see detailed examples above):
+
+```bash
+curl -X POST http://localhost:8080/v1/mcp/tool/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "call_123",
+    "type": "function", 
+    "function": {
+      "name": "read_file",
+      "arguments": "{\"path\": \"config.json\"}"
+    }
+  }'
+
+# Response - Tool execution result
+{
+  "role": "tool",
+  "content": "{\n  \"providers\": {\n    ...\n  }\n}",
+  "tool_call_id": "call_123"
+}
+```
+
+### **Error Responses**
+
+All endpoints return consistent error responses:
+
+```json
+// 400 Bad Request
+{
+  "error": {
+    "message": "Invalid request format: missing required field 'name'",
+    "type": "invalid_request"
+  }
+}
+
+// 500 Internal Server Error  
+{
+  "error": {
+    "message": "Failed to connect to MCP client: connection timeout",
+    "type": "internal_error"
+  }
+}
+```
+
+### **Management Workflow Example**
+
+Complete client lifecycle management via API:
+
+```bash
+# 1. Add a new client
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "temp-filesystem",
+    "connection_type": "stdio",
+    "stdio_config": {
+      "command": "npx", 
+      "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+    }
+  }'
+
+# 2. Check client status
+curl -X GET http://localhost:8080/api/mcp/clients | jq '.[] | select(.name=="temp-filesystem")'
+
+# 3. Restrict to safe tools only
+curl -X PUT http://localhost:8080/api/mcp/client/temp-filesystem \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tools_to_execute": ["read_file", "list_directory"]
+  }'
+
+# 4. Test tool execution
+curl -X POST http://localhost:8080/v1/mcp/tool/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "test_call",
+    "type": "function",
+    "function": {
+      "name": "list_directory", 
+      "arguments": "{\"path\": \".\"}"
+    }
+  }'
+
+# 5. Remove when done
+curl -X DELETE http://localhost:8080/api/mcp/client/temp-filesystem
 ```
 
 ---

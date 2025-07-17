@@ -18,13 +18,13 @@ The Bifrost client is your main interface for making AI requests. It handles:
 
 ```go
 // Initialize client
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
 })
 defer client.Cleanup() // Always cleanup!
 
 // Make requests
-response, err := client.ChatCompletionRequest(ctx, request)
+response, bifrostErr := client.ChatCompletionRequest(ctx, request)
 ```
 
 ---
@@ -85,12 +85,15 @@ func (b *Bifrost) TextCompletionRequest(
 
 ```go
 prompt := "Complete this story: Once upon a time in a digital realm,"
-response, err := client.TextCompletionRequest(context.Background(), &schemas.BifrostRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-3.5-turbo-instruct", // Text completion models
-    Input: schemas.RequestInput{
-        TextCompletionInput: &prompt,
-    },
+response, bifrostErr := client.TextCompletionRequest(context.Background(), &schemas.BifrostRequest{
+    Provider: schemas.Anthropic,
+    Model:    "claude-2.1", // Text completion models
+        Input: schemas.RequestInput{
+            TextCompletionInput: &prompt,
+        },
+        Params: &schemas.ModelParameters{
+            MaxTokens: bifrost.Ptr(100),
+        },
 })
 ```
 
@@ -118,9 +121,9 @@ func (b *Bifrost) Cleanup()
 **Example:**
 
 ```go
-client, err := bifrost.Init(config)
-if err != nil {
-    log.Fatal(err)
+client, initErr := bifrost.Init(config)
+if initErr != nil {
+    log.Fatal(initErr)
 }
 defer client.Cleanup() // Ensures proper resource cleanup
 ```
@@ -170,7 +173,7 @@ Ensure reliability with provider fallbacks:
 response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
     Provider: schemas.OpenAI,        // Primary provider
     Model:    "gpt-4o-mini",
-    Input:    input,
+    Input:    input, // your input here
     Fallbacks: []schemas.Fallback{
         {Provider: schemas.Anthropic, Model: "claude-3-sonnet-20240229"},
         {Provider: schemas.Vertex, Model: "gemini-pro"},
@@ -195,14 +198,11 @@ stopSequences := []string{"\n\n", "END"}
 response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
-    Input:    input,
+    Input:    input, // your input here
     Params: &schemas.ModelParameters{
         Temperature:     &temperature,
         MaxTokens:       &maxTokens,
         StopSequences:   &stopSequences,
-        TopP:            &topP,           // 0.9
-        PresencePenalty: &presence,       // 0.1
-        FrequencyPenalty: &frequency,     // 0.1
     },
 })
 ```
@@ -244,7 +244,7 @@ auto := "auto"
 response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
-    Input:    input,
+    Input:    input, // your input here
     Params: &schemas.ModelParameters{
         Tools:      &[]schemas.Tool{weatherTool},
         ToolChoice: &schemas.ToolChoice{ToolChoiceStr: &auto},
@@ -309,10 +309,10 @@ imageMessage := schemas.BifrostMessage{
         ContentBlocks: &[]schemas.ContentBlock{
             {
                 Type: schemas.ContentBlockTypeText,
-                Text: &textPrompt,
+                Text: bifrost.Ptr("What is this image about?"),
             },
             {
-                Type: schemas.ContentBlockTypeImageURL,
+                Type: schemas.ContentBlockTypeImage,
                 ImageURL: &schemas.ImageURLStruct{
                     URL:    "https://example.com/image.jpg",
                     Detail: &detail, // "high", "low", or "auto"
@@ -324,16 +324,16 @@ imageMessage := schemas.BifrostMessage{
 
 // Image from base64
 base64Image := "data:image/jpeg;base64,/9j/4AAQSkZJRgABA..."
-imageMessage := schemas.BifrostMessage{
+imageMessageBase64 := schemas.BifrostMessage{
     Role: schemas.ModelChatMessageRoleUser,
     Content: schemas.MessageContent{
         ContentBlocks: &[]schemas.ContentBlock{
             {
                 Type: schemas.ContentBlockTypeText,
-                Text: &textPrompt,
+                Text: bifrost.Ptr("What is this image about?"),
             },
             {
-                Type: schemas.ContentBlockTypeImageURL,
+                Type: schemas.ContentBlockTypeImage,
                 ImageURL: &schemas.ImageURLStruct{
                     URL: base64Image,
                 },
@@ -486,7 +486,7 @@ Configure client behavior during initialization:
 
 ```go
 // Production configuration
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account:            &MyAccount{},
     Plugins:            []schemas.Plugin{&MyPlugin{}},
     Logger:             customLogger,
@@ -513,9 +513,9 @@ Always cleanup resources properly:
 
 ```go
 func main() {
-    client, err := bifrost.Init(config)
-    if err != nil {
-        log.Fatal(err)
+    client, initErr := bifrost.Init(config)
+    if initErr != nil {
+        log.Fatal(initErr)
     }
 
     // Setup graceful shutdown
@@ -548,10 +548,10 @@ Test client methods with mock providers:
 ```go
 func TestChatCompletion(t *testing.T) {
     account := &TestAccount{}
-    client, err := bifrost.Init(schemas.BifrostConfig{
+    client, initErr := bifrost.Init(schemas.BifrostConfig{
         Account: account,
     })
-    require.NoError(t, err)
+    require.Nil(t, initErr)
     defer client.Cleanup()
 
     message := "Hello, test!"
@@ -587,10 +587,10 @@ func TestIntegrationChatCompletion(t *testing.T) {
     }
 
     account := &ProductionAccount{}
-    client, err := bifrost.Init(schemas.BifrostConfig{
+    client, initErr := bifrost.Init(schemas.BifrostConfig{
         Account: account,
     })
-    require.NoError(t, err)
+    require.Nil(t, initErr)
     defer client.Cleanup()
 
     // Test actual request

@@ -42,32 +42,16 @@ bifrost-http -port 8080
 
 ```bash
 # 🖥️ Configure visually - no config files needed!
-# macOS:
 open http://localhost:8080
-
-# Linux:
-xdg-open http://localhost:8080
-
-# Windows:
-start http://localhost:8080
 
 # Or simply open http://localhost:8080 manually in your browser
 ```
 
 **Step 3:** Add your provider via the web UI or API
 
-```bash
-# Via Web UI: Just click "Add Provider" and enter your OpenAI API key
-# Or via API:
-curl -X POST http://localhost:8080/providers \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider": "openai",
-    "keys": [{"value": "env.OPENAI_API_KEY", "models": ["gpt-4o-mini"], "weight": 1.0}]
-  }'
+Via Web UI: Just Go to providers tab and click "Add Provider" to configure your provider.
 
-# Make sure to set the environment variable OPENAI_API_KEY in bifrost's session, or pass it as a flag in Docker (docker run -e OPENAI_API_KEY maximhq/bifrost).
-```
+Note: If using environment variables (e.g. `env.OPENAI_API_KEY`), make sure to set the corresponding environment variable in bifrost's session, or pass it as a flag in Docker (`docker run -e OPENAI_API_KEY maximhq/bifrost`).
 
 **Step 4:** Test it works
 

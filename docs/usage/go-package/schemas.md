@@ -76,13 +76,18 @@ if len(response.Choices) > 0 {
     choice := response.Choices[0]
 
     // Text content
-    if choice.Message.Content.ContentStr != nil {
-        fmt.Println("Response:", *choice.Message.Content.ContentStr)
+    if choice.BifrostNonStreamResponseChoice != nil && choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr != nil {
+        fmt.Println("Response:", *choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr)
+    }
+
+    // Streaming content
+    if choice.BifrostStreamResponseChoice != nil && choice.BifrostStreamResponseChoice.Delta.Content != nil {
+        fmt.Println("Streaming Response:", *choice.BifrostStreamResponseChoice.Delta.Content)
     }
 
     // Tool calls
-    if choice.Message.ToolCalls != nil {
-        for _, toolCall := range *choice.Message.ToolCalls {
+    if choice.BifrostNonStreamResponseChoice != nil && choice.BifrostNonStreamResponseChoice.Message.ToolCalls != nil {
+        for _, toolCall := range *choice.BifrostNonStreamResponseChoice.Message.ToolCalls {
             // Handle tool call
         }
     }

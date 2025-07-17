@@ -22,7 +22,7 @@ This plugin integrates the Maxim SDK into Bifrost, enabling seamless observabili
 3. Pass the plugin to Bifrost
 
 ```go
-    client, err := bifrost.Init(schemas.BifrostConfig{
+    client, initErr := bifrost.Init(schemas.BifrostConfig{
         Account: &yourAccount,
         Plugins: []schemas.Plugin{maximPlugin},
         })

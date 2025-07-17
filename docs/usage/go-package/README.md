@@ -59,7 +59,7 @@ func main() {
 response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
-    Input:    input,
+    Input:    input, // your input here
     Fallbacks: []schemas.Fallback{
         {Provider: schemas.Anthropic, Model: "claude-3-sonnet-20240229"},
         {Provider: schemas.Vertex, Model: "gemini-pro"},
@@ -76,7 +76,7 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
 response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
-    Input:    input,
+    Input:    input, // your input here
     Params: &schemas.ModelParameters{
         Tools: &[]schemas.Tool{weatherTool},
         ToolChoice: &schemas.ToolChoice{ToolChoiceStr: &auto},

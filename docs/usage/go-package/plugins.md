@@ -145,7 +145,7 @@ For advanced plugin development and complete examples:
 
 ```go
 // Add plugins to your Bifrost client
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
     Plugins: []schemas.Plugin{
         NewLoggingPlugin(),

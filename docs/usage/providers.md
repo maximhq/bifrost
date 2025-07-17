@@ -459,15 +459,15 @@ func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schema
 
 ## 📋 Provider Features Matrix
 
-| Feature              | OpenAI | Anthropic | Azure | Bedrock | Vertex | Cohere | Mistral | Ollama | Groq   |
-| -------------------- | ------ | --------- | ----- | ------- | ------ | ------ | ------- | ------ | ------ |
-| **Chat Completion**  | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     |
-| **Function Calling** | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     |
-| **Streaming**        | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     |
-| **Vision**           | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ❌     |
-| **JSON Mode**        | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     |
-| **Custom Base URL**  | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     |
-| **Proxy Support**    | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     |
+| Feature              | OpenAI | Anthropic | Azure | Bedrock | Vertex | Cohere | Mistral | Ollama | Groq   | SGLang |  
+| -------------------- | ------ | --------- | ----- | ------- | ------ | ------ | ------- | ------ | ------ | ------ |
+| **Chat Completion**  | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     | ✅     |
+| **Function Calling** | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     | ✅     |
+| **Streaming**        | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     | ✅     |
+| **Vision**           | ✅     | ✅        |  ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ❌     | ✅     |
+| **JSON Mode**        | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     | ✅     |
+| **Custom Base URL**  | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅     |
+| **Proxy Support**    | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅      |
 
 ---
 

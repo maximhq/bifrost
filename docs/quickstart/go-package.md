@@ -63,11 +63,11 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 
 
 func main() {
-	client, err := bifrost.Init(schemas.BifrostConfig{
+	client, initErr := bifrost.Init(schemas.BifrostConfig{
 		Account: &MyAccount{},
 	})
-	if err != nil {
-		panic(err)
+	if initErr != nil {
+		panic(initErr)
 	}
 	defer client.Cleanup()
 
@@ -155,16 +155,19 @@ messages := []schemas.BifrostMessage{
 		{Role: schemas.ModelChatMessageRoleUser, Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello, Bifrost!")}},
 	}
 
-response, err := client.ChatCompletionRequest(context.Background(), schemas.ChatCompletionRequest{
-    Provider: schemas.OpenAI,        // Primary provider
-    Model:    "gpt-4o-mini",
-    Input: schemas.RequestInput{
+	response, bifrostErr := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
+		Provider: schemas.OpenAI, // Primary provider
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
 			ChatCompletionInput: &messages,
 		},
-    Fallbacks: []schemas.Fallback{
-        {Provider: schemas.Anthropic, Model: "claude-3-sonnet-20240229"},
-    },
-})
+		Params: &schemas.ModelParameters{
+			MaxTokens: bifrost.Ptr(100),
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Anthropic, Model: "claude-3-sonnet-20240229"},
+		},
+	})
 ```
 
 ### **🛠️ Add Tool Calling**
@@ -172,7 +175,7 @@ response, err := client.ChatCompletionRequest(context.Background(), schemas.Chat
 ```go
 // Add tools to your request
 messages := []schemas.BifrostMessage{
-		{Role: schemas.ModelChatMessageRoleUser, Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello, Bifrost!")}},
+		{Role: schemas.ModelChatMessageRoleUser, Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Which tool can I use to get the weather?")}},
 	}
 
 response, bifrostErr := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{

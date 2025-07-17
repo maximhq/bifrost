@@ -17,7 +17,7 @@ MCP (Model Context Protocol) enables AI models to interact with external tools a
 
 ```go
 // Configure MCP during initialization
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
     MCPConfig: &schemas.MCPConfig{
         ClientConfigs: []schemas.MCPClientConfig{
@@ -72,7 +72,7 @@ func setupMCPClient() *schemas.MCPConfig {
 os.Setenv("FILESYSTEM_ROOT", "/safe/directory")
 os.Setenv("SEARCH_API_KEY", "your-search-api-key")
 
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account:   &MyAccount{},
     MCPConfig: setupMCPClient(),
 })
@@ -376,7 +376,7 @@ ctx := context.WithValue(context.Background(), "mcp-include-clients", []string{"
 response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
-    Input:    input,
+    Input:    input, // your input here
 })
 
 // Blacklist specific clients (all tools except these clients' tools will be available)
@@ -385,7 +385,7 @@ ctx = context.WithValue(context.Background(), "mcp-exclude-clients", []string{"w
 response, err = client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
     Provider: schemas.Anthropic,
     Model:    "claude-3-sonnet-20240229",
-    Input:    input,
+    Input:    input, // your input here
 })
 
 // Combine both approaches for fine-grained control
@@ -411,6 +411,240 @@ response, err := client.ChatCompletionRequest(userCtx, userRequest)
 >   Similarly you can pass values for `mcp-include-tools` and `mcp-exclude-tools` to filter tools at runtime.
 > - These filters work at runtime and can be different for each request
 > - Useful for user-based permissions, request-specific security, or A/B testing different tool sets
+
+---
+
+## 🔧 Dynamic Client Management
+
+### **Adding Clients at Runtime**
+
+Add new MCP clients after initialization:
+
+```go
+// Add a new filesystem client
+newClientConfig := schemas.MCPClientConfig{
+    Name:           "new-filesystem",
+    ConnectionType: schemas.MCPConnectionTypeSTDIO,
+    StdioConfig: &schemas.MCPStdioConfig{
+        Command: "npx",
+        Args:    []string{"-y", "@modelcontextprotocol/server-filesystem"},
+        Envs:    []string{"FILESYSTEM_ROOT"},
+    },
+}
+
+err := client.AddMCPClient(newClientConfig)
+if err != nil {
+    log.Printf("Failed to add MCP client: %v", err)
+}
+
+// Add HTTP client
+httpEndpoint := "http://localhost:8080/mcp"
+httpClientConfig := schemas.MCPClientConfig{
+    Name:             "api-tools",
+    ConnectionType:   schemas.MCPConnectionTypeHTTP,
+    ConnectionString: &httpEndpoint,
+}
+
+err = client.AddMCPClient(httpClientConfig)
+if err != nil {
+    log.Printf("Failed to add HTTP MCP client: %v", err)
+}
+```
+
+### **Removing Clients**
+
+Remove MCP clients when no longer needed:
+
+```go
+// Remove a specific client
+err := client.RemoveMCPClient("filesystem-tools")
+if err != nil {
+    log.Printf("Failed to remove MCP client: %v", err)
+}
+
+// The client will be disconnected and its tools will no longer be available
+```
+
+### **Editing Client Tool Filters**
+
+Dynamically modify which tools are available from a client:
+
+```go
+// Allow only specific tools from a client
+toolsToAdd := []string{"read_file", "list_directory"}
+toolsToRemove := []string{"write_file", "delete_file"}
+
+err := client.EditMCPClientTools("filesystem-tools", toolsToAdd, toolsToRemove)
+if err != nil {
+    log.Printf("Failed to edit client tools: %v", err)
+}
+
+// Clear all restrictions (allow all tools)
+err = client.EditMCPClientTools("filesystem-tools", []string{}, []string{})
+if err != nil {
+    log.Printf("Failed to clear tool restrictions: %v", err)
+}
+
+// Block specific dangerous tools
+dangerousTools := []string{"delete_file", "format_disk", "system_shutdown"}
+err = client.EditMCPClientTools("filesystem-tools", []string{}, dangerousTools)
+if err != nil {
+    log.Printf("Failed to block dangerous tools: %v", err)
+}
+```
+
+### **Listing All Clients**
+
+Get information about all connected MCP clients:
+
+```go
+import "strings"
+
+clients, err := client.GetMCPClients()
+if err != nil {
+    log.Printf("Failed to get MCP clients: %v", err)
+    return
+}
+
+for _, mcpClient := range clients {
+    fmt.Printf("Client: %s\n", mcpClient.Name)
+    fmt.Printf("  Type: %s\n", mcpClient.Config.ConnectionType)
+    fmt.Printf("  State: %s\n", mcpClient.State)
+    
+    if mcpClient.Config.ConnectionString != nil {
+        fmt.Printf("  URL: %s\n", *mcpClient.Config.ConnectionString)
+    }
+    
+    if mcpClient.Config.StdioConfig != nil {
+        cmdString := fmt.Sprintf("%s %s", mcpClient.Config.StdioConfig.Command, 
+                                strings.Join(mcpClient.Config.StdioConfig.Args, " "))
+        fmt.Printf("  Command: %s\n", cmdString)
+    }
+    
+    fmt.Printf("  Tools: %d available\n", len(mcpClient.Tools))
+    for _, toolName := range mcpClient.Tools {
+        fmt.Printf("    - %s\n", toolName)
+    }
+    fmt.Println()
+}
+
+// Filter clients by connection state
+connectedClients := []schemas.MCPClient{}
+disconnectedClients := []schemas.MCPClient{}
+
+for _, mcpClient := range clients {
+    if mcpClient.State == schemas.MCPConnectionStateConnected {
+        connectedClients = append(connectedClients, mcpClient)
+    } else {
+        disconnectedClients = append(disconnectedClients, mcpClient)
+    }
+}
+
+fmt.Printf("Connected clients: %d\n", len(connectedClients))
+fmt.Printf("Disconnected clients: %d\n", len(disconnectedClients))
+```
+
+### **Reconnecting Disconnected Clients**
+
+Reconnect clients that have lost their connection:
+
+```go
+// Reconnect a specific client
+err := client.ReconnectMCPClient("web-search")
+if err != nil {
+    log.Printf("Failed to reconnect MCP client: %v", err)
+}
+
+// Check client status before reconnecting
+clients, err := client.GetMCPClients()
+if err == nil {
+    for _, mcpClient := range clients {
+        if mcpClient.State != schemas.MCPConnectionStateConnected {
+            fmt.Printf("Client %s is %s, attempting reconnect...\n", mcpClient.Name, mcpClient.State)
+            if err := client.ReconnectMCPClient(mcpClient.Name); err != nil {
+                log.Printf("Failed to reconnect %s: %v", mcpClient.Name, err)
+            } else {
+                fmt.Printf("Successfully reconnected %s\n", mcpClient.Name)
+            }
+        }
+    }
+}
+```
+
+### **Dynamic Client Management Example**
+
+Complete example showing dynamic client lifecycle:
+
+```go
+func manageMCPClients(client *bifrost.Bifrost) {
+    // 1. Add clients based on runtime conditions
+    if needsFileAccess() {
+        fileClientConfig := schemas.MCPClientConfig{
+            Name:           "runtime-filesystem",
+            ConnectionType: schemas.MCPConnectionTypeSTDIO,
+            StdioConfig: &schemas.MCPStdioConfig{
+                Command: "npx",
+                Args:    []string{"-y", "@modelcontextprotocol/server-filesystem"},
+                Envs:    []string{"FILESYSTEM_ROOT"},
+            },
+        }
+        
+        if err := client.AddMCPClient(fileClientConfig); err != nil {
+            log.Printf("Failed to add filesystem client: %v", err)
+        }
+    }
+
+    // 2. Configure tool access based on user permissions
+    if isRestrictedUser() {
+        // Only allow safe read operations
+        safeTools := []string{"read_file", "list_directory"}
+        err := client.EditMCPClientTools("runtime-filesystem", safeTools, []string{})
+        if err != nil {
+            log.Printf("Failed to restrict tools: %v", err)
+        }
+    }
+
+    // 3. Monitor and maintain connections
+    go func() {
+        ticker := time.NewTicker(30 * time.Second)
+        defer ticker.Stop()
+        
+        for range ticker.C {
+            clients, err := client.GetMCPClients()
+            if err != nil {
+                continue
+            }
+            
+            for _, mcpClient := range clients {
+                if mcpClient.State != schemas.MCPConnectionStateConnected {
+                    log.Printf("Detected disconnected client: %s (state: %s)", mcpClient.Name, mcpClient.State)
+                    if err := client.ReconnectMCPClient(mcpClient.Name); err != nil {
+                        log.Printf("Failed to reconnect %s: %v", mcpClient.Name, err)
+                    }
+                }
+            }
+        }
+    }()
+
+    // 4. Cleanup when done
+    defer func() {
+        // Remove temporary clients
+        if err := client.RemoveMCPClient("runtime-filesystem"); err != nil {
+            log.Printf("Failed to remove temporary client: %v", err)
+        }
+    }()
+}
+
+func needsFileAccess() bool {
+    // Your logic to determine if file access is needed
+    return true
+}
+
+func isRestrictedUser() bool {
+    // Your logic to determine user permissions
+    return false
+}
+```
 
 ---
 
@@ -535,7 +769,7 @@ Enable detailed logging for MCP operations:
 // Create logger that shows MCP operations
 logger := log.New(os.Stdout, "[MCP] ", log.LstdFlags|log.Lshortfile)
 
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account:   &MyAccount{},
     Logger:    customLogger, // Use custom logger for MCP debug info
     MCPConfig: mcpConfig,
@@ -584,7 +818,7 @@ func TestMCPIntegration(t *testing.T) {
     }
 
     // Setup MCP client with echo tool
-    client, err := bifrost.Init(schemas.BifrostConfig{
+    client, initErr := bifrost.Init(schemas.BifrostConfig{
         Account: &TestAccount{},
         MCPConfig: &schemas.MCPConfig{
             ClientConfigs: []schemas.MCPClientConfig{
@@ -592,7 +826,7 @@ func TestMCPIntegration(t *testing.T) {
             },
         },
     })
-    require.NoError(t, err)
+    require.Nil(t, initErr)
     defer client.Cleanup()
 
     // Register test tool

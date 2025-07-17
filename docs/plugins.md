@@ -66,7 +66,7 @@ func (p *LoggingPlugin) PostHook(ctx *context.Context, result *BifrostResponse, 
 }
 
 // Add to Bifrost
-client, err := bifrost.Init(schemas.BifrostConfig{
+client, initErr := bifrost.Init(schemas.BifrostConfig{
     Account: &MyAccount{},
     Plugins: []schemas.Plugin{
         &LoggingPlugin{},

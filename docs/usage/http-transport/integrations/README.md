@@ -133,9 +133,7 @@ response = requests.post(
 response = requests.post(
     "http://localhost:8080/anthropic/v1/messages",
     headers={
-        "x-api-key": anthropic_key,
         "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01"
     },
     json={
         "model": "claude-3-sonnet-20240229",
@@ -362,15 +360,12 @@ Verify your application works with Bifrost:
 ```bash
 # Test OpenAI compatibility
 curl -X POST http://localhost:8080/openai/v1/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "test"}]}'
 
 # Test Anthropic compatibility
 curl -X POST http://localhost:8080/anthropic/v1/messages \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{"model": "claude-3-sonnet-20240229", "max_tokens": 100, "messages": [{"role": "user", "content": "test"}]}'
 ```
 

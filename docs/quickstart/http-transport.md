@@ -221,12 +221,12 @@ client = genai.Client(
 
 ```bash
 # Add OpenAI
-curl -X POST http://localhost:8080/providers \
+curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "openai", "keys": [{"value": "env.OPENAI_API_KEY", "models": ["gpt-4o-mini"], "weight": 1.0}]}'
 
 # Add Anthropic
-curl -X POST http://localhost:8080/providers \
+curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "anthropic", "keys": [{"value": "env.ANTHROPIC_API_KEY", "models": ["claude-3-sonnet-20240229"], "weight": 1.0}]}'
 
@@ -246,7 +246,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 # Use Anthropic
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "anthropic/claude-3-sonnet-20240229", "messages": [{"role": "user", "content": "Hello from Anthropic!"}]}'
+  -d '{"model": "anthropic/claude-3-sonnet-20240229", "messages": [{"role": "user", "content": "Hello from Anthropic!"}], "params":{"max_tokens": 100}}'
 ```
 
 ### **🔄 Add Automatic Fallbacks**
@@ -258,7 +258,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}],
-    "fallbacks": ["anthropic/claude-3-sonnet-20240229"]
+    "fallbacks": ["anthropic/claude-3-sonnet-20240229"],
+    "params": {"max_tokens": 100}
   }'
 ```
 
