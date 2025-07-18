@@ -17,7 +17,7 @@ The Account interface is your configuration provider that tells Bifrost:
 ```go
 type Account interface {
     GetConfiguredProviders() ([]schemas.ModelProvider, error)
-    GetKeysForProvider(providerKey schemas.ModelProvider) ([]schemas.Key, error)
+    GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error)
     GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error)
 }
 ```
@@ -34,6 +34,7 @@ Perfect for getting started or simple use cases:
 package main
 
 import (
+    "context"
     "fmt"
     "os"
     "github.com/maximhq/bifrost/core/schemas"
@@ -45,7 +46,7 @@ func (a *SimpleAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error
     return []schemas.ModelProvider{schemas.OpenAI}, nil
 }
 
-func (a *SimpleAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *SimpleAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.OpenAI {
         apiKey := os.Getenv("OPENAI_API_KEY")
         if apiKey == "" {
@@ -110,7 +111,7 @@ func (a *MultiProviderAccount) GetConfiguredProviders() ([]schemas.ModelProvider
     return providers, nil
 }
 
-func (a *MultiProviderAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MultiProviderAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{{
@@ -217,7 +218,7 @@ func (a *MultiProviderAccount) GetConfigForProvider(provider schemas.ModelProvid
 Distribute requests across multiple API keys for higher rate limits:
 
 ```go
-func (a *AdvancedAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *AdvancedAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.OpenAI {
         return []schemas.Key{
             {
@@ -235,6 +236,98 @@ func (a *AdvancedAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]
     // ... other providers
 }
 ```
+
+### **Plugin Context Usage**
+
+Leverage plugin pre-hook data for dynamic key selection:
+
+```go
+type ContextAwareAccount struct {
+    standardKeys map[schemas.ModelProvider][]schemas.Key
+    premiumKeys  map[schemas.ModelProvider][]schemas.Key
+    regionKeys   map[string][]schemas.Key
+}
+
+func (a *ContextAwareAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    // Early validation
+    standardKeys, ok := a.standardKeys[provider]
+    if !ok {
+        return nil, fmt.Errorf("provider %s not configured", provider)
+    }
+
+    // No context means use standard keys
+    if ctx == nil {
+        return standardKeys, nil
+    }
+
+    // Example: Access control based on user role
+    if userRole, ok := (*ctx).Value("user_role").(string); ok {
+        switch userRole {
+        case "premium":
+            if premiumKeys, ok := a.premiumKeys[provider]; ok {
+                return premiumKeys, nil
+            }
+        }
+    }
+
+    // Example: Geographic routing
+    if region, ok := (*ctx).Value("geo_region").(string); ok {
+        if regionKeys, ok := a.regionKeys[region]; ok {
+            return regionKeys, nil
+        }
+    }
+
+    // Example: Custom routing based on request type
+    if reqType, ok := (*ctx).Value("request_type").(string); ok {
+        switch reqType {
+        case "streaming":
+            return []schemas.Key{{
+                Value:  os.Getenv("DEDICATED_STREAMING_KEY"),
+                Models: []string{"gpt-4o-mini"},
+                Weight: 1.0,
+            }}, nil
+        case "batch":
+            return []schemas.Key{{
+                Value:  os.Getenv("BATCH_PROCESSING_KEY"),
+                Models: []string{"gpt-4o"},
+                Weight: 1.0,
+            }}, nil
+        }
+    }
+
+    // Example: Rate limit management
+    if quota, ok := (*ctx).Value("remaining_quota").(int); ok {
+        if quota < 100 {
+            // Switch to backup keys when quota is low
+            return []schemas.Key{{
+                Value:  os.Getenv("BACKUP_API_KEY"),
+                Models: []string{"gpt-4o-mini"},
+                Weight: 1.0,
+            }}, nil
+        }
+    }
+
+    return standardKeys, nil
+}
+```
+
+This implementation shows how to:
+- Use plugin-set context data for dynamic key selection
+- Implement role-based access control
+- Handle geographic routing requirements
+- Support request type-specific key allocation
+- Manage rate limits and quotas
+
+Common context values set by plugins:
+- `user_role`: User permission level
+- `geo_region`: Geographic location
+- `request_type`: Type of request (streaming, batch, etc.)
+- `remaining_quota`: Rate limit tracking
+- `request_priority`: Priority level
+- `client_id`: Client identifier
+- `custom_routing`: Custom routing rules
+
+> **💡 Tip:** Plugins can set any context values during their pre-hook phase. Document the expected context keys and their format to help plugin developers integrate with your key selection logic.
 
 ### **Custom Network Settings**
 
@@ -354,7 +447,7 @@ type DatabaseAccount struct {
     db *sql.DB
 }
 
-func (a *DatabaseAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *DatabaseAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     rows, err := a.db.Query(`
         SELECT api_key, models, weight
         FROM provider_keys
@@ -403,7 +496,7 @@ apiKey := "sk-..." // Never do this!
 ### **Error Handling**
 
 ```go
-func (a *Account) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *Account) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     apiKey := os.Getenv("OPENAI_API_KEY")
     if apiKey == "" {
         return nil, fmt.Errorf("OPENAI_API_KEY not configured")
@@ -442,7 +535,7 @@ func TestAccount(t *testing.T) {
     assert.Contains(t, providers, schemas.OpenAI)
 
     // Test key retrieval
-    keys, err := account.GetKeysForProvider(schemas.OpenAI)
+    keys, err := account.GetKeysForProvider(context.Background(), schemas.OpenAI)
     assert.NoError(t, err)
     assert.Len(t, keys, 1)
     assert.Equal(t, "sk-test-key", keys[0].Value)

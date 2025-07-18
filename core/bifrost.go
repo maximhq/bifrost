@@ -485,14 +485,6 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 
 	oldQueue := oldQueueValue.(chan ChannelMessage)
 
-	// Check if the provider has any keys (skip keyless providers)
-	if providerRequiresKey(providerKey) {
-		keys, err := bifrost.account.GetKeysForProvider(providerKey)
-		if err != nil || len(keys) == 0 {
-			return fmt.Errorf("failed to get keys for provider %s: %v", providerKey, err)
-		}
-	}
-
 	bifrost.logger.Debug(fmt.Sprintf("Gracefully stopping existing workers for provider %s", providerKey))
 
 	// Step 1: Create new queue with updated buffer size
@@ -836,14 +828,6 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to get config for provider: %v", err)
 	}
 
-	// Check if the provider has any keys (skip keyless providers)
-	if providerRequiresKey(providerKey) {
-		keys, err := bifrost.account.GetKeysForProvider(providerKey)
-		if err != nil || len(keys) == 0 {
-			return fmt.Errorf("failed to get keys for provider: %v", err)
-		}
-	}
-
 	queue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
 
 	bifrost.requestQueues.Store(providerKey, queue)
@@ -1094,7 +1078,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 
 		key := schemas.Key{}
 		if providerRequiresKey(provider.GetProviderKey()) {
-			key, err = bifrost.selectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
+			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, provider.GetProviderKey(), req.Model)
 			if err != nil {
 				bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))
 				req.Err <- schemas.BifrostError{
@@ -1384,8 +1368,8 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 
 // selectKeyFromProviderForModel selects an appropriate API key for a given provider and model.
 // It uses weighted random selection if multiple keys are available.
-func (bifrost *Bifrost) selectKeyFromProviderForModel(providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
-	keys, err := bifrost.account.GetKeysForProvider(providerKey)
+func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
+	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {
 		return schemas.Key{}, err
 	}

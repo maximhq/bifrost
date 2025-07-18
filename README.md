@@ -19,7 +19,7 @@ Bifrost is a high-performance AI gateway that connects you to 10+ providers (Ope
 **What You Need**
 
 - Any AI provider API key (OpenAI, Anthropic, Bedrock, etc.)
-- Node.js 18+ installed (or use Docker instead via [Docker installation](#using-bifrost-http-transport))
+- Node.js 18+ installed (or use Docker instead via [Docker installation](./docs/quickstart/http-transport.md))
 - 20 seconds of your time ⏰
 
 ### Using Bifrost HTTP Transport

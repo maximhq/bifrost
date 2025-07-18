@@ -44,7 +44,7 @@ func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
     return []schemas.ModelProvider{schemas.OpenAI}, nil
 }
 
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{
@@ -153,7 +153,7 @@ Configure multiple providers for fallbacks and load distribution.
 <summary><strong>🔧 Go Package - Multi-Provider</strong></summary>
 
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{
@@ -314,7 +314,7 @@ echo "$response"
 **Go Package:**
 
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.Azure {
         return []schemas.Key{
             {
@@ -368,7 +368,7 @@ func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schema
 **Go Package:**
 
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.Vertex {
         return []schemas.Key{
             {
@@ -427,7 +427,7 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
     return &schemas.ProviderConfig{}, nil
 }
 
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.Ollama {
         return []schemas.Key{
             {

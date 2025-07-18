@@ -39,7 +39,7 @@ func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
     return []schemas.ModelProvider{schemas.OpenAI}, nil
 }
 
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
 	if provider == schemas.OpenAI {
 		return []schemas.Key{{
 			Value:  os.Getenv("OPENAI_API_KEY"),
@@ -119,7 +119,7 @@ func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 }
 
 // Update GetKeysForProvider to handle both providers
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{{

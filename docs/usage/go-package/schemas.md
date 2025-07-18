@@ -385,7 +385,11 @@ Provider configuration and key management:
 ```go
 type Account interface {
     GetConfiguredProviders() ([]ModelProvider, error)
-    GetKeysForProvider(ModelProvider) ([]Key, error)
+    // GetKeysForProvider receives a context that can contain data from any source that sets
+    // values before the Bifrost request. This includes application code, middleware, plugin
+    // pre-hooks, or any other source. Implementations can use this context data to make
+    // dynamic key selection decisions based on any values present during the request.
+    GetKeysForProvider(ctx *context.Context, providerKey ModelProvider) ([]Key, error)
     GetConfigForProvider(ModelProvider) (*ProviderConfig, error)
 }
 
@@ -402,15 +406,36 @@ func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
     }, nil
 }
 
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+// Example of context-aware key selection
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
+        // Check for any context values
+        if ctx != nil {
+            // Example: Value set by application code
+            if userRole, ok := (*ctx).Value("user_role").(string); ok && userRole == "premium" {
+                return []schemas.Key{{
+                    Value:  os.Getenv("OPENAI_PREMIUM_KEY"),
+                    Models: []string{"gpt-4o"},
+                    Weight: 1.0,
+                }}, nil
+            }
+            
+            // Example: Value set by middleware
+            if region, ok := (*ctx).Value("geo_region").(string); ok && region == "eu" {
+                return []schemas.Key{{
+                    Value:  os.Getenv("OPENAI_EU_KEY"),
+                    Models: []string{"gpt-4o"},
+                    Weight: 1.0,
+                }}, nil
+            }
+        }
+        // Default key if no special context
         return []schemas.Key{{
             Value:  os.Getenv("OPENAI_API_KEY"),
             Models: []string{"gpt-4o-mini", "gpt-4o"},
             Weight: 1.0,
         }}, nil
-    // ... other providers
     }
     return nil, fmt.Errorf("provider not supported")
 }

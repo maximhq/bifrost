@@ -29,8 +29,20 @@ Advanced API key management with weighted distribution, automatic rotation, and 
 <details open>
 <summary><strong>🔧 Go Package Usage</strong></summary>
 
+The `GetKeysForProvider` method allows you to implement custom key selection logic for each provider. The method receives a context parameter that carries data set by plugin pre-hooks, enabling dynamic key selection based on plugin-defined criteria.
+
+For example, plugins can set request metadata, user preferences, or routing rules in the context during their pre-hook phase. Your key management implementation can then access this data to make informed decisions about which keys to return. This is particularly useful for scenarios like:
+
+- Route requests to specific API keys based on user roles or permissions
+- Implement key rotation based on request patterns
+- Apply custom rate limiting or quota management
+- Select keys based on geographical routing rules
+- Use different keys for different types of requests or model configurations
+
+Here's a basic example implementation:
+
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{
@@ -96,6 +108,118 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ---
 
+### Context-Aware Key Selection
+
+<details>
+<summary><strong>🔧 Go Package - Context Usage</strong></summary>
+
+The `GetKeysForProvider` method receives a context that can contain data from any source that sets values before the Bifrost request. This includes plugin pre-hooks, application logic, middleware, or direct context manipulation. Here's an example that demonstrates various context-based key selection strategies:
+
+```go
+type ContextAwareAccount struct {
+    standardKeys []schemas.Key
+    premiumKeys  []schemas.Key
+}
+
+func (a *ContextAwareAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    if provider != schemas.OpenAI {
+        return nil, fmt.Errorf("provider not supported")
+    }
+
+    // Access context values from any source
+    if ctx != nil {
+        // Example: Application-set user role
+        if userRole, ok := (*ctx).Value("user_role").(string); ok {
+            switch userRole {
+            case "premium":
+                return a.premiumKeys, nil
+            case "standard":
+                return a.standardKeys, nil
+            }
+        }
+
+        // Example: Middleware-set geographic region
+        if region, ok := (*ctx).Value("geo_region").(string); ok {
+            // Return region-specific keys
+            switch region {
+            case "eu":
+                return []schemas.Key{{
+                    Value:  os.Getenv("OPENAI_EU_KEY"),
+                    Models: []string{"gpt-4o-mini", "gpt-4o"},
+                    Weight: 1.0,
+                }}, nil
+            case "us":
+                return []schemas.Key{{
+                    Value:  os.Getenv("OPENAI_US_KEY"),
+                    Models: []string{"gpt-4o-mini", "gpt-4o"},
+                    Weight: 1.0,
+                }}, nil
+            }
+        }
+
+        // Example: Plugin-set request priority
+        if priority, ok := (*ctx).Value("request_priority").(string); ok {
+            switch priority {
+            case "high":
+                return []schemas.Key{{
+                    Value:  os.Getenv("OPENAI_DEDICATED_KEY"),
+                    Models: []string{"gpt-4o"},
+                    Weight: 1.0,
+                }}, nil
+            }
+        }
+
+        // Example: Direct context value from application code
+        if customKey, ok := (*ctx).Value("custom_api_key").(string); ok {
+            return []schemas.Key{{
+                Value:  customKey,
+                Models: []string{"gpt-4o-mini", "gpt-4o"},
+                Weight: 1.0,
+            }}, nil
+        }
+    }
+
+    // Default to standard keys if no context or matching criteria
+    return a.standardKeys, nil
+}
+```
+
+This implementation demonstrates:
+- Reading context values set by various sources
+- Application-level user role based selection
+- Geographic routing from middleware
+- Priority-based selection from plugins
+- Custom key injection through direct context manipulation
+
+You can set context values in several ways:
+
+```go
+// Direct in your application code
+ctx := context.WithValue(context.Background(), "user_role", "premium")
+
+// In middleware
+func MyMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        ctx := context.WithValue(r.Context(), "geo_region", "eu")
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+
+// In a plugin's PreHook
+func (p *MyPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+    *ctx = context.WithValue(*ctx, "request_priority", "high")
+    return req, nil, nil
+}
+
+// When making a Bifrost request
+ctx := context.WithValue(context.Background(), "custom_api_key", "sk-...")
+response, err := client.ChatCompletionRequest(ctx, request)
+```
+
+</details>
+
+---
+
 ## 🔄 Key Distribution Strategies
 
 ### Load Balancing Strategy
@@ -106,7 +230,7 @@ Distribute requests evenly across multiple keys for maximum throughput:
 <summary><strong>🔧 Go Package - Equal Distribution</strong></summary>
 
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.OpenAI {
         return []schemas.Key{
             {
@@ -190,7 +314,7 @@ Use premium keys for expensive models, standard keys for cheaper models:
 <summary><strong>🔧 Go Package - Tiered Strategy</strong></summary>
 
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.OpenAI {
         return []schemas.Key{
             // Standard keys for cheap models
@@ -269,7 +393,7 @@ Route traffic based on key priority and reliability:
 <summary><strong>🔧 Go Package - Priority Strategy</strong></summary>
 
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.OpenAI {
         return []schemas.Key{
             // Primary key (highest priority)
@@ -338,7 +462,7 @@ func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schema
 <summary><strong>🔧 Go Package - Cross-Provider Keys</strong></summary>
 
 ```go
-func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{
@@ -447,7 +571,7 @@ type DynamicAccount struct {
     keys                map[schemas.ModelProvider][]schemas.Key
 }
 
-func (a *DynamicAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *DynamicAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     // Rotate keys every hour
     if time.Since(a.lastRotation) > a.keyRotationInterval {
         a.rotateKeys()

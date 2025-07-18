@@ -1,6 +1,8 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
+import "context"
+
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
@@ -37,7 +39,10 @@ type Account interface {
 
 	// GetKeysForProvider returns the API keys configured for a specific provider.
 	// The keys include their values, supported models, and weights for load balancing.
-	GetKeysForProvider(providerKey ModelProvider) ([]Key, error)
+	// The context can carry data from any source that sets values before the Bifrost request,
+	// including but not limited to plugin pre-hooks, application logic, or any in app middleware sharing the context.
+	// This enables dynamic key selection based on any context values present during the request.
+	GetKeysForProvider(ctx *context.Context, providerKey ModelProvider) ([]Key, error)
 
 	// GetConfigForProvider returns the configuration for a specific provider.
 	// This includes network settings, authentication details, and other provider-specific
