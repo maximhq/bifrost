@@ -17,7 +17,7 @@ type Key struct {
 type AzureKeyConfig struct {
 	Endpoint    string            `json:"endpoint"`              // Azure service endpoint URL
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment names
-	APIVersion  *string           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-02-01"
+	APIVersion  *string           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-08-01-preview"
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
