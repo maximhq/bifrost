@@ -28,7 +28,7 @@ const (
 )
 
 // executor is a function type that handles specific request types.
-type executor func(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError)
+type executor func(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError)
 
 // messageExecutors is a factory map for handling different request types.
 var messageExecutors = map[RequestType]executor{
@@ -1092,7 +1092,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		var bifrostError *schemas.BifrostError
 		var err error
 
-		key := ""
+		key := schemas.Key{}
 		if providerRequiresKey(provider.GetProviderKey()) {
 			key, err = bifrost.selectKeyFromProviderForModel(provider.GetProviderKey(), req.Model)
 			if err != nil {
@@ -1207,7 +1207,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 }
 
 // handleTextCompletion executes a text completion request
-func handleTextCompletion(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func handleTextCompletion(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if req.Input.TextCompletionInput == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1220,7 +1220,7 @@ func handleTextCompletion(provider schemas.Provider, req *ChannelMessage, key st
 }
 
 // handleChatCompletion executes a chat completion request
-func handleChatCompletion(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func handleChatCompletion(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if req.Input.ChatCompletionInput == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1233,7 +1233,7 @@ func handleChatCompletion(provider schemas.Provider, req *ChannelMessage, key st
 }
 
 // handleEmbedding executes an embedding request
-func handleEmbedding(provider schemas.Provider, req *ChannelMessage, key string) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func handleEmbedding(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if req.Input.EmbeddingInput == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1246,7 +1246,7 @@ func handleEmbedding(provider schemas.Provider, req *ChannelMessage, key string)
 }
 
 // handleChatCompletionStream executes a chat completion stream request
-func handleChatCompletionStream(provider schemas.Provider, req *ChannelMessage, key string, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func handleChatCompletionStream(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if req.Input.ChatCompletionInput == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1384,30 +1384,30 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 
 // selectKeyFromProviderForModel selects an appropriate API key for a given provider and model.
 // It uses weighted random selection if multiple keys are available.
-func (bifrost *Bifrost) selectKeyFromProviderForModel(providerKey schemas.ModelProvider, model string) (string, error) {
+func (bifrost *Bifrost) selectKeyFromProviderForModel(providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
 	keys, err := bifrost.account.GetKeysForProvider(providerKey)
 	if err != nil {
-		return "", err
+		return schemas.Key{}, err
 	}
 
 	if len(keys) == 0 {
-		return "", fmt.Errorf("no keys found for provider: %v", providerKey)
+		return schemas.Key{}, fmt.Errorf("no keys found for provider: %v", providerKey)
 	}
 
 	// filter out keys which dont support the model, if the key has no models, it is supported for all models
 	var supportedKeys []schemas.Key
 	for _, key := range keys {
-		if (slices.Contains(key.Models, model) && strings.TrimSpace(key.Value) != "") || len(key.Models) == 0 {
+		if (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || providerKey == schemas.Vertex)) || len(key.Models) == 0 {
 			supportedKeys = append(supportedKeys, key)
 		}
 	}
 
 	if len(supportedKeys) == 0 {
-		return "", fmt.Errorf("no keys found that support model: %s", model)
+		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
 	}
 
 	if len(supportedKeys) == 1 {
-		return supportedKeys[0].Value, nil
+		return supportedKeys[0], nil
 	}
 
 	// Use a weighted random selection based on key weights
@@ -1425,12 +1425,12 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(providerKey schemas.ModelP
 	for _, key := range supportedKeys {
 		currentWeight += int(key.Weight * 100)
 		if randomValue < currentWeight {
-			return key.Value, nil
+			return key, nil
 		}
 	}
 
 	// Fallback to first key if something goes wrong
-	return supportedKeys[0].Value, nil
+	return supportedKeys[0], nil
 }
 
 // CLEANUP

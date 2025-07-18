@@ -17,30 +17,6 @@ interface MetaField {
 }
 
 const providerMetaFields: Record<string, { title: string; fields: MetaField[] }> = {
-  azure: {
-    title: 'Azure OpenAI Meta Config',
-    fields: [
-      {
-        name: 'endpoint',
-        label: 'Endpoint',
-        type: 'text',
-        placeholder: 'https://your-resource.openai.azure.com or env.AZURE_ENDPOINT',
-      },
-      {
-        name: 'api_version',
-        label: 'API Version (Optional)',
-        type: 'text',
-        placeholder: 'YYYY-MM-DD or env.AZURE_VERSION',
-      },
-      {
-        name: 'deployments',
-        label: 'Deployments (JSON format)',
-        type: 'textarea',
-        placeholder: '{ "gpt-4": "my-deployment" }',
-        isJson: true,
-      },
-    ],
-  },
   bedrock: {
     title: 'AWS Bedrock Meta Config',
     fields: [
@@ -50,28 +26,30 @@ const providerMetaFields: Record<string, { title: string; fields: MetaField[] }>
         type: 'text',
         placeholder: 'us-east-1 or env.AWS_REGION',
       },
-    ],
-  },
-  vertex: {
-    title: 'Google Vertex AI Meta Config',
-    fields: [
       {
-        name: 'project_id',
-        label: 'Project ID',
+        name: 'secret_access_key',
+        label: 'Secret Access Key (Optional)',
         type: 'text',
-        placeholder: 'gcp-project-id or env.GCP_PROJECT',
+        placeholder: 'Your AWS secret access key or env.AWS_SECRET_ACCESS_KEY',
       },
       {
-        name: 'region',
-        label: 'Region',
+        name: 'session_token',
+        label: 'Session Token (Optional)',
         type: 'text',
-        placeholder: 'us-central1 or env.GCP_REGION',
+        placeholder: 'Your AWS session token or env.AWS_SESSION_TOKEN',
       },
       {
-        name: 'auth_credentials',
-        label: 'Auth Credentials (JSON key)',
+        name: 'arn',
+        label: 'ARN (Optional)',
+        type: 'text',
+        placeholder: 'AWS ARN or env.AWS_ARN',
+      },
+      {
+        name: 'inference_profiles',
+        label: 'Inference Profiles (JSON format, Optional)',
         type: 'textarea',
-        placeholder: 'JSON key or env.GCP_CREDS',
+        placeholder: '{ "model-id": "profile-name" }',
+        isJson: true,
       },
     ],
   },

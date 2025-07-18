@@ -158,7 +158,14 @@ Provider configuration in `config.json` defines:
         {
           "value": "env.AZURE_API_KEY",
           "models": ["gpt-4o"],
-          "weight": 1.0
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "deployments": {
+              "gpt-4o": "gpt-4o-aug"
+            },
+            "api_version": "2024-08-01-preview"
+          }
         }
       ],
       "network_config": {
@@ -166,13 +173,6 @@ Provider configuration in `config.json` defines:
         "max_retries": 1,
         "retry_backoff_initial_ms": 100,
         "retry_backoff_max_ms": 2000
-      },
-      "meta_config": {
-        "endpoint": "env.AZURE_ENDPOINT",
-        "deployments": {
-          "gpt-4o": "gpt-4o-aug"
-        },
-        "api_version": "2024-08-01-preview"
       },
       "concurrency_and_buffer_size": {
         "concurrency": 3,
@@ -189,12 +189,18 @@ Provider configuration in `config.json` defines:
 {
   "providers": {
     "vertex": {
-      "keys": [],
-      "meta_config": {
-        "project_id": "env.VERTEX_PROJECT_ID",
-        "region": "us-central1",
-        "auth_credentials": "env.VERTEX_CREDENTIALS"
-      },
+      "keys": [
+        {
+          "value": "env.VERTEX_API_KEY",
+          "models": ["gemini-2.0-flash-001"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us-central1",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          }
+        }
+      ],
       "concurrency_and_buffer_size": {
         "concurrency": 3,
         "buffer_size": 10

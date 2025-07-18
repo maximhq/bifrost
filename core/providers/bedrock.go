@@ -829,14 +829,14 @@ func (provider *BedrockProvider) prepareTextCompletionParams(params map[string]i
 // TextCompletion performs a text completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *BedrockProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	preparedParams := provider.prepareTextCompletionParams(prepareParams(params), model)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"prompt": text,
 	}, preparedParams)
 
-	body, err := provider.completeRequest(ctx, requestBody, fmt.Sprintf("%s/invoke", model), key)
+	body, err := provider.completeRequest(ctx, requestBody, fmt.Sprintf("%s/invoke", model), key.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -920,7 +920,7 @@ func (provider *BedrockProvider) extractToolsFromHistory(messages []schemas.Bifr
 // ChatCompletion performs a chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
 	if err != nil {
 		return nil, err
@@ -962,7 +962,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model, key 
 	}
 
 	// Create the signed request
-	responseBody, err := provider.completeRequest(ctx, requestBody, path, key)
+	responseBody, err := provider.completeRequest(ctx, requestBody, path, key.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -1150,12 +1150,12 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
 // Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *BedrockProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	switch {
 	case strings.HasPrefix(model, "amazon.titan-embed-text"):
-		return provider.handleTitanEmbedding(ctx, model, key, input, params)
+		return provider.handleTitanEmbedding(ctx, model, key.Value, input, params)
 	case strings.HasPrefix(model, "cohere.embed"):
-		return provider.handleCohereEmbedding(ctx, model, key, input, params)
+		return provider.handleCohereEmbedding(ctx, model, key.Value, input, params)
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1308,7 +1308,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the streaming response.
 // Returns a channel for streaming BifrostResponse objects or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
 	if err != nil {
 		return nil, err
@@ -1392,7 +1392,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 	// Sign the request for AWS
 	if provider.meta.GetSecretAccessKey() != nil {
-		if signErr := signAWSRequest(req, key, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); signErr != nil {
+		if signErr := signAWSRequest(req, key.Value, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); signErr != nil {
 			return nil, signErr
 		}
 	} else {

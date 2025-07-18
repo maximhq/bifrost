@@ -60,16 +60,6 @@ type MetaConfig interface {
 	GetARN() *string
 	// GetInferenceProfiles returns the inference profiles
 	GetInferenceProfiles() map[string]string
-	// GetEndpoint returns the provider endpoint
-	GetEndpoint() *string
-	// GetDeployments returns the deployment configurations
-	GetDeployments() map[string]string
-	// GetAPIVersion returns the API version
-	GetAPIVersion() *string
-	// GetProjectID returns the project ID
-	GetProjectID() *string
-	// GetAuthCredentials returns the authentication credentials for the provider
-	GetAuthCredentials() *string
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -158,11 +148,11 @@ type Provider interface {
 	// GetProviderKey returns the provider's identifier
 	GetProviderKey() ModelProvider
 	// TextCompletion performs a text completion request
-	TextCompletion(ctx context.Context, model, key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	TextCompletion(ctx context.Context, model string, key Key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
 	// ChatCompletion performs a chat completion request
-	ChatCompletion(ctx context.Context, model, key string, messages []BifrostMessage, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	ChatCompletion(ctx context.Context, model string, key Key, messages []BifrostMessage, params *ModelParameters) (*BifrostResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
-	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, model, key string, messages []BifrostMessage, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, messages []BifrostMessage, params *ModelParameters) (chan *BifrostStream, *BifrostError)
 	// Embedding performs an embedding request
-	Embedding(ctx context.Context, model string, key string, input *EmbeddingInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	Embedding(ctx context.Context, model string, key Key, input *EmbeddingInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
 }

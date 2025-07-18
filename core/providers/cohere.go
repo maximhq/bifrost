@@ -183,14 +183,14 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the Cohere provider.
 // Returns an error indicating that text completion is not supported.
-func (provider *CohereProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "cohere")
 }
 
 // ChatCompletion performs a chat completion request to the Cohere API.
 // It formats the request, sends it to Cohere, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Prepare request body using shared function
 	requestBody, err := prepareCohereChatRequest(messages, params, model, false)
 	if err != nil {
@@ -227,7 +227,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model, key s
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	req.SetBody(jsonBody)
 
@@ -590,7 +590,7 @@ func convertChatHistory(history []struct {
 
 // Embedding generates embeddings for the given input text(s) using the Cohere API.
 // Supports Cohere's embedding models and returns a BifrostResponse containing the embedding(s).
-func (provider *CohereProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if len(input.Texts) == 0 {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -654,7 +654,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/embed")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	req.SetBody(jsonBody)
 
@@ -727,7 +727,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 // ChatCompletionStream performs a streaming chat completion request to the Cohere API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Prepare request body using shared function
 	requestBody, err := prepareCohereChatRequest(messages, params, model, true)
 	if err != nil {
@@ -765,7 +765,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 

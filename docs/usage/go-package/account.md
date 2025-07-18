@@ -131,6 +131,13 @@ func (a *MultiProviderAccount) GetKeysForProvider(provider schemas.ModelProvider
             Value:  os.Getenv("AZURE_API_KEY"),
             Models: []string{"gpt-4o"},
             Weight: 1.0,
+            AzureKeyConfig: &schemas.AzureKeyConfig{
+                Endpoint:     os.Getenv("AZURE_ENDPOINT"),
+                APIVersion: bifrost.Ptr("2024-08-01-preview"),
+                Deployments: map[string]string{
+                    "gpt-4o": "gpt-4o-deployment",
+                },
+            },
         }}, nil
 
     case schemas.Bedrock:
@@ -141,8 +148,15 @@ func (a *MultiProviderAccount) GetKeysForProvider(provider schemas.ModelProvider
         }}, nil
 
     case schemas.Vertex:
-        // Vertex is keyless (uses Google Cloud credentials)
-        return []schemas.Key{}, nil
+        return []schemas.Key{{
+            Models: []string{"google/gemini-2.0-flash-001"},
+            Weight: 1.0,
+            VertexKeyConfig: &schemas.VertexKeyConfig{
+                ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
+                Region:          "us-central1",
+                AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
+            },
+        }}, nil
     }
 
     return nil, fmt.Errorf("provider %s not supported", provider)
@@ -171,13 +185,6 @@ func (a *MultiProviderAccount) GetConfigForProvider(provider schemas.ModelProvid
                 RetryBackoffMax:                10 * time.Second,
             },
             ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-            MetaConfig: &meta.AzureMetaConfig{
-                Endpoint:     os.Getenv("AZURE_ENDPOINT"),
-                APIVersion: bifrost.Ptr("2024-08-01-preview"),
-                Deployments: map[string]string{
-                    "gpt-4o": "gpt-4o-deployment",
-                },
-            },
         }, nil
 
     case schemas.Bedrock:
@@ -194,11 +201,6 @@ func (a *MultiProviderAccount) GetConfigForProvider(provider schemas.ModelProvid
         return &schemas.ProviderConfig{
             NetworkConfig:            schemas.DefaultNetworkConfig,
             ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-            MetaConfig: &meta.VertexMetaConfig{
-                ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
-                Region:          "us-central1",
-                AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
-            },
         }, nil
     }
 

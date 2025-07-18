@@ -9,10 +9,10 @@ import (
 )
 
 // BaseAccount implements the Account interface for Bifrost.
-// It manages provider configurations using a bbolt store for persistent storage.
+// It manages provider configurations using a in-memory store for persistent storage.
 // All data processing (environment variables, meta configs) is done upfront in the store.
 type BaseAccount struct {
-	store *ConfigStore // bbolt store for persistent configuration
+	store *ConfigStore // store for in-memory configuration
 }
 
 // NewBaseAccount creates a new BaseAccount with the given store

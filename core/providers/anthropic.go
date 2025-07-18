@@ -318,7 +318,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 // TextCompletion performs a text completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	preparedParams := provider.prepareTextCompletionParams(prepareParams(params))
 
 	// Merge additional parameters
@@ -327,7 +327,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, ke
 		"prompt": fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
 	}, preparedParams)
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/complete", key)
+	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/complete", key.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +379,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model, ke
 // ChatCompletion performs a chat completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
 
 	// Merge additional parameters
@@ -388,7 +388,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model, ke
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/messages", key)
+	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/messages", key.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -775,14 +775,14 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 }
 
 // Embedding is not supported by the Anthropic provider.
-func (provider *AnthropicProvider) Embedding(ctx context.Context, model, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "anthropic")
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Anthropic API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
 
 	// Merge additional parameters and set stream to true
@@ -795,7 +795,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 	// Prepare Anthropic headers
 	headers := map[string]string{
 		"Content-Type":      "application/json",
-		"x-api-key":         key,
+		"x-api-key":         key.Value,
 		"anthropic-version": provider.apiVersion,
 		"Accept":            "text/event-stream",
 		"Cache-Control":     "no-cache",

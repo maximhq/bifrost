@@ -117,7 +117,6 @@ type AzureProvider struct {
 	logger        schemas.Logger        // Logger for provider operations
 	client        *fasthttp.Client      // HTTP client for API requests
 	streamClient  *http.Client          // HTTP client for streaming requests
-	meta          schemas.MetaConfig    // Azure-specific configuration
 	networkConfig schemas.NetworkConfig // Network configuration including extra headers
 }
 
@@ -126,10 +125,6 @@ type AzureProvider struct {
 // The client is configured with timeouts, concurrency limits, and optional proxy settings.
 func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*AzureProvider, error) {
 	config.CheckAndSetDefaults()
-
-	if config.MetaConfig == nil {
-		return nil, fmt.Errorf("meta config is not set")
-	}
 
 	client := &fasthttp.Client{
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
@@ -156,7 +151,6 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		logger:        logger,
 		client:        client,
 		streamClient:  streamClient,
-		meta:          config.MetaConfig,
 		networkConfig: config.NetworkConfig,
 	}, nil
 }
@@ -169,7 +163,16 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Azure's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key string, model string) ([]byte, *schemas.BifrostError) {
+func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key schemas.Key, model string) ([]byte, *schemas.BifrostError) {
+	if key.AzureKeyConfig == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "azure key config not set",
+			},
+		}
+	}
+
 	// Marshal the request body
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
@@ -182,7 +185,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 		}
 	}
 
-	if provider.meta.GetEndpoint() == nil {
+	if key.AzureKeyConfig.Endpoint == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -191,10 +194,10 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 		}
 	}
 
-	url := *provider.meta.GetEndpoint()
+	url := key.AzureKeyConfig.Endpoint
 
-	if provider.meta.GetDeployments() != nil {
-		deployment := provider.meta.GetDeployments()[model]
+	if key.AzureKeyConfig.Deployments != nil {
+		deployment := key.AzureKeyConfig.Deployments[model]
 		if deployment == "" {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -204,7 +207,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 			}
 		}
 
-		apiVersion := provider.meta.GetAPIVersion()
+		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
 			apiVersion = StrPtr("2024-02-01")
 		}
@@ -236,7 +239,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 		// Ensure api-key is not accidentally present (from extra headers, etc.)
 		req.Header.Del("api-key")
 	} else {
-		req.Header.Set("api-key", key)
+		req.Header.Set("api-key", key.Value)
 	}
 
 	req.SetBody(jsonData)
@@ -269,7 +272,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 // TextCompletion performs a text completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	preparedParams := prepareParams(params)
 
 	// Merge additional parameters
@@ -337,7 +340,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model, key, t
 // ChatCompletion performs a chat completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	// Merge additional parameters
@@ -384,7 +387,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model, key st
 // Embedding generates embeddings for the given input text(s) using Azure OpenAI.
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *AzureProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if len(input.Texts) == 0 {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -493,8 +496,17 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+
+	if key.AzureKeyConfig == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "azure key config not set",
+			},
+		}
+	}
 
 	// Merge additional parameters and set stream to true
 	requestBody := mergeConfig(map[string]interface{}{
@@ -504,7 +516,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 	}, preparedParams)
 
 	// Construct Azure-specific URL with deployment
-	if provider.meta.GetEndpoint() == nil {
+	if key.AzureKeyConfig.Endpoint == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -513,11 +525,11 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 		}
 	}
 
-	baseURL := *provider.meta.GetEndpoint()
+	baseURL := key.AzureKeyConfig.Endpoint
 	var fullURL string
 
-	if provider.meta.GetDeployments() != nil {
-		deployment := provider.meta.GetDeployments()[model]
+	if key.AzureKeyConfig.Deployments != nil {
+		deployment := key.AzureKeyConfig.Deployments[model]
 		if deployment == "" {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -527,7 +539,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 			}
 		}
 
-		apiVersion := provider.meta.GetAPIVersion()
+		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
 			apiVersion = StrPtr("2024-02-01")
 		}
@@ -552,7 +564,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
 		headers["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
 	} else {
-		headers["api-key"] = key
+		headers["api-key"] = key.Value
 	}
 
 	// Use shared streaming logic from OpenAI

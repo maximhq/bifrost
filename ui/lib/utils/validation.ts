@@ -151,3 +151,113 @@ export class Validator {
     return invalidRule || { isValid: true, message: '' }
   }
 }
+
+// Utility functions for validation and redaction detection
+
+/**
+ * Checks if a value is redacted based on the backend redaction patterns
+ * @param value - The value to check
+ * @returns true if the value is redacted
+ */
+export function isRedacted(value: string): boolean {
+  if (!value) {
+    return false
+  }
+
+  // Check if it's an environment variable reference
+  if (value.startsWith('env.')) {
+    return true
+  }
+
+  // Check for exact redaction pattern: 4 chars + 24 asterisks + 4 chars (total 32)
+  if (value.length === 32) {
+    const middle = value.substring(4, 28)
+    if (middle === '*'.repeat(24)) {
+      return true
+    }
+  }
+
+  // Check for short key redaction (all asterisks, length <= 8)
+  if (value.length <= 8 && /^\*+$/.test(value)) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Checks if a JSON string is valid
+ * @param value - The JSON string to validate
+ * @returns true if valid JSON
+ */
+export function isValidJSON(value: string): boolean {
+  try {
+    JSON.parse(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Validates Vertex auth credentials
+ * @param value - The auth credentials value
+ * @returns true if valid (redacted, env var, or valid service account JSON)
+ */
+export function isValidVertexAuthCredentials(value: string): boolean {
+  if (!value || !value.trim()) {
+    return false
+  }
+
+  // If redacted, consider it valid (backend has the real value)
+  if (isRedacted(value)) {
+    return true
+  }
+
+  // If environment variable, validate format
+  if (value.startsWith('env.')) {
+    return value.length > 4
+  }
+
+  // Try to parse as service account JSON
+  try {
+    const parsed = JSON.parse(value)
+    return typeof parsed === 'object' && parsed !== null && parsed.type === 'service_account' && parsed.project_id && parsed.private_key
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Validates Azure deployments configuration
+ * @param value - The deployments value (object or string)
+ * @returns true if valid (redacted, or valid JSON object)
+ */
+export function isValidAzureDeployments(value: Record<string, string> | string | undefined): boolean {
+  if (!value) {
+    return false
+  }
+
+  // If it's already an object, check if it has entries
+  if (typeof value === 'object') {
+    return Object.keys(value).length > 0
+  }
+
+  // If it's a string, check for redaction or valid JSON
+  if (typeof value === 'string') {
+    // If redacted, consider it valid (backend has the real value)
+    if (isRedacted(value)) {
+      return true
+    }
+
+    // Try to parse as JSON
+    try {
+      const parsed = JSON.parse(value)
+      return typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0
+    } catch {
+      return false
+    }
+  }
+
+  return false
+}

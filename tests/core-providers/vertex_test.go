@@ -35,9 +35,6 @@ func TestVertex(t *testing.T) {
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
 		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
-		},
 	}
 
 	runAllComprehensiveTests(t, client, ctx, testConfig)

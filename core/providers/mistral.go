@@ -114,12 +114,12 @@ func (provider *MistralProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Mistral provider.
-func (provider *MistralProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *MistralProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "mistral")
 }
 
 // ChatCompletion performs a chat completion request to the Mistral API.
-func (provider *MistralProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *MistralProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -150,7 +150,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model, key 
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	req.SetBody(jsonBody)
 
@@ -205,7 +205,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model, key 
 
 // Embedding generates embeddings for the given input text(s) using the Mistral API.
 // Supports Mistral's embedding models and returns a BifrostResponse containing the embedding(s).
-func (provider *MistralProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *MistralProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if len(input.Texts) == 0 {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -271,7 +271,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/embeddings")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	req.SetBody(jsonBody)
 
@@ -349,7 +349,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Mistral's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -361,7 +361,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postH
 	// Prepare Mistral headers
 	headers := map[string]string{
 		"Content-Type":  "application/json",
-		"Authorization": "Bearer " + key,
+		"Authorization": "Bearer " + key.Value,
 		"Accept":        "text/event-stream",
 		"Cache-Control": "no-cache",
 	}

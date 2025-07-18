@@ -13,6 +13,7 @@ import { ProviderIconType, renderProviderIcon } from '@/lib/constants/icons'
 import { PROVIDER_LABELS, PROVIDERS as Providers } from '@/lib/constants/logs'
 import {
   AddProviderRequest,
+  AzureKeyConfig,
   ConcurrencyAndBufferSize,
   Key as KeyType,
   MetaConfig,
@@ -22,15 +23,18 @@ import {
   ProxyConfig,
   ProxyType,
   UpdateProviderRequest,
+  VertexKeyConfig,
 } from '@/lib/types/config'
 import { cn } from '@/lib/utils'
 import { Validator } from '@/lib/utils/validation'
+import { isRedacted, isValidVertexAuthCredentials, isValidAzureDeployments } from '@/lib/utils/validation'
 import isEqual from 'lodash.isequal'
 import { AlertTriangle, Globe, Info, Plus, Save, X, Zap } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '../ui/alert'
 import MetaConfigRenderer from './meta-config-renderer'
+import { Textarea } from '../ui/textarea'
 
 interface ProviderFormProps {
   provider?: ProviderResponse | null
@@ -43,22 +47,37 @@ interface ProviderFormProps {
 const createInitialState = (provider?: ProviderResponse | null, defaultProvider?: string): Omit<ProviderFormData, 'isDirty'> => {
   const isNewProvider = !provider
   const providerName = provider?.name || defaultProvider || ''
-  const keysRequired = !['vertex', 'ollama', 'sgl'].includes(providerName)
+  const keysRequired = !['ollama', 'sgl'].includes(providerName) // Vertex needs keys for config
+
+  // Create default key based on provider type
+  const createDefaultKey = (): KeyType => {
+    const baseKey: KeyType = { id: '', value: '', models: [], weight: 1.0 }
+
+    if (providerName === 'azure') {
+      baseKey.azure_key_config = {
+        endpoint: '',
+        deployments: {},
+        api_version: '2024-02-01',
+      }
+    } else if (providerName === 'vertex') {
+      baseKey.vertex_key_config = {
+        project_id: '',
+        region: '',
+        auth_credentials: '',
+      }
+    }
+
+    return baseKey
+  }
 
   return {
     selectedProvider: providerName,
-    keys:
-      isNewProvider && keysRequired
-        ? [{ value: '', models: [], weight: 1.0 }]
-        : !isNewProvider && keysRequired && provider?.keys
-          ? provider.keys
-          : [],
+    keys: isNewProvider && keysRequired ? [createDefaultKey()] : !isNewProvider && keysRequired && provider?.keys ? provider.keys : [],
     networkConfig: provider?.network_config || DEFAULT_NETWORK_CONFIG,
     performanceConfig: provider?.concurrency_and_buffer_size || DEFAULT_PERFORMANCE_CONFIG,
     metaConfig: provider?.meta_config || {
-      endpoint: '',
-      deployments: {},
-      api_version: '',
+      region: '',
+      secret_access_key: '',
     },
     proxyConfig: provider?.proxy_config || {
       type: 'none',
@@ -92,8 +111,8 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
   const { selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, isDirty } = formData
 
   const baseURLRequired = selectedProvider === 'ollama' || selectedProvider === 'sgl'
-  const keysRequired = !['vertex', 'ollama', 'sgl'].includes(selectedProvider)
-  const keysValid = !keysRequired || keys.every((k) => k.value.trim() !== '')
+  const keysRequired = !['ollama', 'sgl'].includes(selectedProvider) // Vertex needs keys for config
+  const keysValid = !keysRequired || keys.every((k) => selectedProvider === 'vertex' || k.value.trim() !== '') // Vertex can have empty API key
   const keysPresent = !keysRequired || keys.length > 0
 
   const performanceValid =
@@ -104,41 +123,58 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     performanceConfig.concurrency !== initialState.performanceConfig.concurrency ||
     performanceConfig.buffer_size !== initialState.performanceConfig.buffer_size
 
-  /* Meta configuration validation based on provider requirements */
-  const getMetaValidation = () => {
+  /* Key-level configuration validation for Azure and Vertex */
+  const getKeyValidation = () => {
     let valid = true
     let message = ''
 
-    if (selectedProvider === 'azure') {
-      const endpointValid = !!metaConfig.endpoint && (metaConfig.endpoint as string).trim() !== ''
-      const deploymentsValid = !!(
-        metaConfig.deployments &&
-        typeof metaConfig.deployments === 'object' &&
-        Object.keys(metaConfig.deployments as Record<string, string>).length > 0
-      )
-      valid = endpointValid && deploymentsValid
-      if (!valid) {
-        message = 'Endpoint and at least one Deployment are required for Azure'
-      }
-    } else if (selectedProvider === 'bedrock') {
-      const regionValid = !!metaConfig.region && (metaConfig.region as string).trim() !== ''
-      valid = regionValid
-      if (!valid) {
-        message = 'Region is required for AWS Bedrock'
-      }
-    } else if (selectedProvider === 'vertex') {
-      const projectValid = !!metaConfig.project_id && (metaConfig.project_id as string).trim() !== ''
-      const credsValid = !!metaConfig.auth_credentials && (metaConfig.auth_credentials as string).trim() !== ''
-      const regionValid = !!metaConfig.region && (metaConfig.region as string).trim() !== ''
-      valid = projectValid && credsValid && regionValid
-      if (!valid) {
-        message = 'Project ID, Auth Credentials, and Region are required for Vertex AI'
+    for (const key of keys) {
+      if (selectedProvider === 'azure' && key.azure_key_config) {
+        const endpointValid = !!key.azure_key_config.endpoint && key.azure_key_config.endpoint.trim() !== ''
+
+        // Validate deployments using utility function
+        const deploymentsValid = isValidAzureDeployments(key.azure_key_config.deployments)
+
+        if (!endpointValid || !deploymentsValid) {
+          valid = false
+          message = 'Endpoint and valid Deployments (JSON object) are required for Azure keys'
+          break
+        }
+      } else if (selectedProvider === 'vertex' && key.vertex_key_config) {
+        const projectValid = !!key.vertex_key_config.project_id && key.vertex_key_config.project_id.trim() !== ''
+        const regionValid = !!key.vertex_key_config.region && key.vertex_key_config.region.trim() !== ''
+
+        // Validate auth credentials using utility function
+        const credsValid = isValidVertexAuthCredentials(key.vertex_key_config.auth_credentials)
+
+        if (!projectValid || !credsValid || !regionValid) {
+          valid = false
+          message = 'Project ID, valid Auth Credentials (JSON object or env.VAR), and Region are required for Vertex AI keys'
+          break
+        }
       }
     }
 
     return { valid, message }
   }
 
+  /* Meta configuration validation based on provider requirements (Bedrock only) */
+  const getMetaValidation = () => {
+    let valid = true
+    let message = ''
+
+    if (selectedProvider === 'bedrock') {
+      const regionValid = !!metaConfig.region && (metaConfig.region as string).trim() !== ''
+      valid = regionValid
+      if (!valid) {
+        message = 'Region is required for AWS Bedrock'
+      }
+    }
+
+    return { valid, message }
+  }
+
+  const { valid: keyValid, message: keyErrorMessage } = getKeyValidation()
   const { valid: metaValid, message: metaErrorMessage } = getMetaValidation()
 
   useEffect(() => {
@@ -179,7 +215,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
     if (provider) {
       const data: UpdateProviderRequest = {
-        keys: keysRequired ? keys.filter((k) => k.value.trim() !== '') : [],
+        keys: keysRequired
+          ? keys.filter((k) =>
+              selectedProvider === 'vertex'
+                ? true // Include all Vertex keys (API key can be empty)
+                : k.value.trim() !== '',
+            )
+          : [],
         network_config: networkConfig,
         concurrency_and_buffer_size: performanceConfig,
         meta_config: metaConfig,
@@ -189,7 +231,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     } else {
       const data: AddProviderRequest = {
         provider: selectedProvider as ModelProvider,
-        keys: keysRequired ? keys.filter((k) => k.value.trim() !== '') : [],
+        keys: keysRequired
+          ? keys.filter((k) =>
+              selectedProvider === 'vertex'
+                ? true // Include all Vertex keys (API key can be empty)
+                : k.value.trim() !== '',
+            )
+          : [],
         network_config: networkConfig,
         concurrency_and_buffer_size: performanceConfig,
         meta_config: metaConfig,
@@ -228,8 +276,12 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       ? [
           Validator.minValue(keys.length, 1, 'At least one API key is required'),
           Validator.custom(
-            keys.every((k) => k.value.trim() !== ''),
+            keys.every((k) => selectedProvider === 'vertex' || k.value.trim() !== ''),
             'API key value cannot be empty',
+          ),
+          Validator.custom(
+            keys.every((k) => k.weight >= 0 && k.weight <= 1),
+            'Key weights must be between 0 and 1',
           ),
         ]
       : []),
@@ -243,36 +295,34 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     Validator.minValue(performanceConfig.buffer_size, 1, 'Buffer size must be greater than 0'),
     Validator.custom(performanceConfig.concurrency < performanceConfig.buffer_size, 'Buffer size must be greater than concurrency'),
 
-    // Meta config validation
-    Validator.custom(metaValid, metaErrorMessage),
+    // Key-level config validation
+    Validator.custom(keyValid, keyErrorMessage),
 
-    // Meta config validation for Azure
-    ...(selectedProvider === 'azure'
-      ? [
-          Validator.required(metaConfig.endpoint, 'Azure endpoint is required'),
-          Validator.minValue(
-            Object.keys((metaConfig.deployments as Record<string, string>) || {}).length,
-            1,
-            'At least one Azure deployment is required',
-          ),
-        ]
-      : []),
+    // Meta config validation (Bedrock only)
+    Validator.custom(metaValid, metaErrorMessage),
 
     // Meta config validation for Bedrock
     ...(selectedProvider === 'bedrock' ? [Validator.required(metaConfig.region, 'AWS region is required')] : []),
-
-    // Meta config validation for Vertex
-    ...(selectedProvider === 'vertex'
-      ? [
-          Validator.required(metaConfig.project_id, 'Project ID is required for Vertex AI'),
-          Validator.required(metaConfig.auth_credentials, 'Auth credentials are required for Vertex AI'),
-          Validator.required(metaConfig.region, 'Region is required for Vertex AI'),
-        ]
-      : []),
   ])
 
   const addKey = () => {
-    updateField('keys', [...keys, { value: '', models: [], weight: 1.0 }])
+    const newKey: KeyType = { id: '', value: '', models: [], weight: 1.0 }
+
+    if (selectedProvider === 'azure') {
+      newKey.azure_key_config = {
+        endpoint: '',
+        deployments: {},
+        api_version: '2024-02-01',
+      }
+    } else if (selectedProvider === 'vertex') {
+      newKey.vertex_key_config = {
+        project_id: '',
+        region: '',
+        auth_credentials: '',
+      }
+    }
+
+    updateField('keys', [...keys, newKey])
   }
 
   const removeKey = (index: number) => {
@@ -298,6 +348,48 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     updateField('keys', newKeys)
   }
 
+  const updateKeyAzureConfig = (index: number, field: keyof AzureKeyConfig, value: string | Record<string, string>) => {
+    const newKeys = [...keys]
+    const keyToUpdate = { ...newKeys[index] }
+
+    if (!keyToUpdate.azure_key_config) {
+      keyToUpdate.azure_key_config = {
+        endpoint: '',
+        deployments: {},
+        api_version: '2024-02-01',
+      }
+    }
+
+    keyToUpdate.azure_key_config = {
+      ...keyToUpdate.azure_key_config,
+      [field]: value,
+    }
+
+    newKeys[index] = keyToUpdate
+    updateField('keys', newKeys)
+  }
+
+  const updateKeyVertexConfig = (index: number, field: keyof VertexKeyConfig, value: string) => {
+    const newKeys = [...keys]
+    const keyToUpdate = { ...newKeys[index] }
+
+    if (!keyToUpdate.vertex_key_config) {
+      keyToUpdate.vertex_key_config = {
+        project_id: '',
+        region: '',
+        auth_credentials: '',
+      }
+    }
+
+    keyToUpdate.vertex_key_config = {
+      ...keyToUpdate.vertex_key_config,
+      [field]: value,
+    }
+
+    newKeys[index] = keyToUpdate
+    updateField('keys', newKeys)
+  }
+
   const handleMetaConfigChange = (field: keyof MetaConfig, value: string | Record<string, string>) => {
     updateField('metaConfig', { ...metaConfig, [field]: value })
   }
@@ -313,8 +405,8 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       })
     }
 
-    // Add Meta Config tab for providers that need it
-    if (selectedProvider === 'azure' || selectedProvider === 'bedrock' || selectedProvider === 'vertex') {
+    // Add Meta Config tab only for Bedrock
+    if (selectedProvider === 'bedrock') {
       availableTabs.push({
         id: 'meta-config',
         label: 'Meta Config',
@@ -447,20 +539,23 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                         {keys.map((key, index) => (
                           <div
                             key={index}
-                            className="animate-in fade-in-0 slide-in-from-left-2 space-y-4 rounded-md border p-4 duration-300"
+                            className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 rounded-md border p-4 duration-300"
                             style={{ animationDelay: `${index * 50}ms` }}
                           >
                             <div className="flex gap-4">
-                              <div className="flex-1">
-                                <div className="text-sm font-medium">API Key</div>
-                                <Input
-                                  placeholder="API Key or env.MY_KEY"
-                                  value={key.value}
-                                  onChange={(e) => updateKey(index, 'value', e.target.value)}
-                                  type="text"
-                                  className={`flex-1 transition-all duration-200 ease-in-out ${keysRequired && key.value.trim() === '' ? 'border-destructive' : ''}`}
-                                />
-                              </div>
+                              {selectedProvider !== 'vertex' && (
+                                <div className="flex-1">
+                                  <div className="text-sm font-medium">API Key</div>
+                                  <Input
+                                    placeholder="API Key or env.MY_KEY"
+                                    value={key.value}
+                                    onChange={(e) => updateKey(index, 'value', e.target.value)}
+                                    type="text"
+                                    className={`flex-1 transition-all duration-200 ease-in-out ${keysRequired && selectedProvider !== 'vertex' && key.value.trim() === '' ? 'border-destructive' : ''}`}
+                                  />
+                                </div>
+                              )}
+
                               <div>
                                 <div className="flex items-center gap-4">
                                   <label className="text-sm font-medium">Weight</label>
@@ -482,10 +577,11 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                   value={key.weight}
                                   onChange={(e) => updateKey(index, 'weight', e.target.value)}
                                   type="number"
-                                  step="0.1"
+                                  step="0.01"
                                   min="0"
-                                  max="1.0"
-                                  className="w-20 transition-all duration-200 ease-in-out"
+                                  className={`w-20 transition-all duration-200 ease-in-out ${
+                                    keysRequired && (key.weight < 0 || key.weight > 1) ? 'border-destructive' : ''
+                                  }`}
                                 />
                               </div>
                             </div>
@@ -511,6 +607,112 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                 onValueChange={(newModels) => updateKey(index, 'models', newModels)}
                               />
                             </div>
+
+                            {/* Azure Key Configuration */}
+                            {selectedProvider === 'azure' && (
+                              <div className="space-y-4">
+                                <div>
+                                  <label className="text-sm font-medium">Endpoint (Required)</label>
+                                  <Input
+                                    placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT"
+                                    value={key.azure_key_config?.endpoint || ''}
+                                    onChange={(e) => updateKeyAzureConfig(index, 'endpoint', e.target.value)}
+                                    className={`transition-all duration-200 ease-in-out ${!key.azure_key_config?.endpoint?.trim() ? 'border-destructive' : ''}`}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">API Version (Optional)</label>
+                                  <Input
+                                    placeholder="2024-02-01 or env.AZURE_API_VERSION"
+                                    value={key.azure_key_config?.api_version || ''}
+                                    onChange={(e) => updateKeyAzureConfig(index, 'api_version', e.target.value)}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">Deployments (Required)</label>
+                                  <div className="text-muted-foreground mb-2 text-xs">
+                                    JSON object mapping model names to deployment names
+                                  </div>
+                                  <Textarea
+                                    placeholder='{"gpt-4": "my-gpt4-deployment", "gpt-3.5-turbo": "my-gpt35-deployment"}'
+                                    value={
+                                      typeof key.azure_key_config?.deployments === 'string'
+                                        ? key.azure_key_config.deployments
+                                        : JSON.stringify(key.azure_key_config?.deployments || {}, null, 2)
+                                    }
+                                    onChange={(e) => {
+                                      // Store as string during editing to allow intermediate invalid states
+                                      updateKeyAzureConfig(index, 'deployments', e.target.value)
+                                    }}
+                                    onBlur={(e) => {
+                                      // Try to parse as JSON on blur, but keep as string if invalid
+                                      const value = e.target.value.trim()
+                                      if (value) {
+                                        try {
+                                          const parsed = JSON.parse(value)
+                                          if (typeof parsed === 'object' && parsed !== null) {
+                                            updateKeyAzureConfig(index, 'deployments', parsed)
+                                          }
+                                        } catch {
+                                          // Keep as string for validation on submit
+                                        }
+                                      }
+                                    }}
+                                    rows={3}
+                                    className="wrap-anywhere max-w-full font-mono text-sm"
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Vertex Key Configuration */}
+                            {selectedProvider === 'vertex' && (
+                              <div className="space-y-4 pt-2">
+                                <div>
+                                  <label className="text-sm font-medium">Project ID (Required)</label>
+                                  <Input
+                                    placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID"
+                                    value={key.vertex_key_config?.project_id || ''}
+                                    onChange={(e) => updateKeyVertexConfig(index, 'project_id', e.target.value)}
+                                    className={`transition-all duration-200 ease-in-out ${!key.vertex_key_config?.project_id?.trim() ? 'border-destructive' : ''}`}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">Region (Required)</label>
+                                  <Input
+                                    placeholder="us-central1 or env.VERTEX_REGION"
+                                    value={key.vertex_key_config?.region || ''}
+                                    onChange={(e) => updateKeyVertexConfig(index, 'region', e.target.value)}
+                                    className={`transition-all duration-200 ease-in-out ${!key.vertex_key_config?.region?.trim() ? 'border-destructive' : ''}`}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">Auth Credentials (Required)</label>
+                                  <div className="text-muted-foreground mb-2 text-xs">Service account JSON object or env.VAR_NAME</div>
+                                  <Textarea
+                                    placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
+                                    value={key.vertex_key_config?.auth_credentials || ''}
+                                    onChange={(e) => {
+                                      // Always store as string - backend expects string type
+                                      updateKeyVertexConfig(index, 'auth_credentials', e.target.value)
+                                    }}
+                                    rows={4}
+                                    className={`wrap-anywhere max-w-full font-mono text-sm ${
+                                      !isValidVertexAuthCredentials(key.vertex_key_config?.auth_credentials || '')
+                                        ? 'border-destructive'
+                                        : ''
+                                    }`}
+                                  />
+                                  {isRedacted(key.vertex_key_config?.auth_credentials || '') && (
+                                    <div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+                                      <Info className="h-3 w-3" />
+                                      <span>Credentials are stored securely. Edit to update.</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
                             {keys.length > 1 && (
                               <Button
                                 type="button"
@@ -530,18 +732,11 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                   )}
 
                   {/* Meta Config Tab */}
-                  {selectedProvider !== 'anthropic' &&
-                    selectedProvider !== 'openai' &&
-                    selectedProvider !== 'cohere' &&
-                    selectedTab === 'meta-config' && (
-                      <div className="animate-in fade-in-0 slide-in-from-right-2 duration-300">
-                        <MetaConfigRenderer
-                          provider={selectedProvider}
-                          metaConfig={metaConfig}
-                          onMetaConfigChange={handleMetaConfigChange}
-                        />
-                      </div>
-                    )}
+                  {selectedProvider === 'bedrock' && selectedTab === 'meta-config' && (
+                    <div className="animate-in fade-in-0 slide-in-from-right-2 duration-300">
+                      <MetaConfigRenderer provider={selectedProvider} metaConfig={metaConfig} onMetaConfigChange={handleMetaConfigChange} />
+                    </div>
+                  )}
 
                   {/* Network Tab */}
                   {selectedTab === 'network' && (
@@ -671,7 +866,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
                   {/* Performance Tab */}
                   {selectedTab === 'performance' && (
-                    <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 duration-300">
+                    <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-2 duration-300">
                       <div className="flex items-center gap-2">
                         <Zap className="h-4 w-4" />
                         <h3 className="text-base font-medium">Performance Settings</h3>

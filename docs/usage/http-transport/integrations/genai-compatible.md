@@ -544,12 +544,17 @@ response3 = model3.generate_content("Hello!")
 {
   "providers": {
     "vertex": {
-      "keys": [],
-      "meta_config": {
-        "project_id": "env.VERTEX_PROJECT_ID",
-        "region": "us-central1",
-        "auth_credentials": "env.VERTEX_CREDENTIALS"
-      },
+      "keys": [
+        {
+          "models": ["gemini-2.0-flash-001"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us-central1",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          }
+        }
+      ],
       "network_config": {
         "default_request_timeout_in_seconds": 30,
         "max_retries": 2,
@@ -609,10 +614,17 @@ genai.configure(
 {
   "providers": {
     "vertex": {
-      "meta_config": {
-        "project_id": "env.VERTEX_PROJECT_ID",
-        "region": "us-central1"
-      }
+      "keys": [
+        {
+          "models": ["gemini-2.0-flash-001"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us-central1",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          }
+        }
+      ]
     },
     "openai": {
       "keys": [

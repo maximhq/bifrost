@@ -42,10 +42,3 @@ func (c *BedrockMetaConfig) GetARN() *string {
 func (c *BedrockMetaConfig) GetInferenceProfiles() map[string]string {
 	return c.InferenceProfiles
 }
-
-// These are not used for Bedrock.
-func (c *BedrockMetaConfig) GetAPIVersion() *string            { return nil }
-func (c *BedrockMetaConfig) GetAuthCredentials() *string       { return nil }
-func (c *BedrockMetaConfig) GetDeployments() map[string]string { return nil }
-func (c *BedrockMetaConfig) GetEndpoint() *string              { return nil }
-func (c *BedrockMetaConfig) GetProjectID() *string             { return nil }

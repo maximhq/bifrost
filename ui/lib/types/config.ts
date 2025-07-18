@@ -3,11 +3,28 @@
 // ModelProvider enum matching Go's schemas.ModelProvider
 export type ModelProvider = 'openai' | 'azure' | 'anthropic' | 'bedrock' | 'cohere' | 'vertex' | 'mistral' | 'ollama' | 'groq' | 'sgl'
 
+// AzureKeyConfig matching Go's schemas.AzureKeyConfig
+export interface AzureKeyConfig {
+  endpoint: string
+  deployments?: Record<string, string> | string // Allow string during editing
+  api_version?: string
+}
+
+// VertexKeyConfig matching Go's schemas.VertexKeyConfig
+export interface VertexKeyConfig {
+  project_id: string
+  region: string
+  auth_credentials: string // Always string - JSON string or env var
+}
+
 // Key structure matching Go's schemas.Key
 export interface Key {
+  id: string
   value: string
   models: string[]
   weight: number
+  azure_key_config?: AzureKeyConfig
+  vertex_key_config?: VertexKeyConfig
 }
 
 // NetworkConfig matching Go's schemas.NetworkConfig
@@ -28,21 +45,12 @@ export interface ConcurrencyAndBufferSize {
 
 // MetaConfig interface - provider-specific configuration
 export interface MetaConfig {
-  // Azure specific
-  endpoint: string
-  deployments: Record<string, string>
-  api_version: string
-
   // AWS Bedrock specific
   secret_access_key?: string
   region?: string
   session_token?: string
   arn?: string
   inference_profiles?: Record<string, string>
-
-  // Vertex specific
-  project_id?: string
-  auth_credentials?: string
 
   // Generic fields for extensibility
   [key: string]: unknown

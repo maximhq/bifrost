@@ -78,8 +78,8 @@ func (h *CompletionHandler) handleCompletion(ctx *fasthttp.RequestCtx, completio
 		return
 	}
 
-	model := strings.Split(req.Model, "/")
-	if len(model) != 2 {
+	model := strings.SplitN(req.Model, "/", 2)
+	if len(model) < 2 {
 		SendError(ctx, fasthttp.StatusBadRequest, "Model must be in the format of 'provider/model'", h.logger)
 		return
 	}

@@ -109,14 +109,29 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(providerKey schemas.
 				Value:  os.Getenv("AZURE_API_KEY"),
 				Models: []string{"gpt-4o"},
 				Weight: 1.0,
+				AzureKeyConfig: &schemas.AzureKeyConfig{
+					Endpoint: os.Getenv("AZURE_ENDPOINT"),
+					Deployments: map[string]string{
+						"gpt-4o": "gpt-4o-aug",
+					},
+					// Use environment variable for API version with fallback to current preview version
+					// Note: This is a preview API version that may change over time. Update as needed.
+					// Set AZURE_API_VERSION environment variable to override the default.
+					APIVersion: bifrost.Ptr(getEnvWithDefault("AZURE_API_VERSION", "2024-08-01-preview")),
+				},
 			},
 		}, nil
 	case schemas.Vertex:
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("VERTEX_API_KEY"),
-				Models: []string{"gemini-pro"},
+				Models: []string{},
 				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
+					Region:          getEnvWithDefault("VERTEX_REGION", "us-central1"),
+					AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
+				},
 			},
 		}, nil
 	case schemas.Mistral:
@@ -191,16 +206,6 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
 			},
-			MetaConfig: &meta.AzureMetaConfig{
-				Endpoint: os.Getenv("AZURE_ENDPOINT"),
-				Deployments: map[string]string{
-					"gpt-4o": "gpt-4o-aug",
-				},
-				// Use environment variable for API version with fallback to current preview version
-				// Note: This is a preview API version that may change over time. Update as needed.
-				// Set AZURE_API_VERSION environment variable to override the default.
-				APIVersion: bifrost.Ptr(getEnvWithDefault("AZURE_API_VERSION", "2024-08-01-preview")),
-			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
 				BufferSize:  10,
@@ -213,11 +218,6 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
-			},
-			MetaConfig: &meta.VertexMetaConfig{
-				ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
-				Region:          getEnvWithDefault("VERTEX_REGION", "us-central1"),
-				AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,

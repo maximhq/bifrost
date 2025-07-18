@@ -101,12 +101,12 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the SGL provider.
-func (provider *SGLProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "sgl")
 }
 
 // ChatCompletion performs a chat completion request to the SGL API.
-func (provider *SGLProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -137,8 +137,8 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, model, key stri
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
 	}
 
 	req.SetBody(jsonBody)
@@ -193,7 +193,7 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, model, key stri
 }
 
 // Embedding is not supported by the SGL provider.
-func (provider *SGLProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "sgl")
 }
 
@@ -201,7 +201,7 @@ func (provider *SGLProvider) Embedding(ctx context.Context, model string, key st
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses SGL's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -218,8 +218,8 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 	}
 
 	// Only add Authorization header if key is provided (SGL can run without auth)
-	if key != "" {
-		headers["Authorization"] = "Bearer " + key
+	if key.Value != "" {
+		headers["Authorization"] = "Bearer " + key.Value
 	}
 
 	// Use shared OpenAI-compatible streaming logic

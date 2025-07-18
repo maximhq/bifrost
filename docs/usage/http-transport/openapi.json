@@ -2334,6 +2334,50 @@
             },
             "description": "Models this key can access",
             "example": ["gpt-4o", "gpt-4o-mini"]
+          },
+          "azure_key_config": {
+            "type": "object",
+            "properties": {
+              "endpoint": {
+                "type": "string",
+                "description": "Azure endpoint",
+                "example": "https://your-resource.openai.azure.com"
+              },
+              "deployments": {
+                "type": "object",
+                "description": "Azure deployments",
+                "example": {
+                  "gpt-4o": "gpt-4o-deployment"
+                }
+              },
+              "api_version": {
+                "type": "string",
+                "description": "Azure API version",
+                "example": "2024-02-15-preview"
+              }
+            },
+            "description": "Azure key configuration"
+          },
+          "vertex_key_config": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "description": "Vertex project ID",
+                "example": "your-project-id"
+              },
+              "region": {
+                "type": "string",
+                "description": "Vertex region",
+                "example": "us-central1"
+              },
+              "auth_credentials": {
+                "type": "string",
+                "description": "Vertex auth credentials",
+                "example": "env.VERTEX_AUTH_CREDENTIALS"
+              }
+            },
+            "description": "Vertex key configuration"
           }
         }
       },

@@ -5,7 +5,9 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -153,7 +155,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate required keys
-	if len(req.Keys) == 0 && req.Provider != schemas.Vertex && req.Provider != schemas.Ollama && req.Provider != schemas.SGL {
+	if len(req.Keys) == 0 && req.Provider != schemas.Ollama && req.Provider != schemas.SGL {
 		SendError(ctx, fasthttp.StatusBadRequest, "At least one API key is required", h.logger)
 		return
 	}
@@ -237,78 +239,50 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	oldConfigRedacted, err := h.store.GetProviderConfigRedacted(provider)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err), h.logger)
+		return
+	}
+
 	// Construct ProviderConfig from individual fields
 	config := lib.ProviderConfig{
 		Keys:                     oldConfigRaw.Keys,
 		NetworkConfig:            oldConfigRaw.NetworkConfig,
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
+		ProxyConfig:              oldConfigRaw.ProxyConfig,
 	}
 
-	// For now, don't replace any environment keys - preserve all existing ones
-	// TODO: Implement proper tracking of which env keys should be dropped
-	envKeysToReplace := make(map[string]struct{})
+	// Environment variable cleanup is now handled automatically by mergeKeys function
 
-	// Validate and process keys
-	if req.Keys != nil {
-		if len(req.Keys) == 0 && provider != schemas.Vertex && provider != schemas.Ollama && provider != schemas.SGL {
-			SendError(ctx, fasthttp.StatusBadRequest, "At least one API key is required", h.logger)
-			return
+	var keysToAdd []schemas.Key
+	var keysToUpdate []schemas.Key
+
+	for _, key := range req.Keys {
+		if !slices.ContainsFunc(oldConfigRaw.Keys, func(k schemas.Key) bool {
+			return k.ID == key.ID
+		}) {
+			keysToAdd = append(keysToAdd, key)
+		} else {
+			keysToUpdate = append(keysToUpdate, key)
 		}
-
-		// Create a map of old keys by model patterns for quick lookup
-		oldKeysByModels := make(map[string][]schemas.Key)
-		for _, oldKey := range oldConfigRaw.Keys {
-			for _, model := range oldKey.Models {
-				oldKeysByModels[model] = append(oldKeysByModels[model], oldKey)
-			}
-		}
-
-		// Process each key in the request
-		for i, newKey := range req.Keys {
-			// If the key is redacted, try to find and use the old key for the same models
-			if lib.IsRedacted(newKey.Value) {
-				// Look for matching old keys
-				var matchingKeys []schemas.Key
-				for _, model := range newKey.Models {
-					if oldKeys, exists := oldKeysByModels[model]; exists {
-						matchingKeys = append(matchingKeys, oldKeys...)
-					}
-				}
-
-				// If we found matching keys, use the most appropriate one
-				if len(matchingKeys) > 0 {
-					// Try to find a key that matches all the same models
-					var bestMatch schemas.Key
-					bestMatchScore := 0
-
-					for _, oldKey := range matchingKeys {
-						// Calculate how many models match between the old and new key
-						matchCount := 0
-						oldModelsMap := make(map[string]bool)
-						for _, m := range oldKey.Models {
-							oldModelsMap[m] = true
-						}
-
-						for _, m := range newKey.Models {
-							if oldModelsMap[m] {
-								matchCount++
-							}
-						}
-
-						// Update best match if this key has more matching models
-						if matchCount > bestMatchScore {
-							bestMatch = oldKey
-							bestMatchScore = matchCount
-						}
-					}
-
-					// Use the best matching key's value
-					req.Keys[i].Value = bestMatch.Value
-				}
-			}
-		}
-		config.Keys = req.Keys
 	}
+
+	var keysToDelete []schemas.Key
+	for _, key := range oldConfigRaw.Keys {
+		if !slices.ContainsFunc(req.Keys, func(k schemas.Key) bool {
+			return k.ID == key.ID
+		}) {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+
+	keys, err := h.mergeKeys(provider, oldConfigRaw.Keys, oldConfigRedacted.Keys, keysToAdd, keysToDelete, keysToUpdate)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid keys: %v", err), h.logger)
+		return
+	}
+	config.Keys = keys
 
 	// Handle meta config if provided
 	if req.MetaConfig != nil && len(*req.MetaConfig) > 0 {
@@ -340,7 +314,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	config.ProxyConfig = req.ProxyConfig
 
 	// Update provider config in store (env vars will be processed by store)
-	if err := h.store.UpdateProviderConfig(provider, config, envKeysToReplace); err != nil {
+	if err := h.store.UpdateProviderConfig(provider, config); err != nil {
 		h.logger.Warn(fmt.Sprintf("Failed to update provider %s: %v", provider, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err), h.logger)
 		return
@@ -415,14 +389,6 @@ func (h *ProviderHandler) convertToProviderMetaConfig(provider schemas.ModelProv
 	}
 
 	switch provider {
-	case schemas.Azure:
-		var azureMetaConfig meta.AzureMetaConfig
-		if err := json.Unmarshal(metaConfigJSON, &azureMetaConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal Azure meta config: %w", err)
-		}
-		var metaConfig schemas.MetaConfig = &azureMetaConfig
-		return &metaConfig, nil
-
 	case schemas.Bedrock:
 		var bedrockMetaConfig meta.BedrockMetaConfig
 		if err := json.Unmarshal(metaConfigJSON, &bedrockMetaConfig); err != nil {
@@ -431,18 +397,99 @@ func (h *ProviderHandler) convertToProviderMetaConfig(provider schemas.ModelProv
 		var metaConfig schemas.MetaConfig = &bedrockMetaConfig
 		return &metaConfig, nil
 
-	case schemas.Vertex:
-		var vertexMetaConfig meta.VertexMetaConfig
-		if err := json.Unmarshal(metaConfigJSON, &vertexMetaConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal Vertex meta config: %w", err)
-		}
-		var metaConfig schemas.MetaConfig = &vertexMetaConfig
-		return &metaConfig, nil
-
 	default:
 		// For providers that don't support meta config, return nil
 		return nil, nil
 	}
+}
+
+// mergeKeys merges new keys with old, preserving values that are redacted in the new config
+func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys []schemas.Key, oldRedactedKeys []schemas.Key, keysToAdd []schemas.Key, keysToDelete []schemas.Key, keysToUpdate []schemas.Key) ([]schemas.Key, error) {
+	// Clean up environment variables for deleted and updated keys
+	h.store.CleanupEnvKeysForKeys(string(provider), keysToDelete)
+	h.store.CleanupEnvKeysForUpdatedKeys(string(provider), keysToUpdate)
+	// Create a map of indices to delete
+	toDelete := make(map[int]bool)
+	for _, key := range keysToDelete {
+		for i, oldKey := range oldRawKeys {
+			if oldKey.ID == key.ID {
+				toDelete[i] = true
+				break
+			}
+		}
+	}
+
+	// Create a map of updates by ID for quick lookup
+	updates := make(map[string]schemas.Key)
+	for _, key := range keysToUpdate {
+		updates[key.ID] = key
+	}
+
+	// Process existing keys (handle updates and deletions)
+	var resultKeys []schemas.Key
+	for i, oldRawKey := range oldRawKeys {
+		// Skip if this key should be deleted
+		if toDelete[i] {
+			continue
+		}
+
+		// Check if this key should be updated
+		if updateKey, exists := updates[oldRawKey.ID]; exists {
+			mergedKey := updateKey
+
+			// Handle redacted values
+			if lib.IsRedacted(updateKey.Value) &&
+				(!strings.HasPrefix(updateKey.Value, "env.") ||
+					!strings.EqualFold(updateKey.Value, oldRedactedKeys[i].Value)) {
+				mergedKey.Value = oldRawKey.Value
+			}
+
+			// Handle Azure config redacted values
+			if updateKey.AzureKeyConfig != nil && oldRedactedKeys[i].AzureKeyConfig != nil {
+				if lib.IsRedacted(updateKey.AzureKeyConfig.Endpoint) &&
+					(!strings.HasPrefix(updateKey.AzureKeyConfig.Endpoint, "env.") ||
+						!strings.EqualFold(updateKey.AzureKeyConfig.Endpoint, oldRedactedKeys[i].AzureKeyConfig.Endpoint)) {
+					mergedKey.AzureKeyConfig.Endpoint = oldRawKey.AzureKeyConfig.Endpoint
+				}
+				if updateKey.AzureKeyConfig.APIVersion != nil {
+					if lib.IsRedacted(*updateKey.AzureKeyConfig.APIVersion) &&
+						(!strings.HasPrefix(*updateKey.AzureKeyConfig.APIVersion, "env.") ||
+							!strings.EqualFold(*updateKey.AzureKeyConfig.APIVersion, *oldRedactedKeys[i].AzureKeyConfig.APIVersion)) {
+						mergedKey.AzureKeyConfig.APIVersion = oldRawKey.AzureKeyConfig.APIVersion
+					}
+				}
+			}
+
+			// Handle Vertex config redacted values
+			if updateKey.VertexKeyConfig != nil && oldRedactedKeys[i].VertexKeyConfig != nil {
+				if lib.IsRedacted(updateKey.VertexKeyConfig.ProjectID) &&
+					(!strings.HasPrefix(updateKey.VertexKeyConfig.ProjectID, "env.") ||
+						!strings.EqualFold(updateKey.VertexKeyConfig.ProjectID, oldRedactedKeys[i].VertexKeyConfig.ProjectID)) {
+					mergedKey.VertexKeyConfig.ProjectID = oldRawKey.VertexKeyConfig.ProjectID
+				}
+				if lib.IsRedacted(updateKey.VertexKeyConfig.Region) &&
+					(!strings.HasPrefix(updateKey.VertexKeyConfig.Region, "env.") ||
+						!strings.EqualFold(updateKey.VertexKeyConfig.Region, oldRedactedKeys[i].VertexKeyConfig.Region)) {
+					mergedKey.VertexKeyConfig.Region = oldRawKey.VertexKeyConfig.Region
+				}
+				if lib.IsRedacted(updateKey.VertexKeyConfig.AuthCredentials) &&
+					(!strings.HasPrefix(updateKey.VertexKeyConfig.AuthCredentials, "env.") ||
+						!strings.EqualFold(updateKey.VertexKeyConfig.AuthCredentials, oldRedactedKeys[i].VertexKeyConfig.AuthCredentials)) {
+					mergedKey.VertexKeyConfig.AuthCredentials = oldRawKey.VertexKeyConfig.AuthCredentials
+				}
+			}
+
+			resultKeys = append(resultKeys, mergedKey)
+		} else {
+			// Keep unchanged key
+			resultKeys = append(resultKeys, oldRawKey)
+		}
+	}
+
+	// Add new keys
+	resultKeys = append(resultKeys, keysToAdd...)
+
+	return resultKeys, nil
 }
 
 // mergeMetaConfig merges new meta config with old, preserving values that are redacted in the new config
@@ -452,29 +499,6 @@ func (h *ProviderHandler) mergeMetaConfig(provider schemas.ModelProvider, oldCon
 	}
 
 	switch provider {
-	case schemas.Azure:
-		var newAzureConfig meta.AzureMetaConfig
-		newConfigJSON, _ := json.Marshal(newConfigMap)
-		if err := json.Unmarshal(newConfigJSON, &newAzureConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal new Azure meta config: %w", err)
-		}
-
-		oldAzureConfig, ok := (*oldConfig).(*meta.AzureMetaConfig)
-		if !ok {
-			return nil, fmt.Errorf("existing meta config type mismatch: expected AzureMetaConfig")
-		}
-
-		// Preserve old values if new ones are redacted
-		if lib.IsRedacted(newAzureConfig.Endpoint) {
-			newAzureConfig.Endpoint = oldAzureConfig.Endpoint
-		}
-		if newAzureConfig.APIVersion != nil && oldAzureConfig.APIVersion != nil && lib.IsRedacted(*newAzureConfig.APIVersion) {
-			newAzureConfig.APIVersion = oldAzureConfig.APIVersion
-		}
-
-		var metaConfig schemas.MetaConfig = &newAzureConfig
-		return &metaConfig, nil
-
 	case schemas.Bedrock:
 		var newBedrockConfig meta.BedrockMetaConfig
 		newConfigJSON, _ := json.Marshal(newConfigMap)
@@ -503,33 +527,6 @@ func (h *ProviderHandler) mergeMetaConfig(provider schemas.ModelProvider, oldCon
 
 		var metaConfig schemas.MetaConfig = &newBedrockConfig
 		return &metaConfig, nil
-
-	case schemas.Vertex:
-		var newVertexConfig meta.VertexMetaConfig
-		newConfigJSON, _ := json.Marshal(newConfigMap)
-		if err := json.Unmarshal(newConfigJSON, &newVertexConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal new Vertex meta config: %w", err)
-		}
-
-		oldVertexConfig, ok := (*oldConfig).(*meta.VertexMetaConfig)
-		if !ok {
-			return nil, fmt.Errorf("existing meta config type mismatch: expected VertexMetaConfig")
-		}
-
-		// Preserve old values if new ones are redacted
-		if lib.IsRedacted(newVertexConfig.ProjectID) {
-			newVertexConfig.ProjectID = oldVertexConfig.ProjectID
-		}
-		if lib.IsRedacted(newVertexConfig.Region) {
-			newVertexConfig.Region = oldVertexConfig.Region
-		}
-		if lib.IsRedacted(newVertexConfig.AuthCredentials) {
-			newVertexConfig.AuthCredentials = oldVertexConfig.AuthCredentials
-		}
-
-		var metaConfig schemas.MetaConfig = &newVertexConfig
-		return &metaConfig, nil
-
 	default:
 		return nil, nil
 	}

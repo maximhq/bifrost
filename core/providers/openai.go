@@ -127,14 +127,14 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the OpenAI provider.
 // Returns an error indicating that text completion is not available.
-func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "openai")
 }
 
 // ChatCompletion performs a chat completion request to the OpenAI API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -165,7 +165,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model, key s
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	req.SetBody(jsonBody)
 
@@ -280,7 +280,7 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 // Embedding generates embeddings for the given input text(s).
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Validate input texts are not empty
 	if len(input.Texts) == 0 {
 		return nil, &schemas.BifrostError{
@@ -337,7 +337,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/embeddings")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	req.SetBody(jsonBody)
 
@@ -466,7 +466,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 	return bifrostResponse, nil
 }
 
-func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -478,7 +478,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Prepare OpenAI headers
 	headers := map[string]string{
 		"Content-Type":  "application/json",
-		"Authorization": "Bearer " + key,
+		"Authorization": "Bearer " + key.Value,
 		"Accept":        "text/event-stream",
 		"Cache-Control": "no-cache",
 	}

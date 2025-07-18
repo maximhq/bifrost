@@ -100,12 +100,12 @@ func (provider *GroqProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Groq provider.
-func (provider *GroqProvider) TextCompletion(ctx context.Context, model, key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "groq")
 }
 
 // ChatCompletion performs a chat completion request to the Groq API.
-func (provider *GroqProvider) ChatCompletion(ctx context.Context, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -136,9 +136,7 @@ func (provider *GroqProvider) ChatCompletion(ctx context.Context, model, key str
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	req.SetBody(jsonBody)
 
@@ -192,7 +190,7 @@ func (provider *GroqProvider) ChatCompletion(ctx context.Context, model, key str
 }
 
 // Embedding is not supported by the Groq provider.
-func (provider *GroqProvider) Embedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "groq")
 }
 
@@ -200,7 +198,7 @@ func (provider *GroqProvider) Embedding(ctx context.Context, model string, key s
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Groq's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model, key string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -216,10 +214,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHook
 		"Cache-Control": "no-cache",
 	}
 
-	// Only add Authorization header if key is provided (Groq can run without auth)
-	if key != "" {
-		headers["Authorization"] = "Bearer " + key
-	}
+	headers["Authorization"] = "Bearer " + key.Value
 
 	// Use shared OpenAI-compatible streaming logic
 	return handleOpenAIStreaming(

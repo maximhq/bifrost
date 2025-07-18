@@ -314,19 +314,24 @@ echo "$response"
 **Go Package:**
 
 ```go
-func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.Azure {
-        return &schemas.ProviderConfig{
-            NetworkConfig: schemas.NetworkConfig{
-                BaseURL: "https://your-resource.openai.azure.com",
-            },
-            MetaConfig: map[string]interface{}{
-                "api_version": "2024-02-15-preview",
-                "deployment":  "gpt-4o-deployment",
+        return []schemas.Key{
+            {
+                Value: "your-azure-api-key", 
+                Models: []string{"gpt-4o"}, // These models are mapped to the deployment
+                Weight: 1.0,
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint: "https://your-resource.openai.azure.com",
+                    Deployments: map[string]string{
+                        "gpt-4o": "gpt-4o-deployment",
+                    },
+                    APIVersion: StrPtr("2024-02-15-preview"),
+                },
             },
         }, nil
     }
-    return &schemas.ProviderConfig{}, nil
+    return nil, fmt.Errorf("provider not configured")
 }
 ```
 
@@ -340,16 +345,16 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
         {
           "value": "env.AZURE_OPENAI_API_KEY",
           "models": ["gpt-4o"],
-          "weight": 1.0
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "https://your-resource.openai.azure.com",
+            "deployments": {
+              "gpt-4o": "gpt-4o-deployment"
+            },
+            "api_version": "2024-02-15-preview"
+          }
         }
-      ],
-      "network_config": {
-        "base_url": "https://your-resource.openai.azure.com"
-      },
-      "meta_config": {
-        "api_version": "2024-02-15-preview",
-        "deployment": "gpt-4o-deployment"
-      }
+      ]
     }
   }
 }
@@ -363,17 +368,21 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 **Go Package:**
 
 ```go
-func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+func (a *MyAccount) GetKeysForProvider(provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.Vertex {
-        return &schemas.ProviderConfig{
-            MetaConfig: map[string]interface{}{
-                "project_id": "your-project-id",
-                "location":   "us-central1",
-                "credentials_path": "/path/to/service-account.json",
+        return []schemas.Key{
+            {
+                Models: []string{"gemini-pro"}, // These models are just for mapping to keys
+                Weight: 1.0,
+                VertexKeyConfig: &schemas.VertexKeyConfig{
+                    ProjectID: "your-project-id",
+                    Location:  "us-central1",
+                    AuthCredentials: os.Getenv("VERTEX_AUTH_CREDENTIALS"), // Or read from file
+                },
             },
         }, nil
     }
-    return &schemas.ProviderConfig{}, nil
+    return nil, fmt.Errorf("provider not configured")
 }
 ```
 
@@ -385,15 +394,15 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
     "vertex": {
       "keys": [
         {
-          "value": "file:/path/to/service-account.json",
-          "models": ["gemini-pro"],
-          "weight": 1.0
+          "models": ["google/gemini-2.0-flash-001"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "your-project-id",
+            "region": "us-central1",
+            "auth_credentials": "env.VERTEX_AUTH_CREDENTIALS"
+          }
         }
-      ],
-      "meta_config": {
-        "project_id": "your-project-id",
-        "location": "us-central1"
-      }
+      ]
     }
   }
 }
