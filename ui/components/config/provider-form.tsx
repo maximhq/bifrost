@@ -745,6 +745,16 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                   {/* Network Tab */}
                   {selectedTab === 'network' && (
                     <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-6 duration-300">
+                      {provider && (
+                        <Alert>
+                          <AlertTriangle className="h-4 w-4" />
+                          <AlertDescription>
+                            The settings below require a Bifrost service restart to take effect. Current connections will continue with
+                            existing settings until restart.
+                          </AlertDescription>
+                        </Alert>
+                      )}
+
                       {/* Network Configuration */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2">
@@ -773,12 +783,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                 type="number"
                                 placeholder="30"
                                 value={networkConfig.default_request_timeout_in_seconds}
-                                onChange={(e) =>
+                                onChange={(e) => {
                                   updateField('networkConfig', {
                                     ...networkConfig,
-                                    default_request_timeout_in_seconds: Number.parseInt(e.target.value) || 30,
-                                  })
-                                }
+                                    default_request_timeout_in_seconds: Number.parseInt(e.target.value),
+                                  });
+                                }}
+                                min={1}
                                 className="transition-all duration-200 ease-in-out"
                               />
                             </div>
@@ -791,9 +802,10 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                 onChange={(e) =>
                                   updateField('networkConfig', {
                                     ...networkConfig,
-                                    max_retries: Number.parseInt(e.target.value) || 0,
+                                    max_retries: Number.parseInt(e.target.value),
                                   })
                                 }
+                                min={0}
                                 className="transition-all duration-200 ease-in-out"
                               />
                             </div>
@@ -899,7 +911,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                             onChange={(e) =>
                               updateField('performanceConfig', {
                                 ...performanceConfig,
-                                concurrency: Number.parseInt(e.target.value) || 0,
+                                concurrency: Number.parseInt(e.target.value),
                               })
                             }
                             className={`transition-all duration-200 ease-in-out ${!performanceValid ? 'border-destructive' : ''}`}
@@ -913,7 +925,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                             onChange={(e) =>
                               updateField('performanceConfig', {
                                 ...performanceConfig,
-                                buffer_size: Number.parseInt(e.target.value) || 0,
+                                buffer_size: Number.parseInt(e.target.value),
                               })
                             }
                             className={`transition-all duration-200 ease-in-out ${!performanceValid ? 'border-destructive' : ''}`}

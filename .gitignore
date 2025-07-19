@@ -6,6 +6,7 @@
 **/__pycache__/**
 private.*
 .venv
+bifrost-data
 
 # Temporary directories
 **/temp/
