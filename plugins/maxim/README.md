@@ -50,10 +50,12 @@ This plugin integrates the Maxim SDK into Bifrost, enabling seamless observabili
 
    Running the docker container
 
+   > **💡 Volume Mounting**: The entire working directory is mounted to `/app/data` to persist both the JSON configuration file and the database. This ensures that configuration changes made via the web UI are preserved between container restarts, and the new hash-based configuration loading system can properly track file changes.
+
    ```bash
    docker run -d \
     -p 8080:8080 \
-    -v $(pwd)/config.json:/app/config/config.json \
+    -v $(pwd):/app/data \
     -e APP_PORT=8080 \
     -e MAXIM_API_KEY \
     -e MAXIM_LOG_REPO_ID \

@@ -6,9 +6,25 @@ Complete guide to configuring AI providers in Bifrost HTTP transport through `co
 
 ---
 
-## 📋 Configuration Overview (File Based)
+## 📋 Configuration Overview
 
 > You can directly use the UI (`http://localhost:{port}/providers`) to configure the providers.
+
+Provider configuration can be managed through:
+
+- **`config.json` file** - File-based configuration with intelligent loading
+- **Web UI** - Visual configuration interface
+- **Database** - Persistent storage with automatic synchronization
+
+### **Configuration Loading Behavior**
+
+Bifrost intelligently manages configuration sources:
+
+- **If `config.json` exists**: Checks if the file has changed. If unchanged, loads from database (fast path). If changed, uses file as source of truth and syncs to database.
+- **If no `config.json`**: Loads configuration from database only.
+- **Web UI changes**: Always update the database, making it the source of truth for subsequent loads.
+
+> **⚠️ Important**: After configuring via web UI, your `config.json` may become outdated. The database becomes the source of truth once you make changes through the UI.
 
 Provider configuration in `config.json` defines:
 
@@ -485,6 +501,16 @@ export MISTRAL_API_KEY="your-mistral-key"
 ### **Docker Environment**
 
 ```bash
+# With persistent configuration
+docker run -p 8080:8080 \
+  -v $(pwd):/app/data \
+  -e OPENAI_API_KEY \
+  -e ANTHROPIC_API_KEY \
+  -e BEDROCK_API_KEY \
+  -e AWS_SECRET_ACCESS_KEY \
+  maximhq/bifrost
+
+# Legacy: Direct config.json mount
 docker run -p 8080:8080 \
   -v $(pwd)/config.json:/app/config/config.json \
   -e OPENAI_API_KEY \
@@ -493,6 +519,8 @@ docker run -p 8080:8080 \
   -e AWS_SECRET_ACCESS_KEY \
   maximhq/bifrost
 ```
+
+> **💡 Note**: The recommended approach uses `-v $(pwd):/app/data` to persist both the config file and database. This ensures configuration changes via web UI are preserved between container restarts.
 
 ---
 
