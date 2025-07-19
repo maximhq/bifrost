@@ -1,6 +1,6 @@
 "use client";
 
-import { BoxIcon, BugIcon, ExternalLink, Puzzle, Settings2Icon, Telescope } from "lucide-react";
+import { BoxIcon, BugIcon, ExternalLink, Puzzle, Settings2Icon, ShuffleIcon, Telescope } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -57,6 +57,12 @@ const navigationItems = [
 		url: "/providers",
 		icon: BoxIcon,
 		description: "Configure models",
+	},
+	{
+		title: "Routing rules",
+		url: "/routing",
+		icon: ShuffleIcon,
+		description: "Build advanced routing",
 	},
 	{
 		title: "MCP clients",
@@ -150,7 +156,7 @@ export default function AppSidebar() {
 									<SidebarMenuItem key={item.title}>
 										<SidebarMenuButton
 											asChild
-											className={`relative h-16 rounded-lg border px-3 transition-all duration-200 ${
+											className={`relative h-16 rounded-sm border px-3 transition-all duration-200 ${
 												isActive
 													? "bg-accent text-primary border-primary/10"
 													: "hover:bg-accent hover:text-accent-foreground border-transparent"
@@ -196,7 +202,7 @@ export default function AppSidebar() {
 								<SidebarMenuItem key={item.title}>
 									<SidebarMenuButton
 										asChild
-										className="hover:bg-accent hover:text-accent-foreground h-9 rounded-lg px-3 transition-all duration-200"
+										className="hover:bg-accent hover:text-accent-foreground h-9 rounded-sm px-3 transition-all duration-200"
 									>
 										<a href={item.url} target="_blank" rel="noopener noreferrer" className="group flex w-full items-center justify-between">
 											<div className="flex items-center space-x-3">

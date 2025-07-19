@@ -1,17 +1,17 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
 import { CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
-import { AlertTriangle, Loader2 } from 'lucide-react'
-import { CoreConfig } from '@/lib/types/config'
 import { apiService } from '@/lib/api'
-import { toast } from 'sonner'
+import { CoreConfig } from '@/lib/types/config'
+import { parseArrayFromText } from '@/lib/utils/array'
 import { Separator } from '@radix-ui/react-separator'
+import { AlertTriangle, Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { Alert, AlertDescription } from '../ui/alert'
 import { Input } from '../ui/input'
 import { Textarea } from '../ui/textarea'
-import { parseArrayFromText } from '@/lib/utils/array'
 
 export default function CoreSettingsList() {
   const [config, setConfig] = useState<CoreConfig>({
@@ -146,7 +146,7 @@ export default function CoreSettingsList() {
       </CardHeader>
       <div className="space-y-6">
         {/* Drop Excess Requests */}
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label htmlFor="drop-excess-requests" className="text-sm font-medium">
               Drop Excess Requests
@@ -170,7 +170,7 @@ export default function CoreSettingsList() {
           </AlertDescription>
         </Alert>
 
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label htmlFor="initial-pool-size" className="text-sm font-medium">
               Initial Pool Size
@@ -187,7 +187,7 @@ export default function CoreSettingsList() {
           />
         </div>
 
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label htmlFor="enable-logging" className="text-sm font-medium">
               Enable Logs
@@ -203,7 +203,7 @@ export default function CoreSettingsList() {
           />
         </div>
 
-        <div className="space-y-2 rounded-lg border p-4">
+        <div className="space-y-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label htmlFor="prometheus-labels" className="text-sm font-medium">
               Prometheus Labels
