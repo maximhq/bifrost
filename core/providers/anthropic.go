@@ -1269,22 +1269,7 @@ func handleAnthropicStreaming(
 
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerType, err))
-
-			// Send scanner error through channel
-			errorResponse := &schemas.BifrostStream{
-				BifrostError: &schemas.BifrostError{
-					IsBifrostError: true,
-					Error: schemas.ErrorField{
-						Message: "Error reading stream",
-						Error:   err,
-					},
-				},
-			}
-
-			select {
-			case responseChan <- errorResponse:
-			case <-ctx.Done():
-			}
+			ProcessAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 

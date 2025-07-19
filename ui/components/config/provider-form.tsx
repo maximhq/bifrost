@@ -741,6 +741,16 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                   {/* Network Tab */}
                   {selectedTab === 'network' && (
                     <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-6 duration-300">
+                      {provider && (
+                        <Alert>
+                          <AlertTriangle className="h-4 w-4" />
+                          <AlertDescription>
+                            The settings below require a Bifrost service restart to take effect. Current connections will continue with
+                            existing settings until restart.
+                          </AlertDescription>
+                        </Alert>
+                      )}
+
                       {/* Network Configuration */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2">
