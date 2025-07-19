@@ -17,11 +17,17 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// WebSocketClient represents a connected WebSocket client with its own mutex
+type WebSocketClient struct {
+	conn *websocket.Conn
+	mu   sync.Mutex // Per-connection mutex for thread-safe writes
+}
+
 // WebSocketHandler manages WebSocket connections for real-time updates
 type WebSocketHandler struct {
 	logManager logging.LogManager
 	logger     schemas.Logger
-	clients    map[*websocket.Conn]bool
+	clients    map[*websocket.Conn]*WebSocketClient
 	mu         sync.RWMutex
 	stopChan   chan struct{} // Channel to signal heartbeat goroutine to stop
 	done       chan struct{} // Channel to signal when heartbeat goroutine has stopped
@@ -32,7 +38,7 @@ func NewWebSocketHandler(logManager logging.LogManager, logger schemas.Logger) *
 	return &WebSocketHandler{
 		logManager: logManager,
 		logger:     logger,
-		clients:    make(map[*websocket.Conn]bool),
+		clients:    make(map[*websocket.Conn]*WebSocketClient),
 		stopChan:   make(chan struct{}),
 		done:       make(chan struct{}),
 	}
@@ -83,9 +89,14 @@ func isLocalhost(host string) bool {
 // HandleLogStream handles WebSocket connections for real-time log streaming
 func (h *WebSocketHandler) HandleLogStream(ctx *fasthttp.RequestCtx) {
 	err := upgrader.Upgrade(ctx, func(ws *websocket.Conn) {
+		// Create a new client with its own mutex
+		client := &WebSocketClient{
+			conn: ws,
+		}
+
 		// Register new client
 		h.mu.Lock()
-		h.clients[ws] = true
+		h.clients[ws] = client
 		h.mu.Unlock()
 
 		// Clean up on disconnect
@@ -123,8 +134,37 @@ func (h *WebSocketHandler) HandleLogStream(ctx *fasthttp.RequestCtx) {
 	}
 }
 
+// sendMessageSafely sends a message to a client with proper locking and error handling
+func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageType int, data []byte) error {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	// Set a write deadline to prevent hanging connections
+	client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	defer client.conn.SetWriteDeadline(time.Time{}) // Clear the deadline
+
+	err := client.conn.WriteMessage(messageType, data)
+	if err != nil {
+		// Remove the client from the map if write fails
+		go func() {
+			h.mu.Lock()
+			delete(h.clients, client.conn)
+			h.mu.Unlock()
+			client.conn.Close()
+		}()
+	}
+	return err
+}
+
 // BroadcastLogUpdate sends a log update to all connected WebSocket clients
 func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logging.LogEntry) {
+	// Add panic recovery to prevent server crashes
+	defer func() {
+		if r := recover(); r != nil {
+			h.logger.Error(fmt.Errorf("panic in BroadcastLogUpdate: %v", r))
+		}
+	}()
+
 	// Determine operation type based on log status and timestamp
 	operationType := "update"
 	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
@@ -147,14 +187,18 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logging.LogEntry) {
 		return
 	}
 
+	// Get a snapshot of clients to avoid holding the lock during writes
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	clients := make([]*WebSocketClient, 0, len(h.clients))
+	for _, client := range h.clients {
+		clients = append(clients, client)
+	}
+	h.mu.RUnlock()
 
-	for client := range h.clients {
-		err := client.WriteMessage(websocket.TextMessage, data)
-		if err != nil {
+	// Send message to each client safely
+	for _, client := range clients {
+		if err := h.sendMessageSafely(client, websocket.TextMessage, data); err != nil {
 			h.logger.Error(fmt.Errorf("failed to send message to client: %v", err))
-			continue
 		}
 	}
 }
@@ -171,14 +215,20 @@ func (h *WebSocketHandler) StartHeartbeat() {
 		for {
 			select {
 			case <-ticker.C:
+				// Get a snapshot of clients to avoid holding the lock during writes
 				h.mu.RLock()
-				for client := range h.clients {
-					err := client.WriteMessage(websocket.PingMessage, nil)
-					if err != nil {
+				clients := make([]*WebSocketClient, 0, len(h.clients))
+				for _, client := range h.clients {
+					clients = append(clients, client)
+				}
+				h.mu.RUnlock()
+
+				// Send heartbeat to each client safely
+				for _, client := range clients {
+					if err := h.sendMessageSafely(client, websocket.PingMessage, nil); err != nil {
 						h.logger.Error(fmt.Errorf("failed to send heartbeat: %v", err))
 					}
 				}
-				h.mu.RUnlock()
 			case <-h.stopChan:
 				return
 			}
@@ -193,9 +243,9 @@ func (h *WebSocketHandler) Stop() {
 
 	// Close all client connections
 	h.mu.Lock()
-	for client := range h.clients {
-		client.Close()
+	for _, client := range h.clients {
+		client.conn.Close()
 	}
-	h.clients = make(map[*websocket.Conn]bool)
+	h.clients = make(map[*websocket.Conn]*WebSocketClient)
 	h.mu.Unlock()
 }

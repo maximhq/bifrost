@@ -13,22 +13,20 @@ import (
 )
 
 // ConfigHandler manages runtime configuration updates for Bifrost.
-// It provides an endpoint to hot-reload settings from the configuration file.
+// It provides endpoints to update and retrieve settings persisted via the ConfigStore backed by sql database.
 type ConfigHandler struct {
-	client     *bifrost.Bifrost
-	logger     schemas.Logger
-	store      *lib.ConfigStore
-	configPath string
+	client *bifrost.Bifrost
+	logger schemas.Logger
+	store  *lib.ConfigStore
 }
 
 // NewConfigHandler creates a new handler for configuration management.
-// It requires the Bifrost client, a logger, and the path to the config file to be reloaded.
-func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.ConfigStore, configPath string) *ConfigHandler {
+// It requires the Bifrost client, a logger, and the config store.
+func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.ConfigStore) *ConfigHandler {
 	return &ConfigHandler{
-		client:     client,
-		logger:     logger,
-		store:      store,
-		configPath: configPath,
+		client: client,
+		logger: logger,
+		store:  store,
 	}
 }
 

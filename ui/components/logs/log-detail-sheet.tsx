@@ -3,13 +3,14 @@
 import { Badge } from '@/components/ui/badge'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { LogEntry } from '@/lib/types/logs'
-import { DollarSign, FileText, Timer } from 'lucide-react'
+import { DollarSign, FileText, Info, Timer } from 'lucide-react'
 import LogEntryDetailsView from './ui/log-entry-details-view'
 import moment from 'moment'
 import { DottedSeparator } from '@/components/ui/separator'
 import { PROVIDER_LABELS, Provider, Status, STATUS_COLORS, REQUEST_TYPE_LABELS, REQUEST_TYPE_COLORS } from '@/lib/constants/logs'
 import { CodeEditor } from './ui/code-editor'
 import LogMessageView from './ui/log-message-view'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import SpeechView from './ui/speech-view'
 import TranscriptionView from './ui/transcription-view'
 
@@ -203,7 +204,22 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
           <>
             {log.output_message && (
               <>
-                <div className="mt-4 w-full text-center text-sm font-medium">Response</div>
+                <div className="mt-4 flex w-full items-center justify-center gap-2">
+                  <div className="text-sm font-medium">Response</div>
+                  {log.stream && (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="h-4 w-4 text-gray-600" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          The response shown may appear incomplete or out of order due to the way streamed data is accumulated for real-time
+                          display.
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                </div>
                 <LogMessageView message={log.output_message} />
               </>
             )}
