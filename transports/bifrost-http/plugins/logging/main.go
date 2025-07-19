@@ -1,21 +1,17 @@
-// Package logging provides a SQLite-based logging plugin for Bifrost.
+// Package logging provides a GORM-based logging plugin for Bifrost.
 // This plugin stores comprehensive logs of all requests and responses with search,
 // filter, and pagination capabilities.
 package logging
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/maximhq/bifrost/core/schemas"
+	"gorm.io/gorm"
 )
 
 const (
@@ -80,26 +76,6 @@ type InitialLogData struct {
 	Tools        *[]schemas.Tool
 }
 
-// LogEntry represents a complete log entry for a request/response cycle
-type LogEntry struct {
-	ID            string                   `json:"id"`
-	Timestamp     time.Time                `json:"timestamp"`
-	Object        string                   `json:"object"` // text.completion, chat.completion, or embedding
-	Provider      string                   `json:"provider"`
-	Model         string                   `json:"model"`
-	InputHistory  []schemas.BifrostMessage `json:"input_history,omitempty"`
-	OutputMessage *schemas.BifrostMessage  `json:"output_message,omitempty"`
-	Params        *schemas.ModelParameters `json:"params,omitempty"`
-	Tools         *[]schemas.Tool          `json:"tools,omitempty"`
-	ToolCalls     *[]schemas.ToolCall      `json:"tool_calls,omitempty"`
-	Latency       *float64                 `json:"latency,omitempty"`
-	TokenUsage    *schemas.LLMUsage        `json:"token_usage,omitempty"`
-	Status        string                   `json:"status"` // "processing", "success", or "error"
-	ErrorDetails  *schemas.BifrostError    `json:"error_details,omitempty"`
-	Stream        bool                     `json:"stream"` // true if this was a streaming response
-	CreatedAt     time.Time                `json:"created_at"`
-}
-
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
 	Providers     []string   `json:"providers,omitempty"`
@@ -135,19 +111,12 @@ type SearchResult struct {
 	} `json:"stats"`
 }
 
-// Config represents the configuration for the logging plugin
-type Config struct {
-	DatabasePath string `json:"database_path"`
-	// SQLite memory optimization is now handled via connection string parameters
-}
-
 // LogCallback is a function that gets called when a new log entry is created
 type LogCallback func(*LogEntry)
 
 // LoggerPlugin implements the schemas.Plugin interface
 type LoggerPlugin struct {
-	config          *Config
-	db              *sql.DB
+	db              *gorm.DB
 	mu              sync.Mutex
 	done            chan struct{}
 	wg              sync.WaitGroup
@@ -160,40 +129,13 @@ type LoggerPlugin struct {
 	streamDataPool  sync.Pool    // Pool for reusing StreamUpdateData structs
 }
 
-// NewLoggerPlugin creates a new logging plugin
-func NewLoggerPlugin(config *Config, logger schemas.Logger) (*LoggerPlugin, error) {
-	if config == nil {
-		config = &Config{
-			DatabasePath: "./bifrost-logs.db",
-		}
-	}
-
-	// Handle legacy database path (if it was a directory for BadgerDB)
-	dbPath := config.DatabasePath
-	if !strings.HasSuffix(dbPath, ".db") {
-		dbPath = filepath.Join(dbPath, "logs.db")
-	}
-
-	// Ensure the directory exists
-	dbDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create database directory %s: %w", dbDir, err)
-	}
-
-	// Open SQLite with optimized settings for low memory usage
-	db, err := sql.Open("sqlite3", dbPath+"?cache=shared&_journal_mode=WAL&_synchronous=NORMAL&_auto_vacuum=incremental&_page_size=4096&_temp_store=FILE&_mmap_size=0")
-	if err != nil {
-		return nil, fmt.Errorf("failed to open SQLite database at %s: %w", dbPath, err)
-	}
-
-	// Test the connection
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping SQLite database: %w", err)
+// NewLoggerPlugin creates a new logging plugin with GORM database
+func NewLoggerPlugin(db *gorm.DB, logger schemas.Logger) (*LoggerPlugin, error) {
+	if db == nil {
+		return nil, fmt.Errorf("GORM database connection cannot be nil")
 	}
 
 	plugin := &LoggerPlugin{
-		config: config,
 		db:     db,
 		done:   make(chan struct{}),
 		logger: logger,
@@ -221,10 +163,9 @@ func NewLoggerPlugin(config *Config, logger schemas.Logger) (*LoggerPlugin, erro
 		plugin.streamDataPool.Put(&StreamUpdateData{})
 	}
 
-	// Create tables and indexes
-	if err := plugin.createTables(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to create tables: %w", err)
+	// Auto-migrate tables
+	if err := plugin.autoMigrate(); err != nil {
+		return nil, fmt.Errorf("failed to auto-migrate tables: %w", err)
 	}
 
 	// Start cleanup ticker (runs every 30 seconds)
@@ -235,129 +176,17 @@ func NewLoggerPlugin(config *Config, logger schemas.Logger) (*LoggerPlugin, erro
 	return plugin, nil
 }
 
-// createTables creates the SQLite tables and indexes
-func (p *LoggerPlugin) createTables() error {
-	// Main logs table with updated schema
-	createTable := `
-	CREATE TABLE IF NOT EXISTS logs (
-		id TEXT PRIMARY KEY,
-		timestamp INTEGER,
-		provider TEXT NOT NULL,
-		model TEXT NOT NULL,
-		object_type TEXT NOT NULL,
-		status TEXT NOT NULL,
-		latency REAL,
-		prompt_tokens INTEGER,
-		completion_tokens INTEGER,
-		total_tokens INTEGER,
-		
-		-- Store complex fields as JSON
-		input_history TEXT,
-		output_message TEXT,
-		tools TEXT,
-		tool_calls TEXT,
-		params TEXT,
-		error_details TEXT,
-		
-		-- For content search
-		content_summary TEXT,
-		
-		-- Stream indicator
-		stream BOOLEAN DEFAULT FALSE,
-		
-		-- Timestamps for tracking
-		created_at INTEGER NOT NULL
-	)`
-
-	if _, err := p.db.Exec(createTable); err != nil {
-		return fmt.Errorf("failed to create logs table: %w", err)
+// autoMigrate creates/updates the database tables using GORM
+func (p *LoggerPlugin) autoMigrate() error {
+	// First migrate the main table
+	if err := p.db.AutoMigrate(&LogEntry{}); err != nil {
+		return err
 	}
 
-	// Check if we need to add the new columns to existing table
-	if err := p.migrateTableSchema(); err != nil {
-		return fmt.Errorf("failed to migrate table schema: %w", err)
-	}
-
-	// Create indexes for fast filtering
-	indexes := []string{
-		"CREATE INDEX IF NOT EXISTS idx_timestamp ON logs(timestamp)",
-		"CREATE INDEX IF NOT EXISTS idx_provider ON logs(provider)",
-		"CREATE INDEX IF NOT EXISTS idx_model ON logs(model)",
-		"CREATE INDEX IF NOT EXISTS idx_object_type ON logs(object_type)",
-		"CREATE INDEX IF NOT EXISTS idx_status ON logs(status)",
-		"CREATE INDEX IF NOT EXISTS idx_created_at ON logs(created_at)",
-	}
-
-	for _, index := range indexes {
-		if _, err := p.db.Exec(index); err != nil {
-			return fmt.Errorf("failed to create index: %w", err)
-		}
-	}
-
-	// Check if FTS5 is available
-	var ftsAvailable bool
-	err := p.db.QueryRow("SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'").Scan(&ftsAvailable)
-	if err != nil {
-		p.logger.Debug("FTS5 not available for logging, falling back to regular search")
-	} else {
-		createFTS := `
-			CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
-				id, content_summary, content='logs', content_rowid='rowid'
-			)`
-
-		if _, err := p.db.Exec(createFTS); err != nil {
-			p.logger.Warn(fmt.Sprintf("Failed to create FTS table, falling back to LIKE search: %v", err))
-		} else {
-			// Create triggers to keep FTS table in sync
-			triggers := []string{
-				`CREATE TRIGGER IF NOT EXISTS logs_fts_insert AFTER INSERT ON logs BEGIN
-						INSERT INTO logs_fts(id, content_summary) VALUES (new.id, new.content_summary);
-					END`,
-				`CREATE TRIGGER IF NOT EXISTS logs_fts_update AFTER UPDATE ON logs BEGIN
-						UPDATE logs_fts SET content_summary = new.content_summary WHERE id = new.id;
-					END`,
-				`CREATE TRIGGER IF NOT EXISTS logs_fts_delete AFTER DELETE ON logs BEGIN
-						DELETE FROM logs_fts WHERE id = old.id;
-					END`,
-			}
-
-			for _, trigger := range triggers {
-				if _, err := p.db.Exec(trigger); err != nil {
-					p.logger.Warn(fmt.Sprintf("Failed to create FTS trigger: %v", err))
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-// migrateTableSchema adds new columns if they don't exist
-func (p *LoggerPlugin) migrateTableSchema() error {
-	// Check if created_at column exists
-	var columnExists bool
-	err := p.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('logs') WHERE name = 'created_at'").Scan(&columnExists)
-	if err != nil {
-		return fmt.Errorf("failed to check for created_at column: %w", err)
-	}
-
-	if !columnExists {
-		if _, err := p.db.Exec("ALTER TABLE logs ADD COLUMN created_at INTEGER DEFAULT 0"); err != nil {
-			return fmt.Errorf("failed to add created_at column: %w", err)
-		}
-	}
-
-	// Check if stream column exists
-	columnExists = false
-	err = p.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('logs') WHERE name = 'stream'").Scan(&columnExists)
-	if err != nil {
-		return fmt.Errorf("failed to check for stream column: %w", err)
-	}
-
-	if !columnExists {
-		if _, err := p.db.Exec("ALTER TABLE logs ADD COLUMN stream BOOLEAN DEFAULT FALSE"); err != nil {
-			return fmt.Errorf("failed to add stream column: %w", err)
-		}
+	// Try to create FTS table for enhanced search (SQLite specific, will fail gracefully on other databases)
+	if err := p.createFTSTable(); err != nil {
+		// Log warning but don't fail - FTS is optional enhancement
+		p.logger.Debug(fmt.Sprintf("FTS table creation failed (this is normal for non-SQLite databases): %v", err))
 	}
 
 	return nil
@@ -378,22 +207,21 @@ func (p *LoggerPlugin) cleanupWorker() {
 	}
 }
 
-// cleanupOldProcessingLogs removes processing logs older than 1 minute
+// cleanupOldProcessingLogs removes processing logs older than 5 minutes
 func (p *LoggerPlugin) cleanupOldProcessingLogs() {
-	// Calculate timestamp for 1 minute ago
-	oneMinuteAgo := time.Now().Add(-1 * time.Minute).UnixNano()
+	// Calculate timestamp for 5 minutes ago
+	fiveMinutesAgo := time.Now().Add(-1 * 5 * time.Minute)
 
-	// Delete processing logs older than 1 minute
-	query := `DELETE FROM logs WHERE status = 'processing' AND created_at < ?`
-	result, err := p.db.Exec(query, oneMinuteAgo)
-	if err != nil {
-		p.logger.Error(fmt.Errorf("failed to cleanup old processing logs: %w", err))
+	// Delete processing logs older than 5 minutes using GORM
+	result := p.db.Where("status = ? AND created_at < ?", "processing", fiveMinutesAgo).Delete(&LogEntry{})
+	if result.Error != nil {
+		p.logger.Error(fmt.Errorf("failed to cleanup old processing logs: %w", result.Error))
 		return
 	}
 
 	// Log the cleanup activity
-	if rowsAffected, err := result.RowsAffected(); err == nil && rowsAffected > 0 {
-		p.logger.Debug(fmt.Sprintf("Cleaned up %d old processing logs", rowsAffected))
+	if result.RowsAffected > 0 {
+		p.logger.Debug(fmt.Sprintf("Cleaned up %d old processing logs", result.RowsAffected))
 	}
 }
 
@@ -516,17 +344,17 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 			p.mu.Lock()
 			if p.logCallback != nil {
 				initialEntry := &LogEntry{
-					ID:           logMsg.RequestID,
-					Timestamp:    logMsg.Timestamp,
-					Object:       logMsg.InitialData.Object,
-					Provider:     logMsg.InitialData.Provider,
-					Model:        logMsg.InitialData.Model,
-					InputHistory: logMsg.InitialData.InputHistory,
-					Params:       logMsg.InitialData.Params,
-					Tools:        logMsg.InitialData.Tools,
-					Status:       "processing",
-					Stream:       false, // Initially false, will be updated if streaming
-					CreatedAt:    logMsg.Timestamp,
+					ID:                 logMsg.RequestID,
+					Timestamp:          logMsg.Timestamp,
+					Object:             logMsg.InitialData.Object,
+					Provider:           logMsg.InitialData.Provider,
+					Model:              logMsg.InitialData.Model,
+					InputHistoryParsed: logMsg.InitialData.InputHistory,
+					ParamsParsed:       logMsg.InitialData.Params,
+					ToolsParsed:        logMsg.InitialData.Tools,
+					Status:             "processing",
+					Stream:             false, // Initially false, will be updated if streaming
+					CreatedAt:          logMsg.Timestamp,
 				}
 				p.logCallback(initialEntry)
 			}
@@ -567,7 +395,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	logMsg.RequestID = requestID
 	logMsg.Timestamp = time.Now()
 
-	if isStreaming {
+	if isStreaming { // NOTE: in case where stream ends with error, isStreaming is false because there is no way to know that the error is from the stream.
 		// Handle streaming response with lightweight async pattern
 		logMsg.Operation = LogOperationStreamUpdate
 
@@ -717,9 +545,41 @@ func (p *LoggerPlugin) Cleanup() error {
 	// Wait for the background worker to finish processing remaining items
 	p.wg.Wait()
 
-	// Close the database
-	if p.db != nil {
-		return p.db.Close()
-	}
+	// GORM handles connection cleanup automatically
 	return nil
+}
+
+// Helper methods
+
+// determineObjectType determines the object type from request input
+func (p *LoggerPlugin) determineObjectType(input schemas.RequestInput) string {
+	if input.ChatCompletionInput != nil {
+		return "chat.completion"
+	}
+	if input.TextCompletionInput != nil {
+		return "text.completion"
+	}
+	if input.EmbeddingInput != nil {
+		return "embedding"
+	}
+	return "unknown"
+}
+
+// extractInputHistory extracts input history from request input
+func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas.BifrostMessage {
+	if input.ChatCompletionInput != nil {
+		return *input.ChatCompletionInput
+	}
+	if input.TextCompletionInput != nil {
+		// Convert text completion to message format
+		return []schemas.BifrostMessage{
+			{
+				Role: schemas.ModelChatMessageRoleUser,
+				Content: schemas.MessageContent{
+					ContentStr: input.TextCompletionInput,
+				},
+			},
+		}
+	}
+	return []schemas.BifrostMessage{}
 }

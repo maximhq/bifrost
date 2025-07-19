@@ -4,6 +4,7 @@ package lib
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -13,25 +14,25 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/meta"
+	"gorm.io/gorm"
 )
 
 // ConfigStore represents a high-performance in-memory configuration store for Bifrost.
-// It provides thread-safe access to provider configurations with the ability to
-// persist changes back to the original JSON configuration file.
+// It provides thread-safe access to provider configurations with database persistence.
 //
 // Features:
 //   - Pure in-memory storage for ultra-fast access
 //   - Environment variable processing for API keys and key-level configurations
 //   - Thread-safe operations with read-write mutexes
 //   - Real-time configuration updates via HTTP API
-//   - Explicit persistence control via WriteConfigToFile()
+//   - Automatic database persistence for all changes
 //   - Support for provider-specific key configurations (Azure, Vertex) and meta configurations (Bedrock)
 type ConfigStore struct {
-	mu         sync.RWMutex
-	muMCP      sync.RWMutex
-	logger     schemas.Logger
-	configPath string // Path to the original JSON config file
-	client     *bifrost.Bifrost
+	mu     sync.RWMutex
+	muMCP  sync.RWMutex
+	logger schemas.Logger
+	db     *gorm.DB // GORM database connection
+	client *bifrost.Bifrost
 
 	// In-memory storage
 	ClientConfig ClientConfig
@@ -58,197 +59,203 @@ var DefaultClientConfig = ClientConfig{
 	EnableLogging:      true,
 }
 
-// NewConfigStore creates a new in-memory configuration store instance.
-func NewConfigStore(logger schemas.Logger) (*ConfigStore, error) {
-	return &ConfigStore{
+// NewConfigStore creates a new in-memory configuration store instance with database connection.
+func NewConfigStore(logger schemas.Logger, db *gorm.DB) (*ConfigStore, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database connection cannot be nil")
+	}
+
+	store := &ConfigStore{
 		logger:    logger,
+		db:        db,
 		Providers: make(map[schemas.ModelProvider]ProviderConfig),
 		EnvKeys:   make(map[string][]EnvKeyInfo),
-	}, nil
+	}
+
+	// Auto-migrate database tables
+	if err := store.autoMigrate(); err != nil {
+		return nil, fmt.Errorf("failed to auto-migrate tables: %w", err)
+	}
+
+	return store, nil
 }
 
-// LoadFromConfig loads initial configuration from a JSON config file into memory
+// autoMigrate creates/updates the database tables using GORM
+func (s *ConfigStore) autoMigrate() error {
+	return s.db.AutoMigrate(
+		&DBProvider{},
+		&DBKey{},
+		&DBMCPClient{},
+		&DBClientConfig{},
+		&DBEnvKey{},
+	)
+}
+
+// LoadFromDatabase loads initial configuration from the database into memory
 // with full preprocessing including environment variable resolution and key config parsing.
 // All processing is done upfront to ensure zero latency when retrieving data.
 //
-// If the config file doesn't exist, the system starts with default configuration
+// If no configuration exists in the database, the system starts with default configuration
 // and users can add providers dynamically via the HTTP API.
 //
 // This method handles:
-//   - JSON config file parsing
+//   - Database configuration loading
 //   - Environment variable substitution for API keys (env.VARIABLE_NAME)
 //   - Key-level config processing for Azure and Vertex (Endpoint, APIVersion, ProjectID, Region, AuthCredentials)
 //   - Provider-specific meta config processing (Bedrock only)
-//   - Case conversion for provider names (e.g., "OpenAI" -> "openai")
 //   - In-memory storage for ultra-fast access during request processing
-//   - Graceful handling of missing config files
-func (s *ConfigStore) LoadFromConfig(configPath string) error {
+//   - Auto-detection of providers from environment variables if database is empty
+func (s *ConfigStore) LoadFromDatabase() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.configPath = configPath
-	s.logger.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
+	s.logger.Info("Loading configuration from database")
 
-	// Check if config file exists
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			s.logger.Info(fmt.Sprintf("Config file %s not found, starting with default configuration. Providers can be added dynamically via UI.", configPath))
-
-			// Initialize with default configuration
-			s.ClientConfig = DefaultClientConfig
-			s.Providers = make(map[schemas.ModelProvider]ProviderConfig)
-			s.MCPConfig = nil
-
-			// Auto-detect and configure providers from common environment variables
-			s.autoDetectProviders()
-
-			s.logger.Info("Successfully initialized with default configuration.")
-			return nil
-		}
-		return fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	// Parse the JSON directly
-	var configData struct {
-		Client    json.RawMessage            `json:"client"`
-		Providers map[string]json.RawMessage `json:"providers"`
-		MCP       json.RawMessage            `json:"mcp,omitempty"`
-	}
-
-	if err := json.Unmarshal(data, &configData); err != nil {
-		return fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	// Process core configuration if present, otherwise use defaults
-	if len(configData.Client) > 0 {
-		var clientConfig ClientConfig
-		if err := json.Unmarshal(configData.Client, &clientConfig); err != nil {
-			return fmt.Errorf("failed to unmarshal client config: %w", err)
-		}
-		s.ClientConfig = clientConfig
-	} else {
+	// Load client configuration
+	if err := s.loadClientConfigFromDB(); err != nil {
+		s.logger.Warn(fmt.Sprintf("Failed to load client config from database, using defaults: %v", err))
 		s.ClientConfig = DefaultClientConfig
 	}
 
-	// Process provider configurations
-	processedProviders := make(map[schemas.ModelProvider]ProviderConfig)
-
-	if len(configData.Providers) > 0 {
-		// First unmarshal providers into a map with string keys to handle case conversion
-		var rawProviders map[string]ProviderConfig
-		if providersBytes, err := json.Marshal(configData.Providers); err != nil {
-			return fmt.Errorf("failed to marshal providers: %w", err)
-		} else if err := json.Unmarshal(providersBytes, &rawProviders); err != nil {
-			return fmt.Errorf("failed to unmarshal providers: %w", err)
-		}
-
-		// Create a temporary structure to unmarshal the full JSON with proper meta configs
-		var tempConfig struct {
-			Providers map[string]struct {
-				MetaConfig json.RawMessage `json:"meta_config"`
-			} `json:"providers"`
-		}
-
-		if err := json.Unmarshal(data, &tempConfig); err != nil {
-			return fmt.Errorf("failed to unmarshal configuration file: %w", err)
-		}
-
-		// Process each provider configuration
-		for rawProviderName, cfg := range rawProviders {
-			newEnvKeys := make(map[string]struct{})
-
-			provider := schemas.ModelProvider(strings.ToLower(rawProviderName))
-
-			// Process meta config if it exists
-			if tempProvider, exists := tempConfig.Providers[rawProviderName]; exists && len(tempProvider.MetaConfig) > 0 {
-				processedMetaConfig, envKeys, err := s.processMetaConfigEnvVars(tempProvider.MetaConfig, provider)
-
-				if err != nil {
-					s.cleanupEnvKeys(string(provider), "", envKeys)
-					s.logger.Warn(fmt.Sprintf("failed to process env vars in meta config for %s: %v", provider, err))
-					continue
-				}
-
-				// Parse and set the meta config
-				metaConfig, err := s.parseMetaConfig(processedMetaConfig, provider)
-				if err != nil {
-					s.cleanupEnvKeys(string(provider), "", envKeys)
-					s.logger.Warn(fmt.Sprintf("failed to process meta config for %s: %v", provider, err))
-					continue
-				} else {
-					cfg.MetaConfig = metaConfig
-				}
-			}
-
-			// Process environment variables in keys (including key-level configs)
-			for i, key := range cfg.Keys {
-				if key.ID == "" {
-					cfg.Keys[i].ID = uuid.NewString()
-				}
-
-				// Process API key value
-				processedValue, envVar, err := s.processEnvValue(key.Value)
-				if err != nil {
-					s.cleanupEnvKeys(string(provider), "", newEnvKeys)
-					s.logger.Warn(fmt.Sprintf("failed to process env vars in keys for %s: %v", provider, err))
-					continue
-				}
-				cfg.Keys[i].Value = processedValue
-
-				// Track environment key if it came from env
-				if envVar != "" {
-					newEnvKeys[envVar] = struct{}{}
-					s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
-						EnvVar:     envVar,
-						Provider:   string(provider),
-						KeyType:    "api_key",
-						ConfigPath: fmt.Sprintf("providers.%s.keys[%s]", provider, key.ID),
-						KeyID:      key.ID,
-					})
-				}
-
-				// Process Azure key config if present
-				if key.AzureKeyConfig != nil {
-					if err := s.processAzureKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
-						s.cleanupEnvKeys(string(provider), "", newEnvKeys)
-						s.logger.Warn(fmt.Sprintf("failed to process Azure key config env vars for %s: %v", provider, err))
-						continue
-					}
-				}
-
-				// Process Vertex key config if present
-				if key.VertexKeyConfig != nil {
-					if err := s.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
-						s.cleanupEnvKeys(string(provider), "", newEnvKeys)
-						s.logger.Warn(fmt.Sprintf("failed to process Vertex key config env vars for %s: %v", provider, err))
-						continue
-					}
-				}
-			}
-
-			processedProviders[provider] = cfg
-		}
-
-		// Store processed configurations in memory
-		s.Providers = processedProviders
-	} else {
+	// Load providers configuration
+	if err := s.loadProvidersFromDB(); err != nil {
+		s.logger.Warn(fmt.Sprintf("Failed to load providers from database: %v", err))
+		// Auto-detect providers if database load fails
 		s.autoDetectProviders()
 	}
 
-	// Parse MCP config if present
-	if len(configData.MCP) > 0 {
-		var mcpConfig schemas.MCPConfig
-		if err := json.Unmarshal(configData.MCP, &mcpConfig); err != nil {
-			s.logger.Warn(fmt.Sprintf("failed to parse MCP config: %v", err))
-		} else {
-			// Process environment variables in MCP config
-			s.MCPConfig = &mcpConfig
-			s.processMCPEnvVars()
+	// Load MCP configuration
+	if err := s.loadMCPFromDB(); err != nil {
+		s.logger.Warn(fmt.Sprintf("Failed to load MCP config from database: %v", err))
+		s.MCPConfig = nil
+	}
+
+	// Load environment variable tracking
+	if err := s.loadEnvKeysFromDB(); err != nil {
+		s.logger.Warn(fmt.Sprintf("Failed to load env keys from database: %v", err))
+		s.EnvKeys = make(map[string][]EnvKeyInfo)
+	}
+
+	s.logger.Info("Successfully loaded configuration from database.")
+	return nil
+}
+
+// loadClientConfigFromDB loads client configuration from database
+func (s *ConfigStore) loadClientConfigFromDB() error {
+	var dbConfig DBClientConfig
+	if err := s.db.First(&dbConfig).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// No client config in database, use defaults
+			s.ClientConfig = DefaultClientConfig
+			return nil
+		}
+		return err
+	}
+
+	s.ClientConfig = ClientConfig{
+		DropExcessRequests: dbConfig.DropExcessRequests,
+		PrometheusLabels:   dbConfig.PrometheusLabels,
+		InitialPoolSize:    dbConfig.InitialPoolSize,
+		EnableLogging:      dbConfig.EnableLogging,
+	}
+
+	return nil
+}
+
+// loadProvidersFromDB loads all providers and their keys from database
+func (s *ConfigStore) loadProvidersFromDB() error {
+	var dbProviders []DBProvider
+	if err := s.db.Preload("Keys").Find(&dbProviders).Error; err != nil {
+		return err
+	}
+
+	if len(dbProviders) == 0 {
+		// No providers in database, auto-detect from environment
+		s.autoDetectProviders()
+		return nil
+	}
+
+	processedProviders := make(map[schemas.ModelProvider]ProviderConfig)
+
+	for _, dbProvider := range dbProviders {
+		provider := schemas.ModelProvider(dbProvider.Name)
+
+		// Convert database keys to schemas.Key
+		keys := make([]schemas.Key, len(dbProvider.Keys))
+		for i, dbKey := range dbProvider.Keys {
+			keys[i] = schemas.Key{
+				ID:              dbKey.KeyID,
+				Value:           dbKey.Value,
+				Models:          dbKey.Models,
+				Weight:          dbKey.Weight,
+				AzureKeyConfig:  dbKey.AzureKeyConfig,
+				VertexKeyConfig: dbKey.VertexKeyConfig,
+			}
+		}
+
+		providerConfig := ProviderConfig{
+			Keys:                     keys,
+			NetworkConfig:            dbProvider.NetworkConfig,
+			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
+			MetaConfig:               dbProvider.MetaConfig,
+		}
+
+		processedProviders[provider] = providerConfig
+	}
+
+	s.Providers = processedProviders
+	return nil
+}
+
+// loadMCPFromDB loads MCP configuration from database
+func (s *ConfigStore) loadMCPFromDB() error {
+	var dbClients []DBMCPClient
+	if err := s.db.Find(&dbClients).Error; err != nil {
+		return err
+	}
+
+	if len(dbClients) == 0 {
+		s.MCPConfig = nil
+		return nil
+	}
+
+	clientConfigs := make([]schemas.MCPClientConfig, len(dbClients))
+	for i, dbClient := range dbClients {
+		clientConfigs[i] = schemas.MCPClientConfig{
+			Name:             dbClient.Name,
+			ConnectionType:   schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString: dbClient.ConnectionString,
+			StdioConfig:      dbClient.StdioConfig,
+			ToolsToExecute:   dbClient.ToolsToExecute,
+			ToolsToSkip:      dbClient.ToolsToSkip,
 		}
 	}
 
-	s.logger.Info("Successfully loaded configuration.")
+	s.MCPConfig = &schemas.MCPConfig{
+		ClientConfigs: clientConfigs,
+	}
+
+	return nil
+}
+
+// loadEnvKeysFromDB loads environment variable tracking from database
+func (s *ConfigStore) loadEnvKeysFromDB() error {
+	var dbEnvKeys []DBEnvKey
+	if err := s.db.Find(&dbEnvKeys).Error; err != nil {
+		return err
+	}
+
+	s.EnvKeys = make(map[string][]EnvKeyInfo)
+	for _, dbEnvKey := range dbEnvKeys {
+		s.EnvKeys[dbEnvKey.EnvVar] = append(s.EnvKeys[dbEnvKey.EnvVar], EnvKeyInfo{
+			EnvVar:     dbEnvKey.EnvVar,
+			Provider:   dbEnvKey.Provider,
+			KeyType:    dbEnvKey.KeyType,
+			ConfigPath: dbEnvKey.ConfigPath,
+			KeyID:      dbEnvKey.KeyID,
+		})
+	}
+
 	return nil
 }
 
@@ -505,12 +512,158 @@ func (s *ConfigStore) restoreMetaConfigEnvVars(provider schemas.ModelProvider, m
 	}
 }
 
-// SaveConfig writes the current configuration back to the original config file path
+// SaveConfig writes the current configuration back to the database
 func (s *ConfigStore) SaveConfig() error {
-	if s.configPath == "" {
-		return fmt.Errorf("no config path set - use LoadFromConfig first")
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Save client config
+	if err := s.saveClientConfigToDB(); err != nil {
+		return fmt.Errorf("failed to save client config: %w", err)
 	}
-	return s.writeConfigToFile(s.configPath)
+
+	// Save providers
+	if err := s.saveProvidersToDB(); err != nil {
+		return fmt.Errorf("failed to save providers: %w", err)
+	}
+
+	// Save MCP config
+	if err := s.saveMCPToDB(); err != nil {
+		return fmt.Errorf("failed to save MCP config: %w", err)
+	}
+
+	// Save env keys
+	if err := s.saveEnvKeysToDB(); err != nil {
+		return fmt.Errorf("failed to save env keys: %w", err)
+	}
+
+	return nil
+}
+
+// saveClientConfigToDB saves client configuration to database
+func (s *ConfigStore) saveClientConfigToDB() error {
+	dbConfig := DBClientConfig{
+		DropExcessRequests: s.ClientConfig.DropExcessRequests,
+		InitialPoolSize:    s.ClientConfig.InitialPoolSize,
+		EnableLogging:      s.ClientConfig.EnableLogging,
+		PrometheusLabels:   s.ClientConfig.PrometheusLabels,
+	}
+
+	// Delete existing client config and create new one
+	if err := s.db.Where("1 = 1").Delete(&DBClientConfig{}).Error; err != nil {
+		return err
+	}
+
+	return s.db.Create(&dbConfig).Error
+}
+
+// saveProvidersToDB saves all providers and their keys to database
+func (s *ConfigStore) saveProvidersToDB() error {
+	// Delete existing providers and keys (cascade will handle keys)
+	if err := s.db.Where("1 = 1").Delete(&DBProvider{}).Error; err != nil {
+		return err
+	}
+
+	for providerName, providerConfig := range s.Providers {
+		dbProvider := DBProvider{
+			Name:                     string(providerName),
+			NetworkConfig:            providerConfig.NetworkConfig,
+			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
+			MetaConfig:               providerConfig.MetaConfig,
+		}
+
+		// Create provider first
+		if err := s.db.Create(&dbProvider).Error; err != nil {
+			return err
+		}
+
+		// Create keys for this provider
+		for _, key := range providerConfig.Keys {
+			dbKey := DBKey{
+				ProviderID:      dbProvider.ID,
+				KeyID:           key.ID,
+				Value:           key.Value,
+				Models:          key.Models,
+				Weight:          key.Weight,
+				AzureKeyConfig:  key.AzureKeyConfig,
+				VertexKeyConfig: key.VertexKeyConfig,
+			}
+
+			// Handle Azure config
+			if key.AzureKeyConfig != nil {
+				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
+			}
+
+			// Handle Vertex config
+			if key.VertexKeyConfig != nil {
+				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+				dbKey.VertexRegion = &key.VertexKeyConfig.Region
+				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			}
+
+			if err := s.db.Create(&dbKey).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// saveMCPToDB saves MCP configuration to database
+func (s *ConfigStore) saveMCPToDB() error {
+	// Delete existing MCP clients
+	if err := s.db.Where("1 = 1").Delete(&DBMCPClient{}).Error; err != nil {
+		return err
+	}
+
+	if s.MCPConfig == nil {
+		return nil
+	}
+
+	for _, clientConfig := range s.MCPConfig.ClientConfigs {
+		dbClient := DBMCPClient{
+			Name:             clientConfig.Name,
+			ConnectionType:   string(clientConfig.ConnectionType),
+			ConnectionString: clientConfig.ConnectionString,
+			StdioConfig:      clientConfig.StdioConfig,
+			ToolsToExecute:   clientConfig.ToolsToExecute,
+			ToolsToSkip:      clientConfig.ToolsToSkip,
+		}
+
+		if err := s.db.Create(&dbClient).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// saveEnvKeysToDB saves environment variable tracking to database
+func (s *ConfigStore) saveEnvKeysToDB() error {
+	// Delete existing env keys
+	if err := s.db.Where("1 = 1").Delete(&DBEnvKey{}).Error; err != nil {
+		return err
+	}
+
+	for envVar, infos := range s.EnvKeys {
+		for _, info := range infos {
+			dbEnvKey := DBEnvKey{
+				EnvVar:     envVar,
+				Provider:   info.Provider,
+				KeyType:    info.KeyType,
+				ConfigPath: info.ConfigPath,
+				KeyID:      info.KeyID,
+			}
+
+			if err := s.db.Create(&dbEnvKey).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // parseMetaConfig converts raw JSON to the appropriate provider-specific meta config interface

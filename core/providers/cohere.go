@@ -1015,6 +1015,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading Cohere stream: %v", err))
+			ProcessAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 

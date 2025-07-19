@@ -1711,6 +1711,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading Bedrock stream: %v", err))
+			ProcessAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 

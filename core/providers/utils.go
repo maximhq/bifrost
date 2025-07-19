@@ -611,3 +611,31 @@ func ProcessAndSendResponse(
 		return
 	}
 }
+
+func ProcessAndSendError(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	err error,
+	responseChan chan *schemas.BifrostStream,
+) {
+	// Send scanner error through channel
+	bifrostError :=
+		&schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: fmt.Sprintf("Error reading stream: %v", err),
+				Error:   err,
+			},
+		}
+
+	_, processedError := postHookRunner(&ctx, nil, bifrostError)
+
+	errorResponse := &schemas.BifrostStream{
+		BifrostError: processedError,
+	}
+
+	select {
+	case responseChan <- errorResponse:
+	case <-ctx.Done():
+	}
+}
