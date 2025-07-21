@@ -52,6 +52,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"bufio"
@@ -94,7 +95,13 @@ type ErrorConverter func(*schemas.BifrostError) interface{}
 // It takes a BifrostError and returns the streaming error format expected by the specific integration.
 type StreamErrorConverter func(*schemas.BifrostError) interface{}
 
-// PreRequestCallback is called before processing the request.
+// RequestParser is a function that handles custom request body parsing.
+// It replaces the default JSON parsing when configured (e.g., for multipart/form-data).
+// The parser should populate the provided request object from the fasthttp context.
+// If it returns an error, the request processing stops.
+type RequestParser func(ctx *fasthttp.RequestCtx, req interface{}) error
+
+// PreRequestCallback is called after parsing the request but before processing through Bifrost.
 // It can be used to modify the request object (e.g., extract model from URL parameters)
 // or perform validation. If it returns an error, the request processing stops.
 type PreRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}) error
@@ -135,11 +142,12 @@ type RouteConfig struct {
 	Path                   string              // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                 string              // HTTP method (POST, GET, PUT, DELETE)
 	GetRequestTypeInstance func() interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
+	RequestParser          RequestParser       // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter       RequestConverter    // Function to convert request to BifrostRequest (SHOULD NOT BE NIL)
 	ResponseConverter      ResponseConverter   // Function to convert BifrostResponse to integration format (SHOULD NOT BE NIL)
 	ErrorConverter         ErrorConverter      // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
 	StreamConfig           *StreamConfig       // Optional: Streaming configuration (if nil, streaming not supported)
-	PreCallback            PreRequestCallback  // Optional: called before request processing
+	PreCallback            PreRequestCallback  // Optional: called after parsing but before Bifrost processing
 	PostCallback           PostRequestCallback // Optional: called after request processing
 }
 
@@ -220,20 +228,29 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		method := string(ctx.Method())
 
+		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodDelete {
-			// Use ctx.Request.Body() instead of ctx.PostBody() to support all HTTP methods
-			body := ctx.Request.Body()
-			if len(body) > 0 {
-				if err := json.Unmarshal(body, req); err != nil {
-					g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
+			if config.RequestParser != nil {
+				// Use custom parser (e.g., for multipart/form-data)
+				if err := config.RequestParser(ctx, req); err != nil {
+					g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse request"))
 					return
+				}
+			} else {
+				// Use default JSON parsing
+				body := ctx.Request.Body()
+				if len(body) > 0 {
+					if err := json.Unmarshal(body, req); err != nil {
+						g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
+						return
+					}
 				}
 			}
 		}
 
 		// Execute pre-request callback if configured
 		// This is typically used for extracting data from URL parameters
-		// or performing request-specific validation
+		// or performing request validation after parsing
 		if config.PreCallback != nil {
 			if err := config.PreCallback(ctx, req); err != nil {
 				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute pre-request callback"))
@@ -275,7 +292,21 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 // handleNonStreamingRequest handles regular (non-streaming) requests
 func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
-	result, bifrostErr := g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
+	var result *schemas.BifrostResponse
+	var bifrostErr *schemas.BifrostError
+
+	// Handle different request types
+	if bifrostReq.Input.TextCompletionInput != nil {
+		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
+	} else if bifrostReq.Input.ChatCompletionInput != nil {
+		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
+	} else if bifrostReq.Input.SpeechInput != nil {
+		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq)
+	} else if bifrostReq.Input.TranscriptionInput != nil {
+		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq)
+	}
+
+	// Handle errors
 	if bifrostErr != nil {
 		g.sendError(ctx, config.ErrorConverter, bifrostErr)
 		return
@@ -301,6 +332,18 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to encode response"))
 		return
 	}
+
+	if result.Speech != nil {
+		responseBytes, ok := response.([]byte)
+		if ok {
+			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+			ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
+			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(responseBytes)))
+			ctx.Response.SetBody(responseBytes)
+			return
+		}
+	}
+
 	g.sendSuccess(ctx, config.ErrorConverter, response)
 }
 
@@ -312,8 +355,19 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	ctx.Response.Header.Set("Connection", "keep-alive")
 	ctx.Response.Header.Set("Access-Control-Allow-Origin", "*")
 
+	var stream chan *schemas.BifrostStream
+	var bifrostErr *schemas.BifrostError
+
+	// Handle different request types
+	if bifrostReq.Input.ChatCompletionInput != nil {
+		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq)
+	} else if bifrostReq.Input.SpeechInput != nil {
+		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq)
+	} else if bifrostReq.Input.TranscriptionInput != nil {
+		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq)
+	}
+
 	// Get the streaming channel from Bifrost
-	stream, bifrostErr := g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq)
 	if bifrostErr != nil {
 		// Send error in SSE format
 		g.sendStreamError(ctx, config, bifrostErr)

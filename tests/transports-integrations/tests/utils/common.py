@@ -849,6 +849,309 @@ class TestCategories:
     ERROR_HANDLING = "error_handling"
 
 
+# Speech and Transcription Test Data
+SPEECH_TEST_INPUT = "Hello, this is a test of the speech synthesis functionality. The quick brown fox jumps over the lazy dog."
+
+SPEECH_TEST_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+
+
+# Generate a simple test audio file (sine wave) for transcription testing
+def generate_test_audio() -> bytes:
+    """Generate a simple sine wave audio file for testing transcription"""
+    import wave
+    import math
+    import struct
+
+    # Audio parameters
+    sample_rate = 16000  # 16kHz sample rate
+    duration = 2  # 2 seconds
+    frequency = 440  # A4 note (440 Hz)
+
+    # Generate sine wave samples
+    samples = []
+    for i in range(int(sample_rate * duration)):
+        t = i / sample_rate
+        sample = int(32767 * math.sin(2 * math.pi * frequency * t))
+        samples.append(struct.pack("<h", sample))
+
+    # Create WAV file in memory
+    import io
+
+    wav_buffer = io.BytesIO()
+
+    with wave.open(wav_buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)  # Mono
+        wav_file.setsampwidth(2)  # 16-bit
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(samples))
+
+    wav_buffer.seek(0)
+    return wav_buffer.read()
+
+
+# Simple test audio content (very short WAV file header + minimal data)
+# This creates a valid but minimal WAV file for testing
+TEST_AUDIO_DATA = (
+    b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
+    b"\x00\x7d\x00\x00\x00\xfa\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+)
+
+# Speech and Transcription Test Messages/Inputs
+TRANSCRIPTION_TEST_INPUTS = [
+    {
+        "description": "Simple English audio",
+        "expected_keywords": ["hello", "test", "audio", "transcription"],
+    },
+    {
+        "description": "Long form content",
+        "expected_keywords": ["speech", "recognition", "technology", "accuracy"],
+    },
+]
+
+
+def assert_valid_speech_response(response: Any, expected_audio_size_min: int = 1000):
+    """Assert that a speech synthesis response is valid"""
+    assert response is not None, "Speech response should not be None"
+
+    # OpenAI returns binary audio data directly
+    if hasattr(response, "content"):
+        # Handle the response.content case (from requests)
+        audio_data = response.content
+    elif hasattr(response, "read"):
+        # Handle file-like objects
+        audio_data = response.read()
+    elif isinstance(response, bytes):
+        # Handle direct bytes
+        audio_data = response
+    else:
+        # Try to extract from response object
+        audio_data = getattr(response, "audio", None)
+        if audio_data is None:
+            # Try other common attributes
+            for attr in ["data", "body", "content"]:
+                if hasattr(response, attr):
+                    audio_data = getattr(response, attr)
+                    break
+
+    assert audio_data is not None, "Speech response should contain audio data"
+    assert isinstance(
+        audio_data, bytes
+    ), f"Audio data should be bytes, got {type(audio_data)}"
+    assert (
+        len(audio_data) >= expected_audio_size_min
+    ), f"Audio data should be at least {expected_audio_size_min} bytes, got {len(audio_data)}"
+
+    # Check for common audio file headers
+    # MP3 files start with 0xFF followed by 0xFB, 0xF3, 0xF2, or 0xF0 (MPEG frame sync)
+    # or with an ID3 tag
+    is_mp3 = (
+        audio_data.startswith(b"\xff\xfb")  # MPEG-1 Layer III
+        or audio_data.startswith(b"\xff\xf3")  # MPEG-2 Layer III
+        or audio_data.startswith(b"\xff\xf2")  # MPEG-2.5 Layer III
+        or audio_data.startswith(b"\xff\xf0")  # MPEG-2 Layer I/II
+        or audio_data.startswith(b"ID3")  # ID3 tag
+    )
+    is_wav = audio_data.startswith(b"RIFF") and b"WAVE" in audio_data[:20]
+    is_opus = audio_data.startswith(b"OggS")
+    is_aac = audio_data.startswith(b"\xff\xf1") or audio_data.startswith(b"\xff\xf9")
+    is_flac = audio_data.startswith(b"fLaC")
+
+    assert (
+        is_mp3 or is_wav or is_opus or is_aac or is_flac
+    ), f"Audio data should be in a recognized format (MP3, WAV, Opus, AAC, or FLAC) but got {audio_data[:100]}"
+
+
+def assert_valid_transcription_response(response: Any, min_text_length: int = 1):
+    """Assert that a transcription response is valid"""
+    assert response is not None, "Transcription response should not be None"
+
+    # Extract transcribed text from various response formats
+    text_content = ""
+
+    if hasattr(response, "text"):
+        # Direct text attribute
+        text_content = response.text
+    elif hasattr(response, "content"):
+        # JSON response with content
+        if isinstance(response.content, str):
+            text_content = response.content
+        elif isinstance(response.content, dict) and "text" in response.content:
+            text_content = response.content["text"]
+    elif isinstance(response, dict):
+        # Direct dictionary response
+        text_content = response.get("text", "")
+    elif isinstance(response, str):
+        # Direct string response
+        text_content = response
+
+    assert text_content is not None, "Transcription response should contain text"
+    assert isinstance(
+        text_content, str
+    ), f"Transcribed text should be string, got {type(text_content)}"
+    assert (
+        len(text_content.strip()) >= min_text_length
+    ), f"Transcribed text should be at least {min_text_length} characters, got: '{text_content}'"
+
+
+def assert_valid_streaming_speech_response(chunk: Any, integration: str):
+    """Assert that a streaming speech response chunk is valid"""
+    assert chunk is not None, "Streaming speech chunk should not be None"
+
+    if integration.lower() == "openai":
+        # For OpenAI, speech streaming returns audio chunks
+        # The chunk might be direct bytes or wrapped in an object
+        if hasattr(chunk, "audio"):
+            audio_data = chunk.audio
+        elif hasattr(chunk, "data"):
+            audio_data = chunk.data
+        elif isinstance(chunk, bytes):
+            audio_data = chunk
+        else:
+            # Try to find audio data in the chunk
+            audio_data = None
+            for attr in ["content", "chunk", "audio_chunk"]:
+                if hasattr(chunk, attr):
+                    audio_data = getattr(chunk, attr)
+                    break
+
+        if audio_data:
+            assert isinstance(
+                audio_data, bytes
+            ), f"Audio chunk should be bytes, got {type(audio_data)}"
+            assert len(audio_data) > 0, "Audio chunk should not be empty"
+
+
+def assert_valid_streaming_transcription_response(chunk: Any, integration: str):
+    """Assert that a streaming transcription response chunk is valid"""
+    assert chunk is not None, "Streaming transcription chunk should not be None"
+
+    if integration.lower() == "openai":
+        # For OpenAI, transcription streaming returns text chunks
+        if hasattr(chunk, "text"):
+            text_chunk = chunk.text
+        elif hasattr(chunk, "content"):
+            text_chunk = chunk.content
+        elif isinstance(chunk, str):
+            text_chunk = chunk
+        elif isinstance(chunk, dict) and "text" in chunk:
+            text_chunk = chunk["text"]
+        else:
+            # Try to find text data in the chunk
+            text_chunk = None
+            for attr in ["data", "chunk", "text_chunk"]:
+                if hasattr(chunk, attr):
+                    text_chunk = getattr(chunk, attr)
+                    break
+
+        if text_chunk:
+            assert isinstance(
+                text_chunk, str
+            ), f"Text chunk should be string, got {type(text_chunk)}"
+            # Note: text chunks can be empty in streaming (e.g., just punctuation updates)
+
+
+def collect_streaming_speech_content(
+    stream, integration: str, timeout: int = 60
+) -> tuple[bytes, int]:
+    """
+    Collect audio content from a streaming speech response.
+
+    Args:
+        stream: The streaming response iterator
+        integration: The integration name (openai, etc.)
+        timeout: Maximum time to wait for stream completion
+
+    Returns:
+        tuple: (collected_audio_bytes, chunk_count)
+    """
+    import time
+
+    audio_chunks = []
+    chunk_count = 0
+    start_time = time.time()
+
+    for chunk in stream:
+        chunk_count += 1
+
+        # Check timeout
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Speech streaming took longer than {timeout} seconds")
+
+        # Validate chunk
+        assert_valid_streaming_speech_response(chunk, integration)
+
+        # Extract audio data
+        if integration.lower() == "openai":
+            if hasattr(chunk, "audio") and chunk.audio:
+                audio_chunks.append(chunk.audio)
+            elif hasattr(chunk, "data") and chunk.data:
+                audio_chunks.append(chunk.data)
+            elif isinstance(chunk, bytes):
+                audio_chunks.append(chunk)
+
+        # Safety check
+        if chunk_count > 1000:
+            raise ValueError(
+                "Received too many speech streaming chunks, something might be wrong"
+            )
+
+    # Combine all audio chunks
+    complete_audio = b"".join(audio_chunks)
+    return complete_audio, chunk_count
+
+
+def collect_streaming_transcription_content(
+    stream, integration: str, timeout: int = 60
+) -> tuple[str, int]:
+    """
+    Collect text content from a streaming transcription response.
+
+    Args:
+        stream: The streaming response iterator
+        integration: The integration name (openai, etc.)
+        timeout: Maximum time to wait for stream completion
+
+    Returns:
+        tuple: (collected_text, chunk_count)
+    """
+    import time
+
+    text_chunks = []
+    chunk_count = 0
+    start_time = time.time()
+
+    for chunk in stream:
+        chunk_count += 1
+
+        # Check timeout
+        if time.time() - start_time > timeout:
+            raise TimeoutError(
+                f"Transcription streaming took longer than {timeout} seconds"
+            )
+
+        # Validate chunk
+        assert_valid_streaming_transcription_response(chunk, integration)
+
+        # Extract text data
+        if integration.lower() == "openai":
+            if hasattr(chunk, "text") and chunk.text:
+                text_chunks.append(chunk.text)
+            elif hasattr(chunk, "content") and chunk.content:
+                text_chunks.append(chunk.content)
+            elif isinstance(chunk, str):
+                text_chunks.append(chunk)
+
+        # Safety check
+        if chunk_count > 1000:
+            raise ValueError(
+                "Received too many transcription streaming chunks, something might be wrong"
+            )
+
+    # Combine all text chunks
+    complete_text = "".join(text_chunks)
+    return complete_text, chunk_count
+
+
 # Environment helpers
 def get_api_key(integration: str) -> str:
     """Get API key for a integration from environment variables"""

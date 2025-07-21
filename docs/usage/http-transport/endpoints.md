@@ -157,6 +157,149 @@ Text completion endpoint for simple text generation.
 }
 ```
 
+### **POST /v1/audio/speech**
+
+🔊 **Speech synthesis endpoint for converting text to audio.**
+
+**Request Body:**
+
+```json
+{
+  "model": "openai/tts-1",
+  "input": "Hello, this is a test of the speech synthesis feature.",
+  "voice": "alloy",
+  "response_format": "mp3",
+  "instructions": "Speak slowly and clearly"
+}
+```
+
+**Supported Parameters:**
+
+- `model` (required): Model in "provider/model" format (e.g., "openai/tts-1")
+- `input` (required): Text to convert to speech (max 4096 characters)
+- `voice` (required): Voice to use - supports:
+  - Simple voice: `"alloy"`, `"echo"`, `"fable"`, `"onyx"`, `"nova"`, `"shimmer"`
+  - Multi-voice config: `[{"speaker": "narrator", "voice": "alloy"}]`
+- `response_format` (optional): Audio format - `"mp3"` (default), `"opus"`, `"aac"`, `"flac"`, `"wav"`, `"pcm"`
+- `instructions` (optional): Additional instructions for the voice synthesis
+- `stream_format` (optional): Set to `"sse"` for streaming responses
+
+**Response:**
+
+Returns binary audio data with appropriate Content-Type headers:
+
+```
+Content-Type: audio/mpeg
+Content-Disposition: attachment; filename=speech.mp3
+Content-Length: 24576
+
+[Binary audio data]
+```
+
+**cURL Example:**
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/tts-1",
+    "input": "Hello world! This is a test of text to speech.",
+    "voice": "alloy",
+    "response_format": "mp3"
+  }' \
+  --output speech.mp3
+```
+
+**Streaming Speech Synthesis:**
+
+```json
+{
+  "model": "openai/tts-1",
+  "input": "This is a longer text that will be streamed as audio chunks.",
+  "voice": "nova",
+  "response_format": "mp3",
+  "stream_format": "sse"
+}
+```
+
+### **POST /v1/audio/transcriptions**
+
+🎤 **Audio transcription endpoint for converting speech to text.**
+
+> **Note:** This endpoint expects `multipart/form-data` content type due to file upload requirements.
+
+**Form Data Parameters:**
+
+- `model` (required): Model in "provider/model" format (e.g., "openai/whisper-1")
+- `file` (required): Audio file to transcribe (mp3, mp4, mpeg, mpga, m4a, wav, webm)
+- `language` (optional): Language code (e.g., "en", "es", "fr") - auto-detected if not specified
+- `prompt` (optional): Text prompt to guide the transcription style
+- `response_format` (optional): Format of response - `"json"` (default), `"text"`, `"srt"`, `"verbose_json"`, `"vtt"`
+- `temperature` (optional): Sampling temperature (0-1) for transcription randomness
+- `stream` (optional): Set to `"true"` for streaming transcription
+
+**Response:**
+
+```json
+{
+  "object": "audio.transcription",
+  "text": "Hello, this is a test of the audio transcription feature.",
+  "language": "english",
+  "duration": 3.45,
+  "segments": [
+    {
+      "id": 0,
+      "seek": 0,
+      "start": 0.0,
+      "end": 3.45,
+      "text": "Hello, this is a test of the audio transcription feature.",
+      "tokens": [15496, 11, 341, 307, 257, 1500, 295, 264, 6278, 35288, 4122, 13],
+      "temperature": 0.0,
+      "avg_logprob": -0.23,
+      "compression_ratio": 1.2,
+      "no_speech_prob": 0.01
+    }
+  ],
+  "usage": {
+    "total_duration": 3.45
+  }
+}
+```
+
+**cURL Example:**
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "model=openai/whisper-1" \
+  -F "file=@audio.mp3" \
+  -F "language=en" \
+  -F "response_format=json"
+```
+
+**Streaming Transcription:**
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "model=openai/whisper-1" \
+  -F "file=@audio.mp3" \
+  -F "stream=true" \
+  -F "response_format=json"
+```
+
+**Streaming Response:**
+
+```
+data: {"object":"audio.transcription.chunk","text":"Hello","type":"transcript.text.delta"}
+
+data: {"object":"audio.transcription.chunk","text":", this is","type":"transcript.text.delta"}
+
+data: {"object":"audio.transcription.chunk","text":" a test","type":"transcript.text.delta"}
+
+data: {"object":"audio.transcription.chunk","text":"Hello, this is a test of the audio transcription feature.","type":"transcript.text.done"}
+
+data: [DONE]
+```
+
 ### **POST /v1/mcp/tool/execute**
 
 Direct MCP tool execution endpoint.

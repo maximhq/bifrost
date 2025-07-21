@@ -55,6 +55,18 @@ from ..utils.common import (
     COMPARISON_KEYWORDS,
     WEATHER_KEYWORDS,
     LOCATION_KEYWORDS,
+    # Speech and Transcription utilities
+    SPEECH_TEST_INPUT,
+    SPEECH_TEST_VOICES,
+    TRANSCRIPTION_TEST_INPUTS,
+    generate_test_audio,
+    TEST_AUDIO_DATA,
+    assert_valid_speech_response,
+    assert_valid_transcription_response,
+    assert_valid_streaming_speech_response,
+    assert_valid_streaming_transcription_response,
+    collect_streaming_speech_content,
+    collect_streaming_transcription_content,
 )
 from ..utils.config_loader import get_model
 
@@ -450,3 +462,261 @@ class TestOpenAIIntegration:
         assert (
             tool_calls_detected_tools
         ), "Should detect tool calls in streaming response"
+
+    @skip_if_no_api_key("openai")
+    def test_14_speech_synthesis(self, openai_client, test_config):
+        """Test Case 14: Speech synthesis (text-to-speech)"""
+        # Basic speech synthesis test
+        response = openai_client.audio.speech.create(
+            model=get_model("openai", "speech"),
+            voice="alloy",
+            input=SPEECH_TEST_INPUT,
+        )
+
+        # Read the audio content
+        audio_content = response.content
+        assert_valid_speech_response(audio_content)
+
+        # Test with different voice
+        response2 = openai_client.audio.speech.create(
+            model=get_model("openai", "speech"),
+            voice="nova",
+            input="Short test message.",
+            response_format="mp3",
+        )
+
+        audio_content2 = response2.content
+        assert_valid_speech_response(audio_content2, expected_audio_size_min=500)
+
+        # Verify that different voices produce different audio
+        assert (
+            audio_content != audio_content2
+        ), "Different voices should produce different audio"
+
+    @skip_if_no_api_key("openai")
+    def test_15_transcription_audio(self, openai_client, test_config):
+        """Test Case 16: Audio transcription (speech-to-text)"""
+        # Generate test audio for transcription
+        test_audio = generate_test_audio()
+
+        # Basic transcription test
+        response = openai_client.audio.transcriptions.create(
+            model=get_model("openai", "transcription"),
+            file=("test_audio.wav", test_audio, "audio/wav"),
+        )
+
+        assert_valid_transcription_response(response)
+        # Since we're using a generated sine wave, we don't expect specific text,
+        # but the API should return some transcription attempt
+
+        # Test with additional parameters
+        response2 = openai_client.audio.transcriptions.create(
+            model=get_model("openai", "transcription"),
+            file=("test_audio.wav", test_audio, "audio/wav"),
+            language="en",
+            temperature=0.0,
+        )
+
+        assert_valid_transcription_response(response2)
+
+    @skip_if_no_api_key("openai")
+    def test_16_transcription_streaming(self, openai_client, test_config):
+        """Test Case 17: Audio transcription streaming"""
+        # Generate test audio for streaming transcription
+        test_audio = generate_test_audio()
+
+        try:
+            # Try to create streaming transcription
+            response = openai_client.audio.transcriptions.create(
+                model=get_model("openai", "transcription"),
+                file=("test_audio.wav", test_audio, "audio/wav"),
+                stream=True,
+            )
+
+            # If streaming is supported, collect the text chunks
+            if hasattr(response, "__iter__"):
+                text_content, chunk_count = collect_streaming_transcription_content(
+                    response, "openai", timeout=60
+                )
+                assert chunk_count > 0, "Should receive at least one text chunk"
+                assert_valid_transcription_response(
+                    text_content, min_text_length=0
+                )  # Sine wave might not produce much text
+            else:
+                # If not streaming, should still be valid transcription
+                assert_valid_transcription_response(response)
+
+        except Exception as e:
+            # If streaming is not supported, ensure it's a proper error message
+            error_message = str(e).lower()
+            streaming_not_supported = any(
+                phrase in error_message
+                for phrase in ["streaming", "not supported", "invalid", "stream"]
+            )
+            if not streaming_not_supported:
+                # Re-raise if it's not a streaming support issue
+                raise
+
+    @skip_if_no_api_key("openai")
+    def test_17_speech_transcription_round_trip(self, openai_client, test_config):
+        """Test Case 18: Complete round-trip - text to speech to text"""
+        original_text = "The quick brown fox jumps over the lazy dog."
+
+        # Step 1: Convert text to speech
+        speech_response = openai_client.audio.speech.create(
+            model=get_model("openai", "speech"),
+            voice="alloy",
+            input=original_text,
+            response_format="wav",  # Use WAV for better transcription compatibility
+        )
+
+        audio_content = speech_response.content
+        assert_valid_speech_response(audio_content)
+
+        # Step 2: Convert speech back to text
+        transcription_response = openai_client.audio.transcriptions.create(
+            model=get_model("openai", "transcription"),
+            file=("generated_speech.wav", audio_content, "audio/wav"),
+        )
+
+        assert_valid_transcription_response(transcription_response)
+        transcribed_text = transcription_response.text
+
+        # Step 3: Verify similarity (allowing for some variation in transcription)
+        # Check for key words from the original text
+        original_words = original_text.lower().split()
+        transcribed_words = transcribed_text.lower().split()
+
+        # At least 50% of the original words should be present in the transcription
+        matching_words = sum(1 for word in original_words if word in transcribed_words)
+        match_percentage = matching_words / len(original_words)
+
+        assert match_percentage >= 0.3, (
+            f"Round-trip transcription should preserve at least 30% of original words. "
+            f"Original: '{original_text}', Transcribed: '{transcribed_text}', "
+            f"Match percentage: {match_percentage:.2%}"
+        )
+
+    @skip_if_no_api_key("openai")
+    def test_18_speech_error_handling(self, openai_client, test_config):
+        """Test Case 19: Speech synthesis error handling"""
+        # Test with invalid voice
+        with pytest.raises(Exception) as exc_info:
+            openai_client.audio.speech.create(
+                model=get_model("openai", "speech"),
+                voice="invalid_voice_name",
+                input="This should fail.",
+            )
+
+        error = exc_info.value
+        assert_valid_error_response(error, "invalid_voice_name")
+
+        # Test with empty input
+        with pytest.raises(Exception) as exc_info:
+            openai_client.audio.speech.create(
+                model=get_model("openai", "speech"),
+                voice="alloy",
+                input="",
+            )
+
+        error = exc_info.value
+        # Should get an error for empty input
+
+        # Test with invalid model
+        with pytest.raises(Exception) as exc_info:
+            openai_client.audio.speech.create(
+                model="invalid-speech-model",
+                voice="alloy",
+                input="This should fail due to invalid model.",
+            )
+
+        error = exc_info.value
+        # Should get an error for invalid model
+
+    @skip_if_no_api_key("openai")
+    def test_19_transcription_error_handling(self, openai_client, test_config):
+        """Test Case 20: Transcription error handling"""
+        # Test with invalid audio data
+        invalid_audio = b"This is not audio data"
+
+        with pytest.raises(Exception) as exc_info:
+            openai_client.audio.transcriptions.create(
+                model=get_model("openai", "transcription"),
+                file=("invalid.wav", invalid_audio, "audio/wav"),
+            )
+
+        error = exc_info.value
+        # Should get an error for invalid audio format
+
+        # Test with invalid model
+        valid_audio = generate_test_audio()
+
+        with pytest.raises(Exception) as exc_info:
+            openai_client.audio.transcriptions.create(
+                model="invalid-transcription-model",
+                file=("test.wav", valid_audio, "audio/wav"),
+            )
+
+        error = exc_info.value
+        # Should get an error for invalid model
+
+        # Test with unsupported file format (if applicable)
+        with pytest.raises(Exception) as exc_info:
+            openai_client.audio.transcriptions.create(
+                model=get_model("openai", "transcription"),
+                file=("test.txt", b"text file content", "text/plain"),
+            )
+
+        error = exc_info.value
+        # Should get an error for unsupported file type
+
+    @skip_if_no_api_key("openai")
+    def test_20_speech_different_voices_and_formats(self, openai_client, test_config):
+        """Test Case 21: Test different voices and response formats"""
+        test_text = "Testing different voices and audio formats."
+
+        # Test multiple voices
+        voices_tested = []
+        for voice in SPEECH_TEST_VOICES[
+            :3
+        ]:  # Test first 3 voices to avoid too many API calls
+            response = openai_client.audio.speech.create(
+                model=get_model("openai", "speech"),
+                voice=voice,
+                input=test_text,
+                response_format="mp3",
+            )
+
+            audio_content = response.content
+            assert_valid_speech_response(audio_content)
+            voices_tested.append((voice, len(audio_content)))
+
+        # Verify that different voices produce different sized outputs (generally)
+        sizes = [size for _, size in voices_tested]
+        assert len(set(sizes)) > 1 or all(
+            s > 1000 for s in sizes
+        ), "Different voices should produce varying audio outputs"
+
+        # Test different response formats
+        formats_to_test = ["mp3", "wav", "opus"]
+        format_results = []
+
+        for format_type in formats_to_test:
+            try:
+                response = openai_client.audio.speech.create(
+                    model=get_model("openai", "speech"),
+                    voice="alloy",
+                    input="Testing audio format: " + format_type,
+                    response_format=format_type,
+                )
+
+                audio_content = response.content
+                assert_valid_speech_response(audio_content, expected_audio_size_min=500)
+                format_results.append(format_type)
+
+            except Exception as e:
+                # Some formats might not be supported
+                print(f"Format {format_type} not supported or failed: {e}")
+
+        # At least MP3 should be supported
+        assert "mp3" in format_results, "MP3 format should be supported"

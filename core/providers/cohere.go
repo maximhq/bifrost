@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -786,12 +787,14 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &resp.StatusCode,
 			Error: schemas.ErrorField{
 				Message: fmt.Sprintf("HTTP error from Cohere: %d", resp.StatusCode),
+				Error:   fmt.Errorf("%s", string(body)),
 			},
 		}
 	}
@@ -1019,4 +1022,20 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	}()
 
 	return responseChan, nil
+}
+
+func (provider *CohereProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("speech", "cohere")
+}
+
+func (provider *CohereProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("speech stream", "cohere")
+}
+
+func (provider *CohereProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("transcription", "cohere")
+}
+
+func (provider *CohereProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("transcription stream", "cohere")
 }

@@ -38,6 +38,14 @@ func runAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		scenarios.RunMultipleImagesTest,
 		scenarios.RunCompleteEnd2EndTest,
 		scenarios.RunProviderSpecificTest,
+		scenarios.RunSpeechSynthesisTest,
+		scenarios.RunSpeechSynthesisAdvancedTest,
+		scenarios.RunSpeechSynthesisStreamTest,
+		scenarios.RunSpeechSynthesisStreamAdvancedTest,
+		scenarios.RunTranscriptionTest,
+		scenarios.RunTranscriptionAdvancedTest,
+		scenarios.RunTranscriptionStreamTest,
+		scenarios.RunTranscriptionStreamAdvancedTest,
 	}
 
 	// Execute all test scenarios
@@ -68,6 +76,10 @@ func printTestSummary(t *testing.T, testConfig config.ComprehensiveTestConfig) {
 		{"MultipleImages", testConfig.Scenarios.MultipleImages},
 		{"CompleteEnd2End", testConfig.Scenarios.CompleteEnd2End},
 		{"ProviderSpecific", testConfig.Scenarios.ProviderSpecific},
+		{"SpeechSynthesis", testConfig.Scenarios.SpeechSynthesis},
+		{"SpeechSynthesisStream", testConfig.Scenarios.SpeechSynthesisStream},
+		{"Transcription", testConfig.Scenarios.Transcription},
+		{"TranscriptionStream", testConfig.Scenarios.TranscriptionStream},
 	}
 
 	supported := 0

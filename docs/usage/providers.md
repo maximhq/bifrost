@@ -6,7 +6,7 @@ Multi-provider support with unified API across all AI providers. Switch between 
 
 | Provider              | Models                                 | Features                            | Enterprise |
 | --------------------- | -------------------------------------- | ----------------------------------- | ---------- |
-| **OpenAI**         | GPT-4o, GPT-4 Turbo, GPT-4, GPT-3.5    | Function calling, streaming, vision | ✅         |
+| **OpenAI**         | GPT-4o, GPT-4 Turbo, GPT-4, GPT-3.5    | Function calling, streaming, vision, audio | ✅         |
 | **Anthropic**      | Claude 3.5 Sonnet, Claude 3 Opus/Haiku | Tool use, vision, 200K context      | ✅         |
 | **Azure OpenAI**   | Enterprise GPT deployment              | Private networks, compliance        | ✅         |
 | **Amazon Bedrock** | Claude, Titan, Cohere, Meta            | Multi-model platform, VPC           | ✅         |
@@ -475,8 +475,43 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | **Streaming**        | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     | ✅     |
 | **Vision**           | ✅     | ✅        |  ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ❌     | ✅     |
 | **JSON Mode**        | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     | ✅     |
+| **🔊 Audio Speech**   | ✅     | ❌        | ❌    | ❌      | ❌     | ❌     | ❌      | ❌     | ❌     | ❌     |
+| **🎤 Transcription** | ✅     | ❌        | ❌    | ❌      | ❌     | ❌     | ❌      | ❌     | ❌     | ❌     |
 | **Custom Base URL**  | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅     |
 | **Proxy Support**    | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅      |
+
+### **🔊 Audio Features Details**
+
+| Provider | Speech Synthesis | Transcription | Models Available | Streaming Support |
+| -------- | --------------- | ------------- | ---------------- | ----------------- |
+| **OpenAI** | ✅ Full Support | ✅ Full Support | `tts-1`, `tts-1-hd`, `whisper-1` | ✅ Both |
+| **Anthropic** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Azure OpenAI** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Amazon Bedrock** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Google Vertex** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Cohere** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Mistral** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Ollama** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Groq** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **SGLang** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+
+> **📝 Note:** Audio features are currently supported only through OpenAI. Other providers return `unsupported operation` errors for audio requests. This allows you to use fallback chains where non-audio requests can still use other providers.
+
+**OpenAI Audio Features:**
+
+- **Speech Synthesis (TTS)**: Convert text to speech with 6 voice options
+  - Models: `tts-1` (standard), `tts-1-hd` (higher quality)
+  - Voices: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
+  - Formats: `mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`
+  - Streaming: ✅ Server-Sent Events (SSE)
+
+- **Audio Transcription (STT)**: Convert speech to text with advanced features
+  - Model: `whisper-1`
+  - Features: Word-level timing, segment breakdown, language detection
+  - Formats: `json`, `text`, `srt`, `verbose_json`, `vtt`
+  - Languages: 50+ supported languages with auto-detection
+  - File formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`
+  - Streaming: ✅ Real-time transcription
 
 ---
 

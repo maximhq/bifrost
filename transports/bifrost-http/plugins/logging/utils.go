@@ -16,6 +16,8 @@ func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Ti
 	inputHistoryJSON, _ := json.Marshal(data.InputHistory)
 	toolsJSON, _ := json.Marshal(data.Tools)
 	paramsJSON, _ := json.Marshal(data.Params)
+	speechInputJSON, _ := json.Marshal(data.SpeechInput)
+	transcriptionInputJSON, _ := json.Marshal(data.TranscriptionInput)
 
 	// Create content summary for searching
 	contentSummary := p.createContentSummaryFromInitialData(data)
@@ -24,14 +26,15 @@ func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Ti
 	query := `
 	INSERT INTO logs (
 		id, provider, model, object_type, status,
-		input_history, tools, params, content_summary,
-		stream, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		input_history, tools, params, speech_input, transcription_input,
+		content_summary, stream, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := p.db.Exec(query,
 		requestID, data.Provider, data.Model,
 		data.Object, "processing",
 		string(inputHistoryJSON), string(toolsJSON), string(paramsJSON),
+		string(speechInputJSON), string(transcriptionInputJSON),
 		contentSummary, false, timestamp.UnixNano())
 
 	if err != nil {
@@ -110,6 +113,20 @@ func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, dat
 		args = append(args, string(errorDetailsJSON))
 	}
 
+	// Update speech output (for non-streaming)
+	if data.SpeechOutput != nil {
+		speechOutputJSON, _ := json.Marshal(data.SpeechOutput)
+		setParts = append(setParts, "speech_output = ?")
+		args = append(args, string(speechOutputJSON))
+	}
+
+	// Update transcription output (for non-streaming)
+	if data.TranscriptionOutput != nil {
+		transcriptionOutputJSON, _ := json.Marshal(data.TranscriptionOutput)
+		setParts = append(setParts, "transcription_output = ?")
+		args = append(args, string(transcriptionOutputJSON))
+	}
+
 	// Add the WHERE clause parameter
 	args = append(args, requestID)
 
@@ -135,7 +152,7 @@ func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, dat
 }
 
 // processStreamUpdate handles streaming delta updates efficiently with minimal database operations
-func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time, data *StreamUpdateData) error {
+func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time, data *StreamUpdateData, isFinalChunk bool) error {
 	// Handle error case first
 	if data.ErrorDetails != nil {
 		// For errors, we should also calculate latency
@@ -163,7 +180,7 @@ func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time
 	var needsLatency bool
 	var latency float64
 
-	if data.FinishReason != nil {
+	if isFinalChunk {
 		// Stream is finishing, calculate latency
 		var createdAtUnix int64
 		err := p.db.QueryRow("SELECT created_at FROM logs WHERE id = ?", requestID).Scan(&createdAtUnix)
@@ -209,7 +226,7 @@ func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time
 	}
 
 	// Handle finish reason - if present, mark as complete
-	if data.FinishReason != nil {
+	if isFinalChunk {
 		setParts = append(setParts, "status = ?")
 		args = append(args, "success")
 	}
@@ -219,6 +236,17 @@ func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time
 		if err := p.appendDeltaToEntry(requestID, data.Delta, &setParts, &args); err != nil {
 			return fmt.Errorf("failed to append delta: %w", err)
 		}
+	}
+
+	// Handle transcription output from stream updates
+	if data.TranscriptionOutput != nil {
+		transcriptionOutputJSON, err := json.Marshal(data.TranscriptionOutput)
+		if err != nil {
+			return fmt.Errorf("failed to marshal transcription output: %w", err)
+		}
+
+		setParts = append(setParts, "transcription_output = ?")
+		args = append(args, string(transcriptionOutputJSON))
 	}
 
 	// Only perform update if there's something to update
@@ -381,6 +409,19 @@ func (p *LoggerPlugin) createContentSummaryFromInitialData(data *InitialLogData)
 		}
 	}
 
+	// Add speech input content
+	if data.SpeechInput != nil && data.SpeechInput.Input != "" {
+		parts = append(parts, data.SpeechInput.Input)
+		if data.SpeechInput.Instructions != "" {
+			parts = append(parts, data.SpeechInput.Instructions)
+		}
+	}
+
+	// Add transcription input prompt if available
+	if data.TranscriptionInput != nil && data.TranscriptionInput.Prompt != nil && *data.TranscriptionInput.Prompt != "" {
+		parts = append(parts, *data.TranscriptionInput.Prompt)
+	}
+
 	return strings.Join(parts, " ")
 }
 
@@ -390,13 +431,16 @@ func (p *LoggerPlugin) getLogEntry(requestID string) (*LogEntry, error) {
 	SELECT id, timestamp, provider, model, object_type, status, latency,
 		   prompt_tokens, completion_tokens, total_tokens,
 		   input_history, output_message, tools, tool_calls,
-		   params, error_details, stream, created_at
+		   params, error_details, speech_input, transcription_input,
+		   speech_output, transcription_output, stream, created_at
 	FROM logs WHERE id = ?`
 
 	var entry LogEntry
 	var timestampUnix, createdAtUnix int64
 	var inputHistoryJSON, outputMessageJSON, toolsJSON, toolCallsJSON sql.NullString
 	var paramsJSON, errorDetailsJSON sql.NullString
+	var speechInputJSON, transcriptionInputJSON sql.NullString
+	var speechOutputJSON, transcriptionOutputJSON sql.NullString
 	var promptTokens, completionTokens, totalTokensRow sql.NullInt64
 	var latency sql.NullFloat64
 	var stream sql.NullBool
@@ -406,7 +450,8 @@ func (p *LoggerPlugin) getLogEntry(requestID string) (*LogEntry, error) {
 		&entry.Object, &entry.Status, &latency,
 		&promptTokens, &completionTokens, &totalTokensRow,
 		&inputHistoryJSON, &outputMessageJSON, &toolsJSON, &toolCallsJSON,
-		&paramsJSON, &errorDetailsJSON, &stream,
+		&paramsJSON, &errorDetailsJSON, &speechInputJSON, &transcriptionInputJSON,
+		&speechOutputJSON, &transcriptionOutputJSON, &stream,
 		&createdAtUnix,
 	)
 	if err != nil {
@@ -461,6 +506,18 @@ func (p *LoggerPlugin) getLogEntry(requestID string) (*LogEntry, error) {
 	if errorDetailsJSON.Valid {
 		json.Unmarshal([]byte(errorDetailsJSON.String), &entry.ErrorDetails)
 	}
+	if speechInputJSON.Valid {
+		json.Unmarshal([]byte(speechInputJSON.String), &entry.SpeechInput)
+	}
+	if transcriptionInputJSON.Valid {
+		json.Unmarshal([]byte(transcriptionInputJSON.String), &entry.TranscriptionInput)
+	}
+	if speechOutputJSON.Valid {
+		json.Unmarshal([]byte(speechOutputJSON.String), &entry.SpeechOutput)
+	}
+	if transcriptionOutputJSON.Valid {
+		json.Unmarshal([]byte(transcriptionOutputJSON.String), &entry.TranscriptionOutput)
+	}
 
 	return &entry, nil
 }
@@ -488,6 +545,24 @@ func (p *LoggerPlugin) createContentSummary(entry *LogEntry) string {
 				parts = append(parts, toolCall.Function.Arguments)
 			}
 		}
+	}
+
+	// Add speech input content
+	if entry.SpeechInput != nil && entry.SpeechInput.Input != "" {
+		parts = append(parts, entry.SpeechInput.Input)
+		if entry.SpeechInput.Instructions != "" {
+			parts = append(parts, entry.SpeechInput.Instructions)
+		}
+	}
+
+	// Add transcription input prompt if available
+	if entry.TranscriptionInput != nil && entry.TranscriptionInput.Prompt != nil && *entry.TranscriptionInput.Prompt != "" {
+		parts = append(parts, *entry.TranscriptionInput.Prompt)
+	}
+
+	// Add transcription output text
+	if entry.TranscriptionOutput != nil && entry.TranscriptionOutput.Text != "" {
+		parts = append(parts, entry.TranscriptionOutput.Text)
 	}
 
 	// Add error details
@@ -570,6 +645,8 @@ func (p *LoggerPlugin) SearchLogs(filters *SearchFilters, pagination *Pagination
 		var timestampUnix sql.NullInt64
 		var inputHistoryJSON, outputMessageJSON, toolsJSON, toolCallsJSON sql.NullString
 		var paramsJSON, errorDetailsJSON sql.NullString
+		var speechInputJSON, transcriptionInputJSON sql.NullString
+		var speechOutputJSON, transcriptionOutputJSON sql.NullString
 		var promptTokens, completionTokens, totalTokensRow sql.NullInt64
 		var latency sql.NullFloat64
 
@@ -578,7 +655,8 @@ func (p *LoggerPlugin) SearchLogs(filters *SearchFilters, pagination *Pagination
 			&entry.Object, &entry.Status, &latency,
 			&promptTokens, &completionTokens, &totalTokensRow,
 			&inputHistoryJSON, &outputMessageJSON, &toolsJSON, &toolCallsJSON,
-			&paramsJSON, &errorDetailsJSON,
+			&paramsJSON, &errorDetailsJSON, &speechInputJSON, &transcriptionInputJSON,
+			&speechOutputJSON, &transcriptionOutputJSON,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
@@ -630,6 +708,18 @@ func (p *LoggerPlugin) SearchLogs(filters *SearchFilters, pagination *Pagination
 		if errorDetailsJSON.Valid {
 			json.Unmarshal([]byte(errorDetailsJSON.String), &entry.ErrorDetails)
 		}
+		if speechInputJSON.Valid {
+			json.Unmarshal([]byte(speechInputJSON.String), &entry.SpeechInput)
+		}
+		if transcriptionInputJSON.Valid {
+			json.Unmarshal([]byte(transcriptionInputJSON.String), &entry.TranscriptionInput)
+		}
+		if speechOutputJSON.Valid {
+			json.Unmarshal([]byte(speechOutputJSON.String), &entry.SpeechOutput)
+		}
+		if transcriptionOutputJSON.Valid {
+			json.Unmarshal([]byte(transcriptionOutputJSON.String), &entry.TranscriptionOutput)
+		}
 
 		logs = append(logs, entry)
 	}
@@ -666,7 +756,8 @@ func (p *LoggerPlugin) buildSearchQuery(filters *SearchFilters, pagination *Pagi
 	SELECT id, timestamp, provider, model, object_type, status, latency,
 		   prompt_tokens, completion_tokens, total_tokens,
 		   input_history, output_message, tools, tool_calls,
-		   params, error_details
+		   params, error_details, speech_input, transcription_input,
+		   speech_output, transcription_output
 	FROM logs`
 
 	countQuery := "SELECT COUNT(*) FROM logs"
@@ -805,6 +896,10 @@ func (p *LoggerPlugin) determineObjectType(input schemas.RequestInput) string {
 		return "text.completion"
 	} else if input.EmbeddingInput != nil {
 		return "embedding"
+	} else if input.SpeechInput != nil {
+		return "audio.speech"
+	} else if input.TranscriptionInput != nil {
+		return "audio.transcription"
 	}
 	return "unknown"
 }

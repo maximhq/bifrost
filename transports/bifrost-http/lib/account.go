@@ -3,6 +3,7 @@
 package lib
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -35,7 +36,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 // GetKeysForProvider returns the API keys configured for a specific provider.
 // Keys are already processed (environment variables resolved) by the store.
 // Implements the Account interface.
-func (baseAccount *BaseAccount) GetKeysForProvider(providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	if baseAccount.store == nil {
 		return nil, fmt.Errorf("store not initialized")
 	}

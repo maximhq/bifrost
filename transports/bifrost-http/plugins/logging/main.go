@@ -41,23 +41,26 @@ const (
 
 // UpdateLogData contains data for log entry updates
 type UpdateLogData struct {
-	Status        string
-	TokenUsage    *schemas.LLMUsage
-	OutputMessage *schemas.BifrostMessage
-	ToolCalls     *[]schemas.ToolCall
-	ErrorDetails  *schemas.BifrostError
-	Model         string // May be different from request
-	Object        string // May be different from request
+	Status              string
+	TokenUsage          *schemas.LLMUsage
+	OutputMessage       *schemas.BifrostMessage
+	ToolCalls           *[]schemas.ToolCall
+	ErrorDetails        *schemas.BifrostError
+	Model               string                     // May be different from request
+	Object              string                     // May be different from request
+	SpeechOutput        *schemas.BifrostSpeech     // For non-streaming speech responses
+	TranscriptionOutput *schemas.BifrostTranscribe // For non-streaming transcription responses
 }
 
 // StreamUpdateData contains lightweight data for streaming delta updates
 type StreamUpdateData struct {
-	ErrorDetails *schemas.BifrostError
-	Model        string // May be different from request
-	Object       string // May be different from request
-	TokenUsage   *schemas.LLMUsage
-	Delta        *schemas.BifrostStreamDelta // The actual streaming delta
-	FinishReason *string                     // If the stream is finished
+	ErrorDetails        *schemas.BifrostError
+	Model               string // May be different from request
+	Object              string // May be different from request
+	TokenUsage          *schemas.LLMUsage
+	Delta               *schemas.BifrostStreamDelta // The actual streaming delta
+	FinishReason        *string                     // If the stream is finished
+	TranscriptionOutput *schemas.BifrostTranscribe  // For transcription stream responses
 }
 
 // LogMessage represents a message in the logging queue
@@ -72,32 +75,38 @@ type LogMessage struct {
 
 // InitialLogData contains data for initial log entry creation
 type InitialLogData struct {
-	Provider     string
-	Model        string
-	Object       string
-	InputHistory []schemas.BifrostMessage
-	Params       *schemas.ModelParameters
-	Tools        *[]schemas.Tool
+	Provider           string
+	Model              string
+	Object             string
+	InputHistory       []schemas.BifrostMessage
+	Params             *schemas.ModelParameters
+	SpeechInput        *schemas.SpeechInput
+	TranscriptionInput *schemas.TranscriptionInput
+	Tools              *[]schemas.Tool
 }
 
 // LogEntry represents a complete log entry for a request/response cycle
 type LogEntry struct {
-	ID            string                   `json:"id"`
-	Timestamp     time.Time                `json:"timestamp"`
-	Object        string                   `json:"object"` // text.completion, chat.completion, or embedding
-	Provider      string                   `json:"provider"`
-	Model         string                   `json:"model"`
-	InputHistory  []schemas.BifrostMessage `json:"input_history,omitempty"`
-	OutputMessage *schemas.BifrostMessage  `json:"output_message,omitempty"`
-	Params        *schemas.ModelParameters `json:"params,omitempty"`
-	Tools         *[]schemas.Tool          `json:"tools,omitempty"`
-	ToolCalls     *[]schemas.ToolCall      `json:"tool_calls,omitempty"`
-	Latency       *float64                 `json:"latency,omitempty"`
-	TokenUsage    *schemas.LLMUsage        `json:"token_usage,omitempty"`
-	Status        string                   `json:"status"` // "processing", "success", or "error"
-	ErrorDetails  *schemas.BifrostError    `json:"error_details,omitempty"`
-	Stream        bool                     `json:"stream"` // true if this was a streaming response
-	CreatedAt     time.Time                `json:"created_at"`
+	ID                  string                      `json:"id"`
+	Timestamp           time.Time                   `json:"timestamp"`
+	Object              string                      `json:"object"` // text.completion, chat.completion, embedding, audio.speech, or audio.transcription
+	Provider            string                      `json:"provider"`
+	Model               string                      `json:"model"`
+	InputHistory        []schemas.BifrostMessage    `json:"input_history,omitempty"`
+	OutputMessage       *schemas.BifrostMessage     `json:"output_message,omitempty"`
+	Params              *schemas.ModelParameters    `json:"params,omitempty"`
+	SpeechInput         *schemas.SpeechInput        `json:"speech_input,omitempty"`
+	TranscriptionInput  *schemas.TranscriptionInput `json:"transcription_input,omitempty"`
+	SpeechOutput        *schemas.BifrostSpeech      `json:"speech_output,omitempty"`
+	TranscriptionOutput *schemas.BifrostTranscribe  `json:"transcription_output,omitempty"`
+	Tools               *[]schemas.Tool             `json:"tools,omitempty"`
+	ToolCalls           *[]schemas.ToolCall         `json:"tool_calls,omitempty"`
+	Latency             *float64                    `json:"latency,omitempty"`
+	TokenUsage          *schemas.LLMUsage           `json:"token_usage,omitempty"`
+	Status              string                      `json:"status"` // "processing", "success", or "error"
+	ErrorDetails        *schemas.BifrostError       `json:"error_details,omitempty"`
+	Stream              bool                        `json:"stream"` // true if this was a streaming response
+	CreatedAt           time.Time                   `json:"created_at"`
 }
 
 // SearchFilters represents the available filters for log searches
@@ -258,6 +267,10 @@ func (p *LoggerPlugin) createTables() error {
 		tool_calls TEXT,
 		params TEXT,
 		error_details TEXT,
+		speech_input TEXT,
+		transcription_input TEXT,
+		speech_output TEXT,
+		transcription_output TEXT,
 		
 		-- For content search
 		content_summary TEXT,
@@ -334,29 +347,32 @@ func (p *LoggerPlugin) createTables() error {
 
 // migrateTableSchema adds new columns if they don't exist
 func (p *LoggerPlugin) migrateTableSchema() error {
-	// Check if created_at column exists
-	var columnExists bool
-	err := p.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('logs') WHERE name = 'created_at'").Scan(&columnExists)
-	if err != nil {
-		return fmt.Errorf("failed to check for created_at column: %w", err)
+	// List of columns to check and add
+	columnsToAdd := []struct {
+		name         string
+		definition   string
+		defaultValue string
+	}{
+		{"created_at", "INTEGER", "0"},
+		{"stream", "BOOLEAN", "FALSE"},
+		{"speech_input", "TEXT", "NULL"},
+		{"transcription_input", "TEXT", "NULL"},
+		{"speech_output", "TEXT", "NULL"},
+		{"transcription_output", "TEXT", "NULL"},
 	}
 
-	if !columnExists {
-		if _, err := p.db.Exec("ALTER TABLE logs ADD COLUMN created_at INTEGER DEFAULT 0"); err != nil {
-			return fmt.Errorf("failed to add created_at column: %w", err)
+	for _, column := range columnsToAdd {
+		var columnExists bool
+		err := p.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('logs') WHERE name = ?", column.name).Scan(&columnExists)
+		if err != nil {
+			return fmt.Errorf("failed to check for %s column: %w", column.name, err)
 		}
-	}
 
-	// Check if stream column exists
-	columnExists = false
-	err = p.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('logs') WHERE name = 'stream'").Scan(&columnExists)
-	if err != nil {
-		return fmt.Errorf("failed to check for stream column: %w", err)
-	}
-
-	if !columnExists {
-		if _, err := p.db.Exec("ALTER TABLE logs ADD COLUMN stream BOOLEAN DEFAULT FALSE"); err != nil {
-			return fmt.Errorf("failed to add stream column: %w", err)
+		if !columnExists {
+			query := fmt.Sprintf("ALTER TABLE logs ADD COLUMN %s %s DEFAULT %s", column.name, column.definition, column.defaultValue)
+			if _, err := p.db.Exec(query); err != nil {
+				return fmt.Errorf("failed to add %s column: %w", column.name, err)
+			}
 		}
 	}
 
@@ -433,6 +449,8 @@ func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
 	data.ErrorDetails = nil
 	data.Model = ""
 	data.Object = ""
+	data.SpeechOutput = nil
+	data.TranscriptionOutput = nil
 
 	p.updateDataPool.Put(data)
 }
@@ -451,6 +469,7 @@ func (p *LoggerPlugin) putStreamUpdateData(data *StreamUpdateData) {
 	data.TokenUsage = nil
 	data.Delta = nil
 	data.FinishReason = nil
+	data.TranscriptionOutput = nil
 
 	p.streamDataPool.Put(data)
 }
@@ -488,11 +507,13 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	inputHistory := p.extractInputHistory(req.Input)
 
 	initialData := &InitialLogData{
-		Provider:     string(req.Provider),
-		Model:        req.Model,
-		Object:       objectType,
-		InputHistory: inputHistory,
-		Params:       req.Params,
+		Provider:           string(req.Provider),
+		Model:              req.Model,
+		Object:             objectType,
+		InputHistory:       inputHistory,
+		Params:             req.Params,
+		SpeechInput:        req.Input.SpeechInput,
+		TranscriptionInput: req.Input.TranscriptionInput,
 	}
 
 	if req.Params != nil && req.Params.Tools != nil {
@@ -516,17 +537,19 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 			p.mu.Lock()
 			if p.logCallback != nil {
 				initialEntry := &LogEntry{
-					ID:           logMsg.RequestID,
-					Timestamp:    logMsg.Timestamp,
-					Object:       logMsg.InitialData.Object,
-					Provider:     logMsg.InitialData.Provider,
-					Model:        logMsg.InitialData.Model,
-					InputHistory: logMsg.InitialData.InputHistory,
-					Params:       logMsg.InitialData.Params,
-					Tools:        logMsg.InitialData.Tools,
-					Status:       "processing",
-					Stream:       false, // Initially false, will be updated if streaming
-					CreatedAt:    logMsg.Timestamp,
+					ID:                 logMsg.RequestID,
+					Timestamp:          logMsg.Timestamp,
+					Object:             logMsg.InitialData.Object,
+					Provider:           logMsg.InitialData.Provider,
+					Model:              logMsg.InitialData.Model,
+					InputHistory:       logMsg.InitialData.InputHistory,
+					Params:             logMsg.InitialData.Params,
+					SpeechInput:        logMsg.InitialData.SpeechInput,
+					TranscriptionInput: logMsg.InitialData.TranscriptionInput,
+					Tools:              logMsg.InitialData.Tools,
+					Status:             "processing",
+					Stream:             false, // Initially false, will be updated if streaming
+					CreatedAt:          logMsg.Timestamp,
 				}
 				p.logCallback(initialEntry)
 			}
@@ -601,6 +624,32 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 				streamUpdateData.FinishReason = choice.FinishReason
 			}
+
+			// Extract token usage from speech and transcription streaming (lightweight)
+			if result.Speech != nil && result.Speech.Usage != nil && streamUpdateData.TokenUsage == nil {
+				streamUpdateData.TokenUsage = &schemas.LLMUsage{
+					PromptTokens:     result.Speech.Usage.InputTokens,
+					CompletionTokens: result.Speech.Usage.OutputTokens,
+					TotalTokens:      result.Speech.Usage.TotalTokens,
+				}
+			}
+			if result.Transcribe != nil && result.Transcribe.Usage != nil && streamUpdateData.TokenUsage == nil {
+				transcriptionUsage := result.Transcribe.Usage
+				streamUpdateData.TokenUsage = &schemas.LLMUsage{}
+
+				if transcriptionUsage.InputTokens != nil {
+					streamUpdateData.TokenUsage.PromptTokens = *transcriptionUsage.InputTokens
+				}
+				if transcriptionUsage.OutputTokens != nil {
+					streamUpdateData.TokenUsage.CompletionTokens = *transcriptionUsage.OutputTokens
+				}
+				if transcriptionUsage.TotalTokens != nil {
+					streamUpdateData.TokenUsage.TotalTokens = *transcriptionUsage.TotalTokens
+				}
+			}
+			if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil && result.Transcribe.Text != "" {
+				streamUpdateData.TranscriptionOutput = result.Transcribe
+			}
 		}
 
 		logMsg.StreamUpdateData = streamUpdateData
@@ -644,13 +693,49 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 					updateData.ToolCalls = result.Choices[0].Message.AssistantMessage.ToolCalls
 				}
 			}
+
+			// Handle speech and transcription outputs for NON-streaming responses
+			if result.Speech != nil {
+				updateData.SpeechOutput = result.Speech
+				// Extract token usage
+				if result.Speech.Usage != nil && updateData.TokenUsage == nil {
+					updateData.TokenUsage = &schemas.LLMUsage{
+						PromptTokens:     result.Speech.Usage.InputTokens,
+						CompletionTokens: result.Speech.Usage.OutputTokens,
+						TotalTokens:      result.Speech.Usage.TotalTokens,
+					}
+				}
+			}
+			if result.Transcribe != nil {
+				updateData.TranscriptionOutput = result.Transcribe
+				// Extract token usage
+				if result.Transcribe.Usage != nil && updateData.TokenUsage == nil {
+					transcriptionUsage := result.Transcribe.Usage
+					updateData.TokenUsage = &schemas.LLMUsage{}
+
+					if transcriptionUsage.InputTokens != nil {
+						updateData.TokenUsage.PromptTokens = *transcriptionUsage.InputTokens
+					}
+					if transcriptionUsage.OutputTokens != nil {
+						updateData.TokenUsage.CompletionTokens = *transcriptionUsage.OutputTokens
+					}
+					if transcriptionUsage.TotalTokens != nil {
+						updateData.TokenUsage.TotalTokens = *transcriptionUsage.TotalTokens
+					}
+				}
+			}
 		}
 
 		logMsg.UpdateData = updateData
 	}
 
+	isFinalChunk := logMsg.StreamUpdateData != nil &&
+		(logMsg.StreamUpdateData.FinishReason != nil ||
+			(result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil && result.Speech.Usage != nil) ||
+			(result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil && result.Transcribe.Usage != nil))
+
 	// Both streaming and regular updates now use the same async pattern
-	go func(logMsg *LogMessage) {
+	go func(logMsg *LogMessage, isFinalChunk bool) {
 		defer p.putLogMessage(logMsg) // Return to pool when done
 
 		// Return pooled data structures to their respective pools
@@ -665,7 +750,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 
 		var processingErr error
 		if logMsg.Operation == LogOperationStreamUpdate {
-			processingErr = p.processStreamUpdate(logMsg.RequestID, logMsg.Timestamp, logMsg.StreamUpdateData)
+			processingErr = p.processStreamUpdate(logMsg.RequestID, logMsg.Timestamp, logMsg.StreamUpdateData, isFinalChunk)
 		} else {
 			processingErr = p.updateLogEntry(logMsg.RequestID, logMsg.Timestamp, logMsg.UpdateData)
 		}
@@ -683,22 +768,34 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			}
 			p.mu.Unlock()
 		}
-	}(logMsg)
+	}(logMsg, isFinalChunk)
 
 	return result, err, nil
 }
 
 // isStreamingResponse checks if the response is a streaming delta
 func (p *LoggerPlugin) isStreamingResponse(result *schemas.BifrostResponse) bool {
-	if result == nil || len(result.Choices) == 0 {
+	if result == nil {
 		return false
 	}
 
-	// Check if any choice has BifrostStreamResponseChoice (indicating streaming)
-	for _, choice := range result.Choices {
-		if choice.BifrostStreamResponseChoice != nil {
-			return true
+	// Check for streaming choices
+	if len(result.Choices) > 0 {
+		for _, choice := range result.Choices {
+			if choice.BifrostStreamResponseChoice != nil {
+				return true
+			}
 		}
+	}
+
+	// Check for streaming speech output
+	if result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil {
+		return true
+	}
+
+	// Check for streaming transcription output
+	if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil {
+		return true
 	}
 
 	return false

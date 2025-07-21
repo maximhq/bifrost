@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Bifrost HTTP Transport API",
-    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n• groq\n• sgl\n\nBifrost provides:\n\n**Core Features:**\n• Standardized **OpenAI Compatible** endpoints for text and chat completions\n• Built-in fallback support across providers\n• Comprehensive monitoring and logging\n• Real-time WebSocket streaming\n\n**MCP Integration:**\n• Model Context Protocol (MCP) support for external tool integration\n• Dynamic MCP client management (add/remove/edit clients)\n• STDIO, HTTP, and SSE connection types\n• Automatic tool discovery and execution\n\n**Management APIs:**\n• Provider configuration management (CRUD operations)\n• System configuration hot-reloading\n• Application logs with advanced filtering\n• Dropped request monitoring\n\n**Integration Endpoints:**\n• OpenAI-compatible: `/openai/chat/completions`\n• Anthropic-compatible: `/anthropic/v1/messages`\n• Google Gemini-compatible: `/genai/v1beta/models/{model}`\n• LiteLLM-compatible: `/chat/completions`",
+    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n• groq\n• sgl\n\nBifrost provides:\n\n**Core Features:**\n• Standardized **OpenAI Compatible** endpoints for text and chat completions\n• Built-in fallback support across providers\n• Comprehensive monitoring and logging\n• Real-time WebSocket streaming\n\n**Audio Processing:**\n• Speech synthesis (text-to-speech) with multiple voices and formats\n• Audio transcription (speech-to-text) with timing information\n• Streaming support for both speech and transcription\n• OpenAI-compatible audio endpoints\n\n**MCP Integration:**\n• Model Context Protocol (MCP) support for external tool integration\n• Dynamic MCP client management (add/remove/edit clients)\n• STDIO, HTTP, and SSE connection types\n• Automatic tool discovery and execution\n\n**Management APIs:**\n• Provider configuration management (CRUD operations)\n• System configuration hot-reloading\n• Application logs with advanced filtering\n• Dropped request monitoring\n\n**Integration Endpoints:**\n• OpenAI-compatible: `/openai/chat/completions`, `/openai/audio/speech`, `/openai/audio/transcriptions`\n• Anthropic-compatible: `/anthropic/v1/messages`\n• Google Gemini-compatible: `/genai/v1beta/models/{model}`\n• LiteLLM-compatible: `/chat/completions`",
     "version": "1.1.2",
     "contact": {
       "name": "Bifrost API Support",
@@ -413,6 +413,404 @@
             "$ref": "#/components/responses/InternalServerError"
           }
         }
+      }
+    },
+    "/v1/audio/speech": {
+      "post": {
+        "summary": "Create Speech (Text-to-Speech)",
+        "description": "Converts text to spoken audio using AI voice synthesis. Supports multiple voices, audio formats, and streaming capabilities.",
+        "operationId": "createSpeech",
+        "tags": ["Audio"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechRequest"
+              },
+              "examples": {
+                "basic_speech": {
+                  "summary": "Basic speech synthesis",
+                  "value": {
+                    "model": "openai/tts-1",
+                    "input": "Hello! This is a test of speech synthesis.",
+                    "voice": "alloy",
+                    "response_format": "mp3"
+                  }
+                },
+                "advanced_speech": {
+                  "summary": "Advanced speech with instructions",
+                  "value": {
+                    "model": "openai/tts-1-hd",
+                    "input": "The weather today is sunny with a high of 72 degrees.",
+                    "voice": "nova",
+                    "response_format": "wav",
+                    "instructions": "Speak slowly and clearly like a weather reporter"
+                  }
+                },
+                "streaming_speech": {
+                  "summary": "Streaming speech synthesis",
+                  "value": {
+                    "model": "openai/tts-1",
+                    "input": "This is a longer text that will be streamed as audio chunks.",
+                    "voice": "fable",
+                    "response_format": "mp3",
+                    "stream_format": "sse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Audio data or streaming response",
+            "content": {
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "streaming_audio": {
+                    "summary": "Streaming audio chunks",
+                    "value": "data: {\"object\":\"audio.speech.chunk\",\"audio\":\"<base64_audio_data>\",\"type\":\"audio.chunk\"}\n\ndata: [DONE]\n\n"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/v1/audio/transcriptions": {
+      "post": {
+        "summary": "Create Transcription (Speech-to-Text)",
+        "description": "Transcribes audio files to text using AI speech recognition. Supports multiple audio formats, languages, and detailed timing information.",
+        "operationId": "createTranscription",
+        "tags": ["Audio"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionRequest"
+              },
+              "examples": {
+                "basic_transcription": {
+                  "summary": "Basic audio transcription",
+                  "value": {
+                    "model": "openai/whisper-1",
+                    "file": "<audio_file_binary>",
+                    "language": "en",
+                    "response_format": "json"
+                  }
+                },
+                "detailed_transcription": {
+                  "summary": "Detailed transcription with timing",
+                  "value": {
+                    "model": "openai/whisper-1",
+                    "file": "<audio_file_binary>",
+                    "language": "en",
+                    "response_format": "verbose_json",
+                    "prompt": "This is a recording of a technical presentation about AI.",
+                    "temperature": 0.0
+                  }
+                },
+                "streaming_transcription": {
+                  "summary": "Streaming transcription",
+                  "value": {
+                    "model": "openai/whisper-1",
+                    "file": "<audio_file_binary>",
+                    "stream": "true",
+                    "response_format": "json"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transcription result or streaming response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostResponse"
+                },
+                "examples": {
+                  "transcription_response": {
+                    "summary": "Transcription response",
+                    "value": {
+                      "object": "audio.transcription",
+                      "text": "Hello, this is a test of audio transcription.",
+                      "language": "english",
+                      "duration": 3.45,
+                      "segments": [
+                        {
+                          "id": 0,
+                          "start": 0.0,
+                          "end": 3.45,
+                          "text": "Hello, this is a test of audio transcription.",
+                          "temperature": 0.0,
+                          "avg_logprob": -0.23,
+                          "compression_ratio": 1.2,
+                          "no_speech_prob": 0.01
+                        }
+                      ],
+                      "usage": {
+                        "total_duration": 3.45
+                      },
+                      "extra_fields": {
+                        "provider": "openai"
+                      }
+                    }
+                  }
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "streaming_transcription": {
+                    "summary": "Streaming transcription chunks",
+                    "value": "data: {\"object\":\"audio.transcription.chunk\",\"text\":\"Hello\",\"type\":\"transcript.text.delta\"}\n\ndata: {\"object\":\"audio.transcription.chunk\",\"text\":\" world\",\"type\":\"transcript.text.delta\"}\n\ndata: [DONE]\n\n"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/openai/v1/audio/speech": {
+      "post": {
+        "summary": "OpenAI Compatible - Create Speech",
+        "description": "OpenAI-compatible speech synthesis endpoint. Drop-in replacement for OpenAI's audio/speech API with identical request/response format.",
+        "operationId": "createOpenAISpeech",
+        "tags": ["OpenAI Integration", "Audio"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAISpeechRequest"
+              },
+              "examples": {
+                "openai_speech": {
+                  "summary": "OpenAI speech synthesis",
+                  "value": {
+                    "model": "tts-1",
+                    "input": "The quick brown fox jumps over the lazy dog.",
+                    "voice": "alloy",
+                    "response_format": "mp3",
+                    "speed": 1.0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Audio data",
+            "content": {
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/audio/speech": {
+      "post": {
+        "summary": "OpenAI Compatible - Create Speech (Alternative)",
+        "description": "Alternative OpenAI-compatible speech synthesis endpoint without version prefix.",
+        "operationId": "createOpenAISpeechAlt",
+        "tags": ["OpenAI Integration", "Audio"],
+        "requestBody": {
+          "$ref": "#/paths/~1openai~1v1~1audio~1speech/post/requestBody"
+        },
+        "responses": {
+          "$ref": "#/paths/~1openai~1v1~1audio~1speech/post/responses"
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/audio/transcriptions": {
+      "post": {
+        "summary": "OpenAI Compatible - Create Transcription",
+        "description": "OpenAI-compatible audio transcription endpoint. Drop-in replacement for OpenAI's audio/transcriptions API with identical request/response format.",
+        "operationId": "createOpenAITranscription",
+        "tags": ["OpenAI Integration", "Audio"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAITranscriptionRequest"
+              },
+              "examples": {
+                "openai_transcription": {
+                  "summary": "OpenAI transcription",
+                  "value": {
+                    "model": "whisper-1",
+                    "file": "<audio_file_binary>",
+                    "language": "en",
+                    "prompt": "Technical presentation about AI",
+                    "response_format": "verbose_json",
+                    "temperature": 0.0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transcription result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAITranscriptionResponse"
+                },
+                "examples": {
+                  "openai_transcription_response": {
+                    "summary": "OpenAI transcription response",
+                    "value": {
+                      "text": "Hello, this is a test of audio transcription.",
+                      "task": "transcribe",
+                      "language": "english", 
+                      "duration": 3.45,
+                      "segments": [
+                        {
+                          "id": 0,
+                          "seek": 0,
+                          "start": 0.0,
+                          "end": 3.45,
+                          "text": "Hello, this is a test of audio transcription.",
+                          "tokens": [15496, 11, 341, 307, 257, 1500, 295, 264, 6278, 35288, 4122, 13],
+                          "temperature": 0.0,
+                          "avg_logprob": -0.23,
+                          "compression_ratio": 1.2,
+                          "no_speech_prob": 0.01
+                        }
+                      ],
+                      "words": [
+                        {"word": "Hello", "start": 0.0, "end": 0.5},
+                        {"word": "this", "start": 0.6, "end": 0.8},
+                        {"word": "is", "start": 0.9, "end": 1.0}
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/audio/transcriptions": {
+      "post": {
+        "summary": "OpenAI Compatible - Create Transcription (Alternative)",
+        "description": "Alternative OpenAI-compatible transcription endpoint without version prefix.",
+        "operationId": "createOpenAITranscriptionAlt",
+        "tags": ["OpenAI Integration", "Audio"],
+        "requestBody": {
+          "$ref": "#/paths/~1openai~1v1~1audio~1transcriptions/post/requestBody"
+        },
+        "responses": {
+          "$ref": "#/paths/~1openai~1v1~1audio~1transcriptions/post/responses"
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/api/mcp/clients": {
@@ -2585,78 +2983,303 @@
             "example": "gpt-4o"
           }
         }
-      }
-    },
-    "responses": {
-      "BadRequest": {
-        "description": "Bad Request - Invalid request format or missing required fields",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/BifrostError"
-            },
-            "example": {
-              "is_bifrost_error": true,
-              "status_code": 400,
-              "error": {
-                "type": "invalid_request_error",
-                "code": "missing_required_parameter",
-                "message": "Provider is required",
-                "param": "provider"
-              }
-            }
+      },
+      "SpeechRequest": {
+        "type": "object",
+        "required": ["model", "input", "voice"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model to use for speech synthesis in 'provider/model' format",
+            "example": "openai/tts-1"
+          },
+          "input": {
+            "type": "string",
+            "description": "Text to convert to speech (max 4096 characters)",
+            "example": "Hello! This is a test of speech synthesis.",
+            "maxLength": 4096
+          },
+          "voice": {
+            "type": "string",
+            "description": "Voice to use for speech synthesis",
+            "enum": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
+            "example": "alloy"
+          },
+          "response_format": {
+            "type": "string",
+            "description": "Audio format for the response",
+            "enum": ["mp3", "opus", "aac", "flac", "wav", "pcm"],
+            "default": "mp3",
+            "example": "mp3"
+          },
+          "instructions": {
+            "type": "string",
+            "description": "Additional instructions for voice synthesis",
+            "example": "Speak slowly and clearly"
+          },
+          "stream_format": {
+            "type": "string",
+            "description": "Enable streaming with Server-Sent Events",
+            "enum": ["sse"],
+            "example": "sse"
           }
         }
       },
-      "Unauthorized": {
-        "description": "Unauthorized - Invalid or missing API key",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/BifrostError"
-            },
-            "example": {
-              "is_bifrost_error": true,
-              "status_code": 401,
-              "error": {
-                "type": "authentication_error",
-                "message": "Invalid API key provided"
-              }
-            }
+      "TranscriptionRequest": {
+        "type": "object",
+        "required": ["model", "file"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model to use for transcription in 'provider/model' format",
+            "example": "openai/whisper-1"
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "Audio file to transcribe (mp3, mp4, mpeg, mpga, m4a, wav, webm, max 25MB)"
+          },
+          "language": {
+            "type": "string",
+            "description": "Language of the input audio (ISO-639-1 format)",
+            "example": "en"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Optional text to guide the model's style or continue a previous audio segment",
+            "example": "This is a recording of a technical presentation about AI."
+          },
+          "response_format": {
+            "type": "string",
+            "description": "Format of the transcript output",
+            "enum": ["json", "text", "srt", "verbose_json", "vtt"],
+            "default": "json",
+            "example": "verbose_json"
+          },
+          "temperature": {
+            "type": "number",
+            "description": "Sampling temperature (0 to 1)",
+            "minimum": 0,
+            "maximum": 1,
+            "example": 0.0
+          },
+          "stream": {
+            "type": "string",
+            "description": "Enable streaming transcription",
+            "enum": ["true", "false"],
+            "example": "true"
           }
         }
       },
-      "RateLimited": {
-        "description": "Too Many Requests - Rate limit exceeded",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/BifrostError"
-            },
-            "example": {
-              "is_bifrost_error": false,
-              "status_code": 429,
-              "error": {
-                "type": "rate_limit_error",
-                "message": "Rate limit exceeded. Please try again later."
-              }
-            }
+      "OpenAISpeechRequest": {
+        "type": "object",
+        "required": ["model", "input", "voice"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "TTS model to use",
+            "enum": ["tts-1", "tts-1-hd"],
+            "example": "tts-1"
+          },
+          "input": {
+            "type": "string",
+            "description": "Text to generate audio for (max 4096 characters)",
+            "example": "The quick brown fox jumped over the lazy dog.",
+            "maxLength": 4096
+          },
+          "voice": {
+            "type": "string",
+            "description": "Voice to use when generating the audio",
+            "enum": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
+            "example": "alloy"
+          },
+          "response_format": {
+            "type": "string",
+            "description": "Format to audio in",
+            "enum": ["mp3", "opus", "aac", "flac", "wav", "pcm"],
+            "default": "mp3",
+            "example": "mp3"
+          },
+          "speed": {
+            "type": "number",
+            "description": "Speed of the generated audio (0.25 to 4.0)",
+            "minimum": 0.25,
+            "maximum": 4.0,
+            "default": 1.0,
+            "example": 1.0
+          },
+          "instructions": {
+            "type": "string",
+            "description": "Additional instructions for voice synthesis",
+            "example": "Speak slowly and clearly"
+          },
+          "stream_format": {
+            "type": "string",
+            "description": "Enable streaming with Server-Sent Events",
+            "enum": ["sse"],
+            "example": "sse"
           }
         }
       },
-      "InternalServerError": {
-        "description": "Internal Server Error - Server or provider error",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/BifrostError"
+      "OpenAITranscriptionRequest": {
+        "type": "object",
+        "required": ["model", "file"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "ID of the model to use",
+            "enum": ["whisper-1"],
+            "example": "whisper-1"
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "Audio file object to transcribe (mp3, mp4, mpeg, mpga, m4a, wav, webm, max 25MB)"
+          },
+          "language": {
+            "type": "string",
+            "description": "Language of the input audio (ISO-639-1 format)",
+            "example": "en"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Optional text to guide the model's style or continue a previous audio segment",
+            "example": "ZyntriQix, Digique Plus, CynapseFive, VortiQore V8, EchoNix Pro, CyberLeap"
+          },
+          "response_format": {
+            "type": "string",
+            "description": "Format of the transcript output",
+            "enum": ["json", "text", "srt", "verbose_json", "vtt"],
+            "default": "json",
+            "example": "json"
+          },
+          "temperature": {
+            "type": "number",
+            "description": "Sampling temperature (0 to 1)",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0,
+            "example": 0
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["segments"]
             },
-            "example": {
-              "is_bifrost_error": true,
-              "status_code": 500,
-              "error": {
-                "type": "api_error",
-                "message": "Internal server error occurred"
+            "description": "Additional data to include in the response"
+          },
+          "timestamp_granularities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["word", "segment"]
+            },
+            "description": "Timestamp granularities to populate for this transcription",
+            "default": ["segment"]
+          },
+          "stream": {
+            "type": "boolean",
+            "description": "Enable streaming transcription",
+            "default": false,
+            "example": false
+          }
+        }
+      },
+      "OpenAITranscriptionResponse": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The transcribed text",
+            "example": "Imagine the wildest idea that you've ever had, and you're curious about how it might scale to something that's a 100, a 1,000 times bigger."
+          },
+          "task": {
+            "type": "string",
+            "description": "Task that was performed",
+            "example": "transcribe"
+          },
+          "language": {
+            "type": "string",
+            "description": "Detected language of the input audio",
+            "example": "english"
+          },
+          "duration": {
+            "type": "number",
+            "description": "Duration of the input audio in seconds",
+            "example": 8.470000267028809
+          },
+          "segments": {
+            "type": "array",
+            "description": "Segments of the transcribed text and their corresponding details",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "description": "Unique identifier of the segment"
+                },
+                "seek": {
+                  "type": "integer",
+                  "description": "Seek offset of the segment"
+                },
+                "start": {
+                  "type": "number",
+                  "description": "Start time of the segment in seconds"
+                },
+                "end": {
+                  "type": "number",
+                  "description": "End time of the segment in seconds"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Text content of the segment"
+                },
+                "tokens": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "description": "Array of token IDs for the text content"
+                },
+                "temperature": {
+                  "type": "number",
+                  "description": "Temperature parameter used for generating the segment"
+                },
+                "avg_logprob": {
+                  "type": "number",
+                  "description": "Average logprob of the segment"
+                },
+                "compression_ratio": {
+                  "type": "number",
+                  "description": "Compression ratio of the segment"
+                },
+                "no_speech_prob": {
+                  "type": "number",
+                  "description": "Probability of no speech in the segment"
+                }
+              }
+            }
+          },
+          "words": {
+            "type": "array",
+            "description": "Individual words and their corresponding timestamps",
+            "items": {
+              "type": "object",
+              "properties": {
+                "word": {
+                  "type": "string",
+                  "description": "The text content of the word"
+                },
+                "start": {
+                  "type": "number",
+                  "description": "Start time of the word in seconds"
+                },
+                "end": {
+                  "type": "number",
+                  "description": "End time of the word in seconds"
+                }
               }
             }
           }
@@ -2672,6 +3295,10 @@
     {
       "name": "Text Completions",
       "description": "Create text completions from prompts"
+    },
+    {
+      "name": "Audio",
+      "description": "Speech synthesis and audio transcription"
     },
     {
       "name": "MCP Tools",
@@ -2717,5 +3344,81 @@
       "name": "Monitoring",
       "description": "Monitoring and observability endpoint"
     }
-  ]
+  ],
+  "responses": {
+    "BadRequest": {
+      "description": "Bad Request - Invalid request format or missing required fields",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/BifrostError"
+          },
+          "example": {
+            "is_bifrost_error": true,
+            "status_code": 400,
+            "error": {
+              "type": "invalid_request_error",
+              "code": "missing_required_parameter",
+              "message": "Provider is required",
+              "param": "provider"
+            }
+          }
+        }
+      }
+    },
+    "Unauthorized": {
+      "description": "Unauthorized - Invalid or missing API key",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/BifrostError"
+          },
+          "example": {
+            "is_bifrost_error": true,
+            "status_code": 401,
+            "error": {
+              "type": "authentication_error",
+              "message": "Invalid API key provided"
+            }
+          }
+        }
+      }
+    },
+    "RateLimited": {
+      "description": "Too Many Requests - Rate limit exceeded",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/BifrostError"
+          },
+          "example": {
+            "is_bifrost_error": false,
+            "status_code": 429,
+            "error": {
+              "type": "rate_limit_error",
+              "message": "Rate limit exceeded. Please try again later."
+            }
+          }
+        }
+      }
+    },
+    "InternalServerError": {
+      "description": "Internal Server Error - Server or provider error",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/BifrostError"
+          },
+          "example": {
+            "is_bifrost_error": true,
+            "status_code": 500,
+            "error": {
+              "type": "api_error",
+              "message": "Internal server error occurred"
+            }
+          }
+        }
+      }
+    }
+  }
 }

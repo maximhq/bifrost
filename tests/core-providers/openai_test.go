@@ -34,6 +34,10 @@ func TestOpenAI(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       true,
+			SpeechSynthesisStream: true,
+			Transcription:         false,
+			TranscriptionStream:   false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},

@@ -207,6 +207,211 @@ multimodalContent := schemas.MessageContent{
 
 ---
 
+## 🔊 Audio Schemas
+
+### **SpeechInput**
+
+Input structure for speech synthesis (text-to-speech):
+
+```go
+type SpeechInput struct {
+    Input          string           `json:"input"`                       // Required: Text to convert to speech
+    VoiceConfig    SpeechVoiceInput `json:"voice"`                      // Required: Voice configuration
+    Instructions   string           `json:"instructions,omitempty"`      // Optional: Additional voice instructions
+    ResponseFormat string           `json:"response_format,omitempty"`   // Optional: Audio format (default: "mp3")
+}
+
+type SpeechVoiceInput struct {
+    Voice            *string       // Simple voice selection
+    MultiVoiceConfig []VoiceConfig // Multi-voice configuration
+}
+
+type VoiceConfig struct {
+    Speaker string `json:"speaker"` // Speaker identifier
+    Voice   string `json:"voice"`   // Voice name
+}
+
+// Simple voice usage
+speechInput := &schemas.SpeechInput{
+    Input: "Hello, this is a test of speech synthesis.",
+    VoiceConfig: schemas.SpeechVoiceInput{
+        Voice: &[]string{"alloy"}[0],
+    },
+    ResponseFormat: "mp3",
+}
+
+// Multi-voice configuration (for complex scenarios)
+multiVoiceSpeech := &schemas.SpeechInput{
+    Input: "This is a conversation between two speakers.",
+    VoiceConfig: schemas.SpeechVoiceInput{
+        MultiVoiceConfig: []schemas.VoiceConfig{
+            {Speaker: "narrator", Voice: "alloy"},
+            {Speaker: "character", Voice: "nova"},
+        },
+    },
+    Instructions: "Use different voices for each speaker.",
+    ResponseFormat: "wav",
+}
+
+// Available voices for OpenAI:
+// "alloy", "echo", "fable", "onyx", "nova", "shimmer"
+
+// Available response formats:
+// "mp3" (default), "opus", "aac", "flac", "wav", "pcm"
+```
+
+### **TranscriptionInput**
+
+Input structure for audio transcription (speech-to-text):
+
+```go
+type TranscriptionInput struct {
+    File           []byte  `json:"file"`                         // Required: Audio file binary data
+    Language       *string `json:"language,omitempty"`           // Optional: Language code (e.g., "en", "es")
+    Prompt         *string `json:"prompt,omitempty"`             // Optional: Context prompt for transcription
+    ResponseFormat *string `json:"response_format,omitempty"`    // Optional: Response format (default: "json")
+}
+
+// Read audio file
+audioData, err := os.ReadFile("speech.mp3")
+if err != nil {
+    log.Fatal(err)
+}
+
+transcriptionInput := &schemas.TranscriptionInput{
+    File:           audioData,
+    Language:       &[]string{"en"}[0],
+    Prompt:         &[]string{"This is a recording of a weather report."}[0],
+    ResponseFormat: &[]string{"verbose_json"}[0],
+}
+
+// Available response formats:
+// "json" (default), "text", "srt", "verbose_json", "vtt"
+
+// Supported audio formats:
+// mp3, mp4, mpeg, mpga, m4a, wav, webm
+```
+
+### **BifrostSpeech**
+
+Response structure for speech synthesis:
+
+```go
+type BifrostSpeech struct {
+    Usage *AudioLLMUsage `json:"usage,omitempty"` // Usage statistics
+    Audio []byte         `json:"audio"`           // Binary audio data
+
+    *BifrostSpeechStreamResponse // For streaming responses
+}
+
+type BifrostSpeechStreamResponse struct {
+    Type string `json:"type"` // Stream event type
+}
+
+// Access speech response
+response, err := client.SpeechRequest(ctx, speechRequest)
+if err != nil {
+    log.Fatal(err)
+}
+
+if response.Speech != nil {
+    // Save audio to file
+    err = os.WriteFile("output.mp3", response.Speech.Audio, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Check usage information
+    if response.Speech.Usage != nil {
+        fmt.Printf("Audio duration: %.2fs\n", response.Speech.Usage.TotalDuration)
+    }
+}
+```
+
+### **BifrostTranscribe**
+
+Response structure for audio transcription:
+
+```go
+type BifrostTranscribe struct {
+    // Common fields for both streaming and non-streaming
+    Text     string                 `json:"text"`              // Transcribed text
+    LogProbs []TranscriptionLogProb `json:"logprobs,omitempty"` // Log probabilities
+    Usage    *TranscriptionUsage    `json:"usage,omitempty"`    // Usage statistics
+
+    // Non-streaming specific fields
+    *BifrostTranscribeNonStreamResponse
+    // Streaming specific fields  
+    *BifrostTranscribeStreamResponse
+}
+
+type BifrostTranscribeNonStreamResponse struct {
+    Task     *string                `json:"task,omitempty"`     // e.g., "transcribe"
+    Language *string                `json:"language,omitempty"` // Detected language
+    Duration *float64               `json:"duration,omitempty"` // Audio duration in seconds
+    Words    []TranscriptionWord    `json:"words,omitempty"`    // Word-level timing
+    Segments []TranscriptionSegment `json:"segments,omitempty"` // Segment-level breakdown
+}
+
+type TranscriptionWord struct {
+    Word  string  `json:"word"`  // Word text
+    Start float64 `json:"start"` // Start time in seconds
+    End   float64 `json:"end"`   // End time in seconds
+}
+
+type TranscriptionSegment struct {
+    ID               int     `json:"id"`                // Segment ID
+    Seek             int     `json:"seek"`              // Seek position
+    Start            float64 `json:"start"`             // Start time in seconds
+    End              float64 `json:"end"`               // End time in seconds
+    Text             string  `json:"text"`              // Segment text
+    Tokens           []int   `json:"tokens"`            // Token IDs
+    Temperature      float64 `json:"temperature"`       // Temperature used
+    AvgLogProb       float64 `json:"avg_logprob"`       // Average log probability
+    CompressionRatio float64 `json:"compression_ratio"` // Compression ratio
+    NoSpeechProb     float64 `json:"no_speech_prob"`    // No speech probability
+}
+
+// Access transcription response
+response, err := client.TranscriptionRequest(ctx, transcriptionRequest)
+if err != nil {
+    log.Fatal(err)
+}
+
+if response.Transcribe != nil {
+    // Get transcribed text
+    fmt.Printf("Transcription: %s\n", response.Transcribe.Text)
+
+    // Check detected language
+    if response.Transcribe.Language != nil {
+        fmt.Printf("Language: %s\n", *response.Transcribe.Language)
+    }
+
+    // Check duration
+    if response.Transcribe.Duration != nil {
+        fmt.Printf("Duration: %.2fs\n", *response.Transcribe.Duration)
+    }
+
+    // Process word-level timing (if available)
+    for _, word := range response.Transcribe.Words {
+        fmt.Printf("[%.2fs-%.2fs]: %s\n", word.Start, word.End, word.Word)
+    }
+
+    // Process segments (if available)
+    for _, segment := range response.Transcribe.Segments {
+        fmt.Printf("Segment %d [%.2fs-%.2fs]: %s\n", 
+            segment.ID, segment.Start, segment.End, segment.Text)
+    }
+
+    // Check usage information
+    if response.Transcribe.Usage != nil {
+        fmt.Printf("Processing duration: %.2fs\n", response.Transcribe.Usage.TotalDuration)
+    }
+}
+```
+
+---
+
 ## 🔧 Configuration Schemas
 
 ### **BifrostConfig**

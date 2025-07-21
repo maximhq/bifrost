@@ -17,6 +17,10 @@ func providerRequiresKey(providerKey schemas.ModelProvider) bool {
 	return providerKey != schemas.Ollama && providerKey != schemas.SGL
 }
 
+func isStreamRequestType(reqType RequestType) bool {
+	return reqType == ChatCompletionStreamRequest || reqType == SpeechStreamRequest || reqType == TranscriptionStreamRequest
+}
+
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
 func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration {
 	// Calculate an exponential backoff: initial * 2^attempt

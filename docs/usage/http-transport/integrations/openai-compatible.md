@@ -239,6 +239,218 @@ response = client.chat.completions.create(
 )
 ```
 
+### **🔊 Audio - Speech Synthesis (Text-to-Speech)**
+
+```python
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key=openai_key
+)
+
+# Basic speech synthesis
+response = client.audio.speech.create(
+    model="tts-1",
+    voice="alloy",
+    input="Hello! This is a test of Bifrost's speech synthesis feature."
+)
+
+# Save the audio to a file
+with open("speech.mp3", "wb") as f:
+    f.write(response.content)
+
+# With different voice and format
+response = client.audio.speech.create(
+    model="tts-1-hd",  # Higher quality model
+    voice="nova",
+    input="The weather today is sunny with a chance of rain.",
+    response_format="wav"
+)
+
+with open("weather.wav", "wb") as f:
+    f.write(response.content)
+```
+
+**JavaScript Example:**
+
+```javascript
+import OpenAI from "openai";
+import fs from "fs";
+
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Generate speech
+const mp3 = await openai.audio.speech.create({
+  model: "tts-1",
+  voice: "alloy",
+  input: "Today is a wonderful day to build something people love!"
+});
+
+// Save to file
+const buffer = Buffer.from(await mp3.arrayBuffer());
+await fs.promises.writeFile("speech.mp3", buffer);
+```
+
+**cURL Example:**
+
+```bash
+curl -X POST http://localhost:8080/openai/v1/audio/speech \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "The quick brown fox jumped over the lazy dog.",
+    "voice": "alloy"
+  }' \
+  --output speech.mp3
+```
+
+**Available Voices:**
+- `alloy` - Neutral, balanced voice
+- `echo` - Clear, expressive voice  
+- `fable` - Warm, narrative voice
+- `onyx` - Deep, authoritative voice
+- `nova` - Vibrant, engaging voice
+- `shimmer` - Gentle, soothing voice
+
+**Supported Audio Formats:**
+- `mp3` (default) - Most compatible
+- `opus` - Internet streaming
+- `aac` - Digital audio compression
+- `flac` - Lossless audio
+- `wav` - Uncompressed audio
+- `pcm` - Raw audio data
+
+### **🎤 Audio - Transcription (Speech-to-Text)**
+
+```python
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key=openai_key
+)
+
+# Basic transcription
+audio_file = open("speech.mp3", "rb")
+transcript = client.audio.transcriptions.create(
+    model="whisper-1",
+    file=audio_file
+)
+print(transcript.text)
+
+# With additional parameters
+audio_file = open("speech.wav", "rb")
+transcript = client.audio.transcriptions.create(
+    model="whisper-1",
+    file=audio_file,
+    language="en",  # Optional: specify language
+    prompt="This is a transcription of a weather report.",  # Optional: context
+    response_format="verbose_json",  # Get detailed response
+    temperature=0.0  # More deterministic output
+)
+
+print(f"Text: {transcript.text}")
+print(f"Language: {transcript.language}")
+print(f"Duration: {transcript.duration}s")
+
+# Process segments for timing information
+for segment in transcript.segments:
+    print(f"[{segment.start:.2f}s - {segment.end:.2f}s]: {segment.text}")
+```
+
+**JavaScript Example:**
+
+```javascript
+import OpenAI from "openai";
+import fs from "fs";
+
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Transcribe audio file
+const transcription = await openai.audio.transcriptions.create({
+  file: fs.createReadStream("audio.mp3"),
+  model: "whisper-1",
+  language: "en",
+  response_format: "verbose_json"
+});
+
+console.log(`Transcription: ${transcription.text}`);
+console.log(`Language: ${transcription.language}`);
+console.log(`Duration: ${transcription.duration}s`);
+```
+
+**cURL Example:**
+
+```bash
+curl -X POST http://localhost:8080/openai/v1/audio/transcriptions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -F file="@audio.mp3" \
+  -F model="whisper-1" \
+  -F language="en" \
+  -F response_format="json"
+```
+
+**Response Formats:**
+- `json` (default) - Basic JSON with text
+- `text` - Plain text only
+- `srt` - SubRip subtitle format
+- `verbose_json` - Detailed JSON with timing and metadata
+- `vtt` - WebVTT subtitle format
+
+**Supported Audio Formats:**
+- `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`
+- File uploads are limited to 25 MB
+
+### **🎵 Audio Round-Trip Example**
+
+Complete workflow from text → speech → text:
+
+```python
+import openai
+import tempfile
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key=openai_key
+)
+
+# Step 1: Convert text to speech
+original_text = "The quick brown fox jumps over the lazy dog."
+speech_response = client.audio.speech.create(
+    model="tts-1",
+    voice="alloy",
+    input=original_text,
+    response_format="wav"
+)
+
+# Step 2: Save speech to temporary file
+with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+    temp_audio.write(speech_response.content)
+    temp_audio_path = temp_audio.name
+
+# Step 3: Transcribe speech back to text
+with open(temp_audio_path, "rb") as audio_file:
+    transcription = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=audio_file
+    )
+
+print(f"Original: {original_text}")
+print(f"Transcribed: {transcription.text}")
+
+# Cleanup
+import os
+os.unlink(temp_audio_path)
+```
+
 ---
 
 ## 🔧 Advanced Usage

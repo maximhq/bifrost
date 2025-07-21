@@ -27,8 +27,43 @@ type OpenAIChatRequest struct {
 	Seed             *int                     `json:"seed,omitempty"`
 }
 
+// OpenAISpeechRequest represents an OpenAI speech synthesis request
+type OpenAISpeechRequest struct {
+	Model          string   `json:"model"`
+	Input          string   `json:"input"`
+	Voice          string   `json:"voice"`
+	ResponseFormat *string  `json:"response_format,omitempty"`
+	Speed          *float64 `json:"speed,omitempty"`
+	Instructions   *string  `json:"instructions,omitempty"`
+	StreamFormat   *string  `json:"stream_format,omitempty"`
+}
+
+// OpenAITranscriptionRequest represents an OpenAI transcription request
+// Note: This is used for JSON body parsing, actual form parsing is handled in the router
+type OpenAITranscriptionRequest struct {
+	Model                  string   `json:"model"`
+	File                   []byte   `json:"file"` // Binary audio data
+	Language               *string  `json:"language,omitempty"`
+	Prompt                 *string  `json:"prompt,omitempty"`
+	ResponseFormat         *string  `json:"response_format,omitempty"`
+	Temperature            *float64 `json:"temperature,omitempty"`
+	Include                []string `json:"include,omitempty"`
+	TimestampGranularities []string `json:"timestamp_granularities,omitempty"`
+	Stream                 *bool    `json:"stream,omitempty"`
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *OpenAIChatRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
+}
+
+// IsStreamingRequested implements the StreamingRequest interface for speech
+func (r *OpenAISpeechRequest) IsStreamingRequested() bool {
+	return r.StreamFormat != nil && *r.StreamFormat == "sse"
+}
+
+// IsStreamingRequested implements the StreamingRequest interface for transcription
+func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
@@ -110,6 +145,76 @@ func (r *OpenAIChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 	return bifrostReq
 }
 
+// ConvertToBifrostRequest converts an OpenAI speech request to Bifrost format
+func (r *OpenAISpeechRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
+	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI)
+
+	// Create speech input
+	speechInput := &schemas.SpeechInput{
+		Input: r.Input,
+		VoiceConfig: schemas.SpeechVoiceInput{
+			Voice: &r.Voice,
+		},
+	}
+
+	// Set response format if provided
+	if r.ResponseFormat != nil {
+		speechInput.ResponseFormat = *r.ResponseFormat
+	}
+
+	// Set instructions if provided
+	if r.Instructions != nil {
+		speechInput.Instructions = *r.Instructions
+	}
+
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: provider,
+		Model:    model,
+		Input: schemas.RequestInput{
+			SpeechInput: speechInput,
+		},
+	}
+
+	// Map parameters
+	bifrostReq.Params = r.convertSpeechParameters()
+
+	return bifrostReq
+}
+
+// ConvertToBifrostRequest converts an OpenAI transcription request to Bifrost format
+func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
+	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI)
+
+	// Create transcription input
+	transcriptionInput := &schemas.TranscriptionInput{
+		File: r.File,
+	}
+
+	// Set optional fields
+	if r.Language != nil {
+		transcriptionInput.Language = r.Language
+	}
+	if r.Prompt != nil {
+		transcriptionInput.Prompt = r.Prompt
+	}
+	if r.ResponseFormat != nil {
+		transcriptionInput.ResponseFormat = r.ResponseFormat
+	}
+
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: provider,
+		Model:    model,
+		Input: schemas.RequestInput{
+			TranscriptionInput: transcriptionInput,
+		},
+	}
+
+	// Map parameters
+	bifrostReq.Params = r.convertTranscriptionParameters()
+
+	return bifrostReq
+}
+
 // convertParameters converts OpenAI request parameters to Bifrost ModelParameters
 // using direct field access for better performance and type safety.
 func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
@@ -164,6 +269,40 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 	return params
 }
 
+// convertSpeechParameters converts OpenAI speech request parameters to Bifrost ModelParameters
+func (r *OpenAISpeechRequest) convertSpeechParameters() *schemas.ModelParameters {
+	params := &schemas.ModelParameters{
+		ExtraParams: make(map[string]interface{}),
+	}
+
+	// Add speech-specific parameters
+	if r.Speed != nil {
+		params.ExtraParams["speed"] = *r.Speed
+	}
+
+	return params
+}
+
+// convertTranscriptionParameters converts OpenAI transcription request parameters to Bifrost ModelParameters
+func (r *OpenAITranscriptionRequest) convertTranscriptionParameters() *schemas.ModelParameters {
+	params := &schemas.ModelParameters{
+		ExtraParams: make(map[string]interface{}),
+	}
+
+	// Add transcription-specific parameters
+	if r.Temperature != nil {
+		params.ExtraParams["temperature"] = *r.Temperature
+	}
+	if len(r.TimestampGranularities) > 0 {
+		params.ExtraParams["timestamp_granularities"] = r.TimestampGranularities
+	}
+	if len(r.Include) > 0 {
+		params.ExtraParams["include"] = r.Include
+	}
+
+	return params
+}
+
 // DeriveOpenAIFromBifrostResponse converts a Bifrost response to OpenAI format
 func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIChatResponse {
 	if bifrostResp == nil {
@@ -182,6 +321,23 @@ func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *Open
 	}
 
 	return openaiResp
+}
+
+// DeriveOpenAISpeechFromBifrostResponse converts a Bifrost speech response to OpenAI format
+func DeriveOpenAISpeechFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *schemas.BifrostSpeech {
+	if bifrostResp == nil || bifrostResp.Speech == nil {
+		return nil
+	}
+
+	return bifrostResp.Speech
+}
+
+// DeriveOpenAITranscriptionFromBifrostResponse converts a Bifrost transcription response to OpenAI format
+func DeriveOpenAITranscriptionFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *schemas.BifrostTranscribe {
+	if bifrostResp == nil || bifrostResp.Transcribe == nil {
+		return nil
+	}
+	return bifrostResp.Transcribe
 }
 
 // DeriveOpenAIErrorFromBifrostError derives a OpenAIChatError from a BifrostError

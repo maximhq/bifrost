@@ -4,6 +4,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -28,6 +29,10 @@ type TestScenarios struct {
 	MultipleImages        bool
 	CompleteEnd2End       bool
 	ProviderSpecific      bool
+	SpeechSynthesis       bool // Text-to-speech functionality
+	SpeechSynthesisStream bool // Streaming text-to-speech functionality
+	Transcription         bool // Speech-to-text functionality
+	TranscriptionStream   bool // Streaming speech-to-text functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -69,13 +74,13 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 }
 
 // GetKeysForProvider returns the API keys and associated models for a given provider.
-func (account *ComprehensiveTestAccount) GetKeysForProvider(providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	switch providerKey {
 	case schemas.OpenAI:
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("OPENAI_API_KEY"),
-				Models: []string{"gpt-4o-mini", "gpt-4-turbo"},
+				Models: []string{},
 				Weight: 1.0,
 			},
 		}, nil
@@ -281,6 +286,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       true,  // OpenAI supports TTS
+			SpeechSynthesisStream: true,  // OpenAI supports streaming TTS
+			Transcription:         false, // OpenAI supports STT with Whisper
+			TranscriptionStream:   false, // OpenAI supports streaming STT
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -304,6 +313,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -327,6 +340,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -350,6 +367,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        false, // Check if supported
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -373,6 +394,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported yet
+			SpeechSynthesisStream: false, // Not supported yet
+			Transcription:         false, // Not supported yet
+			TranscriptionStream:   false, // Not supported yet
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -396,6 +421,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -418,6 +447,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -441,6 +474,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -464,6 +501,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

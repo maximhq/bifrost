@@ -31,24 +31,41 @@ The Bifrost integration tests use a centralized configuration system that routes
 - **⚙️ Flexible Execution**: Selective test running with command-line flags
 - **🛡️ Robust Error Handling**: Graceful error handling and detailed error reporting
 - **🎯 Production-Ready**: Async support, timeouts, retries, and logging
+- **🎵 Speech & Audio Support**: Text-to-speech synthesis and speech-to-text transcription testing
 
 ## 📋 Test Categories
 
-Our test suite covers 13 comprehensive scenarios for each integration:
+Our test suite covers 21 comprehensive scenarios for each integration:
 
+### Core Chat & Conversation Tests
 1. **Simple Chat** - Basic single-message conversations
 2. **Multi-turn Conversation** - Conversation history and context retention
-3. **Single Tool Call** - Basic function calling capabilities
-4. **Multiple Tool Calls** - Multiple tools in single request
-5. **End-to-End Tool Calling** - Complete tool workflow with results
-6. **Automatic Function Calling** - Integration-managed tool execution
-7. **Image Analysis (URL)** - Image processing from URLs
-8. **Image Analysis (Base64)** - Image processing from base64 data
-9. **Multiple Images** - Multi-image analysis and comparison
-10. **Complex End-to-End** - Comprehensive multimodal workflows
-11. **Integration-Specific Features** - Integration-unique capabilities
-12. **Error Handling** - Invalid request error processing and propagation
-13. **Streaming** - Real-time streaming responses and tool calls
+3. **Streaming** - Real-time streaming responses and tool calls
+
+### Tool Calling & Function Tests
+4. **Single Tool Call** - Basic function calling capabilities
+5. **Multiple Tool Calls** - Multiple tools in single request
+6. **End-to-End Tool Calling** - Complete tool workflow with results
+7. **Automatic Function Calling** - Integration-managed tool execution
+
+### Image & Vision Tests
+8. **Image Analysis (URL)** - Image processing from URLs
+9. **Image Analysis (Base64)** - Image processing from base64 data
+10. **Multiple Images** - Multi-image analysis and comparison
+
+### Speech & Audio Tests (OpenAI)
+11. **Speech Synthesis** - Text-to-speech conversion with different voices
+12. **Audio Transcription** - Speech-to-text conversion with multiple formats
+13. **Transcription Streaming** - Real-time transcription processing
+14. **Speech Round-Trip** - Complete text→speech→text workflow validation
+15. **Speech Error Handling** - Invalid voice, model, and input error handling
+16. **Transcription Error Handling** - Invalid audio format and model error handling
+17. **Voice & Format Testing** - Multiple voices and audio format validation
+
+### Integration & Error Tests
+19. **Complex End-to-End** - Comprehensive multimodal workflows
+20. **Integration-Specific Features** - Integration-unique capabilities
+21. **Error Handling** - Invalid request error processing and propagation
 
 ## 📁 Directory Structure
 
@@ -58,6 +75,7 @@ transports-integrations/
 ├── requirements.txt             # Python dependencies
 ├── run_all_tests.py            # Test runner script
 ├── run_integration_tests.py    # Integration-specific test runner
+├── test_audio.py # Speech & transcription test runner
 ├── pytest.ini                  # Pytest configuration
 ├── Makefile                     # Convenience commands
 ├── tests/
@@ -269,7 +287,11 @@ models:
     chat: "gpt-3.5-turbo"
     vision: "gpt-4o"
     tools: "gpt-3.5-turbo"
+    speech: "tts-1"
+    transcription: "whisper-1"
     alternatives: ["gpt-4", "gpt-4-turbo-preview", "gpt-4o", "gpt-4o-mini"]
+    speech_alternatives: ["tts-1-hd"]
+    transcription_alternatives: ["whisper-1"]
 ```
 
 #### API Settings
@@ -298,6 +320,315 @@ openai_url = get_integration_url("openai")
 ```
 
 #### Getting Model Names
+
+```python
+from tests.utils.config_loader import get_model
+
+# Get different model types
+chat_model = get_model("openai", "chat")          # "gpt-3.5-turbo"
+vision_model = get_model("openai", "vision")      # "gpt-4o"
+speech_model = get_model("openai", "speech")      # "tts-1"
+transcription_model = get_model("openai", "transcription")  # "whisper-1"
+```
+
+## 🎵 Speech & Transcription Testing
+
+The test suite includes comprehensive speech synthesis and transcription testing for supported integrations (currently OpenAI).
+
+### Speech & Audio Test Categories
+
+#### 1. Speech Synthesis (Text-to-Speech)
+- **Basic synthesis**: Convert text to audio with different voices
+- **Format testing**: Multiple audio formats (MP3, WAV, Opus)
+- **Voice validation**: Test all available voices (alloy, echo, fable, onyx, nova, shimmer)
+- **Parameter testing**: Response format, voice settings, and quality options
+
+#### 2. Speech Streaming
+- **Real-time generation**: Streaming audio synthesis for large texts
+- **Chunk validation**: Verify audio chunk integrity and format
+- **Performance testing**: Measure streaming latency and throughput
+
+#### 3. Audio Transcription (Speech-to-Text)
+- **File format support**: WAV, MP3, and other audio formats
+- **Language detection**: Multi-language transcription capabilities
+- **Parameter testing**: Language hints, response formats, temperature settings
+- **Quality validation**: Transcription accuracy and completeness
+
+#### 4. Transcription Streaming
+- **Real-time processing**: Streaming transcription for long audio files
+- **Progressive results**: Incremental text output validation
+- **Error handling**: Network interruption and recovery testing
+
+#### 5. Round-Trip Testing
+- **Complete workflow**: Text → Speech → Transcription → Text validation
+- **Accuracy measurement**: Compare original text with round-trip result
+- **Quality assessment**: Measure transcription fidelity and word preservation
+
+### Running Speech & Transcription Tests
+
+#### Quick Start
+
+```bash
+# Run all speech and transcription tests
+python test_audio.py
+
+# Run with verbose output
+python test_audio.py --verbose
+
+# Run specific test
+python test_audio.py --test test_14_speech_synthesis
+
+# List available tests
+python test_audio.py --list
+```
+
+#### Individual Test Examples
+
+```bash
+# Test speech synthesis
+pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_14_speech_synthesis -v
+
+# Test transcription
+pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_16_transcription_audio -v
+
+# Test round-trip workflow
+pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_18_speech_transcription_round_trip -v
+
+# Test error handling
+pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_19_speech_error_handling -v
+pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_20_transcription_error_handling -v
+```
+
+#### Available Test Audio Types
+
+1. **Sine Wave**: Pure tone audio for basic testing
+2. **Chord**: Multi-frequency audio for complex signal testing
+3. **Frequency Sweep**: Variable frequency audio for range testing
+4. **White Noise**: Random audio for noise handling testing
+5. **Silence**: Empty audio for edge case testing
+6. **Various Durations**: Short (0.5s) to long (10s) audio files
+
+### Speech & Transcription Configuration
+
+#### Model Configuration
+
+```yaml
+models:
+  openai:
+    speech: "tts-1"                    # Default speech synthesis model
+    transcription: "whisper-1"         # Default transcription model
+    speech_alternatives: ["tts-1-hd"]  # Higher quality speech model
+    transcription_alternatives: ["whisper-1"]  # Alternative transcription models
+
+# Model capabilities
+model_capabilities:
+  "tts-1":
+    speech: true
+    streaming: false  # Streaming support varies
+    max_tokens: null
+    context_window: null
+
+  "whisper-1":
+    transcription: true
+    streaming: false  # Streaming support varies
+    max_tokens: null
+    context_window: null
+```
+
+#### Test Settings
+
+```yaml
+test_settings:
+  max_tokens:
+    speech: null          # Speech doesn't use token limits
+    transcription: null   # Transcription doesn't use token limits
+
+  timeouts:
+    speech: 60           # Speech generation timeout
+    transcription: 60    # Transcription processing timeout
+```
+
+### Speech Test Examples
+
+#### Basic Speech Synthesis
+
+```python
+# Test basic speech synthesis
+response = openai_client.audio.speech.create(
+    model="tts-1",
+    voice="alloy",
+    input="Hello, this is a test of speech synthesis.",
+)
+audio_content = response.content
+assert len(audio_content) > 1000  # Ensure substantial audio data
+```
+
+#### Transcription Testing
+
+```python
+# Test audio transcription
+test_audio = generate_test_audio()  # Generate test WAV file
+response = openai_client.audio.transcriptions.create(
+    model="whisper-1",
+    file=("test.wav", test_audio, "audio/wav"),
+    language="en",
+)
+transcribed_text = response.text
+assert len(transcribed_text) > 0  # Ensure transcription occurred
+```
+
+#### Round-Trip Validation
+
+```python
+# Complete round-trip test
+original_text = "The quick brown fox jumps over the lazy dog."
+
+# Step 1: Text to speech
+speech_response = openai_client.audio.speech.create(
+    model="tts-1",
+    voice="alloy",
+    input=original_text,
+    response_format="wav",
+)
+
+# Step 2: Speech to text
+transcription_response = openai_client.audio.transcriptions.create(
+    model="whisper-1",
+    file=("speech.wav", speech_response.content, "audio/wav"),
+)
+
+# Step 3: Validate similarity
+transcribed_text = transcription_response.text
+# Check for key word preservation (allowing for transcription variations)
+```
+
+### Error Handling Tests
+
+#### Speech Synthesis Errors
+
+```python
+# Test invalid voice
+with pytest.raises(Exception):
+    openai_client.audio.speech.create(
+        model="tts-1",
+        voice="invalid_voice",
+        input="This should fail",
+    )
+
+# Test empty input
+with pytest.raises(Exception):
+    openai_client.audio.speech.create(
+        model="tts-1",
+        voice="alloy",
+        input="",
+    )
+```
+
+#### Transcription Errors
+
+```python
+# Test invalid audio format
+invalid_audio = b"This is not audio data"
+with pytest.raises(Exception):
+    openai_client.audio.transcriptions.create(
+        model="whisper-1",
+        file=("invalid.wav", invalid_audio, "audio/wav"),
+    )
+
+# Test unsupported file type
+with pytest.raises(Exception):
+    openai_client.audio.transcriptions.create(
+        model="whisper-1",
+        file=("test.txt", b"text content", "text/plain"),
+    )
+```
+
+### Integration Support Matrix
+
+| Integration | Speech Synthesis | Transcription | Streaming | Notes |
+|------------|------------------|---------------|-----------|-------|
+| OpenAI     | ✅ Full Support  | ✅ Full Support | 🔄 Varies | Complete implementation |
+| Anthropic  | ❌ Not Available | ❌ Not Available | ❌ No    | No speech/audio APIs |
+| Google     | ❌ Not Available* | ❌ Not Available* | ❌ No    | *Not through Gemini API |
+| LiteLLM    | ✅ Via OpenAI    | ✅ Via OpenAI    | 🔄 Varies | Proxies to OpenAI |
+
+*Note: Google offers speech services through separate APIs (Cloud Speech-to-Text, Cloud Text-to-Speech) that are not currently integrated.*
+
+### Performance Considerations
+
+#### Speech Synthesis
+- **File Size**: Generated audio files range from 50KB to 5MB depending on length and quality
+- **Generation Time**: Typically 2-10 seconds for short texts, longer for complex content
+- **Format Impact**: WAV files are larger but offer better compatibility; MP3 is more compressed
+
+#### Transcription
+- **Processing Time**: Usually 1-5 seconds for short audio files (under 30 seconds)
+- **File Size Limits**: Most services support files up to 25MB
+- **Accuracy Factors**: Audio quality, background noise, speaker clarity affect results
+
+### Best Practices
+
+#### For Speech Testing
+1. **Use consistent test text** for reproducible results
+2. **Test multiple voices** to ensure voice switching works
+3. **Validate audio headers** to confirm proper format generation
+4. **Check file sizes** to ensure reasonable audio generation
+
+#### For Transcription Testing
+1. **Use high-quality test audio** for consistent transcription results
+2. **Test various audio formats** (WAV, MP3, etc.) for compatibility
+3. **Include silence and noise** tests for edge case handling
+4. **Validate response formats** (JSON, text) as needed
+
+#### For Round-Trip Testing
+1. **Use simple, clear phrases** to maximize transcription accuracy
+2. **Allow for minor variations** in transcribed text
+3. **Focus on key word preservation** rather than exact matches
+4. **Test with different voices** to ensure consistency across voice models
+
+### Troubleshooting
+
+#### Common Issues
+
+1. **Audio Format Errors**
+   ```bash
+   # Check audio file headers
+   file test_audio.wav
+   # Should show: RIFF (little-endian) data, WAVE audio
+   ```
+
+2. **API Key Issues**
+   ```bash
+   # Verify OpenAI API key
+   export OPENAI_API_KEY="your-key-here"
+   python test_audio.py --test test_14_speech_synthesis
+   ```
+
+3. **Bifrost Configuration**
+   ```bash
+   # Ensure Bifrost is running and accessible
+   curl http://localhost:8080/openai/v1/audio/speech -I
+   ```
+
+4. **Model Availability**
+   ```python
+   # Check if speech/transcription models are available
+   from tests.utils.config_loader import get_model
+   print("Speech model:", get_model("openai", "speech"))
+   print("Transcription model:", get_model("openai", "transcription"))
+   ```
+
+#### Debug Commands
+
+```bash
+# Test individual components
+python test_audio.py --test test_14_speech_synthesis --verbose
+
+# Check Bifrost logs for audio endpoint requests
+# (Check your Bifrost instance logs)
+```
+
+## Getting Model Names
 
 ```python
 from tests.utils.config_loader import get_model

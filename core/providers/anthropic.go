@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -876,12 +877,14 @@ func handleAnthropicStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &resp.StatusCode,
 			Error: schemas.ErrorField{
 				Message: fmt.Sprintf("HTTP error from %s: %d", providerType, resp.StatusCode),
+				Error:   fmt.Errorf("%s", string(body)),
 			},
 		}
 	}
@@ -1289,4 +1292,20 @@ func handleAnthropicStreaming(
 	}()
 
 	return responseChan, nil
+}
+
+func (provider *AnthropicProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("speech", "anthropic")
+}
+
+func (provider *AnthropicProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("speech stream", "anthropic")
+}
+
+func (provider *AnthropicProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("transcription", "anthropic")
+}
+
+func (provider *AnthropicProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("transcription stream", "anthropic")
 }

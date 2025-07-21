@@ -52,16 +52,88 @@ const (
 //* Request Structs
 
 // RequestInput represents the input for a model request, which can be either
-// a text completion, a chat completion, or an embedding request.
+// a text completion, a chat completion, an embedding request, a speech request, or a transcription request.
 type RequestInput struct {
-	TextCompletionInput *string           `json:"text_completion_input,omitempty"`
-	ChatCompletionInput *[]BifrostMessage `json:"chat_completion_input,omitempty"`
-	EmbeddingInput      *EmbeddingInput   `json:"embedding_input,omitempty"`
+	TextCompletionInput *string             `json:"text_completion_input,omitempty"`
+	ChatCompletionInput *[]BifrostMessage   `json:"chat_completion_input,omitempty"`
+	EmbeddingInput      *EmbeddingInput     `json:"embedding_input,omitempty"`
+	SpeechInput         *SpeechInput        `json:"speech_input,omitempty"`
+	TranscriptionInput  *TranscriptionInput `json:"transcription_input,omitempty"`
 }
 
 // EmbeddingInput represents the input for an embedding request.
 type EmbeddingInput struct {
 	Texts []string `json:"texts"`
+}
+
+// SpeechInput represents the input for a speech request.
+type SpeechInput struct {
+	Input          string           `json:"input"`
+	VoiceConfig    SpeechVoiceInput `json:"voice"`
+	Instructions   string           `json:"instructions,omitempty"`
+	ResponseFormat string           `json:"response_format,omitempty"` // Default is "mp3"
+}
+
+type SpeechVoiceInput struct {
+	Voice            *string
+	MultiVoiceConfig []VoiceConfig
+}
+
+type VoiceConfig struct {
+	Speaker string `json:"speaker"`
+	Voice   string `json:"voice"`
+}
+
+// MarshalJSON implements custom JSON marshalling for SpeechVoiceInput.
+// It marshals either Voice or MultiVoiceConfig directly without wrapping.
+func (tc SpeechVoiceInput) MarshalJSON() ([]byte, error) {
+	// Validation: ensure only one field is set at a time
+	if tc.Voice != nil && len(tc.MultiVoiceConfig) > 0 {
+		return nil, fmt.Errorf("both Voice and MultiVoiceConfig are set; only one should be non-nil")
+	}
+
+	if tc.Voice != nil {
+		return json.Marshal(*tc.Voice)
+	}
+	if len(tc.MultiVoiceConfig) > 0 {
+		return json.Marshal(tc.MultiVoiceConfig)
+	}
+	// If both are nil, return null
+	return json.Marshal(nil)
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for SpeechVoiceInput.
+// It determines whether "voice" is a string or a VoiceConfig object/array and assigns to the appropriate field.
+// It also handles direct string/array content without a wrapper object.
+func (tc *SpeechVoiceInput) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var stringContent string
+	if err := json.Unmarshal(data, &stringContent); err == nil {
+		tc.Voice = &stringContent
+		return nil
+	}
+
+	// Try to unmarshal as an array of VoiceConfig objects
+	var voiceConfigs []VoiceConfig
+	if err := json.Unmarshal(data, &voiceConfigs); err == nil {
+		// Validate each VoiceConfig and append to MultiVoiceConfig
+		for _, config := range voiceConfigs {
+			if config.Voice == "" {
+				return fmt.Errorf("voice config has empty voice field")
+			}
+			tc.MultiVoiceConfig = append(tc.MultiVoiceConfig, config)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("voice field is neither a string, nor an array of VoiceConfig objects")
+}
+
+type TranscriptionInput struct {
+	File           []byte  `json:"file"`
+	Language       *string `json:"language,omitempty"`
+	Prompt         *string `json:"prompt,omitempty"`
+	ResponseFormat *string `json:"response_format,omitempty"` // Default is "json"
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
@@ -302,7 +374,9 @@ type BifrostResponse struct {
 	ID                string                     `json:"id,omitempty"`
 	Object            string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
 	Choices           []BifrostResponseChoice    `json:"choices,omitempty"`
-	Embedding         [][]float32                `json:"data,omitempty"` // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
+	Embedding         [][]float32                `json:"data,omitempty"`       // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
+	Speech            *BifrostSpeech             `json:"speech,omitempty"`     // Maps to "speech" field in provider responses (e.g., OpenAI speech format)
+	Transcribe        *BifrostTranscribe         `json:"transcribe,omitempty"` // Maps to "transcribe" field in provider responses (e.g., OpenAI transcription format)
 	Model             string                     `json:"model,omitempty"`
 	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
 	ServiceTier       *string                    `json:"service_tier,omitempty"`
@@ -318,6 +392,18 @@ type LLMUsage struct {
 	TotalTokens             int                      `json:"total_tokens"`
 	TokenDetails            *TokenDetails            `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+type AudioLLMUsage struct {
+	InputTokens        int                `json:"input_tokens"`
+	InputTokensDetails *AudioTokenDetails `json:"input_tokens_details,omitempty"`
+	OutputTokens       int                `json:"output_tokens"`
+	TotalTokens        int                `json:"total_tokens"`
+}
+
+type AudioTokenDetails struct {
+	TextTokens  int `json:"text_tokens"`
+	AudioTokens int `json:"audio_tokens"`
 }
 
 // TokenDetails provides detailed information about token usage.
@@ -434,6 +520,81 @@ type BifrostStreamDelta struct {
 	Thought   *string    `json:"thought,omitempty"`    // May be empty string or null
 	Refusal   *string    `json:"refusal,omitempty"`    // Refusal content if any
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+}
+
+type BifrostSpeech struct {
+	Usage *AudioLLMUsage `json:"usage,omitempty"`
+	Audio []byte         `json:"audio"`
+
+	*BifrostSpeechStreamResponse
+}
+type BifrostSpeechStreamResponse struct {
+	Type string `json:"type"`
+}
+
+// BifrostTranscribe represents transcription response data
+type BifrostTranscribe struct {
+	// Common fields for both streaming and non-streaming
+	Text     string                 `json:"text"`
+	LogProbs []TranscriptionLogProb `json:"logprobs,omitempty"`
+	Usage    *TranscriptionUsage    `json:"usage,omitempty"`
+
+	// Embedded structs for specific fields only
+	*BifrostTranscribeNonStreamResponse
+	*BifrostTranscribeStreamResponse
+}
+
+// BifrostTranscribeNonStreamResponse represents non-streaming specific fields only
+type BifrostTranscribeNonStreamResponse struct {
+	Task     *string                `json:"task,omitempty"`     // e.g., "transcribe"
+	Language *string                `json:"language,omitempty"` // e.g., "english"
+	Duration *float64               `json:"duration,omitempty"` // Duration in seconds
+	Words    []TranscriptionWord    `json:"words,omitempty"`
+	Segments []TranscriptionSegment `json:"segments,omitempty"`
+}
+
+// BifrostTranscribeStreamResponse represents streaming specific fields only
+type BifrostTranscribeStreamResponse struct {
+	Type  *string `json:"type,omitempty"`  // "transcript.text.delta" or "transcript.text.done"
+	Delta *string `json:"delta,omitempty"` // For delta events
+}
+
+// TranscriptionLogProb represents log probability information for transcription
+type TranscriptionLogProb struct {
+	Token   string  `json:"token"`
+	LogProb float64 `json:"logprob"`
+	Bytes   []int   `json:"bytes"`
+}
+
+// TranscriptionWord represents word-level timing information
+type TranscriptionWord struct {
+	Word  string  `json:"word"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
+// TranscriptionSegment represents segment-level transcription information
+type TranscriptionSegment struct {
+	ID               int     `json:"id"`
+	Seek             int     `json:"seek"`
+	Start            float64 `json:"start"`
+	End              float64 `json:"end"`
+	Text             string  `json:"text"`
+	Tokens           []int   `json:"tokens"`
+	Temperature      float64 `json:"temperature"`
+	AvgLogProb       float64 `json:"avg_logprob"`
+	CompressionRatio float64 `json:"compression_ratio"`
+	NoSpeechProb     float64 `json:"no_speech_prob"`
+}
+
+// TranscriptionUsage represents usage information for transcription
+type TranscriptionUsage struct {
+	Type              string             `json:"type"` // "tokens" or "duration"
+	InputTokens       *int               `json:"input_tokens,omitempty"`
+	InputTokenDetails *AudioTokenDetails `json:"input_token_details,omitempty"`
+	OutputTokens      *int               `json:"output_tokens,omitempty"`
+	TotalTokens       *int               `json:"total_tokens,omitempty"`
+	Seconds           *int               `json:"seconds,omitempty"` // For duration-based usage
 }
 
 // BifrostResponseExtraFields contains additional fields in a response.

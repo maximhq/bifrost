@@ -10,6 +10,8 @@ import { DottedSeparator } from '@/components/ui/separator'
 import { PROVIDER_LABELS, Provider, Status, STATUS_COLORS, REQUEST_TYPE_LABELS, REQUEST_TYPE_COLORS } from '@/lib/constants/logs'
 import { CodeEditor } from './ui/code-editor'
 import LogMessageView from './ui/log-message-view'
+import SpeechView from './ui/speech-view'
+import TranscriptionView from './ui/transcription-view'
 
 interface LogDetailSheetProps {
   log: LogEntry | null
@@ -168,8 +170,34 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
           </div>
         )}
 
-        <div className="mt-4 w-full text-center text-sm font-medium">Conversation History</div>
-        {log.input_history && log.input_history.map((message, index) => <LogMessageView key={index} message={message} />)}
+        {/* Speech and Transcription Views */}
+        {(log.speech_input || log.speech_output) && (
+          <>
+            <div className="mt-4 w-full text-center text-sm font-medium">Speech</div>
+            <SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
+          </>
+        )}
+
+        {(log.transcription_input || log.transcription_output) && (
+          <>
+            <div className="mt-4 w-full text-center text-sm font-medium">Transcription</div>
+            <TranscriptionView
+              transcriptionInput={log.transcription_input}
+              transcriptionOutput={log.transcription_output}
+              isStreaming={log.stream}
+            />
+          </>
+        )}
+
+        {/* Show conversation history for chat/text completions */}
+        {log.input_history && log.input_history.length > 0 && (
+          <>
+            <div className="mt-4 w-full text-center text-sm font-medium">Conversation History</div>
+            {log.input_history.map((message, index) => (
+              <LogMessageView key={index} message={message} />
+            ))}
+          </>
+        )}
 
         {log.status !== 'processing' && (
           <>

@@ -70,6 +70,58 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
 </details>
 
 <details>
+<summary><strong>🔊 Audio - Speech Synthesis</strong></summary>
+
+```go
+voice := "alloy"
+response, err := client.SpeechRequest(ctx, &schemas.BifrostRequest{
+    Provider: schemas.OpenAI,
+    Model:    "tts-1",
+    Input: schemas.RequestInput{
+        SpeechInput: &schemas.SpeechInput{
+            Input: "Hello, this is a test of speech synthesis!",
+            VoiceConfig: schemas.SpeechVoiceInput{Voice: &voice},
+            ResponseFormat: "mp3",
+        },
+    },
+})
+
+// Save audio to file
+if response.Speech != nil {
+    os.WriteFile("speech.mp3", response.Speech.Audio, 0644)
+}
+```
+
+</details>
+
+<details>
+<summary><strong>🎤 Audio - Transcription</strong></summary>
+
+```go
+// Read audio file
+audioData, _ := os.ReadFile("speech.mp3")
+
+response, err := client.TranscriptionRequest(ctx, &schemas.BifrostRequest{
+    Provider: schemas.OpenAI,
+    Model:    "whisper-1",
+    Input: schemas.RequestInput{
+        TranscriptionInput: &schemas.TranscriptionInput{
+            File: audioData,
+            Language: &[]string{"en"}[0],
+            ResponseFormat: &[]string{"verbose_json"}[0],
+        },
+    },
+})
+
+// Get transcribed text
+if response.Transcribe != nil {
+    fmt.Println("Transcription:", response.Transcribe.Text)
+}
+```
+
+</details>
+
+<details>
 <summary><strong>🛠️ Tool Calling</strong></summary>
 
 ```go
@@ -110,6 +162,8 @@ client, _ := bifrost.Init(schemas.BifrostConfig{
 | **Handle failover automatically** | [Bifrost Client](./bifrost-client.md) | Fallback configuration       |
 | **Add custom logging/monitoring** | [Plugins](./plugins.md)               | Rate limiting, caching       |
 | **Use external tools/APIs**       | [MCP Integration](./mcp.md)           | Database queries, web search |
+| **Convert text to speech**        | [Bifrost Client](./bifrost-client.md) | Speech synthesis             |
+| **Convert audio to text**         | [Bifrost Client](./bifrost-client.md) | Audio transcription          |
 | **Optimize for production**       | [Account Interface](./account.md)     | Connection pooling, keys     |
 | **Debug requests/responses**      | [Logging](./logging.md)               | Custom logger setup          |
 | **Build a chatbot with tools**    | [MCP Integration](./mcp.md)           | Tool registration            |

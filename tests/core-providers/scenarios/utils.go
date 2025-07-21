@@ -70,6 +70,54 @@ var TimeToolDefinition = schemas.Tool{
 const TestImageURL = "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg"
 const TestImageBase64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k="
 
+// Audio test data for speech and transcription testing
+// Note: In production tests, you would use actual audio files
+// These are minimal valid audio file headers for testing purposes
+
+// TestAudioDataMP3 - Sample MP3 data for testing (MP3 header with minimal audio)
+var TestAudioDataMP3 = []byte{
+	0xFF, 0xFB, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	// Additional MP3 frames would go here for real audio...
+}
+
+// TestAudioDataWAV - Sample WAV data for testing (WAV header with minimal audio)
+var TestAudioDataWAV = []byte{
+	// WAV header
+	0x52, 0x49, 0x46, 0x46, // "RIFF"
+	0x24, 0x00, 0x00, 0x00, // File size
+	0x57, 0x41, 0x56, 0x45, // "WAVE"
+	0x66, 0x6D, 0x74, 0x20, // "fmt "
+	0x10, 0x00, 0x00, 0x00, // Format chunk size
+	0x01, 0x00, 0x01, 0x00, // Audio format and channels
+	0x44, 0xAC, 0x00, 0x00, // Sample rate (44100)
+	0x88, 0x58, 0x01, 0x00, // Byte rate
+	0x02, 0x00, 0x10, 0x00, // Block align and bits per sample
+	0x64, 0x61, 0x74, 0x61, // "data"
+	0x00, 0x00, 0x00, 0x00, // Data size
+	// Audio data would go here for real audio...
+}
+
+// CreateSpeechInput creates a basic speech input for testing
+func CreateSpeechInput(text, voice, format string) *schemas.SpeechInput {
+	return &schemas.SpeechInput{
+		Input: text,
+		VoiceConfig: schemas.SpeechVoiceInput{
+			Voice: &voice,
+		},
+		ResponseFormat: format,
+	}
+}
+
+// CreateTranscriptionInput creates a basic transcription input for testing
+func CreateTranscriptionInput(audioData []byte, language, responseFormat *string) *schemas.TranscriptionInput {
+	return &schemas.TranscriptionInput{
+		File:           audioData,
+		Language:       language,
+		ResponseFormat: responseFormat,
+	}
+}
+
 // Helper functions for creating requests
 func CreateBasicChatMessage(content string) schemas.BifrostMessage {
 	return schemas.BifrostMessage{
