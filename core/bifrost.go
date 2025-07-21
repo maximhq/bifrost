@@ -25,16 +25,22 @@ const (
 	ChatCompletionRequest       RequestType = "chat_completion"
 	ChatCompletionStreamRequest RequestType = "chat_completion_stream"
 	EmbeddingRequest            RequestType = "embedding"
+	SpeechRequest               RequestType = "speech"
+	SpeechStreamRequest         RequestType = "speech_stream"
+	TranscriptionRequest        RequestType = "transcription"
+	TranscriptionStreamRequest  RequestType = "transcription_stream"
 )
 
 // executor is a function type that handles specific request types.
 type executor func(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError)
 
-// messageExecutors is a factory map for handling different request types.
+// messageExecutors is a factory map for handling different request types. (stream requests are handled in the tryStreamRequest function)
 var messageExecutors = map[RequestType]executor{
 	TextCompletionRequest: handleTextCompletion,
 	ChatCompletionRequest: handleChatCompletion,
 	EmbeddingRequest:      handleEmbedding,
+	SpeechRequest:         handleSpeech,
+	TranscriptionRequest:  handleTranscription,
 }
 
 // ChannelMessage represents a message passed through the request channel.
@@ -429,6 +435,248 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 
 			// Try the fallback provider
 			result, fallbackErr := bifrost.tryRequest(&fallbackReq, ctx, EmbeddingRequest)
+			if fallbackErr == nil {
+				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+				return result, nil
+			}
+			if fallbackErr.Error.Type != nil && *fallbackErr.Error.Type == schemas.RequestCancelled {
+				fallbackErr.Provider = fallback.Provider
+				return nil, fallbackErr
+			}
+
+			bifrost.logger.Warn(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+		}
+	}
+
+	primaryErr.Provider = req.Provider
+
+	// All providers failed, return the original error
+	return nil, primaryErr
+}
+
+func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := validateRequest(req); err != nil {
+		err.Provider = req.Provider
+		return nil, err
+	}
+
+	// Try the primary provider first
+	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, SpeechRequest)
+	if primaryErr == nil {
+		return primaryResult, nil
+	}
+
+	if primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// Check if this is a short-circuit error that doesn't allow fallbacks
+	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
+	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// If primary provider failed and we have fallbacks, try them in order
+	if len(req.Fallbacks) > 0 {
+		for _, fallback := range req.Fallbacks {
+			// Check if we have config for this fallback provider
+			_, err := bifrost.account.GetConfigForProvider(fallback.Provider)
+			if err != nil {
+				bifrost.logger.Warn(fmt.Sprintf("Config not found for provider %s, skipping fallback: %v", fallback.Provider, err))
+				continue
+			}
+
+			// Create a new request with the fallback provider and model
+			fallbackReq := *req
+			fallbackReq.Provider = fallback.Provider
+			fallbackReq.Model = fallback.Model
+
+			// Try the fallback provider
+			result, fallbackErr := bifrost.tryRequest(&fallbackReq, ctx, SpeechRequest)
+			if fallbackErr == nil {
+				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+				return result, nil
+			}
+			if fallbackErr.Error.Type != nil && *fallbackErr.Error.Type == schemas.RequestCancelled {
+				fallbackErr.Provider = fallback.Provider
+				return nil, fallbackErr
+			}
+
+			bifrost.logger.Warn(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+		}
+	}
+
+	primaryErr.Provider = req.Provider
+
+	// All providers failed, return the original error
+	return nil, primaryErr
+}
+
+func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := validateRequest(req); err != nil {
+		err.Provider = req.Provider
+		return nil, err
+	}
+
+	// Try the primary provider first
+	primaryResult, primaryErr := bifrost.tryStreamRequest(req, ctx, SpeechStreamRequest)
+	if primaryErr == nil {
+		return primaryResult, nil
+	}
+
+	if primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// Check if this is a short-circuit error that doesn't allow fallbacks
+	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
+	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// If primary provider failed and we have fallbacks, try them in order
+	// This includes both regular provider errors and plugin short-circuit errors with AllowFallbacks=true/nil
+	if len(req.Fallbacks) > 0 {
+		for _, fallback := range req.Fallbacks {
+			// Check if we have config for this fallback provider
+			_, err := bifrost.account.GetConfigForProvider(fallback.Provider)
+			if err != nil {
+				bifrost.logger.Warn(fmt.Sprintf("Config not found for provider %s, skipping fallback: %v", fallback.Provider, err))
+				continue
+			}
+
+			// Create a new request with the fallback provider and model
+			fallbackReq := *req
+			fallbackReq.Provider = fallback.Provider
+			fallbackReq.Model = fallback.Model
+
+			// Try the fallback provider
+			result, fallbackErr := bifrost.tryStreamRequest(&fallbackReq, ctx, SpeechStreamRequest)
+			if fallbackErr == nil {
+				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+				return result, nil
+			}
+			if fallbackErr.Error.Type != nil && *fallbackErr.Error.Type == schemas.RequestCancelled {
+				fallbackErr.Provider = fallback.Provider
+				return nil, fallbackErr
+			}
+
+			bifrost.logger.Warn(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+		}
+	}
+
+	primaryErr.Provider = req.Provider
+
+	// All providers failed, return the original error
+	return nil, primaryErr
+}
+
+func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := validateRequest(req); err != nil {
+		err.Provider = req.Provider
+		return nil, err
+	}
+
+	// Try the primary provider first
+	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, TranscriptionRequest)
+	if primaryErr == nil {
+		return primaryResult, nil
+	}
+
+	if primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// Check if this is a short-circuit error that doesn't allow fallbacks
+	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
+	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// If primary provider failed and we have fallbacks, try them in order
+	if len(req.Fallbacks) > 0 {
+		for _, fallback := range req.Fallbacks {
+			// Check if we have config for this fallback provider
+			_, err := bifrost.account.GetConfigForProvider(fallback.Provider)
+			if err != nil {
+				bifrost.logger.Warn(fmt.Sprintf("Config not found for provider %s, skipping fallback: %v", fallback.Provider, err))
+				continue
+			}
+
+			// Create a new request with the fallback provider and model
+			fallbackReq := *req
+			fallbackReq.Provider = fallback.Provider
+			fallbackReq.Model = fallback.Model
+
+			// Try the fallback provider
+			result, fallbackErr := bifrost.tryRequest(&fallbackReq, ctx, TranscriptionRequest)
+			if fallbackErr == nil {
+				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+				return result, nil
+			}
+			if fallbackErr.Error.Type != nil && *fallbackErr.Error.Type == schemas.RequestCancelled {
+				fallbackErr.Provider = fallback.Provider
+				return nil, fallbackErr
+			}
+
+			bifrost.logger.Warn(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+		}
+	}
+
+	primaryErr.Provider = req.Provider
+
+	// All providers failed, return the original error
+	return nil, primaryErr
+}
+
+func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := validateRequest(req); err != nil {
+		err.Provider = req.Provider
+		return nil, err
+	}
+
+	// Try the primary provider first
+	primaryResult, primaryErr := bifrost.tryStreamRequest(req, ctx, TranscriptionStreamRequest)
+	if primaryErr == nil {
+		return primaryResult, nil
+	}
+
+	if primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// Check if this is a short-circuit error that doesn't allow fallbacks
+	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
+	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
+		primaryErr.Provider = req.Provider
+		return nil, primaryErr
+	}
+
+	// If primary provider failed and we have fallbacks, try them in order
+	// This includes both regular provider errors and plugin short-circuit errors with AllowFallbacks=true/nil
+	if len(req.Fallbacks) > 0 {
+		for _, fallback := range req.Fallbacks {
+			// Check if we have config for this fallback provider
+			_, err := bifrost.account.GetConfigForProvider(fallback.Provider)
+			if err != nil {
+				bifrost.logger.Warn(fmt.Sprintf("Config not found for provider %s, skipping fallback: %v", fallback.Provider, err))
+				continue
+			}
+
+			// Create a new request with the fallback provider and model
+			fallbackReq := *req
+			fallbackReq.Provider = fallback.Provider
+			fallbackReq.Model = fallback.Model
+
+			// Try the fallback provider
+			result, fallbackErr := bifrost.tryStreamRequest(&fallbackReq, ctx, TranscriptionStreamRequest)
 			if fallbackErr == nil {
 				bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 				return result, nil
@@ -905,7 +1153,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	}
 
 	// Add MCP tools to request if MCP is configured and requested
-	if requestType != EmbeddingRequest && bifrost.mcpManager != nil {
+	if requestType != EmbeddingRequest && requestType != SpeechRequest && bifrost.mcpManager != nil {
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
@@ -993,7 +1241,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 	}
 
 	// Add MCP tools to request if MCP is configured and requested
-	if requestType != EmbeddingRequest && bifrost.mcpManager != nil {
+	if requestType != SpeechStreamRequest && requestType != TranscriptionStreamRequest && bifrost.mcpManager != nil {
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
@@ -1141,6 +1389,33 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				if bifrostError != nil && !bifrostError.IsBifrostError {
 					break // Don't retry client errors
 				}
+			} else if req.Type == SpeechStreamRequest {
+				pipeline := bifrost.getPluginPipeline()
+				defer bifrost.releasePluginPipeline(pipeline)
+
+				postHookRunner := func(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(bifrost.plugins))
+					if bifrostErr != nil {
+						return nil, bifrostErr
+					}
+					return resp, nil
+				}
+				stream, bifrostError = handleSpeechStream(provider, &req, key, postHookRunner)
+				if bifrostError != nil && !bifrostError.IsBifrostError {
+					break // Don't retry client errors
+				}
+			} else if req.Type == TranscriptionStreamRequest {
+				pipeline := bifrost.getPluginPipeline()
+				defer bifrost.releasePluginPipeline(pipeline)
+
+				postHookRunner := func(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(bifrost.plugins))
+					if bifrostErr != nil {
+						return nil, bifrostErr
+					}
+					return resp, nil
+				}
+				stream, bifrostError = handleTranscriptionStream(provider, &req, key, postHookRunner)
 			} else {
 				executor := messageExecutors[req.Type]
 				if executor == nil {
@@ -1179,7 +1454,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 			}
 			req.Err <- *bifrostError
 		} else {
-			if req.Type == ChatCompletionStreamRequest {
+			if req.Type == ChatCompletionStreamRequest || req.Type == SpeechStreamRequest || req.Type == TranscriptionStreamRequest {
 				req.ResponseStream <- stream
 			} else {
 				req.Response <- result
@@ -1229,6 +1504,32 @@ func handleEmbedding(provider schemas.Provider, req *ChannelMessage, key schemas
 	return provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
 }
 
+// handleSpeech executes a speech request
+func handleSpeech(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.SpeechInput == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "input not provided for speech request",
+			},
+		}
+	}
+	return provider.Speech(req.Context, req.Model, key, req.Input.SpeechInput, req.Params)
+}
+
+// handleTranscription executes a transcription request
+func handleTranscription(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.TranscriptionInput == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "input not provided for transcription request",
+			},
+		}
+	}
+	return provider.Transcription(req.Context, req.Model, key, req.Input.TranscriptionInput, req.Params)
+}
+
 // handleChatCompletionStream executes a chat completion stream request
 func handleChatCompletionStream(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if req.Input.ChatCompletionInput == nil {
@@ -1241,6 +1542,32 @@ func handleChatCompletionStream(provider schemas.Provider, req *ChannelMessage, 
 	}
 
 	return provider.ChatCompletionStream(req.Context, postHookRunner, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+}
+
+// handleSpeechStream executes a speech stream request
+func handleSpeechStream(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req.Input.SpeechInput == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "input not provided for speech request",
+			},
+		}
+	}
+	return provider.SpeechStream(req.Context, postHookRunner, req.Model, key, req.Input.SpeechInput, req.Params)
+}
+
+// handleTranscriptionStream executes a transcription stream request
+func handleTranscriptionStream(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req.Input.TranscriptionInput == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "input not provided for transcription request",
+			},
+		}
+	}
+	return provider.TranscriptionStream(req.Context, postHookRunner, req.Model, key, req.Input.TranscriptionInput, req.Params)
 }
 
 // PLUGIN MANAGEMENT
@@ -1346,7 +1673,7 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType Re
 	msg.Type = reqType
 
 	// Conditionally allocate ResponseStream for streaming requests only
-	if reqType == ChatCompletionStreamRequest {
+	if reqType == ChatCompletionStreamRequest || reqType == SpeechStreamRequest || reqType == TranscriptionStreamRequest {
 		msg.ResponseStream = make(chan chan *schemas.BifrostStream, 1)
 	}
 

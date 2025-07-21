@@ -1,5 +1,88 @@
 // Types for the logs interface based on BifrostResponse schema
 
+// Speech and Transcription types
+export interface VoiceConfig {
+  speaker: string
+  voice: string
+}
+
+export interface SpeechInput {
+  input: string
+  voice: string | VoiceConfig[]
+  instructions?: string
+  response_format?: string // Default is "mp3"
+}
+
+export interface TranscriptionInput {
+  file: string // base64 encoded
+  language?: string
+  prompt?: string
+  response_format?: string // Default is "json"
+}
+
+export interface AudioTokenDetails {
+  text_tokens: number
+  audio_tokens: number
+}
+
+export interface AudioLLMUsage {
+  input_tokens: number
+  input_tokens_details?: AudioTokenDetails
+  output_tokens: number
+  total_tokens: number
+}
+
+export interface TranscriptionWord {
+  word: string
+  start: number
+  end: number
+}
+
+export interface TranscriptionSegment {
+  id: number
+  seek: number
+  start: number
+  end: number
+  text: string
+  tokens: number[]
+  temperature: number
+  avg_logprob: number
+  compression_ratio: number
+  no_speech_prob: number
+}
+
+export interface TranscriptionLogProb {
+  token: string
+  logprob: number
+  bytes: number[]
+}
+
+export interface TranscriptionUsage {
+  type: string // "tokens" or "duration"
+  input_tokens?: number
+  input_token_details?: AudioTokenDetails
+  output_tokens?: number
+  total_tokens?: number
+  seconds?: number // For duration-based usage
+}
+
+export interface BifrostSpeech {
+  usage?: AudioLLMUsage
+  audio: string // base64 encoded audio data
+}
+
+export interface BifrostTranscribe {
+  text: string
+  logprobs?: TranscriptionLogProb[]
+  usage?: TranscriptionUsage
+  // Non-streaming specific fields
+  task?: string // e.g., "transcribe"
+  language?: string // e.g., "english"
+  duration?: number // Duration in seconds
+  words?: TranscriptionWord[]
+  segments?: TranscriptionSegment[]
+}
+
 // Message content types
 export type MessageContentType = 'text' | 'image_url'
 
@@ -128,13 +211,17 @@ export interface Annotation {
 // Main LogEntry interface matching backend
 export interface LogEntry {
   id: string
-  object: string // text.completion, chat.completion, or embedding
+  object: string // text.completion, chat.completion, embedding, audio.speech, or audio.transcription
   timestamp: string // ISO string format from Go time.Time
   provider: string
   model: string
   input_history: BifrostMessage[]
   output_message?: BifrostMessage
   params?: ModelParameters
+  speech_input?: SpeechInput
+  transcription_input?: TranscriptionInput
+  speech_output?: BifrostSpeech
+  transcription_output?: BifrostTranscribe
   tools?: Tool[]
   tool_calls?: ToolCall[]
   latency?: number

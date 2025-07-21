@@ -155,4 +155,12 @@ type Provider interface {
 	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, messages []BifrostMessage, params *ModelParameters) (chan *BifrostStream, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx context.Context, model string, key Key, input *EmbeddingInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	// Speech performs a text to speech request
+	Speech(ctx context.Context, model string, key Key, input *SpeechInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	// SpeechStream performs a text to speech stream request
+	SpeechStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, input *SpeechInput, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	// Transcription performs a transcription request
+	Transcription(ctx context.Context, model string, key Key, input *TranscriptionInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	// TranscriptionStream performs a transcription stream request
+	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, input *TranscriptionInput, params *ModelParameters) (chan *BifrostStream, *BifrostError)
 }
