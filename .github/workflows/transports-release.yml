@@ -88,17 +88,17 @@ jobs:
       # Determine versions and create transport tag
       - name: Create transport tag
         id: manage_versions
-        working-directory: ci/scripts
+        working-directory: .
         run: |
           # Get current core version from go.mod and generate new transport version
-          node manage-versions.mjs transport-release >> "$GITHUB_OUTPUT"
+          node ci/scripts/manage-versions.mjs transport-release >> "$GITHUB_OUTPUT"
           
           # Get the transport version for tagging
           TRANSPORT_VERSION=$(grep "transport_version=" "$GITHUB_OUTPUT" | cut -d'=' -f2)
           echo "📦 Creating transport tag: ${TRANSPORT_VERSION}"
           
           # Create and push transport tag
-          node git-operations.mjs create-tag "${TRANSPORT_VERSION}"
+          node ci/scripts/git-operations.mjs create-tag "${TRANSPORT_VERSION}"
 
       # Build the UI from the current repo state
       - name: Build UI static files
@@ -109,15 +109,15 @@ jobs:
 
       # Cross-compile Go binaries for multiple platforms
       - name: Build Go executables
-        working-directory: transports
+        working-directory: .
         run: |
           echo "🔨 Building Go executables..."
-          chmod +x ../ci/scripts/go-executable-build.sh
-          ../ci/scripts/go-executable-build.sh bifrost-http ../dist ./bifrost-http "$(pwd)"
+          chmod +x ci/scripts/go-executable-build.sh
+          ci/scripts/go-executable-build.sh bifrost-http ./dist ./bifrost-http "$(pwd)/transports"
 
       # Upload the built binaries to S3 for distribution
       - name: Upload builds to S3
-        working-directory: ci/scripts
+        working-directory: .
         env:
           # R2 (Cloudflare S3-compatible storage) credentials
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
@@ -127,7 +127,6 @@ jobs:
           # Strip 'transports/' prefix and add 'v' prefix for upload script
           VERSION_ONLY="${{ steps.manage_versions.outputs.transport_version }}"
           VERSION_ONLY=${VERSION_ONLY#transports/v}
-          cd ../..
           node ci/scripts/upload-builds.mjs v${VERSION_ONLY}
 
   # Second job: Build and push Docker image
