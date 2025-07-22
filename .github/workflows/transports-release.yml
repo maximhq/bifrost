@@ -75,6 +75,11 @@ jobs:
         with:
           node-version: "18"
 
+      # Install script dependencies first
+      - name: Install script dependencies
+        working-directory: ci/scripts
+        run: npm ci
+
       # Configure Git for automated commits and tagging
       - name: Configure Git
         working-directory: ci/scripts
@@ -85,9 +90,6 @@ jobs:
         id: manage_versions
         working-directory: ci/scripts
         run: |
-          # Install dependencies
-          npm ci
-          
           # Get current core version from go.mod and generate new transport version
           node manage-versions.mjs transport-release >> "$GITHUB_OUTPUT"
           
@@ -125,7 +127,6 @@ jobs:
           # Strip 'transports/' prefix and add 'v' prefix for upload script
           VERSION_ONLY="${{ steps.manage_versions.outputs.transport_version }}"
           VERSION_ONLY=${VERSION_ONLY#transports/v}
-          npm ci
           cd ../..
           node ci/scripts/upload-builds.mjs v${VERSION_ONLY}
 

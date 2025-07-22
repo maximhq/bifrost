@@ -38,6 +38,11 @@ jobs:
         with:
           node-version: "18"
 
+      # Install script dependencies first
+      - name: Install script dependencies
+        working-directory: ci/scripts
+        run: npm ci
+
       # Configure Git for automated commits
       - name: Configure Git
         working-directory: ci/scripts
@@ -49,9 +54,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          # Install dependencies
-          npm ci
-          
           # Extract core version from tag
           CORE_VERSION=$(node extract-version.mjs "${GITHUB_REF}" core version)
           echo "📦 Extracted core version: ${CORE_VERSION}"
