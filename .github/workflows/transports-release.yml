@@ -5,6 +5,13 @@ on:
   push:
     branches: ["main"]
     paths: ["transports/go.mod"]
+  # Add manual trigger support
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual release'
+        required: true
+        type: string
 
 # Prevent concurrent runs for the same trigger to avoid conflicts
 concurrency:
@@ -30,6 +37,17 @@ jobs:
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
+          echo "📝 Checking release trigger..."
+          
+          # If manually triggered, always release
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "🚀 Manual release triggered: ${{ github.event.inputs.reason }}"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          
+          # For push events, check commit message
           echo "📝 Commit message: $COMMIT_MSG"
           
           # Check for --trigger-release flag
