@@ -553,6 +553,48 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 	}
 }
 
+// newConfigurationError creates a standardized error for configuration errors.
+// This helper reduces code duplication across providers that have configuration errors.
+func newConfigurationError(message string, providerType schemas.ModelProvider) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		Provider:       providerType,
+		Error: schemas.ErrorField{
+			Message: message,
+		},
+	}
+}
+
+// newBifrostOperationError creates a standardized error for bifrost operation errors.
+// This helper reduces code duplication across providers that have bifrost operation errors.
+func newBifrostOperationError(message string, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		Provider:       providerType,
+		Error: schemas.ErrorField{
+			Message: message,
+			Error:   err,
+		},
+	}
+}
+
+// newProviderAPIError creates a standardized error for provider API errors.
+// This helper reduces code duplication across providers that have provider API errors.
+func newProviderAPIError(message string, err error, statusCode int, providerType schemas.ModelProvider, errorType *string, eventID *string) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		Provider:       providerType,
+		StatusCode:     &statusCode,
+		Type:           errorType,
+		EventID:        eventID,
+		Error: schemas.ErrorField{
+			Message: message,
+			Error:   err,
+			Type:    errorType,
+		},
+	}
+}
+
 // approximateTokenCount provides a rough approximation of token count for text.
 // WARNING: This is a best-effort approximation using 1 token per 4 characters.
 // This heuristic is particularly inaccurate for:
@@ -580,7 +622,7 @@ func approximateTokenCount(texts []string) int {
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
-func ProcessAndSendResponse(
+func processAndSendResponse(
 	ctx context.Context,
 	postHookRunner schemas.PostHookRunner,
 	response *schemas.BifrostResponse,
@@ -609,5 +651,35 @@ func ProcessAndSendResponse(
 	}:
 	case <-ctx.Done():
 		return
+	}
+}
+
+// processAndSendError handles post-hook processing and sends the error to the channel.
+// This utility reduces code duplication across streaming implementations by encapsulating
+// the common pattern of running post hooks, handling errors, and sending responses with
+// proper context cancellation handling.
+func processAndSendError(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	err error,
+	responseChan chan *schemas.BifrostStream,
+) {
+	// Send scanner error through channel
+	bifrostError :=
+		&schemas.BifrostError{
+			IsBifrostError: true,
+			Error: schemas.ErrorField{
+				Message: fmt.Sprintf("Error reading stream: %v", err),
+				Error:   err,
+			},
+		}
+	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostError)
+	errorResponse := &schemas.BifrostStream{
+		BifrostResponse: processedResponse,
+		BifrostError:    processedError,
+	}
+	select {
+	case responseChan <- errorResponse:
+	case <-ctx.Done():
 	}
 }

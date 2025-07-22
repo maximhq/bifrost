@@ -131,12 +131,7 @@ func (provider *VertexProvider) TextCompletion(ctx context.Context, model string
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "vertex key config is not set",
-			},
-		}
+		return nil, newConfigurationError("vertex key config is not set", schemas.Vertex)
 	}
 
 	// Format messages for Vertex API
@@ -166,33 +161,17 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Vertex)
 	}
 
 	projectID := key.VertexKeyConfig.ProjectID
 	if projectID == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "project ID is not set",
-			},
-		}
+		return nil, newConfigurationError("project ID is not set", schemas.Vertex)
 	}
 
 	region := key.VertexKeyConfig.Region
 	if region == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "region is not set in meta config",
-			},
-		}
+		return nil, newConfigurationError("region is not set in meta config", schemas.Vertex)
 	}
 
 	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
@@ -222,13 +201,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 	if err != nil {
 		// Remove client from pool if auth client creation fails
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "error creating auth client",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error creating auth client", err, schemas.Vertex)
 	}
 
 	// Make request
@@ -246,13 +219,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		}
 		// Remove client from pool for non-context errors (could be auth/network issues)
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "error creating request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error creating request", err, schemas.Vertex)
 	}
 	defer resp.Body.Close()
 
@@ -260,13 +227,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error reading request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error reading response", err, schemas.Vertex)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -283,33 +244,15 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		if err := json.Unmarshal(body, &openAIErr); err != nil {
 			// Try Vertex error format if OpenAI format fails
 			if err := json.Unmarshal(body, &vertexErr); err != nil {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: true,
-					StatusCode:     &resp.StatusCode,
-					Error: schemas.ErrorField{
-						Message: schemas.ErrProviderResponseUnmarshal,
-						Error:   err,
-					},
-				}
+				return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
 			}
 
 			if len(vertexErr) > 0 {
-				return nil, &schemas.BifrostError{
-					StatusCode: &resp.StatusCode,
-					Type:       &vertexErr[0].Error.Status,
-					Error: schemas.ErrorField{
-						Message: vertexErr[0].Error.Message,
-					},
-				}
+				return nil, newProviderAPIError(vertexErr[0].Error.Message, nil, resp.StatusCode, schemas.Vertex, nil, nil)
 			}
 		}
 
-		return nil, &schemas.BifrostError{
-			StatusCode: &resp.StatusCode,
-			Error: schemas.ErrorField{
-				Message: openAIErr.Error.Message,
-			},
-		}
+		return nil, newProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode, schemas.Vertex, nil, nil)
 	}
 
 	if strings.Contains(model, "claude") {
@@ -385,45 +328,24 @@ func (provider *VertexProvider) Embedding(ctx context.Context, model string, key
 // Returns a channel of BifrostResponse objects for streaming results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "vertex key config is not set",
-			},
-		}
+		return nil, newConfigurationError("vertex key config is not set", schemas.Vertex)
 	}
 
 	projectID := key.VertexKeyConfig.ProjectID
 	if projectID == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "project ID is not set",
-			},
-		}
+		return nil, newConfigurationError("project ID is not set", schemas.Vertex)
 	}
 
 	region := key.VertexKeyConfig.Region
 	if region == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "region is not set in meta config",
-			},
-		}
+		return nil, newConfigurationError("region is not set in meta config", schemas.Vertex)
 	}
 
 	client, err := getAuthClient(key)
 	if err != nil {
 		// Remove client from pool if auth client creation fails
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "error creating auth client",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error creating auth client", err, schemas.Vertex)
 	}
 
 	if strings.Contains(model, "claude") {

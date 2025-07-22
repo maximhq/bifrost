@@ -129,13 +129,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model strin
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
 
 	// Create request
@@ -207,10 +201,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model strin
 // Supports Mistral's embedding models and returns a BifrostResponse containing the embedding(s).
 func (provider *MistralProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if len(input.Texts) == 0 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
-		}
+		return nil, newConfigurationError("no input text provided for embedding", schemas.Mistral)
 	}
 
 	// Prepare request body with base parameters
@@ -224,12 +215,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 		// Validate encoding format - Mistral API supports multiple formats, but our provider only implements float
 		if params.EncodingFormat != nil {
 			if *params.EncodingFormat != "float" {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: schemas.ErrorField{
-						Message: fmt.Sprintf("Mistral provider currently only supports 'float' encoding format, received: %s", *params.EncodingFormat),
-					},
-				}
+				return nil, newConfigurationError(fmt.Sprintf("Mistral provider currently only supports 'float' encoding format, received: %s", *params.EncodingFormat), schemas.Mistral)
 			}
 			// Map to Mistral's parameter name
 			requestBody["output_dtype"] = *params.EncodingFormat
@@ -250,13 +236,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
 
 	// Create request
@@ -297,25 +277,13 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 	// Parse into structured response
 	var mistralResp MistralEmbeddingResponse
 	if err := json.Unmarshal(rawMessage, &mistralResp); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error parsing Mistral embedding response",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error parsing Mistral embedding response", err, schemas.Mistral)
 	}
 
 	// Parse raw response for consistent format
 	var rawResponse interface{}
 	if err := json.Unmarshal(rawMessage, &rawResponse); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error parsing raw response for Mistral embedding",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error parsing raw response for Mistral embedding", err, schemas.Mistral)
 	}
 
 	// Convert data to embeddings array

@@ -165,33 +165,17 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 // Returns the response body or an error if the request fails.
 func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key schemas.Key, model string) ([]byte, *schemas.BifrostError) {
 	if key.AzureKeyConfig == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "azure key config not set",
-			},
-		}
+		return nil, newConfigurationError("azure key config not set", schemas.Azure)
 	}
 
 	// Marshal the request body
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Azure)
 	}
 
 	if key.AzureKeyConfig.Endpoint == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "endpoint not set",
-			},
-		}
+		return nil, newConfigurationError("endpoint not set", schemas.Azure)
 	}
 
 	url := key.AzureKeyConfig.Endpoint
@@ -199,12 +183,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	if key.AzureKeyConfig.Deployments != nil {
 		deployment := key.AzureKeyConfig.Deployments[model]
 		if deployment == "" {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: schemas.ErrorField{
-					Message: fmt.Sprintf("deployment if not found for model %s", model),
-				},
-			}
+			return nil, newConfigurationError(fmt.Sprintf("deployment not found for model %s", model), schemas.Azure)
 		}
 
 		apiVersion := key.AzureKeyConfig.APIVersion
@@ -214,12 +193,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 
 		url = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", url, deployment, path, *apiVersion)
 	} else {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "deployments not set",
-			},
-		}
+		return nil, newConfigurationError("deployments not set", schemas.Azure)
 	}
 
 	// Create the request with the JSON body
@@ -389,10 +363,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *AzureProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if len(input.Texts) == 0 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
-		}
+		return nil, newBifrostOperationError("no input text provided for embedding", nil, schemas.Azure)
 	}
 
 	// Prepare request body - Azure uses deployment-scoped URLs, so model is not needed in body
@@ -422,13 +393,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 	// Parse response
 	var response AzureEmbeddingResponse
 	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderResponseUnmarshal,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Azure)
 	}
 
 	bifrostResponse := &schemas.BifrostResponse{
@@ -464,22 +429,12 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 					if num, ok := v[j].(float64); ok {
 						floatArray[j] = float32(num)
 					} else {
-						return nil, &schemas.BifrostError{
-							IsBifrostError: true,
-							Error: schemas.ErrorField{
-								Message: fmt.Sprintf("unsupported number type in embedding array: %T", v[j]),
-							},
-						}
+						return nil, newBifrostOperationError(fmt.Sprintf("unsupported number type in embedding array: %T", v[j]), nil, schemas.Azure)
 					}
 				}
 				embeddings[i] = floatArray
 			default:
-				return nil, &schemas.BifrostError{
-					IsBifrostError: true,
-					Error: schemas.ErrorField{
-						Message: fmt.Sprintf("unsupported embedding type: %T", data.Embedding),
-					},
-				}
+				return nil, newBifrostOperationError(fmt.Sprintf("unsupported embedding type: %T", data.Embedding), nil, schemas.Azure)
 			}
 		}
 		bifrostResponse.Embedding = embeddings
@@ -500,12 +455,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	if key.AzureKeyConfig == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "azure key config not set",
-			},
-		}
+		return nil, newConfigurationError("azure key config not set", schemas.Azure)
 	}
 
 	// Merge additional parameters and set stream to true
@@ -517,12 +467,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 
 	// Construct Azure-specific URL with deployment
 	if key.AzureKeyConfig.Endpoint == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "endpoint not set",
-			},
-		}
+		return nil, newConfigurationError("endpoint not set", schemas.Azure)
 	}
 
 	baseURL := key.AzureKeyConfig.Endpoint
@@ -531,12 +476,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 	if key.AzureKeyConfig.Deployments != nil {
 		deployment := key.AzureKeyConfig.Deployments[model]
 		if deployment == "" {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: schemas.ErrorField{
-					Message: fmt.Sprintf("deployment not found for model %s", model),
-				},
-			}
+			return nil, newConfigurationError(fmt.Sprintf("deployment not found for model %s", model), schemas.Azure)
 		}
 
 		apiVersion := key.AzureKeyConfig.APIVersion
@@ -546,12 +486,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 
 		fullURL = fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", baseURL, deployment, *apiVersion)
 	} else {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "deployments not set",
-			},
-		}
+		return nil, newConfigurationError("deployments not set", schemas.Azure)
 	}
 
 	// Prepare Azure-specific headers

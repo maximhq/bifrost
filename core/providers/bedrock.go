@@ -456,12 +456,7 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 		}, nil
 	}
 
-	return nil, &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: schemas.ErrorField{
-			Message: fmt.Sprintf("invalid model choice: %s", model),
-		},
-	}
+	return nil, newConfigurationError(fmt.Sprintf("invalid model choice: %s", model), schemas.Bedrock)
 }
 
 // parseBedrockAnthropicMessageToolCallContent parses the content of a tool call message.
@@ -753,12 +748,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 		return body, nil
 	}
 
-	return nil, &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: schemas.ErrorField{
-			Message: fmt.Sprintf("invalid model choice: %s", model),
-		},
-	}
+	return nil, newConfigurationError(fmt.Sprintf("invalid model choice: %s", model), schemas.Bedrock)
 }
 
 // GetChatCompletionTools prepares tool specifications for Bedrock's API.
@@ -849,13 +839,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 	// Parse raw response
 	var rawResponse interface{}
 	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error parsing raw response",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error parsing raw response", err, schemas.Bedrock)
 	}
 
 	bifrostResponse.ExtraFields.RawResponse = rawResponse
@@ -1077,13 +1061,7 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 	if req.Body != nil {
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
-			return &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "error reading request body",
-					Error:   err,
-				},
-			}
+			return newBifrostOperationError("error reading request body", err, schemas.Bedrock)
 		}
 		// Restore the body for subsequent reads
 		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -1110,13 +1088,7 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 		})),
 	)
 	if err != nil {
-		return &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to load aws config",
-				Error:   err,
-			},
-		}
+		return newBifrostOperationError("failed to load aws config", err, schemas.Bedrock)
 	}
 
 	// Create the AWS signer
@@ -1125,24 +1097,12 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 	// Get credentials
 	creds, err := cfg.Credentials.Retrieve(context.TODO())
 	if err != nil {
-		return &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to retrieve aws credentials",
-				Error:   err,
-			},
-		}
+		return newBifrostOperationError("failed to retrieve aws credentials", err, schemas.Bedrock)
 	}
 
 	// Sign the request with AWS Signature V4
 	if err := signer.SignHTTP(context.TODO(), creds, req, bodyHash, service, region, time.Now()); err != nil {
-		return &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to sign request",
-				Error:   err,
-			},
-		}
+		return newBifrostOperationError("failed to sign request", err, schemas.Bedrock)
 	}
 
 	return nil
@@ -1157,10 +1117,7 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, model string, ke
 	case strings.HasPrefix(model, "cohere.embed"):
 		return provider.handleCohereEmbedding(ctx, model, key.Value, input, params)
 	default:
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error:          schemas.ErrorField{Message: "embedding is not supported for this Bedrock model"},
-		}
+		return nil, newConfigurationError("embedding is not supported for this Bedrock model", schemas.Bedrock)
 	}
 }
 
@@ -1168,16 +1125,10 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, model string, ke
 func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Titan Text Embeddings V1/V2 - only supports single text input
 	if len(input.Texts) == 0 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
-		}
+		return nil, newConfigurationError("no input text provided for embedding", schemas.Bedrock)
 	}
 	if len(input.Texts) > 1 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error:          schemas.ErrorField{Message: "Amazon Titan embedding models support only single text input, received multiple texts"},
-		}
+		return nil, newConfigurationError("Amazon Titan embedding models support only single text input, received multiple texts", schemas.Bedrock)
 	}
 
 	requestBody := map[string]interface{}{
@@ -1187,10 +1138,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 	if params != nil {
 		// Titan models do not support the dimensions parameter - they have fixed dimensions
 		if params.Dimensions != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error:          schemas.ErrorField{Message: "Amazon Titan embedding models do not support custom dimensions parameter"},
-			}
+			return nil, newConfigurationError("Amazon Titan embedding models do not support custom dimensions parameter", schemas.Bedrock)
 		}
 		if params.ExtraParams != nil {
 			for k, v := range params.ExtraParams {
@@ -1212,13 +1160,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 		InputTextTokenCount int       `json:"inputTextTokenCount"`
 	}
 	if err := json.Unmarshal(rawResponse, &titanResp); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error parsing Titan embedding response",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error parsing Titan embedding response", err, schemas.Bedrock)
 	}
 
 	bifrostResponse := &schemas.BifrostResponse{
@@ -1244,10 +1186,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 // handleCohereEmbedding handles embedding requests for Cohere models on Bedrock.
 func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if len(input.Texts) == 0 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
-		}
+		return nil, newConfigurationError("no input text provided for embedding", schemas.Bedrock)
 	}
 
 	requestBody := map[string]interface{}{
@@ -1272,13 +1211,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 		Texts      []string    `json:"texts"`
 	}
 	if err := json.Unmarshal(rawResponse, &cohereResp); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error parsing Cohere embedding response",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error parsing Cohere embedding response", err, schemas.Bedrock)
 	}
 
 	// Calculate token usage based on input texts (approximation since Cohere doesn't provide this)
@@ -1350,12 +1283,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	}
 
 	if provider.meta == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "meta config for bedrock is not provided",
-			},
-		}
+		return nil, newConfigurationError("meta config for bedrock is not provided", schemas.Bedrock)
 	}
 
 	region := "us-east-1"
@@ -1366,25 +1294,13 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	// Create the streaming request
 	jsonBody, jsonErr := json.Marshal(requestBody)
 	if jsonErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   jsonErr,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, jsonErr, schemas.Bedrock)
 	}
 
 	// Create HTTP request for streaming
 	req, reqErr := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), strings.NewReader(string(jsonBody)))
 	if reqErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error creating request",
-				Error:   reqErr,
-			},
-		}
+		return nil, newBifrostOperationError("error creating request", reqErr, schemas.Bedrock)
 	}
 
 	// Set any extra headers from network config
@@ -1396,38 +1312,20 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 			return nil, signErr
 		}
 	} else {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "secret access key not set",
-			},
-		}
+		return nil, newConfigurationError("secret access key not set", schemas.Bedrock)
 	}
 
 	// Make the request
 	resp, respErr := provider.client.Do(req)
 	if respErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   respErr,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, respErr, schemas.Bedrock)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
-			Error: schemas.ErrorField{
-				Message: fmt.Sprintf("HTTP error from Bedrock: %d", resp.StatusCode),
-				Error:   fmt.Errorf("%s", string(body)),
-			},
-		}
+		return nil, newProviderAPIError(fmt.Sprintf("HTTP error from Bedrock: %d", resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, schemas.Bedrock, nil, nil)
 	}
 
 	// Create response channel
@@ -1536,7 +1434,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						}
 
 						// Use utility function to process and send response
-						ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 					}
 
 				case delta["toolUse"] != nil:
@@ -1593,7 +1491,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						}
 
 						// Use utility function to process and send response
-						ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 					}
 				}
 
@@ -1627,7 +1525,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 				}
 
 			case event["stopReason"] != nil:
@@ -1657,7 +1555,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, finalResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, finalResponse, responseChan)
 					return
 				}
 
@@ -1706,13 +1604,14 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, usageResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, usageResponse, responseChan)
 				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading Bedrock stream: %v", err))
+			processAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 

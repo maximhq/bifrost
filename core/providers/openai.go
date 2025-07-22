@@ -147,13 +147,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.OpenAI)
 	}
 
 	// Create request
@@ -273,12 +267,7 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Validate input texts are not empty
 	if len(input.Texts) == 0 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "input texts cannot be empty",
-			},
-		}
+		return nil, newBifrostOperationError("input texts cannot be empty", nil, schemas.OpenAI)
 	}
 
 	// Prepare request body with base parameters
@@ -306,13 +295,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.OpenAI)
 	}
 
 	// Create request
@@ -346,13 +329,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 	// Parse response
 	var response OpenAIResponse
 	if err := json.Unmarshal(resp.Body(), &response); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderResponseUnmarshal,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.OpenAI)
 	}
 
 	// Create final response
@@ -383,12 +360,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 					if num, ok := v[j].(float64); ok {
 						floatArray[j] = float32(num)
 					} else {
-						return nil, &schemas.BifrostError{
-							IsBifrostError: true,
-							Error: schemas.ErrorField{
-								Message: fmt.Sprintf("unsupported number type in embedding array: %T", v[j]),
-							},
-						}
+						return nil, newBifrostOperationError(fmt.Sprintf("unsupported number type in embedding array: %T", v[j]), nil, schemas.OpenAI)
 					}
 				}
 				embeddings[i] = floatArray
@@ -396,24 +368,13 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 				// Decode base64 string into float32 array
 				decodedData, err := base64.StdEncoding.DecodeString(v)
 				if err != nil {
-					return nil, &schemas.BifrostError{
-						IsBifrostError: true,
-						Error: schemas.ErrorField{
-							Message: "failed to decode base64 embedding",
-							Error:   err,
-						},
-					}
+					return nil, newBifrostOperationError("failed to decode base64 embedding", err, schemas.OpenAI)
 				}
 
 				// Validate that decoded data length is divisible by 4 (size of float32)
 				const sizeOfFloat32 = 4
 				if len(decodedData)%sizeOfFloat32 != 0 {
-					return nil, &schemas.BifrostError{
-						IsBifrostError: true,
-						Error: schemas.ErrorField{
-							Message: "malformed base64 embedding data: length not divisible by 4",
-						},
-					}
+					return nil, newBifrostOperationError("malformed base64 embedding data: length not divisible by 4", nil, schemas.OpenAI)
 				}
 
 				floats := make([]float32, len(decodedData)/sizeOfFloat32)
@@ -422,12 +383,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 				}
 				embeddings[i] = floats
 			default:
-				return nil, &schemas.BifrostError{
-					IsBifrostError: true,
-					Error: schemas.ErrorField{
-						Message: fmt.Sprintf("unsupported embedding type: %T", data.Embedding),
-					},
-				}
+				return nil, newBifrostOperationError(fmt.Sprintf("unsupported embedding type: %T", data.Embedding), nil, schemas.OpenAI)
 			}
 		}
 		bifrostResponse.Embedding = embeddings
@@ -492,25 +448,13 @@ func handleOpenAIStreaming(
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.OpenAI)
 	}
 
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonBody)))
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to create HTTP request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("failed to create HTTP request", err, schemas.OpenAI)
 	}
 
 	// Set headers
@@ -524,27 +468,12 @@ func handleOpenAIStreaming(
 	// Make the request
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.OpenAI)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
-			Error: schemas.ErrorField{
-				Message: fmt.Sprintf("HTTP error from %s: %d", providerType, resp.StatusCode),
-				Error:   fmt.Errorf("%s", string(body)),
-			},
-		}
+		return nil, parseStreamOpenAIError(resp)
 	}
 
 	// Create response channel
@@ -642,7 +571,7 @@ func handleOpenAIStreaming(
 				}
 				response.ExtraFields.Provider = providerType
 
-				ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
 				continue
 			}
 
@@ -660,7 +589,7 @@ func handleOpenAIStreaming(
 				}
 				response.ExtraFields.Provider = providerType
 
-				ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
 
 				// End stream processing after finish reason
 				break
@@ -673,29 +602,14 @@ func handleOpenAIStreaming(
 				}
 				response.ExtraFields.Provider = providerType
 
-				ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
 			}
 		}
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-
-			// Send scanner error through channel
-			errorResponse := &schemas.BifrostStream{
-				BifrostError: &schemas.BifrostError{
-					IsBifrostError: true,
-					Error: schemas.ErrorField{
-						Message: "Error reading stream",
-						Error:   err,
-					},
-				},
-			}
-
-			select {
-			case responseChan <- errorResponse:
-			case <-ctx.Done():
-			}
+			processAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 
@@ -725,13 +639,7 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, model string, key sc
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.OpenAI)
 	}
 
 	// Create request
@@ -810,13 +718,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.OpenAI)
 	}
 
 	// Prepare OpenAI headers
@@ -830,13 +732,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v1/audio/speech", strings.NewReader(string(jsonBody)))
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to create HTTP request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("failed to create HTTP request", err, schemas.OpenAI)
 	}
 
 	// Set headers
@@ -850,27 +746,12 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Make the request
 	resp, err := provider.streamClient.Do(req)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.OpenAI)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
-			Error: schemas.ErrorField{
-				Message: fmt.Sprintf("HTTP error from %s: %d", schemas.OpenAI, resp.StatusCode),
-				Error:   fmt.Errorf("%s", string(body)),
-			},
-		}
+		return nil, parseStreamOpenAIError(resp)
 	}
 
 	// Create response channel
@@ -973,28 +854,13 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				response.ExtraFields.Params = *params
 			}
 
-			ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+			processAndSendResponse(ctx, postHookRunner, &response, responseChan)
 		}
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-
-			// Send scanner error through channel
-			errorResponse := &schemas.BifrostStream{
-				BifrostError: &schemas.BifrostError{
-					IsBifrostError: true,
-					Error: schemas.ErrorField{
-						Message: "Error reading stream",
-						Error:   err,
-					},
-				},
-			}
-
-			select {
-			case responseChan <- errorResponse:
-			case <-ctx.Done():
-			}
+			processAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 
@@ -1009,132 +875,8 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, model string,
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	// Add file field
-	fileWriter, err := writer.CreateFormFile("file", "audio.mp3") // OpenAI requires a filename
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to create form file",
-				Error:   err,
-			},
-		}
-	}
-	if _, err := fileWriter.Write(input.File); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to write file data",
-				Error:   err,
-			},
-		}
-	}
-
-	// Add model field
-	if err := writer.WriteField("model", model); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to write model field",
-				Error:   err,
-			},
-		}
-	}
-
-	// Add optional fields
-	if input.Language != nil {
-		if err := writer.WriteField("language", *input.Language); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "failed to write language field",
-					Error:   err,
-				},
-			}
-		}
-	}
-
-	if input.Prompt != nil {
-		if err := writer.WriteField("prompt", *input.Prompt); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "failed to write prompt field",
-					Error:   err,
-				},
-			}
-		}
-	}
-
-	if input.ResponseFormat != nil {
-		if err := writer.WriteField("response_format", *input.ResponseFormat); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "failed to write response_format field",
-					Error:   err,
-				},
-			}
-		}
-	}
-
-	// Note: Temperature and TimestampGranularities can be added via params.ExtraParams if needed
-
-	// Add extra params if provided
-	if params != nil && params.ExtraParams != nil {
-		for key, value := range params.ExtraParams {
-			// Handle array parameters specially for OpenAI's form data format
-			switch v := value.(type) {
-			case []string:
-				// For arrays like timestamp_granularities[] or include[]
-				for _, item := range v {
-					if err := writer.WriteField(key+"[]", item); err != nil {
-						return nil, &schemas.BifrostError{
-							IsBifrostError: true,
-							Error: schemas.ErrorField{
-								Message: fmt.Sprintf("failed to write array param %s", key),
-								Error:   err,
-							},
-						}
-					}
-				}
-			case []interface{}:
-				// Handle generic interface arrays
-				for _, item := range v {
-					if err := writer.WriteField(key+"[]", fmt.Sprintf("%v", item)); err != nil {
-						return nil, &schemas.BifrostError{
-							IsBifrostError: true,
-							Error: schemas.ErrorField{
-								Message: fmt.Sprintf("failed to write array param %s", key),
-								Error:   err,
-							},
-						}
-					}
-				}
-			default:
-				// Handle non-array parameters normally
-				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
-					return nil, &schemas.BifrostError{
-						IsBifrostError: true,
-						Error: schemas.ErrorField{
-							Message: fmt.Sprintf("failed to write extra param %s", key),
-							Error:   err,
-						},
-					}
-				}
-			}
-		}
-	}
-
-	// Close the multipart writer
-	if err := writer.Close(); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to close multipart writer",
-				Error:   err,
-			},
-		}
+	if bifrostErr := parseTranscriptionFormDataBody(writer, input, model, params); bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Create request
@@ -1173,25 +915,13 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, model string,
 	}
 
 	if err := json.Unmarshal(responseBody, transcribeResponse); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderResponseUnmarshal,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.OpenAI)
 	}
 
 	// Parse raw response for RawResponse field
 	var rawResponse interface{}
 	if err := json.Unmarshal(responseBody, &rawResponse); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderDecodeRaw,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderDecodeRaw, err, schemas.OpenAI)
 	}
 
 	// Create final response
@@ -1213,150 +943,17 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, model string,
 
 }
 
-// TranscriptionStream handles streaming for transcription.
-// It creates a multipart form, adds fields, creates HTTP request, and uses shared streaming logic.
-// Returns a channel for streaming responses and any error that occurred.
 func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Create multipart form
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	// Add file field
-	fileWriter, err := writer.CreateFormFile("file", "audio.mp3") // OpenAI requires a filename
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to create form file",
-				Error:   err,
-			},
-		}
-	}
-	if _, err := fileWriter.Write(input.File); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to write file data",
-				Error:   err,
-			},
-		}
-	}
-
-	// Add model field
-	if err := writer.WriteField("model", model); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to write model field",
-				Error:   err,
-			},
-		}
-	}
-
-	// Add optional fields
-	if input.Language != nil {
-		if err := writer.WriteField("language", *input.Language); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "failed to write language field",
-					Error:   err,
-				},
-			}
-		}
-	}
-
-	if input.Prompt != nil {
-		if err := writer.WriteField("prompt", *input.Prompt); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "failed to write prompt field",
-					Error:   err,
-				},
-			}
-		}
-	}
-
-	if input.ResponseFormat != nil {
-		if err := writer.WriteField("response_format", *input.ResponseFormat); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "failed to write response_format field",
-					Error:   err,
-				},
-			}
-		}
-	}
-
-	// Note: Temperature and TimestampGranularities can be added via params.ExtraParams if needed
-
-	// Add extra params if provided
-	if params != nil && params.ExtraParams != nil {
-		for key, value := range params.ExtraParams {
-			// Handle array parameters specially for OpenAI's form data format
-			switch v := value.(type) {
-			case []string:
-				// For arrays like timestamp_granularities[] or include[]
-				for _, item := range v {
-					if err := writer.WriteField(key+"[]", item); err != nil {
-						return nil, &schemas.BifrostError{
-							IsBifrostError: true,
-							Error: schemas.ErrorField{
-								Message: fmt.Sprintf("failed to write array param %s", key),
-								Error:   err,
-							},
-						}
-					}
-				}
-			case []interface{}:
-				// Handle generic interface arrays
-				for _, item := range v {
-					if err := writer.WriteField(key+"[]", fmt.Sprintf("%v", item)); err != nil {
-						return nil, &schemas.BifrostError{
-							IsBifrostError: true,
-							Error: schemas.ErrorField{
-								Message: fmt.Sprintf("failed to write array param %s", key),
-								Error:   err,
-							},
-						}
-					}
-				}
-			default:
-				// Handle non-array parameters normally
-				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
-					return nil, &schemas.BifrostError{
-						IsBifrostError: true,
-						Error: schemas.ErrorField{
-							Message: fmt.Sprintf("failed to write extra param %s", key),
-							Error:   err,
-						},
-					}
-				}
-			}
-		}
-	}
-
 	if err := writer.WriteField("stream", "true"); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to write stream field",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("failed to write stream field", err, schemas.OpenAI)
 	}
 
-	// Close the multipart writer
-	if err := writer.Close(); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to close multipart writer",
-				Error:   err,
-			},
-		}
+	if bifrostErr := parseTranscriptionFormDataBody(writer, input, model, params); bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Prepare OpenAI headers
@@ -1370,13 +967,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v1/audio/transcriptions", &body)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to create HTTP request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("failed to create HTTP request", err, schemas.OpenAI)
 	}
 
 	// Set headers
@@ -1390,26 +981,12 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Make the request
 	resp, err := provider.streamClient.Do(req)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.OpenAI)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		//TODO: proper openAI error handling
-		resp.Body.Close()
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
-			Error: schemas.ErrorField{
-				Message: fmt.Sprintf("HTTP error from %s: %d", schemas.OpenAI, resp.StatusCode),
-			},
-		}
+		return nil, parseStreamOpenAIError(resp)
 	}
 
 	// Create response channel
@@ -1436,7 +1013,6 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			}
 
 			var jsonData string
-
 			// Parse SSE data
 			if strings.HasPrefix(line, "data: ") {
 				jsonData = strings.TrimPrefix(line, "data: ")
@@ -1511,38 +1087,133 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				response.ExtraFields.Params = *params
 			}
 
-			ProcessAndSendResponse(ctx, postHookRunner, &response, responseChan)
+			processAndSendResponse(ctx, postHookRunner, &response, responseChan)
 		}
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-
-			// Send scanner error through channel
-			errorResponse := &schemas.BifrostStream{
-				BifrostError: &schemas.BifrostError{
-					IsBifrostError: true,
-					Error: schemas.ErrorField{
-						Message: "Error reading stream",
-						Error:   err,
-					},
-				},
-			}
-
-			select {
-			case responseChan <- errorResponse:
-			case <-ctx.Done():
-			}
+			processAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 
 	return responseChan, nil
 }
 
+func parseTranscriptionFormDataBody(writer *multipart.Writer, input *schemas.TranscriptionInput, model string, params *schemas.ModelParameters) *schemas.BifrostError {
+	// Add file field
+	fileWriter, err := writer.CreateFormFile("file", "audio.mp3") // OpenAI requires a filename
+	if err != nil {
+		return newBifrostOperationError("failed to create form file", err, schemas.OpenAI)
+	}
+	if _, err := fileWriter.Write(input.File); err != nil {
+		return newBifrostOperationError("failed to write file data", err, schemas.OpenAI)
+	}
+
+	// Add model field
+	if err := writer.WriteField("model", model); err != nil {
+		return newBifrostOperationError("failed to write model field", err, schemas.OpenAI)
+	}
+
+	// Add optional fields
+	if input.Language != nil {
+		if err := writer.WriteField("language", *input.Language); err != nil {
+			return newBifrostOperationError("failed to write language field", err, schemas.OpenAI)
+		}
+	}
+
+	if input.Prompt != nil {
+		if err := writer.WriteField("prompt", *input.Prompt); err != nil {
+			return newBifrostOperationError("failed to write prompt field", err, schemas.OpenAI)
+		}
+	}
+
+	if input.ResponseFormat != nil {
+		if err := writer.WriteField("response_format", *input.ResponseFormat); err != nil {
+			return newBifrostOperationError("failed to write response_format field", err, schemas.OpenAI)
+		}
+	}
+
+	// Note: Temperature and TimestampGranularities can be added via params.ExtraParams if needed
+
+	// Add extra params if provided
+	if params != nil && params.ExtraParams != nil {
+		for key, value := range params.ExtraParams {
+			// Handle array parameters specially for OpenAI's form data format
+			switch v := value.(type) {
+			case []string:
+				// For arrays like timestamp_granularities[] or include[]
+				for _, item := range v {
+					if err := writer.WriteField(key+"[]", item); err != nil {
+						return newBifrostOperationError(fmt.Sprintf("failed to write array param %s", key), err, schemas.OpenAI)
+					}
+				}
+			case []interface{}:
+				// Handle generic interface arrays
+				for _, item := range v {
+					if err := writer.WriteField(key+"[]", fmt.Sprintf("%v", item)); err != nil {
+						return newBifrostOperationError(fmt.Sprintf("failed to write array param %s", key), err, schemas.OpenAI)
+					}
+				}
+			default:
+				// Handle non-array parameters normally
+				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
+					return newBifrostOperationError(fmt.Sprintf("failed to write extra param %s", key), err, schemas.OpenAI)
+				}
+			}
+		}
+	}
+
+	// Close the multipart writer
+	if err := writer.Close(); err != nil {
+		return newBifrostOperationError("failed to close multipart writer", err, schemas.OpenAI)
+	}
+
+	return nil
+}
+
 func parseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp OpenAIError
 
 	bifrostErr := handleProviderAPIError(resp, &errorResp)
+
+	if errorResp.EventID != "" {
+		bifrostErr.EventID = &errorResp.EventID
+	}
+	bifrostErr.Error.Type = &errorResp.Error.Type
+	bifrostErr.Error.Code = &errorResp.Error.Code
+	bifrostErr.Error.Message = errorResp.Error.Message
+	bifrostErr.Error.Param = errorResp.Error.Param
+	if errorResp.Error.EventID != "" {
+		bifrostErr.Error.EventID = &errorResp.Error.EventID
+	}
+
+	return bifrostErr
+}
+
+func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
+	var errorResp OpenAIError
+
+	statusCode := resp.StatusCode
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if err := json.Unmarshal(body, &errorResp); err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     &statusCode,
+			Error: schemas.ErrorField{
+				Message: schemas.ErrProviderResponseUnmarshal,
+				Error:   err,
+			},
+		}
+	}
+
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &statusCode,
+		Error:          schemas.ErrorField{},
+	}
 
 	if errorResp.EventID != "" {
 		bifrostErr.EventID = &errorResp.EventID

@@ -115,13 +115,7 @@ func (provider *GroqProvider) ChatCompletion(ctx context.Context, model string, 
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Groq)
 	}
 
 	// Create request

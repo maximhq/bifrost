@@ -593,10 +593,7 @@ func convertChatHistory(history []struct {
 // Supports Cohere's embedding models and returns a BifrostResponse containing the embedding(s).
 func (provider *CohereProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if len(input.Texts) == 0 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error:          schemas.ErrorField{Message: "no input text provided for embedding"},
-		}
+		return nil, newConfigurationError("no input text provided for embedding", schemas.Cohere)
 	}
 
 	// Prepare request body with default values
@@ -612,12 +609,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 		// Validate encoding format - Cohere API supports float, int8, uint8, binary, ubinary, but our provider only implements float
 		if params.EncodingFormat != nil {
 			if *params.EncodingFormat != "float" {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: schemas.ErrorField{
-						Message: fmt.Sprintf("Cohere provider currently only supports 'float' encoding format, received: %s", *params.EncodingFormat),
-					},
-				}
+				return nil, newConfigurationError(fmt.Sprintf("Cohere provider currently only supports 'float' encoding format, received: %s", *params.EncodingFormat), schemas.Cohere)
 			}
 			// Override default with the specified format
 			requestBody["embedding_types"] = []string{*params.EncodingFormat}
@@ -634,13 +626,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 	// Marshal request body
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Cohere)
 	}
 
 	// Create request
@@ -679,25 +665,13 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 	// Parse response
 	var cohereResp CohereEmbeddingResponse
 	if err := json.Unmarshal(resp.Body(), &cohereResp); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error parsing Cohere embedding response",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error parsing Cohere embedding response", err, schemas.Cohere)
 	}
 
 	// Parse raw response for consistent format
 	var rawResponse interface{}
 	if err := json.Unmarshal(resp.Body(), &rawResponse); err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "error parsing raw response for Cohere embedding",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("error parsing raw response for Cohere embedding", err, schemas.Cohere)
 	}
 
 	// Calculate token usage approximation (since Cohere doesn't provide this for embeddings)
@@ -732,36 +706,18 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Prepare request body using shared function
 	requestBody, err := prepareCohereChatRequest(messages, params, model, true)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to prepare Cohere chat request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("failed to prepare Cohere chat request", err, schemas.Cohere)
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Cohere)
 	}
 
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v1/chat", strings.NewReader(string(jsonBody)))
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to create HTTP request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("failed to create HTTP request", err, schemas.Cohere)
 	}
 
 	// Set headers
@@ -789,14 +745,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
-			Error: schemas.ErrorField{
-				Message: fmt.Sprintf("HTTP error from Cohere: %d", resp.StatusCode),
-				Error:   fmt.Errorf("%s", string(body)),
-			},
-		}
+		return nil, newProviderAPIError(fmt.Sprintf("HTTP error from Cohere: %d", resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, schemas.Cohere, nil, nil)
 	}
 
 	// Create response channel
@@ -870,7 +819,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 
 				case "text-generation":
 					var textEvent CohereStreamTextEvent
@@ -905,7 +854,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
+					processAndSendResponse(ctx, postHookRunner, response, responseChan)
 
 				case "tool-calls-chunk":
 					var toolEvent CohereStreamToolCallEvent
@@ -949,7 +898,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
+					processAndSendResponse(ctx, postHookRunner, response, responseChan)
 
 				case "stream-end":
 					var stopEvent CohereStreamStopEvent
@@ -1005,7 +954,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
+					processAndSendResponse(ctx, postHookRunner, response, responseChan)
 
 					return // End of stream
 
@@ -1018,6 +967,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading Cohere stream: %v", err))
+			processAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 

@@ -265,13 +265,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	// Marshal the request body
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Anthropic)
 	}
 
 	// Create the request with the JSON body
@@ -834,25 +828,13 @@ func handleAnthropicStreaming(
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerType)
 	}
 
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonBody)))
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: "failed to create HTTP request",
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError("failed to create HTTP request", err, providerType)
 	}
 
 	// Set headers
@@ -866,27 +848,14 @@ func handleAnthropicStreaming(
 	// Make the request
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerType)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
-			Error: schemas.ErrorField{
-				Message: fmt.Sprintf("HTTP error from %s: %d", providerType, resp.StatusCode),
-				Error:   fmt.Errorf("%s", string(body)),
-			},
-		}
+		return nil, newProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerType, resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, providerType, nil, nil)
 	}
 
 	// Create response channel
@@ -989,7 +958,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 						}
 					default:
 						thought := ""
@@ -1027,7 +996,7 @@ func handleAnthropicStreaming(
 						}
 
 						// Use utility function to process and send response
-						ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 					}
 				}
 
@@ -1068,7 +1037,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 						}
 
 					case "input_json_delta":
@@ -1106,7 +1075,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 						}
 
 					case "thinking_delta":
@@ -1137,7 +1106,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 						}
 
 					case "signature_delta":
@@ -1186,7 +1155,7 @@ func handleAnthropicStreaming(
 					}
 
 					// Use utility function to process and send response
-					ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 				}
 
 			case "message_stop":
@@ -1225,7 +1194,7 @@ func handleAnthropicStreaming(
 				}
 
 				// Use utility function to process and send response
-				ProcessAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+				processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 				return
 
 			case "ping":
@@ -1239,20 +1208,23 @@ func handleAnthropicStreaming(
 					continue
 				}
 				if event.Error != nil {
-
 					// Send error through channel before closing
-					errorResponse := &schemas.BifrostStream{
-						BifrostError: &schemas.BifrostError{
-							IsBifrostError: false,
-							Error: schemas.ErrorField{
-								Type:    &event.Error.Type,
-								Message: event.Error.Message,
-							},
+					bifrostError := &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: schemas.ErrorField{
+							Type:    &event.Error.Type,
+							Message: event.Error.Message,
 						},
 					}
 
+					processedResponse, processedError := postHookRunner(&ctx, nil, bifrostError)
+					bifrostError = processedError
+
 					select {
-					case responseChan <- errorResponse:
+					case responseChan <- &schemas.BifrostStream{
+						BifrostResponse: processedResponse,
+						BifrostError:    bifrostError,
+					}:
 					case <-ctx.Done():
 					}
 				}
@@ -1272,22 +1244,7 @@ func handleAnthropicStreaming(
 
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerType, err))
-
-			// Send scanner error through channel
-			errorResponse := &schemas.BifrostStream{
-				BifrostError: &schemas.BifrostError{
-					IsBifrostError: true,
-					Error: schemas.ErrorField{
-						Message: "Error reading stream",
-						Error:   err,
-					},
-				},
-			}
-
-			select {
-			case responseChan <- errorResponse:
-			case <-ctx.Done():
-			}
+			processAndSendError(ctx, postHookRunner, err, responseChan)
 		}
 	}()
 
