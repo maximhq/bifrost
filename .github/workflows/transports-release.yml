@@ -145,6 +145,10 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
+          # Trim whitespace from secrets
+          export R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"
+          export R2_ACCESS_KEY_ID="$(echo "$R2_ACCESS_KEY_ID" | tr -d '[:space:]')"
+          export R2_SECRET_ACCESS_KEY="$(echo "$R2_SECRET_ACCESS_KEY" | tr -d '[:space:]')"
           # Strip 'transports/' prefix and add 'v' prefix for upload script
           VERSION_ONLY="${{ steps.manage_versions.outputs.transport_version }}"
           VERSION_ONLY=${VERSION_ONLY#transports/v}

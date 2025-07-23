@@ -60,15 +60,27 @@ async function uploadWithRetry(filePath, s3Key, maxRetries = 3) {
   }
 }
 
-// Exit if any required environment variables are missing
+// Debug and validate environment variables
+console.log('🔍 Environment variables debug:');
 const requiredEnvVars = ['R2_ENDPOINT', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
-const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
-if (missingEnvVars.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missingEnvVars.join(', ')}`);
-  console.error('Please set all required environment variables before running this script.');
-  process.exit(1);
-}
+requiredEnvVars.forEach(varName => {
+  const value = process.env[varName];
+  if (!value) {
+    console.log(`❌ ${varName}: Missing`);
+    process.exit(1);
+  } else {
+    // Show first/last few chars to verify without exposing secrets
+    const masked = value.length > 4 
+      ? `${value.substring(0, 2)}...${value.substring(value.length - 2)}`
+      : `${value.substring(0, 1)}...`;
+    console.log(`✅ ${varName}: Set (${value.length} chars) ${masked}`);
+    
+    // Check for common issues
+    if (value.includes('\n')) console.log(`⚠️  ${varName}: Contains newlines`);
+    if (value.startsWith(' ') || value.endsWith(' ')) console.log(`⚠️  ${varName}: Contains leading/trailing spaces`);
+  }
+});
 
 // Uploadig new folder
 console.log("uploading new release...");
