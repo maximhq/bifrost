@@ -35,8 +35,8 @@ func NewAnthropicRouter(client *bifrost.Bifrost) *AnthropicRouter {
 				return DeriveAnthropicErrorFromBifrostError(err)
 			},
 			StreamConfig: &integrations.StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return DeriveAnthropicStreamFromBifrostResponse(resp, 0), nil
+				ResponseConverter: func(resp *schemas.BifrostResponse, streamIndex int) (interface{}, error) {
+					return DeriveAnthropicStreamFromBifrostResponse(resp, streamIndex), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
 					return DeriveAnthropicStreamFromBifrostError(err)

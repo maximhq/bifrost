@@ -38,7 +38,7 @@ func NewGenAIRouter(client *bifrost.Bifrost) *GenAIRouter {
 				return DeriveGeminiErrorFromBifrostError(err)
 			},
 			StreamConfig: &integrations.StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				ResponseConverter: func(resp *schemas.BifrostResponse, streamIndex int) (interface{}, error) {
 					return DeriveGeminiStreamFromBifrostResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {

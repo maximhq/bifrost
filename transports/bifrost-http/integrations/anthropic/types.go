@@ -521,7 +521,7 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 }
 
 // DeriveAnthropicStreamFromBifrostResponse converts a Bifrost streaming response to Anthropic SSE string format
-func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse, messageIndex int) string {
+func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse, streamIndex int) string {
 	if bifrostResp == nil {
 		return ""
 	}
@@ -537,7 +537,7 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 			delta := choice.BifrostStreamResponseChoice.Delta
 
 			// Handle message start event
-			if messageIndex == 0 {
+			if streamIndex == 0 {
 				streamResp := &AnthropicStreamResponse{}
 				var usage *AnthropicUsage
 
@@ -570,7 +570,7 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 
 			// Handle text content deltas
 			if delta.Content != nil {
-				if messageIndex == 0 {
+				if streamIndex == 0 {
 					streamResp.Type = "content_block_start"
 					streamResp.ContentBlock = &AnthropicContentBlock{
 						Type: "text",
