@@ -30,17 +30,25 @@ const s3Client = new S3Client({
 
 const bucket = "prod-downloads";
 
-async function uploadWithRetry(command, key, maxRetries = 3) {
+async function uploadWithRetry(filePath, s3Key, maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // Create a fresh stream for each attempt
+      const fileStream = fs.createReadStream(filePath);
+      const command = new PutObjectCommand({
+        Bucket: bucket,
+        Key: s3Key,
+        Body: fileStream,
+      });
+      
       await s3Client.send(command);
-      console.log(`🌟 Uploaded: ${key}`);
+      console.log(`🌟 Uploaded: ${s3Key}`);
       return;
     } catch (error) {
-      console.log(`⚠️  Attempt ${attempt}/${maxRetries} failed for ${key}: ${error.message}`);
+      console.log(`⚠️  Attempt ${attempt}/${maxRetries} failed for ${s3Key}: ${error.message}`);
       
       if (attempt === maxRetries) {
-        console.error(`❌ All ${maxRetries} attempts failed for ${key}`);
+        console.error(`❌ All ${maxRetries} attempts failed for ${s3Key}`);
         throw error;
       }
       
@@ -52,6 +60,16 @@ async function uploadWithRetry(command, key, maxRetries = 3) {
   }
 }
 
+// Exit if any required environment variables are missing
+const requiredEnvVars = ['R2_ENDPOINT', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
+const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+  console.error(`❌ Missing required environment variables: ${missingEnvVars.join(', ')}`);
+  console.error('Please set all required environment variables before running this script.');
+  process.exit(1);
+}
+
 // Uploadig new folder
 console.log("uploading new release...");
 const files = getFiles("./dist");
@@ -60,25 +78,13 @@ for (const file of files) {
   const filePath = file.split("dist/")[1];
   
   // Upload to versioned path
-  const versionedFileStream = fs.createReadStream(file);
-  const uploadCommand = new PutObjectCommand({
-    Bucket: bucket,
-    Key: `bifrost/${cliVersion}/${filePath}`,
-    Body: versionedFileStream,
-  });
-  await uploadWithRetry(uploadCommand, `bifrost/${cliVersion}/${filePath}`);
+  await uploadWithRetry(file, `bifrost/${cliVersion}/${filePath}`);
   
   // Small delay between uploads to avoid rate limiting
   await new Promise(resolve => setTimeout(resolve, 500));
   
-  // Upload to latest path (create new stream)
-  const latestFileStream = fs.createReadStream(file);
-  const latestUploadCommand = new PutObjectCommand({
-    Bucket: bucket,
-    Key: `bifrost/latest/${filePath}`,
-    Body: latestFileStream,
-  });
-  await uploadWithRetry(latestUploadCommand, `bifrost/latest/${filePath}`);
+  // Upload to latest path
+  await uploadWithRetry(file, `bifrost/latest/${filePath}`);
   
   // Small delay between files
   await new Promise(resolve => setTimeout(resolve, 500));
