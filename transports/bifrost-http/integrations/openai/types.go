@@ -21,6 +21,7 @@ type OpenAIChatRequest struct {
 	Tools            *[]schemas.Tool          `json:"tools,omitempty"` // Reuse schema type
 	ToolChoice       *schemas.ToolChoice      `json:"tool_choice,omitempty"`
 	Stream           *bool                    `json:"stream,omitempty"`
+	StreamOptions    *schemas.StreamOptions   `json:"stream_options,omitempty"`
 	LogProbs         *bool                    `json:"logprobs,omitempty"`
 	TopLogProbs      *int                     `json:"top_logprobs,omitempty"`
 	ResponseFormat   interface{}              `json:"response_format,omitempty"`
@@ -264,6 +265,9 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 	}
 	if r.Seed != nil {
 		params.ExtraParams["seed"] = *r.Seed
+	}
+	if r.StreamOptions != nil {
+		params.StreamOptions = r.StreamOptions
 	}
 
 	return params

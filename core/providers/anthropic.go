@@ -515,6 +515,10 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 					"tool_use_id": *msg.ToolMessage.ToolCallID,
 				}
 
+				if msg.ToolMessage.IsError != nil {
+					toolCallResult["is_error"] = *msg.ToolMessage.IsError
+				}
+
 				var toolCallResultContent []map[string]interface{}
 
 				if msg.Content.ContentStr != nil {

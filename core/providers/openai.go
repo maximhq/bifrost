@@ -222,11 +222,22 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 	for _, msg := range messages {
 		if msg.Role == schemas.ModelChatMessageRoleAssistant {
 			assistantMessage := map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
+				"role": msg.Role,
 			}
 			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
 				assistantMessage["tool_calls"] = *msg.AssistantMessage.ToolCalls
+			}
+			if msg.Content.ContentStr != nil {
+				assistantMessage["content"] = *msg.Content.ContentStr
+			} else if msg.Content.ContentBlocks != nil && len(*msg.Content.ContentBlocks) > 0 {
+				var sb strings.Builder
+				for _, block := range *msg.Content.ContentBlocks {
+					if block.Text != nil && *block.Text != "" {
+						sb.WriteString(*block.Text)
+						sb.WriteString(" ")
+					}
+				}
+				assistantMessage["content"] = sb.String()
 			}
 			formattedMessages = append(formattedMessages, assistantMessage)
 		} else {
@@ -250,6 +261,24 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 
 			if msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
 				message["tool_call_id"] = *msg.ToolMessage.ToolCallID
+				if msg.IsError != nil {
+					message["is_error"] = *msg.IsError
+				}
+
+				content := message["content"]
+				if contentBlocks, ok := content.([]schemas.ContentBlock); ok {
+					var sb strings.Builder
+					for _, block := range contentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							sb.WriteString(*block.Text)
+							sb.WriteString(" ")
+						} else if block.ImageURL != nil {
+							sb.WriteString(block.ImageURL.URL)
+							sb.WriteString(" ")
+						}
+					}
+					message["content"] = sb.String()
+				}
 			}
 
 			formattedMessages = append(formattedMessages, message)

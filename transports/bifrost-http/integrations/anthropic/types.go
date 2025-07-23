@@ -3,7 +3,6 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -21,6 +20,7 @@ type AnthropicContentBlock struct {
 	Name      *string               `json:"name,omitempty"`        // For tool_use content
 	Input     interface{}           `json:"input,omitempty"`       // For tool_use content
 	Content   AnthropicContent      `json:"content,omitempty"`     // For tool_result content
+	IsError   *bool                 `json:"is_error,omitempty"`    // For tool_result content
 	Source    *AnthropicImageSource `json:"source,omitempty"`      // For image content
 }
 
@@ -63,17 +63,18 @@ type AnthropicToolChoice struct {
 
 // AnthropicMessageRequest represents an Anthropic messages API request
 type AnthropicMessageRequest struct {
-	Model         string               `json:"model"`
-	MaxTokens     int                  `json:"max_tokens"`
-	Messages      []AnthropicMessage   `json:"messages"`
-	System        *AnthropicContent    `json:"system,omitempty"`
-	Temperature   *float64             `json:"temperature,omitempty"`
-	TopP          *float64             `json:"top_p,omitempty"`
-	TopK          *int                 `json:"top_k,omitempty"`
-	StopSequences *[]string            `json:"stop_sequences,omitempty"`
-	Stream        *bool                `json:"stream,omitempty"`
-	Tools         *[]AnthropicTool     `json:"tools,omitempty"`
-	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
+	Model         string                 `json:"model"`
+	MaxTokens     int                    `json:"max_tokens"`
+	Messages      []AnthropicMessage     `json:"messages"`
+	System        *AnthropicContent      `json:"system,omitempty"`
+	Temperature   *float64               `json:"temperature,omitempty"`
+	TopP          *float64               `json:"top_p,omitempty"`
+	TopK          *int                   `json:"top_k,omitempty"`
+	StopSequences *[]string              `json:"stop_sequences,omitempty"`
+	Stream        *bool                  `json:"stream,omitempty"`
+	StreamOptions *schemas.StreamOptions `json:"stream_options,omitempty"`
+	Tools         *[]AnthropicTool       `json:"tools,omitempty"`
+	ToolChoice    *AnthropicToolChoice   `json:"tool_choice,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -124,6 +125,23 @@ type AnthropicStreamResponse struct {
 	ContentBlock *AnthropicContentBlock  `json:"content_block,omitempty"`
 	Delta        *AnthropicStreamDelta   `json:"delta,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
+}
+
+func (s *AnthropicStreamResponse) ToSSE() string {
+	jsonData, err := json.Marshal(s)
+	if err != nil {
+		return "event: error\ndata: {\"type\": \"error\", \"error\": {\"type\": \"internal_error\", \"message\": \"Failed to marshal stream response\"}}\n\n"
+	}
+	return fmt.Sprintf("event: %s\ndata: %s\n\n", s.Type, string(jsonData))
+}
+
+func (s *AnthropicStreamResponse) SetModel(model string) {
+	if s.Model != nil {
+		*s.Model = model
+	}
+	if s.Message != nil && s.Message.Model != "" {
+		s.Message.Model = model
+	}
 }
 
 // AnthropicStreamMessage represents the message structure in streaming events
@@ -238,6 +256,8 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 			var toolCalls []schemas.ToolCall
 			var contentBlocks []schemas.ContentBlock
 
+			skipAppendMessage := false
+
 			for _, content := range *msg.Content.ContentBlocks {
 				switch content.Type {
 				case "text":
@@ -281,46 +301,67 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 						toolCalls = append(toolCalls, tc)
 					}
 				case "tool_result":
-					if content.ToolUseID != nil {
-						bifrostMsg.ToolMessage = &schemas.ToolMessage{
-							ToolCallID: content.ToolUseID,
-						}
-						if content.Content.ContentStr != nil {
-							contentBlocks = append(contentBlocks, schemas.ContentBlock{
-								Type: schemas.ContentBlockTypeText,
-								Text: content.Content.ContentStr,
-							})
-						} else if content.Content.ContentBlocks != nil {
-							for _, block := range *content.Content.ContentBlocks {
-								if block.Text != nil {
-									contentBlocks = append(contentBlocks, schemas.ContentBlock{
-										Type: schemas.ContentBlockTypeText,
-										Text: block.Text,
-									})
-								} else if block.Source != nil {
-									contentBlocks = append(contentBlocks, schemas.ContentBlock{
-										Type: schemas.ContentBlockTypeImage,
-										ImageURL: &schemas.ImageURLStruct{
-											URL: func() string {
-												if block.Source.Data != nil {
-													mime := "image/png"
-													if block.Source.MediaType != nil && *block.Source.MediaType != "" {
-														mime = *block.Source.MediaType
-													}
-													return "data:" + mime + ";base64," + *block.Source.Data
+					if content.ToolUseID == nil || *content.ToolUseID == "" {
+						continue
+					}
+
+					skipAppendMessage = true
+
+					bifrostMsg.Role = schemas.ModelChatMessageRoleTool
+					bifrostMsg.ToolMessage = &schemas.ToolMessage{
+						ToolCallID: content.ToolUseID,
+						IsError:    content.IsError,
+					}
+					if content.Content.ContentStr != nil {
+						contentBlocks = append(contentBlocks, schemas.ContentBlock{
+							Type: schemas.ContentBlockTypeText,
+							Text: content.Content.ContentStr,
+						})
+					} else if content.Content.ContentBlocks != nil {
+						for _, block := range *content.Content.ContentBlocks {
+							if block.Text != nil {
+								contentBlocks = append(contentBlocks, schemas.ContentBlock{
+									Type: schemas.ContentBlockTypeText,
+									Text: block.Text,
+								})
+							} else if block.Source != nil {
+								contentBlocks = append(contentBlocks, schemas.ContentBlock{
+									Type: schemas.ContentBlockTypeImage,
+									ImageURL: &schemas.ImageURLStruct{
+										URL: func() string {
+											if block.Source.Data != nil {
+												mime := "image/png"
+												if block.Source.MediaType != nil && *block.Source.MediaType != "" {
+													mime = *block.Source.MediaType
 												}
-												if block.Source.URL != nil {
-													return *block.Source.URL
-												}
-												return ""
-											}()},
-									})
-								}
+												return "data:" + mime + ";base64," + *block.Source.Data
+											}
+											if block.Source.URL != nil {
+												return *block.Source.URL
+											}
+											return ""
+										}()},
+								})
 							}
 						}
-						bifrostMsg.Role = schemas.ModelChatMessageRoleTool
 					}
+
+					if len(contentBlocks) > 0 {
+						blocks := make([]schemas.ContentBlock, len(contentBlocks))
+						copy(blocks, contentBlocks)
+						bifrostMsg.Content = schemas.MessageContent{
+							ContentBlocks: &blocks,
+						}
+						messages = append(messages, bifrostMsg)
+						bifrostMsg = schemas.BifrostMessage{}
+						contentBlocks = contentBlocks[:0]
+					}
+					continue
 				}
+			}
+
+			if skipAppendMessage {
+				continue
 			}
 
 			// Concatenate all text contents
@@ -359,6 +400,9 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 		}
 		if r.StopSequences != nil {
 			params.StopSequences = r.StopSequences
+		}
+		if r.StreamOptions != nil {
+			params.StreamOptions = r.StreamOptions
 		}
 
 		bifrostReq.Params = params
@@ -450,6 +494,9 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
 		}
+		if bifrostResp.Usage.TokenDetails != nil {
+			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.TokenDetails.CachedTokens
+		}
 	}
 
 	// Convert choices to content
@@ -521,9 +568,9 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 }
 
 // DeriveAnthropicStreamFromBifrostResponse converts a Bifrost streaming response to Anthropic SSE string format
-func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse, streamIndex int) string {
+func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse, streamIndex int) []*AnthropicStreamResponse {
 	if bifrostResp == nil {
-		return ""
+		return nil
 	}
 
 	var streamRespList []*AnthropicStreamResponse
@@ -549,6 +596,13 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 					}
 					if bifrostResp.Usage.TokenDetails != nil {
 						usage.CacheReadInputTokens = bifrostResp.Usage.TokenDetails.CachedTokens
+					}
+				} else {
+					// Default to 1 token for input and output, e.g. for DeepSeek api.
+					// Return the actual usage in the final message delta.
+					usage = &AnthropicUsage{
+						InputTokens:  1,
+						OutputTokens: 1,
 					}
 				}
 				streamResp.Type = "message_start"
@@ -625,14 +679,19 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 				})
 
 				// Handle message delta
+				usage := &AnthropicUsage{
+					OutputTokens: bifrostResp.Usage.CompletionTokens,
+					InputTokens:  bifrostResp.Usage.PromptTokens,
+				}
+				if bifrostResp.Usage.TokenDetails != nil {
+					usage.CacheReadInputTokens = bifrostResp.Usage.TokenDetails.CachedTokens
+				}
 				streamResp = &AnthropicStreamResponse{
 					Type: "message_delta",
 					Delta: &AnthropicStreamDelta{
 						StopReason: choice.FinishReason,
 					},
-					Usage: &AnthropicUsage{
-						OutputTokens: bifrostResp.Usage.CompletionTokens,
-					},
+					Usage: usage,
 				}
 			}
 
@@ -668,24 +727,17 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 
 	}
 
-	var sb strings.Builder
+	result := make([]*AnthropicStreamResponse, 0, len(streamRespList))
 	for _, streamResp := range streamRespList {
 		// Ignore empty stream responses
 		if streamResp.Type == "" {
 			continue
 		}
 
-		// Marshal to JSON and format as SSE
-		jsonData, err := json.Marshal(streamResp)
-		if err != nil {
-			return ""
-		}
-
-		// Format as Anthropic SSE
-		sb.WriteString(fmt.Sprintf("event: %s\ndata: %s\n\n", streamResp.Type, jsonData))
+		result = append(result, streamResp)
 	}
 
-	return sb.String()
+	return result
 }
 
 // DeriveAnthropicErrorFromBifrostError derives a AnthropicMessageError from a BifrostError

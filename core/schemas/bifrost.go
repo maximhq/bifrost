@@ -10,6 +10,11 @@ const (
 	DefaultInitialPoolSize = 100
 )
 
+// StreamOptions represents the options for streaming requests.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
@@ -161,19 +166,20 @@ type Fallback struct {
 // your request to the model. Bifrost follows a standard set of parameters which
 // mapped to the provider's parameters.
 type ModelParameters struct {
-	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
-	Tools             *[]Tool     `json:"tools,omitempty"`               // Tools to use
-	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
-	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
-	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
-	MaxTokens         *int        `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
-	StopSequences     *[]string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
-	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
-	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
-	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
-	EncodingFormat    *string     `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
-	Dimensions        *int        `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
-	User              *string     `json:"user,omitempty"`                // User identifier for tracking
+	ToolChoice        *ToolChoice    `json:"tool_choice,omitempty"`         // Whether to call a tool
+	Tools             *[]Tool        `json:"tools,omitempty"`               // Tools to use
+	Temperature       *float64       `json:"temperature,omitempty"`         // Controls randomness in the output
+	TopP              *float64       `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
+	TopK              *int           `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
+	MaxTokens         *int           `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
+	StopSequences     *[]string      `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	PresencePenalty   *float64       `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
+	FrequencyPenalty  *float64       `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
+	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
+	EncodingFormat    *string        `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
+	Dimensions        *int           `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
+	User              *string        `json:"user,omitempty"`                // User identifier for tracking
+	StreamOptions     *StreamOptions `json:"stream_options,omitempty"`      // Stream options for streaming requests
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -351,6 +357,7 @@ type ContentBlock struct {
 // ToolMessage represents a message from a tool
 type ToolMessage struct {
 	ToolCallID *string `json:"tool_call_id,omitempty"`
+	IsError    *bool   `json:"is_error,omitempty"`
 }
 
 // AssistantMessage represents a message from an assistant
