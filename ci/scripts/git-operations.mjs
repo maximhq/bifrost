@@ -167,11 +167,13 @@ switch (operation) {
   }
   
   case "create-tag":{
-    if (!tag) {
+    // For create-tag operation, the tag name is the second argument (argv[3])
+    const tagName = message || tag;
+    if (!tagName) {
       console.error("❌ Tag name is required for create-tag");
       process.exit(1);
     }
-    createTag(tag);
+    createTag(tagName);
     break;
   }
 

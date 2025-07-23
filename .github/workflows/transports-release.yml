@@ -239,7 +239,12 @@ jobs:
           echo "**Reason:** ${{ needs.check-release-flags.outputs.skip_reason }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### To trigger a release:" >> $GITHUB_STEP_SUMMARY
-          echo "Include \`--trigger-release\` in your commit message when pushing changes to \`transports/go.mod\`" >> $GITHUB_STEP_SUMMARY
+          echo "When merging a PR that changes \`transports/go.mod\`, edit the merge commit message to include \`--trigger-release\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How to do this:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Click **\"Merge pull request\"** in GitHub UI" >> $GITHUB_STEP_SUMMARY
+          echo "2. Edit the commit message to include \`--trigger-release\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Click **\"Confirm merge\"**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Default behavior:" >> $GITHUB_STEP_SUMMARY
           echo "Changes to \`transports/go.mod\` without \`--trigger-release\` flag will not trigger a release" >> $GITHUB_STEP_SUMMARY 
