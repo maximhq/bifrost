@@ -70,7 +70,7 @@ type AnthropicStreamEvent struct {
 	Index        *int                    `json:"index,omitempty"`
 	ContentBlock *AnthropicContentBlock  `json:"content_block,omitempty"`
 	Delta        *AnthropicDelta         `json:"delta,omitempty"`
-	Usage        *schemas.LLMUsage       `json:"usage,omitempty"`
+	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 	Error        *AnthropicStreamError   `json:"error,omitempty"`
 }
 
@@ -84,7 +84,35 @@ type AnthropicStreamMessage struct {
 	Model        string                  `json:"model"`
 	StopReason   *string                 `json:"stop_reason"`
 	StopSequence *string                 `json:"stop_sequence"`
-	Usage        *schemas.LLMUsage       `json:"usage"`
+	Usage        *AnthropicUsage         `json:"usage"`
+}
+
+// AnthropicUsage represents usage information in Anthropic format
+type AnthropicUsage struct {
+	InputTokens              int `json:"input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+}
+
+func (u *AnthropicUsage) ToLLMUsage() *schemas.LLMUsage {
+	if u == nil {
+		return nil
+	}
+
+	llmUsage := &schemas.LLMUsage{
+		PromptTokens:     u.InputTokens,
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      u.InputTokens + u.OutputTokens,
+	}
+
+	if u.CacheReadInputTokens > 0 {
+		llmUsage.TokenDetails = &schemas.TokenDetails{
+			CachedTokens: u.CacheReadInputTokens,
+		}
+	}
+
+	return llmUsage
 }
 
 // AnthropicContentBlock represents a content block in Anthropic responses.
@@ -487,6 +515,10 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 					"tool_use_id": *msg.ToolMessage.ToolCallID,
 				}
 
+				if msg.ToolMessage.IsError != nil {
+					toolCallResult["is_error"] = *msg.ToolMessage.IsError
+				}
+
 				var toolCallResultContent []map[string]interface{}
 
 				if msg.Content.ContentStr != nil {
@@ -871,6 +903,7 @@ func handleAnthropicStreaming(
 		// Track minimal state needed for response format
 		var messageID string
 		var modelName string
+		var usage *AnthropicUsage
 
 		// Track SSE event parsing state
 		var eventType string
@@ -899,6 +932,8 @@ func handleAnthropicStreaming(
 				continue
 			}
 
+			// logger.Debug(fmt.Sprintf("Received event: %s, %s", eventType, eventData))
+
 			// Handle different event types
 			switch eventType {
 			case "message_start":
@@ -910,6 +945,7 @@ func handleAnthropicStreaming(
 				if event.Message != nil {
 					messageID = event.Message.ID
 					modelName = event.Message.Model
+					usage = event.Message.Usage
 				}
 
 			case "content_block_start":
@@ -948,6 +984,7 @@ func handleAnthropicStreaming(
 										},
 									},
 								},
+								Usage: usage.ToLLMUsage(),
 								ExtraFields: schemas.BifrostResponseExtraFields{
 									Provider: providerType,
 								},
@@ -986,6 +1023,7 @@ func handleAnthropicStreaming(
 									},
 								},
 							},
+							Usage: usage.ToLLMUsage(),
 							ExtraFields: schemas.BifrostResponseExtraFields{
 								Provider: providerType,
 							},
@@ -1027,6 +1065,7 @@ func handleAnthropicStreaming(
 										},
 									},
 								},
+								Usage: usage.ToLLMUsage(),
 								ExtraFields: schemas.BifrostResponseExtraFields{
 									Provider: providerType,
 								},
@@ -1065,6 +1104,7 @@ func handleAnthropicStreaming(
 										},
 									},
 								},
+								Usage: usage.ToLLMUsage(),
 								ExtraFields: schemas.BifrostResponseExtraFields{
 									Provider: providerType,
 								},
@@ -1096,6 +1136,7 @@ func handleAnthropicStreaming(
 										},
 									},
 								},
+								Usage: usage.ToLLMUsage(),
 								ExtraFields: schemas.BifrostResponseExtraFields{
 									Provider: providerType,
 								},
@@ -1128,6 +1169,9 @@ func handleAnthropicStreaming(
 				}
 
 				// Handle delta changes to the top-level message
+				if event.Usage != nil && usage != nil {
+					usage.OutputTokens = event.Usage.OutputTokens
+				}
 
 				// Send usage information immediately if present
 				if event.Usage != nil {
@@ -1135,7 +1179,6 @@ func handleAnthropicStreaming(
 						ID:     messageID,
 						Object: "chat.completion.chunk",
 						Model:  modelName,
-						Usage:  event.Usage,
 						Choices: []schemas.BifrostResponseChoice{
 							{
 								Index: 0,
@@ -1145,6 +1188,7 @@ func handleAnthropicStreaming(
 								FinishReason: event.Delta.StopReason,
 							},
 						},
+						Usage: usage.ToLLMUsage(),
 						ExtraFields: schemas.BifrostResponseExtraFields{
 							Provider: providerType,
 						},

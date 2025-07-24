@@ -45,7 +45,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 				return DeriveOpenAIErrorFromBifrostError(err)
 			},
 			StreamConfig: &integrations.StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				ResponseConverter: func(resp *schemas.BifrostResponse, streamIndex int) (interface{}, error) {
 					return DeriveOpenAIStreamFromBifrostResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -84,7 +84,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 				return DeriveOpenAIErrorFromBifrostError(err)
 			},
 			StreamConfig: &integrations.StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				ResponseConverter: func(resp *schemas.BifrostResponse, streamIndex int) (interface{}, error) {
 					return DeriveOpenAISpeechFromBifrostResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -119,7 +119,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 				return DeriveOpenAIErrorFromBifrostError(err)
 			},
 			StreamConfig: &integrations.StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				ResponseConverter: func(resp *schemas.BifrostResponse, streamIndex int) (interface{}, error) {
 					return DeriveOpenAITranscriptionFromBifrostResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {

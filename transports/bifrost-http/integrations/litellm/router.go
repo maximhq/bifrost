@@ -168,7 +168,7 @@ func NewLiteLLMRouter(client *bifrost.Bifrost) *LiteLLMRouter {
 		}
 	}
 
-	streamResponseConverter := func(resp *schemas.BifrostResponse) (interface{}, error) {
+	streamResponseConverter := func(resp *schemas.BifrostResponse, streamIndex int) (interface{}, error) {
 		if resp == nil {
 			return nil, errors.New("response is nil")
 		}
@@ -183,7 +183,7 @@ func NewLiteLLMRouter(client *bifrost.Bifrost) *LiteLLMRouter {
 		case schemas.OpenAI, schemas.Azure:
 			return openai.DeriveOpenAIStreamFromBifrostResponse(resp), nil
 		case schemas.Anthropic:
-			return anthropic.DeriveAnthropicStreamFromBifrostResponse(resp), nil
+			return anthropic.DeriveAnthropicStreamFromBifrostResponse(resp, streamIndex), nil
 		case schemas.Vertex:
 			return genai.DeriveGeminiStreamFromBifrostResponse(resp), nil
 		default:
