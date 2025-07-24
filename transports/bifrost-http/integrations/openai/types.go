@@ -1,6 +1,9 @@
 package openai
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 )
@@ -70,14 +73,15 @@ func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 
 // OpenAIChatResponse represents an OpenAI chat completion response
 type OpenAIChatResponse struct {
-	ID                string                          `json:"id"`
-	Object            string                          `json:"object"`
-	Created           int                             `json:"created"`
-	Model             string                          `json:"model"`
-	Choices           []schemas.BifrostResponseChoice `json:"choices"`
-	Usage             *schemas.LLMUsage               `json:"usage,omitempty"` // Reuse schema type
-	ServiceTier       *string                         `json:"service_tier,omitempty"`
-	SystemFingerprint *string                         `json:"system_fingerprint,omitempty"`
+	ID                  string                          `json:"id"`
+	Object              string                          `json:"object"`
+	Created             int                             `json:"created"`
+	Model               string                          `json:"model"`
+	Choices             []schemas.BifrostResponseChoice `json:"choices"`
+	Usage               *schemas.LLMUsage               `json:"usage,omitempty"` // Reuse schema type
+	ServiceTier         *string                         `json:"service_tier,omitempty"`
+	SystemFingerprint   *string                         `json:"system_fingerprint,omitempty"`
+	PromptFilterResults *[]schemas.PromptFilterResult   `json:"prompt_filter_results,omitempty"`
 }
 
 // OpenAIChatError represents an OpenAI chat completion error response
@@ -93,6 +97,11 @@ type OpenAIChatError struct {
 	} `json:"error"`
 }
 
+func (e *OpenAIChatError) ToSSE() string {
+	data, _ := json.Marshal(e)
+	return fmt.Sprintf("data: %s\n\n", data)
+}
+
 // OpenAIChatErrorStruct represents the error structure of an OpenAI chat completion error response
 type OpenAIChatErrorStruct struct {
 	Type    string      `json:"type"`     // Error type
@@ -104,10 +113,11 @@ type OpenAIChatErrorStruct struct {
 
 // OpenAIStreamChoice represents a choice in a streaming response chunk
 type OpenAIStreamChoice struct {
-	Index        int                `json:"index"`
-	Delta        *OpenAIStreamDelta `json:"delta,omitempty"`
-	FinishReason *string            `json:"finish_reason,omitempty"`
-	LogProbs     *schemas.LogProbs  `json:"logprobs,omitempty"`
+	Index                int                          `json:"index"`
+	Delta                *OpenAIStreamDelta           `json:"delta,omitempty"`
+	FinishReason         *string                      `json:"finish_reason,omitempty"`
+	LogProbs             *schemas.LogProbs            `json:"logprobs,omitempty"`
+	ContentFilterResults *schemas.ContentFilterResult `json:"content_filter_results,omitempty"`
 }
 
 // OpenAIStreamDelta represents the incremental content in a streaming chunk
@@ -126,6 +136,11 @@ type OpenAIStreamResponse struct {
 	SystemFingerprint *string              `json:"system_fingerprint,omitempty"`
 	Choices           []OpenAIStreamChoice `json:"choices"`
 	Usage             *schemas.LLMUsage    `json:"usage,omitempty"`
+}
+
+func (r *OpenAIStreamResponse) ToSSE() string {
+	data, _ := json.Marshal(r)
+	return fmt.Sprintf("data: %s\n\n", data)
 }
 
 // ConvertToBifrostRequest converts an OpenAI chat request to Bifrost format
@@ -314,14 +329,15 @@ func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *Open
 	}
 
 	openaiResp := &OpenAIChatResponse{
-		ID:                bifrostResp.ID,
-		Object:            bifrostResp.Object,
-		Created:           bifrostResp.Created,
-		Model:             bifrostResp.Model,
-		Choices:           bifrostResp.Choices,
-		Usage:             bifrostResp.Usage,
-		ServiceTier:       bifrostResp.ServiceTier,
-		SystemFingerprint: bifrostResp.SystemFingerprint,
+		ID:                  bifrostResp.ID,
+		Object:              bifrostResp.Object,
+		Created:             bifrostResp.Created,
+		Model:               bifrostResp.Model,
+		Choices:             bifrostResp.Choices,
+		Usage:               bifrostResp.Usage,
+		ServiceTier:         bifrostResp.ServiceTier,
+		SystemFingerprint:   bifrostResp.SystemFingerprint,
+		PromptFilterResults: bifrostResp.PromptFilterResults,
 	}
 
 	return openaiResp
@@ -413,8 +429,9 @@ func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 	// Convert choices to streaming format
 	for _, choice := range bifrostResp.Choices {
 		streamChoice := OpenAIStreamChoice{
-			Index:        choice.Index,
-			FinishReason: choice.FinishReason,
+			Index:                choice.Index,
+			FinishReason:         choice.FinishReason,
+			ContentFilterResults: choice.ContentFilterResults,
 		}
 
 		var delta *OpenAIStreamDelta

@@ -1171,7 +1171,6 @@ func handleAnthropicStreaming(
 				// Handle delta changes to the top-level message
 				if event.Usage != nil && usage != nil {
 					usage.OutputTokens = event.Usage.OutputTokens
-					usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
 				}
 
 				// Send usage information immediately if present

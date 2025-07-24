@@ -135,15 +135,6 @@ func (s *AnthropicStreamResponse) ToSSE() string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", s.Type, string(jsonData))
 }
 
-func (s *AnthropicStreamResponse) SetModel(model string) {
-	if s.Model != nil {
-		*s.Model = model
-	}
-	if s.Message != nil && s.Message.Model != "" {
-		s.Message.Model = model
-	}
-}
-
 // AnthropicStreamMessage represents the message structure in streaming events
 type AnthropicStreamMessage struct {
 	ID           string                  `json:"id"`

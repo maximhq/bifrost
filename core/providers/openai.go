@@ -594,6 +594,9 @@ func handleOpenAIStreaming(
 
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if len(response.Choices) == 0 && response.Usage != nil {
+				// Empty choices array.
+				response.Choices = []schemas.BifrostResponseChoice{}
+
 				// This is a usage information chunk at the end of stream
 				if params != nil {
 					response.ExtraFields.Params = *params
@@ -619,9 +622,7 @@ func handleOpenAIStreaming(
 				response.ExtraFields.Provider = providerType
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
-
-				// End stream processing after finish reason
-				break
+				continue
 			}
 
 			// Handle regular content chunks
@@ -632,6 +633,7 @@ func handleOpenAIStreaming(
 				response.ExtraFields.Provider = providerType
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				continue
 			}
 		}
 

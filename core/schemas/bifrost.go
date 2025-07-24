@@ -378,18 +378,41 @@ type ImageURLStruct struct {
 
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
-	ID                string                     `json:"id,omitempty"`
-	Object            string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
-	Choices           []BifrostResponseChoice    `json:"choices,omitempty"`
-	Embedding         [][]float32                `json:"data,omitempty"`       // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
-	Speech            *BifrostSpeech             `json:"speech,omitempty"`     // Maps to "speech" field in provider responses (e.g., OpenAI speech format)
-	Transcribe        *BifrostTranscribe         `json:"transcribe,omitempty"` // Maps to "transcribe" field in provider responses (e.g., OpenAI transcription format)
-	Model             string                     `json:"model,omitempty"`
-	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
-	Usage             *LLMUsage                  `json:"usage,omitempty"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ID                  string                     `json:"id,omitempty"`
+	Object              string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
+	Choices             []BifrostResponseChoice    `json:"choices,omitempty"`
+	Embedding           [][]float32                `json:"data,omitempty"`       // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
+	Speech              *BifrostSpeech             `json:"speech,omitempty"`     // Maps to "speech" field in provider responses (e.g., OpenAI speech format)
+	Transcribe          *BifrostTranscribe         `json:"transcribe,omitempty"` // Maps to "transcribe" field in provider responses (e.g., OpenAI transcription format)
+	Model               string                     `json:"model,omitempty"`
+	Created             int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
+	ServiceTier         *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint   *string                    `json:"system_fingerprint,omitempty"`
+	Usage               *LLMUsage                  `json:"usage,omitempty"`
+	PromptFilterResults *[]PromptFilterResult      `json:"prompt_filter_results,omitempty"` // Azure OpenAI Service
+	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// FilterResult represents the result of a content filter.
+type FilterResult struct {
+	Filtered bool `json:"filtered"`
+	Severity bool `json:"severity"`
+}
+
+// ContentFilterResult represents the result of a content filter.
+type ContentFilterResult struct {
+	HateSpeech FilterResult `json:"hate_speech,omitempty"`
+	SelfHarm   FilterResult `json:"self_harm,omitempty"`
+	Sexual     FilterResult `json:"sexual,omitempty"`
+	Violence   FilterResult `json:"violence,omitempty"`
+	Jailbreak  FilterResult `json:"jailbreak,omitempty"`
+	Profanity  FilterResult `json:"profanity,omitempty"`
+}
+
+// PromptFilterResult represents the result of a prompt filter.
+type PromptFilterResult struct {
+	PromptIndex          int                  `json:"prompt_index"`
+	ContentFilterResults *ContentFilterResult `json:"content_filter_results"`
 }
 
 // LLMUsage represents token usage information
@@ -399,6 +422,36 @@ type LLMUsage struct {
 	TotalTokens             int                      `json:"total_tokens"`
 	TokenDetails            *TokenDetails            `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+func (u *LLMUsage) Clone() *LLMUsage {
+	if u == nil {
+		return nil
+	}
+
+	ret := &LLMUsage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
+
+	if u.TokenDetails != nil {
+		ret.TokenDetails = &TokenDetails{
+			CachedTokens: u.TokenDetails.CachedTokens,
+			AudioTokens:  u.TokenDetails.AudioTokens,
+		}
+	}
+
+	if u.CompletionTokensDetails != nil {
+		ret.CompletionTokensDetails = &CompletionTokensDetails{
+			ReasoningTokens:          u.CompletionTokensDetails.ReasoningTokens,
+			AudioTokens:              u.CompletionTokensDetails.AudioTokens,
+			AcceptedPredictionTokens: u.CompletionTokensDetails.AcceptedPredictionTokens,
+			RejectedPredictionTokens: u.CompletionTokensDetails.RejectedPredictionTokens,
+		}
+	}
+
+	return ret
 }
 
 type AudioLLMUsage struct {
@@ -501,8 +554,9 @@ type Annotation struct {
 // IMPORTANT: Only one of BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
-	Index        int     `json:"index"`
-	FinishReason *string `json:"finish_reason,omitempty"`
+	Index                int                  `json:"index"`
+	FinishReason         *string              `json:"finish_reason,omitempty"`
+	ContentFilterResults *ContentFilterResult `json:"content_filter_results,omitempty"` // Azure OpenAI Service or DeepSeek
 
 	*BifrostNonStreamResponseChoice
 	*BifrostStreamResponseChoice
