@@ -1,0 +1,96 @@
+name: Core PR Tests
+
+# Trigger on pull requests that modify files in the /core directory
+on:
+  pull_request:
+    paths:
+      - "core/**"
+    types: [opened, synchronize, reopened]
+
+# Prevent concurrent runs for the same PR
+concurrency:
+  group: core-pr-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-latest
+    name: Run Core Provider Tests
+    
+    steps:
+      # Checkout the PR branch
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      
+      # Set up Go environment
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.24.1"
+      
+      # Set up Node.js for running test scripts
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+      
+      # Install script dependencies
+      - name: Install script dependencies
+        working-directory: ci/scripts
+        run: npm ci
+      
+      # Run core provider tests (excluding Ollama and SGL)
+      - name: Run Core Provider Tests
+        env:
+          # OpenAI
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          
+          # Anthropic
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          
+          # Azure OpenAI
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+          
+          # AWS Bedrock
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          
+          # Cohere
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          
+          # Google Vertex AI
+          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_REGION: ${{ secrets.VERTEX_REGION }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          
+          # Mistral AI
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          
+          # Groq
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          chmod +x ci/scripts/run-core-tests.mjs
+          node ci/scripts/run-core-tests.mjs
+      
+      # Add success summary
+      - name: Test Results Summary
+        if: success()
+        run: |
+          echo "## ✅ Core Provider Tests Passed" >> $GITHUB_STEP_SUMMARY
+          echo "All core provider tests completed successfully." >> $GITHUB_STEP_SUMMARY
+          echo "**Tested providers:** OpenAI, Anthropic, Azure, Bedrock, Cohere, Vertex, Mistral, Groq" >> $GITHUB_STEP_SUMMARY
+          echo "**Excluded providers:** Ollama, SGL (require local instances)" >> $GITHUB_STEP_SUMMARY
+      
+      # Add failure summary  
+      - name: Test Failure Summary
+        if: failure()
+        run: |
+          echo "## ❌ Core Provider Tests Failed" >> $GITHUB_STEP_SUMMARY
+          echo "One or more core provider tests failed. Please check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          echo "This PR cannot be merged until all core tests pass." >> $GITHUB_STEP_SUMMARY 

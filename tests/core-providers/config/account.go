@@ -151,7 +151,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("GROQ_API_KEY"),
-				Models: []string{"llama-3.3-70b-versatile"},
+				Models: []string{},
 				Weight: 1.0,
 			},
 		}, nil

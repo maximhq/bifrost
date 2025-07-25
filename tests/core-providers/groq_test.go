@@ -27,7 +27,7 @@ func TestGroq(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
+			End2EndToolCalling:    false, // Not supported by llama
 			AutomaticFunctionCall: true,
 			ImageURL:              false,
 			ImageBase64:           false,

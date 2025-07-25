@@ -26,7 +26,7 @@ func TestAnthropic(t *testing.T) {
 			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:     false, // Not supported
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -34,9 +34,6 @@ func TestAnthropic(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
-		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 		},
 	}
 

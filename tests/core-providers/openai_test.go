@@ -39,9 +39,6 @@ func TestOpenAI(t *testing.T) {
 			Transcription:         false,
 			TranscriptionStream:   false,
 		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
-		},
 	}
 
 	runAllComprehensiveTests(t, client, ctx, testConfig)

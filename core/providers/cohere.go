@@ -421,13 +421,49 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 				toolCallParameters = map[string]interface{}{}
 			}
 
+			var resultStr string
+			var outputs []map[string]interface{}
+
+			if msg.Content.ContentStr != nil {
+				resultStr = *msg.Content.ContentStr
+				var result map[string]interface{}
+
+				err := json.Unmarshal([]byte(resultStr), &result)
+				if err != nil {
+					result = map[string]interface{}{
+						"outputs": resultStr,
+					}
+				}
+
+				outputs = append(outputs, result)
+			} else if msg.Content.ContentBlocks != nil {
+				for _, block := range *msg.Content.ContentBlocks {
+					var result map[string]interface{}
+
+					if block.Text != nil {
+						resultStr = *block.Text
+					} else {
+						resultStr = ""
+					}
+
+					err := json.Unmarshal([]byte(resultStr), &result)
+					if err != nil {
+						result = map[string]interface{}{
+							"outputs": resultStr,
+						}
+					}
+
+					outputs = append(outputs, result)
+				}
+			}
+
 			toolResults := []map[string]interface{}{
 				{
 					"call": map[string]interface{}{
 						"name":       *msg.ToolMessage.ToolCallID,
 						"parameters": toolCallParameters,
 					},
-					"outputs": *msg.Content.ContentStr,
+					"outputs": outputs,
 				},
 			}
 
