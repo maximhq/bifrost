@@ -84,14 +84,14 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			require.NotEmpty(t, toolCallID, "toolCallID must not be empty – provider did not return ID or Function.Name")
 			toolMessage := CreateToolMessage(toolResult, toolCallID)
 			conversationHistory = append(conversationHistory, toolMessage)
+		} else {
+			// Continue with follow-up
+			followUpMessage := CreateBasicChatMessage("Thanks! Now can you tell me about this travel image?")
+			if testConfig.Scenarios.ImageURL {
+				followUpMessage = CreateImageMessage("Thanks! Now can you tell me what you see in this travel-related image?", TestImageURL)
+			}
+			conversationHistory = append(conversationHistory, followUpMessage)
 		}
-
-		// Continue with follow-up
-		followUpMessage := CreateBasicChatMessage("Thanks! Now can you tell me about this travel image?")
-		if testConfig.Scenarios.ImageURL {
-			followUpMessage = CreateImageMessage("Thanks! Now can you tell me what you see in this travel-related image?", TestImageURL)
-		}
-		conversationHistory = append(conversationHistory, followUpMessage)
 
 		finalRequest := &schemas.BifrostRequest{
 			Provider: testConfig.Provider,

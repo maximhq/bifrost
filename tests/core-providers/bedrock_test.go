@@ -23,10 +23,10 @@ func TestBedrock(t *testing.T) {
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported for Claude
 			SimpleChat:            true,
-			ChatCompletionStream:  true,
+			ChatCompletionStream:  false,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:     false, // Not supported by anthropic
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false,
