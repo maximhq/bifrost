@@ -13,6 +13,7 @@ type ClientConfig struct {
 	InitialPoolSize    int      `json:"initial_pool_size"`    // The initial pool size for the bifrost client
 	PrometheusLabels   []string `json:"prometheus_labels"`    // The labels to be used for prometheus metrics
 	EnableLogging      bool     `json:"enable_logging"`       // Enable logging of requests and responses
+	EnforceGovernance  bool     `json:"enforce_governance"`   // Enforce governance on all requests
 }
 
 // ProviderConfig represents the configuration for a specific AI model provider.

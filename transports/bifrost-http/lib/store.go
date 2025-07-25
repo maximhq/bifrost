@@ -61,6 +61,7 @@ var DefaultClientConfig = ClientConfig{
 	PrometheusLabels:   []string{},
 	InitialPoolSize:    300,
 	EnableLogging:      true,
+	EnforceGovernance:  false,
 }
 
 // NewConfigStore creates a new in-memory configuration store instance with database connection.
@@ -335,6 +336,7 @@ func (s *ConfigStore) loadClientConfigFromDB() error {
 		PrometheusLabels:   dbConfig.PrometheusLabels,
 		InitialPoolSize:    dbConfig.InitialPoolSize,
 		EnableLogging:      dbConfig.EnableLogging,
+		EnforceGovernance:  dbConfig.EnforceGovernance,
 	}
 
 	return nil
@@ -720,6 +722,7 @@ func (s *ConfigStore) saveClientConfigToDB() error {
 		InitialPoolSize:    s.ClientConfig.InitialPoolSize,
 		EnableLogging:      s.ClientConfig.EnableLogging,
 		PrometheusLabels:   s.ClientConfig.PrometheusLabels,
+		EnforceGovernance:  s.ClientConfig.EnforceGovernance,
 	}
 
 	// Delete existing client config and create new one

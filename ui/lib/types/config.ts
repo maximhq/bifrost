@@ -129,6 +129,7 @@ export interface CoreConfig {
   initial_pool_size?: number
   prometheus_labels?: string
   enable_logging?: boolean
+  enforce_governance?: boolean
 }
 
 // Utility types for form handling
