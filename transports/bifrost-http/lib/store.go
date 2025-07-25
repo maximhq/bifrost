@@ -57,10 +57,12 @@ type EnvKeyInfo struct {
 }
 
 var DefaultClientConfig = ClientConfig{
-	DropExcessRequests: false,
-	PrometheusLabels:   []string{},
-	InitialPoolSize:    300,
-	EnableLogging:      true,
+	DropExcessRequests:      false,
+	PrometheusLabels:        []string{},
+	InitialPoolSize:         300,
+	EnableLogging:           true,
+	EnableGovernance:        true,
+	EnforceGovernanceHeader: false,
 }
 
 // NewConfigStore creates a new in-memory configuration store instance with database connection.
@@ -331,10 +333,12 @@ func (s *ConfigStore) loadClientConfigFromDB() error {
 	}
 
 	s.ClientConfig = ClientConfig{
-		DropExcessRequests: dbConfig.DropExcessRequests,
-		PrometheusLabels:   dbConfig.PrometheusLabels,
-		InitialPoolSize:    dbConfig.InitialPoolSize,
-		EnableLogging:      dbConfig.EnableLogging,
+		DropExcessRequests:      dbConfig.DropExcessRequests,
+		PrometheusLabels:        dbConfig.PrometheusLabels,
+		InitialPoolSize:         dbConfig.InitialPoolSize,
+		EnableLogging:           dbConfig.EnableLogging,
+		EnableGovernance:        dbConfig.EnableGovernance,
+		EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
 	}
 
 	return nil
@@ -716,10 +720,12 @@ func (s *ConfigStore) SaveConfig() error {
 // saveClientConfigToDB saves client configuration to database
 func (s *ConfigStore) saveClientConfigToDB() error {
 	dbConfig := DBClientConfig{
-		DropExcessRequests: s.ClientConfig.DropExcessRequests,
-		InitialPoolSize:    s.ClientConfig.InitialPoolSize,
-		EnableLogging:      s.ClientConfig.EnableLogging,
-		PrometheusLabels:   s.ClientConfig.PrometheusLabels,
+		DropExcessRequests:      s.ClientConfig.DropExcessRequests,
+		InitialPoolSize:         s.ClientConfig.InitialPoolSize,
+		EnableLogging:           s.ClientConfig.EnableLogging,
+		EnableGovernance:        s.ClientConfig.EnableGovernance,
+		EnforceGovernanceHeader: s.ClientConfig.EnforceGovernanceHeader,
+		PrometheusLabels:        s.ClientConfig.PrometheusLabels,
 	}
 
 	// Delete existing client config and create new one
@@ -801,7 +807,6 @@ func (s *ConfigStore) saveMCPToDB() error {
 		return nil
 	}
 
-	
 	dbClients := make([]DBMCPClient, 0, len(s.MCPConfig.ClientConfigs))
 	for _, clientConfig := range s.MCPConfig.ClientConfigs {
 		dbClient := DBMCPClient{
@@ -992,6 +997,25 @@ func (s *ConfigStore) GetProviderConfigRaw(provider schemas.ModelProvider) (*Pro
 	// Return direct reference for maximum performance - this is used by Bifrost core
 	// CRITICAL: Never modify the returned data as it's shared
 	return &config, nil
+}
+
+func (s *ConfigStore) GetClientConfigFromDB() (*DBClientConfig, error) {
+	var dbConfig DBClientConfig
+	if err := s.db.First(&dbConfig).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return &DBClientConfig{
+				DropExcessRequests:      s.ClientConfig.DropExcessRequests,
+				InitialPoolSize:         s.ClientConfig.InitialPoolSize,
+				PrometheusLabels:        s.ClientConfig.PrometheusLabels,
+				EnableLogging:           s.ClientConfig.EnableLogging,
+				EnableGovernance:        s.ClientConfig.EnableGovernance,
+				EnforceGovernanceHeader: s.ClientConfig.EnforceGovernanceHeader,
+			}, nil
+		}
+		return nil, err
+	}
+
+	return &dbConfig, nil
 }
 
 // GetProviderConfigRedacted retrieves a provider configuration with sensitive values redacted.
@@ -2098,26 +2122,26 @@ func (s *ConfigStore) loadFromDatabaseInternal() error {
 }
 
 func (s *ConfigStore) storeConfigHash(tx *gorm.DB, hash string) error {
-    var existingHash DBConfigHash
-    if err := tx.Where("hash = ?", hash).First(&existingHash).Error; err != nil {
-        if errors.Is(err, gorm.ErrRecordNotFound) {
-            // Hash doesn't exist, create new record
-            newHash := DBConfigHash{
-                Hash:      hash,
-                CreatedAt: time.Now(),
-                UpdatedAt: time.Now(),
-            }
-            if err := tx.Create(&newHash).Error; err != nil {
-                return fmt.Errorf("failed to store hash in database: %w", err)
-            }
-        } else {
-            return fmt.Errorf("failed to check existing hash: %w", err)
-        }
-    } else {
-        // Hash exists, update the UpdatedAt field
-        if err := tx.Model(&existingHash).Update("updated_at", time.Now()).Error; err != nil {
-            return fmt.Errorf("failed to update hash record: %w", err)
-        }
-    }
-    return nil
+	var existingHash DBConfigHash
+	if err := tx.Where("hash = ?", hash).First(&existingHash).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Hash doesn't exist, create new record
+			newHash := DBConfigHash{
+				Hash:      hash,
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			if err := tx.Create(&newHash).Error; err != nil {
+				return fmt.Errorf("failed to store hash in database: %w", err)
+			}
+		} else {
+			return fmt.Errorf("failed to check existing hash: %w", err)
+		}
+	} else {
+		// Hash exists, update the UpdatedAt field
+		if err := tx.Model(&existingHash).Update("updated_at", time.Now()).Error; err != nil {
+			return fmt.Errorf("failed to update hash record: %w", err)
+		}
+	}
+	return nil
 }

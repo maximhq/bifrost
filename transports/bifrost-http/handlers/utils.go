@@ -37,6 +37,8 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string, logger 
 func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError, logger schemas.Logger) {
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)
+	} else if !bifrostErr.IsBifrostError {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 	}

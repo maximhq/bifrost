@@ -65,6 +65,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -252,8 +253,8 @@ func main() {
 	configFilePath := filepath.Join(appDir, "config.json")
 	logsDBPath := filepath.Join(appDir, "logs.db")
 
-	// Config database: Optimized for fast reads, rare writes
-	configDB, err := gorm.Open(sqlite.Open(configDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=1000"), &gorm.Config{
+	// Config database: Optimized for high concurrency governance workload
+	configDB, err := gorm.Open(sqlite.Open(configDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000"), &gorm.Config{
 		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
 	if err != nil {
@@ -265,8 +266,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to get config database: %v", err)
 	}
-	configSQLDB.SetMaxIdleConns(2) // Minimal connections for config
-	configSQLDB.SetMaxOpenConns(5) // Config doesn't need many connections
+	configSQLDB.SetMaxIdleConns(20) // More idle connections for high load
 
 	// Initialize high-performance configuration store with dedicated database
 	store, err := lib.NewConfigStore(logger, configDB, configFilePath)
@@ -296,7 +296,6 @@ func main() {
 			log.Fatalf("failed to get logs database: %v", err)
 		}
 		logsSQLDB.SetMaxIdleConns(20) // Higher for concurrent writes
-		logsSQLDB.SetMaxOpenConns(50) // Support high concurrent logging
 	}
 
 	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
@@ -343,11 +342,28 @@ func main() {
 			log.Fatalf("failed to initialize logging plugin: %v", err)
 		}
 
-		loadedPlugins = append(loadedPlugins, promPlugin, loggingPlugin)
+		loadedPlugins = append(loadedPlugins, loggingPlugin)
 
 		loggingHandler = handlers.NewLoggingHandler(loggingPlugin.GetPluginLogManager(), logger)
 		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), logger)
 	}
+
+	var governancePlugin *governance.GovernancePlugin
+	var governanceHandler *handlers.GovernanceHandler
+
+	if store.ClientConfig.EnableGovernance {
+		// Initialize governance plugin
+		governancePlugin, err = governance.NewGovernancePlugin(configDB, logger, &store.ClientConfig.EnforceGovernanceHeader)
+		if err != nil {
+			log.Fatalf("failed to initialize governance plugin: %v", err)
+		}
+
+		loadedPlugins = append(loadedPlugins, governancePlugin)
+
+		governanceHandler = handlers.NewGovernanceHandler(governancePlugin, configDB, logger)
+	}
+
+	loadedPlugins = append(loadedPlugins, promPlugin)
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
 		Account:            account,
@@ -386,6 +402,9 @@ func main() {
 	mcpHandler.RegisterRoutes(r)
 	integrationHandler.RegisterRoutes(r)
 	configHandler.RegisterRoutes(r)
+	if governanceHandler != nil {
+		governanceHandler.RegisterRoutes(r)
+	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(r)
 	}
@@ -412,6 +431,7 @@ func main() {
 		log.Fatalf("Error starting server: %v", err)
 	}
 
+	// Cleanup resources on shutdown
 	if wsHandler != nil {
 		wsHandler.Stop()
 	}

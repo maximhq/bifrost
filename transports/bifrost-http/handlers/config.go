@@ -39,8 +39,18 @@ func (h *ConfigHandler) RegisterRoutes(r *router.Router) {
 
 // GetConfig handles GET /config - Get the current configuration
 func (h *ConfigHandler) GetConfig(ctx *fasthttp.RequestCtx) {
-	config := h.store.ClientConfig
-	SendJSON(ctx, config, h.logger)
+	if query := string(ctx.QueryArgs().Peek("from_db")); query == "true" {
+		config, err := h.store.GetClientConfigFromDB()
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get client config from database: %v", err), h.logger)
+			return
+		}
+		SendJSON(ctx, config, h.logger)
+		return
+	} else {
+		config := h.store.ClientConfig
+		SendJSON(ctx, config, h.logger)
+	}
 }
 
 // handleUpdateConfig updates the core configuration settings.
@@ -68,8 +78,9 @@ func (h *ConfigHandler) handleUpdateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	updatedConfig.InitialPoolSize = req.InitialPoolSize
-
 	updatedConfig.EnableLogging = req.EnableLogging
+	updatedConfig.EnableGovernance = req.EnableGovernance
+	updatedConfig.EnforceGovernanceHeader = req.EnforceGovernanceHeader
 
 	// Update the store with the new config
 	h.store.ClientConfig = updatedConfig

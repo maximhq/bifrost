@@ -17,5 +17,5 @@ transports/bifrost-http/tmp/
 node_modules
 /dist
 **/tmp/
-temp/
+temp*/
 tmp/

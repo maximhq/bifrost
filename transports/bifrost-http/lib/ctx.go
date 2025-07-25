@@ -36,6 +36,12 @@ import (
 //   - These headers enable MCP client and tool filtering
 //   - Values are stored using MCP context keys for consistency
 //
+// 4. Governance Headers:
+//   - x-bf-vk: Virtual key for governance (required for governance to work)
+//   - x-bf-team: Team identifier for team-based governance rules
+//   - x-bf-user: User identifier for user-based governance rules
+//   - x-bf-customer: Customer identifier for customer-based governance rules
+//
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -93,6 +99,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 				bifrostCtx = context.WithValue(bifrostCtx, ContextKey("mcp-"+labelName), string(value))
 				return
 			}
+		}
+
+		// Handle governance headers (x-bf-team, x-bf-user, x-bf-customer)
+		if keyStr == "x-bf-team" || keyStr == "x-bf-user" || keyStr == "x-bf-customer" {
+			bifrostCtx = context.WithValue(bifrostCtx, ContextKey(keyStr), string(value))
+		}
+
+		// Handle virtual key header (x-bf-vk)
+		if keyStr == "x-bf-vk" {
+			bifrostCtx = context.WithValue(bifrostCtx, ContextKey(keyStr), string(value))
 		}
 	})
 

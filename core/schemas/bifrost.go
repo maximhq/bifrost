@@ -612,6 +612,8 @@ const (
 	RequestCancelled = "request_cancelled"
 )
 
+// BifrostStream represents a stream of responses from the Bifrost system.
+// Either BifrostResponse or BifrostError will be non-nil.
 type BifrostStream struct {
 	*BifrostResponse
 	*BifrostError

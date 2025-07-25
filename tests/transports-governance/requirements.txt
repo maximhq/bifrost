@@ -1,0 +1,52 @@
+# Bifrost Governance Plugin Test Suite Dependencies
+
+# Core testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-xdist>=3.3.0  # For parallel test execution
+pytest-cov>=4.1.0    # For coverage reporting
+pytest-html>=3.2.0   # For HTML reports
+pytest-json-report>=1.5.0  # For JSON reports
+pytest-timeout>=2.1.0  # For test timeouts
+
+# HTTP client and API testing
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Concurrency and async support
+aiohttp>=3.8.0
+
+# Data handling and validation
+pydantic>=2.0.0
+jsonschema>=4.18.0
+
+# Performance monitoring
+psutil>=5.9.0  # For system metrics
+memory-profiler>=0.61.0  # For memory profiling
+
+# Date/time handling
+python-dateutil>=2.8.0
+
+# Utilities
+faker>=19.0.0  # For generating test data
+factory-boy>=3.3.0  # For test data factories
+
+# Development and debugging
+ipdb>=0.13.0  # Debugger
+rich>=13.0.0  # Rich console output
+
+# Configuration management
+python-dotenv>=1.0.0  # For environment configuration
+pyyaml>=6.0  # For YAML configuration files
+
+# Type checking (development)
+mypy>=1.5.0  # Static type checking
+types-requests>=2.31.0  # Type stubs for requests
+
+# Testing utilities
+pytest-mock>=3.11.0  # For mocking
+pytest-benchmark>=4.0.0  # For benchmarking
+freezegun>=1.2.0  # For time mocking
+
+# Load testing
+locust>=2.15.0  # For load testing scenarios

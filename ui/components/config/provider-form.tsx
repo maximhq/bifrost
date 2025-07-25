@@ -188,12 +188,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       performanceConfig,
       metaConfig,
       proxyConfig,
+      sendBackRawResponse,
     }
     setFormData((prev) => ({
       ...prev,
       isDirty: !isEqual(initialState, currentData),
     }))
-  }, [selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, initialState, keysRequired])
+  }, [selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, sendBackRawResponse, initialState, keysRequired])
 
   const updateField = <K extends keyof ProviderFormData>(field: K, value: ProviderFormData[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -457,7 +458,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
           <DialogDescription>Configure AI provider settings, API keys, and network options.</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="flex flex-row gap-2 px-6 pt-6">
+        <form onSubmit={handleSubmit} className="flex gap-2 px-6 pt-6">
           {/* Provider Selection */}
           {!provider && (
             <TooltipProvider>
@@ -591,7 +592,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                             </div>
                             <div>
                               <div className="flex items-center gap-2">
-                                <label className="text-sm font-medium">Models (Optional)</label>
+                                <label className="text-sm font-medium">Models</label>
                                 <TooltipProvider>
                                   <Tooltip>
                                     <TooltipTrigger asChild>
@@ -786,8 +787,8 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                 onChange={(e) => {
                                   updateField('networkConfig', {
                                     ...networkConfig,
-                                    default_request_timeout_in_seconds: Number.parseInt(e.target.value) || 30,
-                                  });
+                                    default_request_timeout_in_seconds: Number.parseInt(e.target.value),
+                                  })
                                 }}
                                 min={1}
                                 className="transition-all duration-200 ease-in-out"

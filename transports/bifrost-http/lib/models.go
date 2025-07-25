@@ -35,6 +35,17 @@ type DBProvider struct {
 	NetworkConfig            *schemas.NetworkConfig            `gorm:"-" json:"network_config,omitempty"`
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `gorm:"-" json:"concurrency_and_buffer_size,omitempty"`
 	MetaConfig               *schemas.MetaConfig               `gorm:"-" json:"meta_config,omitempty"`
+
+	// Foreign keys
+	Models []DBModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
+}
+
+type DBModel struct {
+	ID         string    `gorm:"primaryKey" json:"id"`
+	ProviderID uint      `gorm:"index;not null;uniqueIndex:idx_provider_name" json:"provider_id"`
+	Name       string    `gorm:"uniqueIndex:idx_provider_name" json:"name"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // DBKey represents an API key configuration in the database
@@ -84,13 +95,15 @@ type DBMCPClient struct {
 
 // DBClientConfig represents global client configuration in the database
 type DBClientConfig struct {
-	ID                   uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	DropExcessRequests   bool      `gorm:"default:false" json:"drop_excess_requests"`
-	PrometheusLabelsJSON string    `gorm:"type:text" json:"-"` // JSON serialized []string
-	InitialPoolSize      int       `gorm:"default:300" json:"initial_pool_size"`
-	EnableLogging        bool      `json:"enable_logging"`
-	CreatedAt            time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt            time.Time `gorm:"index;not null" json:"updated_at"`
+	ID                      uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	DropExcessRequests      bool      `gorm:"default:false" json:"drop_excess_requests"`
+	PrometheusLabelsJSON    string    `gorm:"type:text" json:"-"` // JSON serialized []string
+	InitialPoolSize         int       `gorm:"default:300" json:"initial_pool_size"`
+	EnableLogging           bool      `gorm:"" json:"enable_logging"`
+	EnableGovernance        bool      `gorm:"" json:"enable_governance"`
+	EnforceGovernanceHeader bool      `gorm:"" json:"enforce_governance_header"`
+	CreatedAt               time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt               time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
 	PrometheusLabels []string `gorm:"-" json:"prometheus_labels"`
@@ -147,7 +160,7 @@ func (p *DBProvider) BeforeSave(tx *gorm.DB) error {
 		case *meta.BedrockMetaConfig:
 			p.MetaConfigType = "bedrock"
 		default:
-			
+
 		}
 	}
 
@@ -289,14 +302,14 @@ func (k *DBKey) AfterFind(tx *gorm.DB) error {
 		config := &schemas.VertexKeyConfig{
 			ProjectID: *k.VertexProjectID,
 		}
-		
+
 		if k.VertexRegion != nil {
 			config.Region = *k.VertexRegion
 		}
 		if k.VertexAuthCredentials != nil {
 			config.AuthCredentials = *k.VertexAuthCredentials
 		}
-		
+
 		k.VertexKeyConfig = config
 	}
 

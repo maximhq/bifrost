@@ -655,6 +655,7 @@ func processAndSendResponse(
 	select {
 	case responseChan <- &schemas.BifrostStream{
 		BifrostResponse: processedResponse,
+		BifrostError:    bifrostErr,
 	}:
 	case <-ctx.Done():
 		return

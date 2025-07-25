@@ -66,7 +66,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		openAIResponsePool.Put(&OpenAIResponse{})
+		openAIResponsePool.Put(&schemas.BifrostResponse{})
 		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
 
 	}
