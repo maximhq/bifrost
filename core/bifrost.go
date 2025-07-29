@@ -5,8 +5,11 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -40,6 +43,7 @@ type ChannelMessage struct {
 	ResponseStream chan chan *schemas.BifrostStream
 	Err            chan schemas.BifrostError
 	Type           RequestType
+	Timestamp      time.Time
 }
 
 // Bifrost manages providers and maintains sepcified open channels for concurrent processing.
@@ -71,6 +75,28 @@ type Bifrost struct {
 	backgroundCtx       context.Context // Shared background context for nil context handling
 	mcpManager          *MCPManager     // MCP integration manager (nil if MCP not configured)
 	dropExcessRequests  atomic.Bool     // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+
+	providerInstances sync.Map // provider instances for accessing metrics (thread-safe)
+
+	// Performance Tracking
+	metrics AtomicMetrics
+
+	// Pool usage counters
+	channelMessageGets       atomic.Int64
+	channelMessagePuts       atomic.Int64
+	channelMessageCreations  atomic.Int64
+	responseChannelGets      atomic.Int64
+	responseChannelPuts      atomic.Int64
+	responseChannelCreations atomic.Int64
+	errorChannelGets         atomic.Int64
+	errorChannelPuts         atomic.Int64
+	errorChannelCreations    atomic.Int64
+	responseStreamGets       atomic.Int64
+	responseStreamPuts       atomic.Int64
+	responseStreamCreations  atomic.Int64
+	pluginPipelineGets       atomic.Int64
+	pluginPipelinePuts       atomic.Int64
+	pluginPipelineCreations  atomic.Int64
 }
 
 // PluginPipeline encapsulates the execution of plugin PreHooks and PostHooks, tracks how many plugins ran, and manages short-circuiting and error aggregation.
@@ -101,6 +127,8 @@ var retryableStatusCodes = map[int]bool{
 // Returns an error if initialization fails.
 // Initial Memory Allocations happens here as per the initial pool size.
 func Init(config schemas.BifrostConfig) (*Bifrost, error) {
+	debug.SetGCPercent(-1)
+
 	if config.Account == nil {
 		return nil, fmt.Errorf("account is required to initialize Bifrost")
 	}
@@ -117,26 +145,31 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 	// Initialize object pools
 	bifrost.channelMessagePool = sync.Pool{
 		New: func() interface{} {
+			bifrost.channelMessageCreations.Add(1)
 			return &ChannelMessage{}
 		},
 	}
 	bifrost.responseChannelPool = sync.Pool{
 		New: func() interface{} {
+			bifrost.responseChannelCreations.Add(1)
 			return make(chan *schemas.BifrostResponse, 1)
 		},
 	}
 	bifrost.errorChannelPool = sync.Pool{
 		New: func() interface{} {
+			bifrost.errorChannelCreations.Add(1)
 			return make(chan schemas.BifrostError, 1)
 		},
 	}
 	bifrost.responseStreamPool = sync.Pool{
 		New: func() interface{} {
+			bifrost.responseStreamCreations.Add(1)
 			return make(chan chan *schemas.BifrostStream, 1)
 		},
 	}
 	bifrost.pluginPipelinePool = sync.Pool{
 		New: func() interface{} {
+			bifrost.pluginPipelineCreations.Add(1)
 			return &PluginPipeline{
 				preHookErrors:  make([]error, 0),
 				postHookErrors: make([]error, 0),
@@ -431,6 +464,9 @@ transferComplete:
 		return fmt.Errorf("failed to create provider instance for %s: %v", providerKey, err)
 	}
 
+	// Store updated provider instance for metrics access
+	bifrost.providerInstances.Store(providerKey, provider)
+
 	// Step 8: Start new workers with updated concurrency
 	bifrost.logger.Debug(fmt.Sprintf("Starting %d new workers for provider %s with buffer size %d",
 		providerConfig.ConcurrencyAndBufferSize.Concurrency,
@@ -719,6 +755,9 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to create provider for the given key: %v", err)
 	}
 
+	// Store provider instance for metrics access
+	bifrost.providerInstances.Store(providerKey, provider)
+
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
 		waitGroup := waitGroupValue.(*sync.WaitGroup)
@@ -795,6 +834,9 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 	if queue != nil {
 		return queue, nil
 	}
+
+	// ADD THIS DEBUG LINE
+	bifrost.logger.Warn(fmt.Sprintf("UNEXPECTED: Provider %s queue is nil after Init()!", providerKey))
 
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 
@@ -970,10 +1012,15 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context, requestType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	startTime := time.Now()
+
+	// Track queue acquisition time
+	queueStart := time.Now()
 	queue, err := bifrost.getProviderQueue(req.Provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
+	queueTime := time.Since(queueStart)
 
 	// Handle nil context early to prevent blocking
 	if ctx == nil {
@@ -988,7 +1035,11 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
 
+	// Track plugin pre-hook time
+	pluginPreStart := time.Now()
 	preReq, shortCircuit, preCount := pipeline.RunPreHooks(&ctx, req)
+	pluginPreTime := time.Since(pluginPreStart)
+
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
@@ -1039,16 +1090,32 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	var resp *schemas.BifrostResponse
 	select {
 	case result = <-msg.Response:
+		pluginPostStart := time.Now()
 		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(bifrost.plugins))
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
 		}
+
+		pluginPostTime := time.Since(pluginPostStart)
+		totalTime := time.Since(startTime)
+		bifrost.recordMetrics(queueTime, 0, 0, 0, pluginPreTime, pluginPostTime, totalTime, true)
+
+		// Add bifrost metrics to the response
+		if rawResponse, ok := resp.ExtraFields.RawResponse.(map[string]interface{}); ok {
+			rawResponse["bifrost_timings"] = bifrost.GetMetrics()
+			resp.ExtraFields.RawResponse = rawResponse
+		}
+
 		bifrost.releaseChannelMessage(msg)
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
 		resp, bifrostErrPtr = pipeline.RunPostHooks(&ctx, nil, bifrostErrPtr, len(bifrost.plugins))
+
+		totalTime := time.Since(startTime)
+		bifrost.recordMetrics(queueTime, 0, 0, 0, pluginPreTime, 0, totalTime, false)
+
 		bifrost.releaseChannelMessage(msg)
 		if bifrostErrPtr != nil {
 			return nil, bifrostErrPtr
@@ -1146,15 +1213,23 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 	}()
 
 	for req := range queue {
+		startTime := time.Now()
+		queueWaitTime := startTime.Sub(req.Timestamp)
+
 		var result *schemas.BifrostResponse
 		var stream chan *schemas.BifrostStream
 		var bifrostError *schemas.BifrostError
 		var err error
 
+		keySelectStart := time.Now()
+		var keySelectTime time.Duration
+
 		key := schemas.Key{}
 		if providerRequiresKey(provider.GetProviderKey()) {
 			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, provider.GetProviderKey(), req.Model)
+			keySelectTime = time.Since(keySelectStart)
 			if err != nil {
+				bifrost.recordError(0, queueWaitTime, keySelectTime, 0, 0, 0)
 				bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))
 				req.Err <- schemas.BifrostError{
 					IsBifrostError: false,
@@ -1180,8 +1255,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 			continue
 		}
 
-		// Track attempts
+		// Track attempts and retry overhead
 		var attempts int
+		var totalRetryWaitTime time.Duration
+
+		// Track provider processing time
+		providerStart := time.Now()
 
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
 		var postHookRunner schemas.PostHookRunner
@@ -1209,8 +1288,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				))
 
 				// Calculate and apply backoff
+				retryWaitStart := time.Now()
 				backoff := calculateBackoff(attempts-1, config)
 				time.Sleep(backoff)
+				totalRetryWaitTime += time.Since(retryWaitStart)
 			}
 
 			bifrost.logger.Debug(fmt.Sprintf("Attempting request for provider %s", provider.GetProviderKey()))
@@ -1238,6 +1319,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				break
 			}
 		}
+
+		providerTime := time.Since(providerStart)
+		totalTime := time.Since(startTime)
+		bifrost.recordMetrics(0, queueWaitTime, keySelectTime, providerTime, 0, 0, totalTime, bifrostError == nil)
 
 		if bifrostError != nil {
 			// Add retry information to error
@@ -1394,6 +1479,7 @@ func (p *PluginPipeline) resetPluginPipeline() {
 
 // getPluginPipeline gets a PluginPipeline from the pool and configures it
 func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
+	bifrost.pluginPipelineGets.Add(1)
 	pipeline := bifrost.pluginPipelinePool.Get().(*PluginPipeline)
 	pipeline.plugins = bifrost.plugins
 	pipeline.logger = bifrost.logger
@@ -1404,6 +1490,7 @@ func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 // releasePluginPipeline returns a PluginPipeline to the pool
 func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 	pipeline.resetPluginPipeline()
+	bifrost.pluginPipelinePuts.Add(1)
 	bifrost.pluginPipelinePool.Put(pipeline)
 }
 
@@ -1413,7 +1500,9 @@ func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 // It also gets response and error channels from their respective pools.
 func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType RequestType) *ChannelMessage {
 	// Get channels from pool
+	bifrost.responseChannelGets.Add(1)
 	responseChan := bifrost.responseChannelPool.Get().(chan *schemas.BifrostResponse)
+	bifrost.errorChannelGets.Add(1)
 	errorChan := bifrost.errorChannelPool.Get().(chan schemas.BifrostError)
 
 	// Clear any previous values to avoid leaking between requests
@@ -1427,14 +1516,17 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType Re
 	}
 
 	// Get message from pool and configure it
+	bifrost.channelMessageGets.Add(1)
 	msg := bifrost.channelMessagePool.Get().(*ChannelMessage)
 	msg.BifrostRequest = req
 	msg.Response = responseChan
 	msg.Err = errorChan
 	msg.Type = reqType
+	msg.Timestamp = time.Now()
 
 	// Conditionally allocate ResponseStream for streaming requests only
 	if isStreamRequestType(reqType) {
+		bifrost.responseStreamGets.Add(1)
 		responseStreamChan := bifrost.responseStreamPool.Get().(chan chan *schemas.BifrostStream)
 		// Clear any previous values to avoid leaking between requests
 		select {
@@ -1450,7 +1542,9 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType Re
 // releaseChannelMessage returns a ChannelMessage and its channels to their respective pools.
 func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	// Put channels back in pools
+	bifrost.responseChannelPuts.Add(1)
 	bifrost.responseChannelPool.Put(msg.Response)
+	bifrost.errorChannelPuts.Add(1)
 	bifrost.errorChannelPool.Put(msg.Err)
 
 	// Return ResponseStream to pool if it was used
@@ -1460,6 +1554,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 		case <-msg.ResponseStream:
 		default:
 		}
+		bifrost.responseStreamPuts.Add(1)
 		bifrost.responseStreamPool.Put(msg.ResponseStream)
 	}
 
@@ -1467,6 +1562,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.Response = nil
 	msg.ResponseStream = nil
 	msg.Err = nil
+	bifrost.channelMessagePuts.Add(1)
 	bifrost.channelMessagePool.Put(msg)
 }
 
@@ -1569,5 +1665,207 @@ func (bifrost *Bifrost) Cleanup() {
 		}
 	}
 
+	// Print final statistics as JSON
+	allStats := bifrost.GetAllStats()
+	if statsJSON, err := json.MarshalIndent(allStats, "", "  "); err == nil {
+		bifrost.logger.Info(fmt.Sprintf("Final Statistics:\n%s", string(statsJSON)))
+	} else {
+		bifrost.logger.Warn(fmt.Sprintf("Failed to marshal statistics to JSON: %v", err))
+	}
+
 	bifrost.logger.Info("Graceful Cleanup Completed")
+}
+
+// PERFORMANCE TRACKING
+
+// Metrics to track timing
+type RequestMetrics struct {
+	TotalTime            time.Duration `json:"total_time"`
+	QueueAcquisitionTime time.Duration `json:"queue_acquisition_time"`
+	QueueWaitTime        time.Duration `json:"queue_wait_time"`
+	KeySelectionTime     time.Duration `json:"key_selection_time"`
+	ProviderTime         time.Duration `json:"provider_time"`
+	PluginPreTime        time.Duration `json:"plugin_pre_time"`
+	PluginPostTime       time.Duration `json:"plugin_post_time"`
+	RequestCount         int64         `json:"request_count"`
+	ErrorCount           int64         `json:"error_count"`
+}
+
+// AtomicMetrics stores metrics using atomic operations for high-throughput scenarios
+type AtomicMetrics struct {
+	// Counters
+	RequestCount int64
+	ErrorCount   int64
+
+	// Time accumulators (in nanoseconds for atomic operations)
+	TotalTimeNs            int64
+	QueueAcquisitionTimeNs int64
+	QueueWaitTimeNs        int64
+	KeySelectionTimeNs     int64
+	ProviderTimeNs         int64
+	PluginPreTimeNs        int64
+	PluginPostTimeNs       int64
+}
+
+func (bifrost *Bifrost) recordError(queueAcquisitionTime, queueWaitTime, keySelectTime, providerTime, pluginPreTime, pluginPostTime time.Duration) {
+	// Spawn goroutine to avoid blocking the request path
+	go func() {
+		atomic.AddInt64(&bifrost.metrics.RequestCount, 1)
+		atomic.AddInt64(&bifrost.metrics.ErrorCount, 1)
+
+		totalTime := queueAcquisitionTime + queueWaitTime + keySelectTime + providerTime + pluginPreTime + pluginPostTime
+
+		// Add to accumulators
+		atomic.AddInt64(&bifrost.metrics.TotalTimeNs, totalTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.QueueAcquisitionTimeNs, queueAcquisitionTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.QueueWaitTimeNs, queueWaitTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.KeySelectionTimeNs, keySelectTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.ProviderTimeNs, providerTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.PluginPreTimeNs, pluginPreTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.PluginPostTimeNs, pluginPostTime.Nanoseconds())
+	}()
+}
+
+func (bifrost *Bifrost) recordMetrics(queueAcquisitionTime, queueWaitTime, keySelectTime, providerTime, pluginPreTime, pluginPostTime, totalTime time.Duration, success bool) {
+	// Spawn goroutine to avoid blocking the request path
+	go func() {
+		atomic.AddInt64(&bifrost.metrics.RequestCount, 1)
+		if !success {
+			atomic.AddInt64(&bifrost.metrics.ErrorCount, 1)
+		}
+
+		//	fmt.Println("Queue acquisition:", queueAcquisitionTime, "Queue wait:", queueWaitTime)
+
+		// Add to accumulators
+		atomic.AddInt64(&bifrost.metrics.TotalTimeNs, totalTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.QueueAcquisitionTimeNs, queueAcquisitionTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.QueueWaitTimeNs, queueWaitTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.KeySelectionTimeNs, keySelectTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.ProviderTimeNs, providerTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.PluginPreTimeNs, pluginPreTime.Nanoseconds())
+		atomic.AddInt64(&bifrost.metrics.PluginPostTimeNs, pluginPostTime.Nanoseconds())
+	}()
+}
+
+func (bifrost *Bifrost) GetMetrics() RequestMetrics {
+	// Read atomic values and calculate averages
+	requestCount := atomic.LoadInt64(&bifrost.metrics.RequestCount)
+	if requestCount == 0 {
+		return RequestMetrics{}
+	}
+
+	return RequestMetrics{
+		RequestCount:         requestCount,
+		ErrorCount:           atomic.LoadInt64(&bifrost.metrics.ErrorCount),
+		TotalTime:            time.Duration(atomic.LoadInt64(&bifrost.metrics.TotalTimeNs) / requestCount),
+		QueueAcquisitionTime: time.Duration(atomic.LoadInt64(&bifrost.metrics.QueueAcquisitionTimeNs) / requestCount),
+		QueueWaitTime:        time.Duration(atomic.LoadInt64(&bifrost.metrics.QueueWaitTimeNs) / requestCount),
+		KeySelectionTime:     time.Duration(atomic.LoadInt64(&bifrost.metrics.KeySelectionTimeNs) / requestCount),
+		ProviderTime:         time.Duration(atomic.LoadInt64(&bifrost.metrics.ProviderTimeNs) / requestCount),
+		PluginPreTime:        time.Duration(atomic.LoadInt64(&bifrost.metrics.PluginPreTimeNs) / requestCount),
+		PluginPostTime:       time.Duration(atomic.LoadInt64(&bifrost.metrics.PluginPostTimeNs) / requestCount),
+	}
+}
+
+// GetAllStats returns all statistics including request metrics and pool usage
+func (bifrost *Bifrost) GetAllStats() map[string]interface{} {
+	stats := make(map[string]interface{})
+	// Add request metrics
+	metrics := bifrost.GetMetrics()
+	stats["request_metrics"] = map[string]interface{}{
+		"total_time":             metrics.TotalTime.String(),
+		"queue_acquisition_time": metrics.QueueAcquisitionTime.String(),
+		"queue_wait_time":        metrics.QueueWaitTime.String(),
+		"key_selection_time":     metrics.KeySelectionTime.String(),
+		"provider_time":          metrics.ProviderTime.String(),
+		"plugin_pre_time":        metrics.PluginPreTime.String(),
+		"plugin_post_time":       metrics.PluginPostTime.String(),
+		"request_count":          metrics.RequestCount,
+		"error_count":            metrics.ErrorCount,
+		"error_rate":             fmt.Sprintf("%.2f%%", float64(metrics.ErrorCount)/float64(metrics.RequestCount)*100),
+	}
+
+	// Add current runtime memory statistics
+	var currentMem runtime.MemStats
+	runtime.ReadMemStats(&currentMem)
+
+	// Helper function to convert bytes to MB
+	bytesToMB := func(bytes uint64) string {
+		return fmt.Sprintf("%.2f MB", float64(bytes)/(1024*1024))
+	}
+
+	// Helper function to convert nanoseconds to microseconds
+	nsToMicroseconds := func(ns uint64) string {
+		return fmt.Sprintf("%.2f μs", float64(ns)/1000)
+	}
+
+	stats["runtime_memory"] = map[string]interface{}{
+		"current_alloc":   bytesToMB(currentMem.Alloc),
+		"total_alloc":     bytesToMB(currentMem.TotalAlloc),
+		"sys":             bytesToMB(currentMem.Sys),
+		"heap_alloc":      bytesToMB(currentMem.HeapAlloc),
+		"heap_sys":        bytesToMB(currentMem.HeapSys),
+		"stack_inuse":     bytesToMB(currentMem.StackInuse),
+		"stack_sys":       bytesToMB(currentMem.StackSys),
+		"num_gc":          currentMem.NumGC,
+		"gc_cpu_fraction": fmt.Sprintf("%.4f", currentMem.GCCPUFraction),
+		"pause_total":     nsToMicroseconds(currentMem.PauseTotalNs),
+		"num_forced_gc":   currentMem.NumForcedGC,
+	}
+
+	// Add pool usage statistics
+	stats["pool_stats"] = bifrost.GetPoolStats()
+
+	// Add provider-specific metrics
+	stats["provider_metrics"] = make(map[string]interface{})
+
+	// Check if OpenAI provider exists and add its metrics
+	if providerInstance, exists := bifrost.providerInstances.Load(schemas.OpenAI); exists {
+		if openAIProvider, ok := providerInstance.(*providers.OpenAIProvider); ok {
+			stats["provider_metrics"].(map[string]interface{})["openai"] = openAIProvider.GetOpenAIMetrics()
+		}
+	}
+
+	return stats
+}
+
+// GetPoolStats returns statistics about object pool usage
+func (bifrost *Bifrost) GetPoolStats() map[string]interface{} {
+	stats := make(map[string]interface{})
+	// Add channel message pool stats
+	stats["channel_message_pool"] = map[string]int64{
+		"gets":      bifrost.channelMessageGets.Load(),
+		"puts":      bifrost.channelMessagePuts.Load(),
+		"creations": bifrost.channelMessageCreations.Load(),
+	}
+	// Add response channel pool stats
+	stats["response_channel_pool"] = map[string]int64{
+		"gets":      bifrost.responseChannelGets.Load(),
+		"puts":      bifrost.responseChannelPuts.Load(),
+		"creations": bifrost.responseChannelCreations.Load(),
+	}
+	// Add response stream pool stats
+	stats["response_stream_pool"] = map[string]int64{
+		"gets":      bifrost.responseStreamGets.Load(),
+		"puts":      bifrost.responseStreamPuts.Load(),
+		"creations": bifrost.responseStreamCreations.Load(),
+	}
+	// Add error channel pool stats
+	stats["error_channel_pool"] = map[string]int64{
+		"gets":      bifrost.errorChannelGets.Load(),
+		"puts":      bifrost.errorChannelPuts.Load(),
+		"creations": bifrost.errorChannelCreations.Load(),
+	}
+	// Add plugin pipeline pool stats
+	stats["plugin_pipeline_pool"] = map[string]int64{
+		"gets":      bifrost.pluginPipelineGets.Load(),
+		"puts":      bifrost.pluginPipelinePuts.Load(),
+		"creations": bifrost.pluginPipelineCreations.Load(),
+	}
+	// Add provider-specific pool stats
+	providerStats := providers.GetPoolStats()
+	for k, v := range providerStats {
+		stats[k] = v
+	}
+	return stats
 }
