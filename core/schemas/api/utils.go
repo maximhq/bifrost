@@ -1,9 +1,9 @@
 package api
 
 import (
-	"encoding/json"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -127,7 +127,7 @@ func JsonifyInput(input interface{}) string {
 	if input == nil {
 		return "{}"
 	}
-	jsonBytes, err := json.Marshal(input)
+	jsonBytes, err := sonic.Marshal(input)
 	if err != nil {
 		return "{}"
 	}

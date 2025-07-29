@@ -1,9 +1,11 @@
 package api
 
 import (
-	"maps"
 	"encoding/json"
 	"fmt"
+	"maps"
+
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -281,7 +283,7 @@ func (mr *AnthropicMessageRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, mr.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }
 
 // AnthropicTextRequest represents an Anthropic text completion API request
@@ -321,7 +323,7 @@ func (r *AnthropicTextRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, r.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -338,13 +340,13 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return json.Marshal(*mc.ContentStr)
+		return sonic.Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return json.Marshal(*mc.ContentBlocks)
+		return sonic.Marshal(*mc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return json.Marshal(nil)
+	return sonic.Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for MessageContent.

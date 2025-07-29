@@ -1,10 +1,10 @@
 package api
 
 import (
-	"encoding/json"
 	"maps"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/bytedance/sonic"
 )
 
 // OpenAIResponse represents the response structure from the OpenAI API.
@@ -119,7 +119,7 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, r.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }
 
 type OpenAIEmbeddingRequest struct {
@@ -149,7 +149,7 @@ func (r *OpenAIEmbeddingRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, r.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }
 
 // OpenAISpeechRequest represents an OpenAI speech synthesis request
@@ -186,7 +186,7 @@ func (r *OpenAISpeechRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, r.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }
 
 // OpenAITranscriptionRequest represents an OpenAI transcription request

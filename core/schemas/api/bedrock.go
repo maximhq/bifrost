@@ -47,7 +47,7 @@ func (r *BedrockTextRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, r.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }
 
 // BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.
@@ -296,7 +296,7 @@ func (r *BedrockTitanEmbeddingRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, r.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }
 
 // BedrockCohereEmbeddingRequest represents the request structure for Cohere embedding API.
@@ -327,5 +327,5 @@ func (r *BedrockCohereEmbeddingRequest) MarshalJSON() ([]byte, error) {
 
 	maps.Copy(result, r.ExtraParams)
 
-	return json.Marshal(result)
+	return sonic.Marshal(result)
 }

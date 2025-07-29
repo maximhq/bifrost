@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 )
 
 // BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.
@@ -583,7 +584,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 								sanitizedURL, _ := SanitizeImageURL(block.ImageURL.URL)
 								urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
 
-								formattedImgContent := AnthropicImageContent{
+								formattedImgContent := api.AnthropicImageContent{
 									Type: urlTypeInfo.Type,
 								}
 
