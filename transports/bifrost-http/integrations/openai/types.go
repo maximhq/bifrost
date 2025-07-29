@@ -2,133 +2,12 @@ package openai
 
 import (
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 )
 
-// OpenAIChatRequest represents an OpenAI chat completion request
-type OpenAIChatRequest struct {
-	Model            string                   `json:"model"`
-	Messages         []schemas.BifrostMessage `json:"messages"`
-	MaxTokens        *int                     `json:"max_tokens,omitempty"`
-	Temperature      *float64                 `json:"temperature,omitempty"`
-	TopP             *float64                 `json:"top_p,omitempty"`
-	N                *int                     `json:"n,omitempty"`
-	Stop             interface{}              `json:"stop,omitempty"`
-	PresencePenalty  *float64                 `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64                 `json:"frequency_penalty,omitempty"`
-	LogitBias        map[string]float64       `json:"logit_bias,omitempty"`
-	User             *string                  `json:"user,omitempty"`
-	Tools            *[]schemas.Tool          `json:"tools,omitempty"` // Reuse schema type
-	ToolChoice       *schemas.ToolChoice      `json:"tool_choice,omitempty"`
-	Stream           *bool                    `json:"stream,omitempty"`
-	LogProbs         *bool                    `json:"logprobs,omitempty"`
-	TopLogProbs      *int                     `json:"top_logprobs,omitempty"`
-	ResponseFormat   interface{}              `json:"response_format,omitempty"`
-	Seed             *int                     `json:"seed,omitempty"`
-}
-
-// OpenAISpeechRequest represents an OpenAI speech synthesis request
-type OpenAISpeechRequest struct {
-	Model          string   `json:"model"`
-	Input          string   `json:"input"`
-	Voice          string   `json:"voice"`
-	ResponseFormat *string  `json:"response_format,omitempty"`
-	Speed          *float64 `json:"speed,omitempty"`
-	Instructions   *string  `json:"instructions,omitempty"`
-	StreamFormat   *string  `json:"stream_format,omitempty"`
-}
-
-// OpenAITranscriptionRequest represents an OpenAI transcription request
-// Note: This is used for JSON body parsing, actual form parsing is handled in the router
-type OpenAITranscriptionRequest struct {
-	Model                  string   `json:"model"`
-	File                   []byte   `json:"file"` // Binary audio data
-	Language               *string  `json:"language,omitempty"`
-	Prompt                 *string  `json:"prompt,omitempty"`
-	ResponseFormat         *string  `json:"response_format,omitempty"`
-	Temperature            *float64 `json:"temperature,omitempty"`
-	Include                []string `json:"include,omitempty"`
-	TimestampGranularities []string `json:"timestamp_granularities,omitempty"`
-	Stream                 *bool    `json:"stream,omitempty"`
-}
-
-// IsStreamingRequested implements the StreamingRequest interface
-func (r *OpenAIChatRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
-}
-
-// IsStreamingRequested implements the StreamingRequest interface for speech
-func (r *OpenAISpeechRequest) IsStreamingRequested() bool {
-	return r.StreamFormat != nil && *r.StreamFormat == "sse"
-}
-
-// IsStreamingRequested implements the StreamingRequest interface for transcription
-func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
-}
-
-// OpenAIChatResponse represents an OpenAI chat completion response
-type OpenAIChatResponse struct {
-	ID                string                          `json:"id"`
-	Object            string                          `json:"object"`
-	Created           int                             `json:"created"`
-	Model             string                          `json:"model"`
-	Choices           []schemas.BifrostResponseChoice `json:"choices"`
-	Usage             *schemas.LLMUsage               `json:"usage,omitempty"` // Reuse schema type
-	ServiceTier       *string                         `json:"service_tier,omitempty"`
-	SystemFingerprint *string                         `json:"system_fingerprint,omitempty"`
-}
-
-// OpenAIChatError represents an OpenAI chat completion error response
-type OpenAIChatError struct {
-	EventID string `json:"event_id"` // Unique identifier for the error event
-	Type    string `json:"type"`     // Type of error
-	Error   struct {
-		Type    string      `json:"type"`     // Error type
-		Code    string      `json:"code"`     // Error code
-		Message string      `json:"message"`  // Error message
-		Param   interface{} `json:"param"`    // Parameter that caused the error
-		EventID string      `json:"event_id"` // Event ID for tracking
-	} `json:"error"`
-}
-
-// OpenAIChatErrorStruct represents the error structure of an OpenAI chat completion error response
-type OpenAIChatErrorStruct struct {
-	Type    string      `json:"type"`     // Error type
-	Code    string      `json:"code"`     // Error code
-	Message string      `json:"message"`  // Error message
-	Param   interface{} `json:"param"`    // Parameter that caused the error
-	EventID string      `json:"event_id"` // Event ID for tracking
-}
-
-// OpenAIStreamChoice represents a choice in a streaming response chunk
-type OpenAIStreamChoice struct {
-	Index        int                `json:"index"`
-	Delta        *OpenAIStreamDelta `json:"delta,omitempty"`
-	FinishReason *string            `json:"finish_reason,omitempty"`
-	LogProbs     *schemas.LogProbs  `json:"logprobs,omitempty"`
-}
-
-// OpenAIStreamDelta represents the incremental content in a streaming chunk
-type OpenAIStreamDelta struct {
-	Role      *string             `json:"role,omitempty"`
-	Content   *string             `json:"content,omitempty"`
-	ToolCalls *[]schemas.ToolCall `json:"tool_calls,omitempty"`
-}
-
-// OpenAIStreamResponse represents a single chunk in the OpenAI streaming response
-type OpenAIStreamResponse struct {
-	ID                string               `json:"id"`
-	Object            string               `json:"object"`
-	Created           int                  `json:"created"`
-	Model             string               `json:"model"`
-	SystemFingerprint *string              `json:"system_fingerprint,omitempty"`
-	Choices           []OpenAIStreamChoice `json:"choices"`
-	Usage             *schemas.LLMUsage    `json:"usage,omitempty"`
-}
-
 // ConvertToBifrostRequest converts an OpenAI chat request to Bifrost format
-func (r *OpenAIChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
+func ConvertChatRequestToBifrostRequest(r *api.OpenAIChatRequest) *schemas.BifrostRequest {
 	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI)
 
 	bifrostReq := &schemas.BifrostRequest{
@@ -140,13 +19,13 @@ func (r *OpenAIChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 	}
 
 	// Map extra parameters and tool settings
-	bifrostReq.Params = r.convertParameters()
+	bifrostReq.Params = convertParameters(r)
 
 	return bifrostReq
 }
 
 // ConvertToBifrostRequest converts an OpenAI speech request to Bifrost format
-func (r *OpenAISpeechRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
+func ConvertSpeechRequestToBifrostRequest(r *api.OpenAISpeechRequest) *schemas.BifrostRequest {
 	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI)
 
 	// Create speech input
@@ -176,13 +55,13 @@ func (r *OpenAISpeechRequest) ConvertToBifrostRequest() *schemas.BifrostRequest 
 	}
 
 	// Map parameters
-	bifrostReq.Params = r.convertSpeechParameters()
+	bifrostReq.Params = convertSpeechParameters(r)
 
 	return bifrostReq
 }
 
 // ConvertToBifrostRequest converts an OpenAI transcription request to Bifrost format
-func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
+func ConvertTranscriptionRequestToBifrostRequest(r *api.OpenAITranscriptionRequest) *schemas.BifrostRequest {
 	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI)
 
 	// Create transcription input
@@ -210,14 +89,14 @@ func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest() *schemas.BifrostR
 	}
 
 	// Map parameters
-	bifrostReq.Params = r.convertTranscriptionParameters()
+	bifrostReq.Params = convertTranscriptionParameters(r)
 
 	return bifrostReq
 }
 
 // convertParameters converts OpenAI request parameters to Bifrost ModelParameters
 // using direct field access for better performance and type safety.
-func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
+func convertParameters(r *api.OpenAIChatRequest) *schemas.ModelParameters {
 	params := &schemas.ModelParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
@@ -270,7 +149,7 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 }
 
 // convertSpeechParameters converts OpenAI speech request parameters to Bifrost ModelParameters
-func (r *OpenAISpeechRequest) convertSpeechParameters() *schemas.ModelParameters {
+func convertSpeechParameters(r *api.OpenAISpeechRequest) *schemas.ModelParameters {
 	params := &schemas.ModelParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
@@ -284,7 +163,7 @@ func (r *OpenAISpeechRequest) convertSpeechParameters() *schemas.ModelParameters
 }
 
 // convertTranscriptionParameters converts OpenAI transcription request parameters to Bifrost ModelParameters
-func (r *OpenAITranscriptionRequest) convertTranscriptionParameters() *schemas.ModelParameters {
+func convertTranscriptionParameters(r *api.OpenAITranscriptionRequest) *schemas.ModelParameters {
 	params := &schemas.ModelParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
@@ -304,12 +183,12 @@ func (r *OpenAITranscriptionRequest) convertTranscriptionParameters() *schemas.M
 }
 
 // DeriveOpenAIFromBifrostResponse converts a Bifrost response to OpenAI format
-func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIChatResponse {
+func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *api.OpenAIChatResponse {
 	if bifrostResp == nil {
 		return nil
 	}
 
-	openaiResp := &OpenAIChatResponse{
+	openaiResp := &api.OpenAIChatResponse{
 		ID:                bifrostResp.ID,
 		Object:            bifrostResp.Object,
 		Created:           bifrostResp.Created,
@@ -341,7 +220,7 @@ func DeriveOpenAITranscriptionFromBifrostResponse(bifrostResp *schemas.BifrostRe
 }
 
 // DeriveOpenAIErrorFromBifrostError derives a OpenAIChatError from a BifrostError
-func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAIChatError {
+func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *api.OpenAIChatError {
 	if bifrostErr == nil {
 		return nil
 	}
@@ -358,7 +237,7 @@ func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAI
 	}
 
 	// Handle nested error fields with nil checks
-	errorStruct := OpenAIChatErrorStruct{
+	errorStruct := api.OpenAIChatErrorStruct{
 		Type:    "",
 		Code:    "",
 		Message: bifrostErr.Error.Message,
@@ -378,7 +257,7 @@ func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAI
 		errorStruct.EventID = *bifrostErr.Error.EventID
 	}
 
-	return &OpenAIChatError{
+	return &api.OpenAIChatError{
 		EventID: eventID,
 		Type:    errorType,
 		Error:   errorStruct,
@@ -386,18 +265,18 @@ func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAI
 }
 
 // DeriveOpenAIStreamFromBifrostError derives an OpenAI streaming error from a BifrostError
-func DeriveOpenAIStreamFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAIChatError {
+func DeriveOpenAIStreamFromBifrostError(bifrostErr *schemas.BifrostError) *api.OpenAIChatError {
 	// For streaming, we use the same error format as regular OpenAI errors
 	return DeriveOpenAIErrorFromBifrostError(bifrostErr)
 }
 
 // DeriveOpenAIStreamFromBifrostResponse converts a Bifrost response to OpenAI streaming format
-func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIStreamResponse {
+func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *api.OpenAIStreamResponse {
 	if bifrostResp == nil {
 		return nil
 	}
 
-	streamResp := &OpenAIStreamResponse{
+	streamResp := &api.OpenAIStreamResponse{
 		ID:                bifrostResp.ID,
 		Object:            "chat.completion.chunk",
 		Created:           bifrostResp.Created,
@@ -408,17 +287,17 @@ func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 
 	// Convert choices to streaming format
 	for _, choice := range bifrostResp.Choices {
-		streamChoice := OpenAIStreamChoice{
+		streamChoice := api.OpenAIStreamChoice{
 			Index:        choice.Index,
 			FinishReason: choice.FinishReason,
 		}
 
-		var delta *OpenAIStreamDelta
+		var delta *api.OpenAIStreamDelta
 
 		// Handle streaming vs non-streaming choices
 		if choice.BifrostStreamResponseChoice != nil {
 			// This is a streaming response - use the delta directly
-			delta = &OpenAIStreamDelta{}
+			delta = &api.OpenAIStreamDelta{}
 
 			// Only set fields that are not nil
 			if choice.BifrostStreamResponseChoice.Delta.Role != nil {
@@ -432,7 +311,7 @@ func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 			}
 		} else if choice.BifrostNonStreamResponseChoice != nil {
 			// This is a non-streaming response - convert message to delta format
-			delta = &OpenAIStreamDelta{}
+			delta = &api.OpenAIStreamDelta{}
 
 			// Convert role
 			role := string(choice.BifrostNonStreamResponseChoice.Message.Role)

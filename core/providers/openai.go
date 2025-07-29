@@ -19,26 +19,9 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/valyala/fasthttp"
 )
-
-// OpenAIResponse represents the response structure from the OpenAI API.
-// It includes completion choices, model information, and usage statistics.
-type OpenAIResponse struct {
-	ID      string                          `json:"id"`      // Unique identifier for the completion
-	Object  string                          `json:"object"`  // Type of completion (text.completion, chat.completion, or embedding)
-	Choices []schemas.BifrostResponseChoice `json:"choices"` // Array of completion choices
-	Data    []struct {                      // Embedding data
-		Object    string `json:"object"`
-		Embedding any    `json:"embedding"`
-		Index     int    `json:"index"`
-	} `json:"data,omitempty"`
-	Model             string           `json:"model"`              // Model used for the completion
-	Created           int              `json:"created"`            // Unix timestamp of completion creation
-	ServiceTier       *string          `json:"service_tier"`       // Service tier used for the request
-	SystemFingerprint *string          `json:"system_fingerprint"` // System fingerprint for the request
-	Usage             schemas.LLMUsage `json:"usage"`              // Token usage statistics
-}
 
 // openAIResponsePool provides a pool for OpenAI response objects.
 var openAIResponsePool = sync.Pool{
@@ -121,16 +104,152 @@ func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model string
 	return nil, newUnsupportedOperationError("text completion", "openai")
 }
 
+// buildChatCompletionRequest creates a type-safe OpenAI chat completion request
+// from Bifrost messages and parameters.
+func buildOpenAIChatCompletionRequest(model string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) *api.OpenAIChatRequest {
+	// Process messages to sanitize image URLs
+	processedMessages := make([]schemas.BifrostMessage, len(messages))
+	for i, msg := range messages {
+		processedMessages[i] = msg // Copy the message
+
+		// Sanitize image URLs in content blocks
+		if msg.Content.ContentBlocks != nil {
+			contentBlocks := *msg.Content.ContentBlocks
+			for j := range contentBlocks {
+				if contentBlocks[j].Type == schemas.ContentBlockTypeImage && contentBlocks[j].ImageURL != nil {
+					sanitizedURL, _ := SanitizeImageURL(contentBlocks[j].ImageURL.URL)
+					contentBlocks[j].ImageURL.URL = sanitizedURL
+				}
+			}
+			processedMessages[i].Content.ContentBlocks = &contentBlocks
+		}
+	}
+
+	// Build the request
+	request := &api.OpenAIChatRequest{
+		Model:    model,
+		Messages: processedMessages,
+		Stream:   ptr(false),
+	}
+
+	// Add parameters if provided
+	if params != nil {
+		request.MaxTokens = params.MaxTokens
+		request.Temperature = params.Temperature
+		request.TopP = params.TopP
+		request.PresencePenalty = params.PresencePenalty
+		request.FrequencyPenalty = params.FrequencyPenalty
+		request.Tools = params.Tools
+		request.ToolChoice = params.ToolChoice
+		request.LogProbs = params.Logprobs
+		request.User = params.User
+		request.N = params.N
+
+		// Handle extra parameters
+		if params.ExtraParams != nil {
+			if stop, ok := params.ExtraParams["stop"]; ok {
+				request.Stop = stop
+				delete(params.ExtraParams, "stop")
+			}
+			if logitBias, ok := params.ExtraParams["logit_bias"].(map[string]float64); ok {
+				request.LogitBias = logitBias
+				delete(params.ExtraParams, "logit_bias")
+			}
+			if topLogProbs, ok := params.ExtraParams["top_logprobs"].(int); ok {
+				request.TopLogProbs = &topLogProbs
+				delete(params.ExtraParams, "top_logprobs")
+			}
+			if responseFormat, ok := params.ExtraParams["response_format"]; ok {
+				request.ResponseFormat = responseFormat
+				delete(params.ExtraParams, "response_format")
+			}
+			if seed, ok := params.ExtraParams["seed"].(int); ok {
+				request.Seed = &seed
+				delete(params.ExtraParams, "seed")
+			}
+
+			request.ExtraParams = params.ExtraParams
+		}
+	}
+
+	return request
+}
+
+// buildOpenAISpeechRequest creates a type-safe OpenAI speech synthesis request
+// from Bifrost speech input and parameters.
+func buildOpenAISpeechRequest(model string, input *schemas.SpeechInput, params *schemas.ModelParameters) *api.OpenAISpeechRequest {
+	// Set default response format if not provided
+	responseFormat := input.ResponseFormat
+	if responseFormat == "" {
+		responseFormat = "mp3"
+	}
+
+	// Validate voice is provided
+	if input.VoiceConfig.Voice == nil {
+		return nil
+	}
+
+	// Build the request
+	request := &api.OpenAISpeechRequest{
+		Model:          model,
+		Input:          input.Input,
+		Voice:          *input.VoiceConfig.Voice,
+		ResponseFormat: &responseFormat,
+	}
+
+	// Set instructions if provided
+	if input.Instructions != "" {
+		request.Instructions = &input.Instructions
+	}
+
+	// Add parameters if provided
+	if params != nil && params.ExtraParams != nil {
+		if speed, ok := params.ExtraParams["speed"].(float64); ok {
+			request.Speed = &speed
+			delete(params.ExtraParams, "speed")
+		}
+		if streamFormat, ok := params.ExtraParams["stream_format"].(string); ok {
+			request.StreamFormat = &streamFormat
+			delete(params.ExtraParams, "stream_format")
+		}
+
+		request.ExtraParams = params.ExtraParams
+	}
+
+	return request
+}
+
+func buildOpenAIEmbeddingRequest(model string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) *api.OpenAIEmbeddingRequest {
+
+	// Build the request
+	request := &api.OpenAIEmbeddingRequest{
+		Model: model,
+		Input: input.Texts,
+	}
+
+	// Add parameters if provided
+	if params != nil {
+		request.EncodingFormat = params.EncodingFormat
+		request.Dimensions = params.Dimensions
+
+		// Handle extra parameters
+		if params.ExtraParams != nil {
+			if user, ok := params.ExtraParams["user"].(string); ok {
+				request.User = &user
+				delete(params.ExtraParams, "user")
+			}
+			request.ExtraParams = params.ExtraParams
+		}
+	}
+
+	return request
+}
+
 // ChatCompletion performs a chat completion request to the OpenAI API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
@@ -246,28 +365,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 		return nil, newBifrostOperationError("input texts cannot be empty", nil, schemas.OpenAI)
 	}
 
-	// Prepare request body with base parameters
-	requestBody := map[string]interface{}{
-		"model": model,
-		"input": input.Texts,
-	}
-
-	// Merge any additional parameters
-	if params != nil {
-		// Map standard parameters
-		if params.EncodingFormat != nil {
-			requestBody["encoding_format"] = *params.EncodingFormat
-		}
-		if params.Dimensions != nil {
-			requestBody["dimensions"] = *params.Dimensions
-		}
-		if params.User != nil {
-			requestBody["user"] = *params.User
-		}
-
-		// Merge any extra parameters
-		requestBody = mergeConfig(requestBody, params.ExtraParams)
-	}
+	requestBody := buildOpenAIEmbeddingRequest(model, input, params)
 
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
@@ -303,7 +401,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 	}
 
 	// Parse response
-	var response OpenAIResponse
+	var response api.OpenAIResponse
 	if err := sonic.Unmarshal(resp.Body(), &response); err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.OpenAI)
 	}
@@ -376,13 +474,11 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 // It formats messages, prepares request body, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
 func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	// Set streaming flag
+	stream := true
+	requestBody.Stream = &stream
 
 	// Prepare OpenAI headers
 	headers := map[string]string{
@@ -413,7 +509,7 @@ func handleOpenAIStreaming(
 	ctx context.Context,
 	httpClient *http.Client,
 	url string,
-	requestBody map[string]interface{},
+	requestBody *api.OpenAIChatRequest,
 	headers map[string]string,
 	extraHeaders map[string]string,
 	providerType schemas.ModelProvider,
@@ -576,21 +672,9 @@ func handleOpenAIStreaming(
 // It formats the request body, makes the API call, and returns the response.
 // Returns the response and any error that occurred.
 func (provider *OpenAIProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	responseFormat := input.ResponseFormat
-	if responseFormat == "" {
-		responseFormat = "mp3"
-	}
-
-	requestBody := map[string]interface{}{
-		"input":           input.Input,
-		"model":           model,
-		"voice":           input.VoiceConfig.Voice,
-		"instructions":    input.Instructions,
-		"response_format": responseFormat,
-	}
-
-	if params != nil {
-		requestBody = mergeConfig(requestBody, params.ExtraParams)
+	requestBody := buildOpenAISpeechRequest(model, input, params)
+	if requestBody == nil {
+		return nil, newBifrostOperationError("invalid speech input: voice is required", nil, schemas.OpenAI)
 	}
 
 	jsonBody, err := sonic.Marshal(requestBody)
@@ -654,23 +738,12 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, model string, key sc
 // It formats the request body, creates HTTP request, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
 func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	responseFormat := input.ResponseFormat
-	if responseFormat == "" {
-		responseFormat = "mp3"
+	requestBody := buildOpenAISpeechRequest(model, input, params)
+	if requestBody == nil {
+		return nil, newBifrostOperationError("invalid speech input: voice is required", nil, schemas.OpenAI)
 	}
 
-	requestBody := map[string]interface{}{
-		"input":           input.Input,
-		"model":           model,
-		"voice":           input.VoiceConfig.Voice,
-		"instructions":    input.Instructions,
-		"response_format": responseFormat,
-		"stream_format":   "sse",
-	}
-
-	if params != nil {
-		requestBody = mergeConfig(requestBody, params.ExtraParams)
-	}
+	requestBody.StreamFormat = ptr("sse")
 
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
@@ -1052,8 +1125,6 @@ func parseTranscriptionFormDataBody(writer *multipart.Writer, input *schemas.Tra
 			return newBifrostOperationError("failed to write response_format field", err, schemas.OpenAI)
 		}
 	}
-
-	// Note: Temperature and TimestampGranularities can be added via params.ExtraParams if needed
 
 	// Add extra params if provided
 	if params != nil && params.ExtraParams != nil {

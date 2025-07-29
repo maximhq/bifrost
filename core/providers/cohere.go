@@ -325,8 +325,8 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.Cohere,
 			BilledUsage: &schemas.BilledLLMUsage{
-				PromptTokens:     float64Ptr(response.Meta.BilledUnits.InputTokens),
-				CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
+				PromptTokens:     ptr(response.Meta.BilledUnits.InputTokens),
+				CompletionTokens: ptr(response.Meta.BilledUnits.OutputTokens),
 			},
 			ChatHistory: convertChatHistory(response.ChatHistory),
 		},
@@ -491,9 +491,9 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 	}
 
 	// Add tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+	if params != nil && params.Tools != nil && len(params.Tools) > 0 {
 		var tools []CohereTool
-		for _, tool := range *params.Tools {
+		for _, tool := range params.Tools {
 			parameterDefinitions := make(map[string]CohereParameterDefinition)
 			params := tool.Function.Parameters
 			for name, prop := range tool.Function.Parameters.Properties {
@@ -808,7 +808,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
 									Delta: schemas.BifrostStreamDelta{
-										Role: StrPtr(string(schemas.ModelChatMessageRoleAssistant)),
+										Role: ptr(string(schemas.ModelChatMessageRoleAssistant)),
 									},
 								},
 							},
@@ -939,7 +939,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 								Index: 0,
 								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
 									Delta: schemas.BifrostStreamDelta{
-										Role:      StrPtr(string(schemas.ModelChatMessageRoleAssistant)),
+										Role:      ptr(string(schemas.ModelChatMessageRoleAssistant)),
 										Content:   &stopEvent.Response.Text,
 										ToolCalls: toolCalls,
 									},

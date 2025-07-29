@@ -18,6 +18,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 )
 
 type VertexError struct {
@@ -66,8 +67,8 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		openAIResponsePool.Put(&OpenAIResponse{})
-		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
+		openAIResponsePool.Put(&api.OpenAIResponse{})
+		anthropicChatResponsePool.Put(&api.AnthropicChatResponse{})
 
 	}
 
@@ -136,36 +137,6 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		return nil, newConfigurationError("vertex key config is not set", schemas.Vertex)
 	}
 
-	// Format messages for Vertex API
-	var formattedMessages []map[string]interface{}
-	var preparedParams map[string]interface{}
-
-	if strings.Contains(model, "claude") {
-		formattedMessages, preparedParams = prepareAnthropicChatRequest(messages, params)
-	} else {
-		formattedMessages, preparedParams = prepareOpenAIChatRequest(messages, params)
-	}
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
-
-	if strings.Contains(model, "claude") {
-		if _, exists := requestBody["anthropic_version"]; !exists {
-			requestBody["anthropic_version"] = "vertex-2023-10-16"
-		}
-
-		delete(requestBody, "model")
-	}
-
-	delete(requestBody, "region")
-
-	jsonBody, err := sonic.Marshal(requestBody)
-	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Vertex)
-	}
-
 	projectID := key.VertexKeyConfig.ProjectID
 	if projectID == "" {
 		return nil, newConfigurationError("project ID is not set", schemas.Vertex)
@@ -176,10 +147,32 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		return nil, newConfigurationError("region is not set in meta config", schemas.Vertex)
 	}
 
-	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
+	// Determine request type based on model
+	var requestBody interface{}
+	var url string
 
-	if strings.Contains(model, "claude") {
+	if api.IsAnthropicModel(model) {
+		// Use Anthropic-style request for Claude models
+		anthropicRequest := buildAnthropicChatRequest(model, messages, params)
+
+		// Set Vertex-specific fields
+		if anthropicRequest.AnthropicVersion == nil {
+			version := "vertex-2023-10-16"
+			anthropicRequest.AnthropicVersion = &version
+		}
+
+		requestBody = anthropicRequest
 		url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, model)
+	} else {
+		// Use OpenAI-style request for non-Claude models
+		openaiRequest := buildOpenAIChatCompletionRequest(model, messages, params)
+		requestBody = openaiRequest
+		url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
+	}
+
+	jsonBody, err := sonic.Marshal(requestBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Vertex)
 	}
 
 	// Create request
@@ -213,7 +206,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: schemas.ErrorField{
-					Type:    StrPtr(schemas.RequestCancelled),
+					Type:    ptr(schemas.RequestCancelled),
 					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 					Error:   err,
 				},
@@ -350,21 +343,18 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		return nil, newBifrostOperationError("error creating auth client", err, schemas.Vertex)
 	}
 
-	if strings.Contains(model, "claude") {
+	if api.IsAnthropicModel(model) {
 		// Use Anthropic-style streaming for Claude models
-		formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
+		anthropicRequest := buildAnthropicChatRequest(model, messages, params)
 
-		requestBody := mergeConfig(map[string]interface{}{
-			"messages": formattedMessages,
-			"stream":   true,
-		}, preparedParams)
+		// Set streaming and Vertex-specific fields
+		stream := true
+		anthropicRequest.Stream = &stream
 
-		if _, exists := requestBody["anthropic_version"]; !exists {
-			requestBody["anthropic_version"] = "vertex-2023-10-16"
+		if anthropicRequest.AnthropicVersion == nil {
+			version := "vertex-2023-10-16"
+			anthropicRequest.AnthropicVersion = &version
 		}
-
-		delete(requestBody, "model")
-		delete(requestBody, "region")
 
 		url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, model)
 
@@ -380,7 +370,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			ctx,
 			client,
 			url,
-			requestBody,
+			anthropicRequest,
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			schemas.Vertex,
@@ -390,15 +380,11 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		)
 	} else {
 		// Use OpenAI-style streaming for non-Claude models
-		formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+		openaiRequest := buildOpenAIChatCompletionRequest(model, messages, params)
 
-		requestBody := mergeConfig(map[string]interface{}{
-			"model":    model,
-			"messages": formattedMessages,
-			"stream":   true,
-		}, preparedParams)
-
-		delete(requestBody, "region")
+		// Set streaming
+		stream := true
+		openaiRequest.Stream = &stream
 
 		url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
 
@@ -414,7 +400,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			ctx,
 			client,
 			url,
-			requestBody,
+			openaiRequest,
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			schemas.Vertex,

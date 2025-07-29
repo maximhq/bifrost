@@ -16,6 +16,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
 
@@ -40,21 +41,6 @@ var fileExtensionToMediaType = map[string]string{
 	".webp": "image/webp",
 	".svg":  "image/svg+xml",
 	".bmp":  "image/bmp",
-}
-
-// ImageContentType represents the type of image content
-type ImageContentType string
-
-const (
-	ImageContentTypeBase64 ImageContentType = "base64"
-	ImageContentTypeURL    ImageContentType = "url"
-)
-
-// URLTypeInfo contains extracted information about a URL
-type URLTypeInfo struct {
-	Type                 ImageContentType
-	MediaType            *string
-	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
 // ContextKey is a custom type for context keys to prevent key collisions in the context.
@@ -148,7 +134,7 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		return &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
-				Type:    StrPtr(schemas.RequestCancelled),
+				Type:    ptr(schemas.RequestCancelled),
 				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
@@ -377,16 +363,10 @@ func getRoleFromMessage(msg map[string]interface{}) (schemas.ModelChatMessageRol
 	return "", false // Role is of an unexpected or invalid type
 }
 
-// float64Ptr creates a pointer to a float64 value.
-// This is a helper function for creating pointers to float64 values.
-func float64Ptr(f float64) *float64 {
-	return &f
-}
-
-// StrPtr creates a pointer to a string value.
-// This is a helper function for creating pointers to string values.
-func StrPtr(s string) *string {
-	return &s
+// ptr creates a pointer to a value.
+// This is a helper function for creating pointers to values.
+func ptr[T any](v T) *T {
+	return &v
 }
 
 //* IMAGE UTILS *//
@@ -445,7 +425,7 @@ func SanitizeImageURL(rawURL string) (string, error) {
 // ExtractURLTypeInfo extracts type and media type information from a sanitized URL.
 // For data URLs, it parses the media type and encoding.
 // For regular URLs, it attempts to infer the media type from the file extension.
-func ExtractURLTypeInfo(sanitizedURL string) URLTypeInfo {
+func ExtractURLTypeInfo(sanitizedURL string) api.URLTypeInfo {
 	if strings.HasPrefix(sanitizedURL, "data:") {
 		return extractDataURLInfo(sanitizedURL)
 	}
@@ -453,12 +433,12 @@ func ExtractURLTypeInfo(sanitizedURL string) URLTypeInfo {
 }
 
 // extractDataURLInfo extracts information from a data URL
-func extractDataURLInfo(dataURL string) URLTypeInfo {
+func extractDataURLInfo(dataURL string) api.URLTypeInfo {
 	// Parse data URL: data:[<mediatype>][;base64],<data>
 	matches := dataURIRegex.FindStringSubmatch(dataURL)
 
 	if len(matches) != 4 {
-		return URLTypeInfo{Type: ImageContentTypeBase64}
+		return api.URLTypeInfo{Type: api.ImageContentTypeBase64}
 	}
 
 	mediaType := matches[1]
@@ -469,24 +449,24 @@ func extractDataURLInfo(dataURL string) URLTypeInfo {
 		dataURLWithoutPrefix = dataURL[len("data:")+len(mediaType)+len(";base64,"):]
 	}
 
-	info := URLTypeInfo{
+	info := api.URLTypeInfo{
 		MediaType:            &mediaType,
 		DataURLWithoutPrefix: &dataURLWithoutPrefix,
 	}
 
 	if isBase64 {
-		info.Type = ImageContentTypeBase64
+		info.Type = api.ImageContentTypeBase64
 	} else {
-		info.Type = ImageContentTypeURL // Non-base64 data URL
+		info.Type = api.ImageContentTypeURL // Non-base64 data URL
 	}
 
 	return info
 }
 
 // extractRegularURLInfo extracts information from a regular HTTP/HTTPS URL
-func extractRegularURLInfo(regularURL string) URLTypeInfo {
-	info := URLTypeInfo{
-		Type: ImageContentTypeURL,
+func extractRegularURLInfo(regularURL string) api.URLTypeInfo {
+	info := api.URLTypeInfo{
+		Type: api.ImageContentTypeURL,
 	}
 
 	// Try to infer media type from file extension

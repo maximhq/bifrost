@@ -60,6 +60,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -618,10 +619,70 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter Err
 	ctx.SetBody(responseBody)
 }
 
-// validProviders is a pre-computed map for efficient O(1) provider validation.
+// GetProviderFromModel determines the appropriate provider based on model name patterns
+// This function uses comprehensive pattern matching to identify the correct provider
+// for various model naming conventions used across different AI providers.
+func GetProviderFromModel(model string) schemas.ModelProvider {
+	// Normalize model name for case-insensitive matching
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+
+	// Azure OpenAI Models - check first to prevent false positives from OpenAI "gpt" patterns
+	if api.IsAzureModel(modelLower) {
+		return schemas.Azure
+	}
+
+	// OpenAI Models - comprehensive pattern matching
+	if api.IsOpenAIModel(modelLower) {
+		return schemas.OpenAI
+	}
+
+	// Anthropic Models - Claude family
+	if api.IsAnthropicModel(modelLower) {
+		return schemas.Anthropic
+	}
+
+	// Google Vertex AI Models - Gemini and Palm family
+	if api.IsVertexModel(modelLower) {
+		return schemas.Vertex
+	}
+
+	// AWS Bedrock Models - various model providers through Bedrock
+	if api.IsBedrockModel(modelLower) {
+		return schemas.Bedrock
+	}
+
+	// Cohere Models - Command and Embed family
+	if api.IsCohereModel(modelLower) {
+		return schemas.Cohere
+	}
+
+	// Default to OpenAI for unknown models (most LiteLLM compatible)
+	return schemas.OpenAI
+}
+
+// newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
+// This helper function reduces code duplication when handling non-Bifrost errors.
+func newBifrostError(err error, message string) *schemas.BifrostError {
+	if err == nil {
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: message,
+			},
+		}
+	}
+
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: schemas.ErrorField{
+			Message: message,
+			Error:   err,
+		},
+	}
+}
+
 var validProviders = map[schemas.ModelProvider]bool{
 	schemas.OpenAI:    true,
-	schemas.Azure:     true,
 	schemas.Anthropic: true,
 	schemas.Bedrock:   true,
 	schemas.Cohere:    true,
@@ -652,147 +713,4 @@ func ParseModelString(model string, defaultProvider schemas.ModelProvider) (sche
 	}
 	// No provider prefix found or invalid provider, return empty provider and the original model
 	return defaultProvider, model
-}
-
-// GetProviderFromModel determines the appropriate provider based on model name patterns
-// This function uses comprehensive pattern matching to identify the correct provider
-// for various model naming conventions used across different AI providers.
-func GetProviderFromModel(model string) schemas.ModelProvider {
-	// Normalize model name for case-insensitive matching
-	modelLower := strings.ToLower(strings.TrimSpace(model))
-
-	// Azure OpenAI Models - check first to prevent false positives from OpenAI "gpt" patterns
-	if isAzureModel(modelLower) {
-		return schemas.Azure
-	}
-
-	// OpenAI Models - comprehensive pattern matching
-	if isOpenAIModel(modelLower) {
-		return schemas.OpenAI
-	}
-
-	// Anthropic Models - Claude family
-	if isAnthropicModel(modelLower) {
-		return schemas.Anthropic
-	}
-
-	// Google Vertex AI Models - Gemini and Palm family
-	if isVertexModel(modelLower) {
-		return schemas.Vertex
-	}
-
-	// AWS Bedrock Models - various model providers through Bedrock
-	if isBedrockModel(modelLower) {
-		return schemas.Bedrock
-	}
-
-	// Cohere Models - Command and Embed family
-	if isCohereModel(modelLower) {
-		return schemas.Cohere
-	}
-
-	// Default to OpenAI for unknown models (most LiteLLM compatible)
-	return schemas.OpenAI
-}
-
-// isOpenAIModel checks for OpenAI model patterns
-func isOpenAIModel(model string) bool {
-	// Exclude Azure models to prevent overlap
-	if strings.Contains(model, "azure/") {
-		return false
-	}
-
-	openaiPatterns := []string{
-		"gpt", "davinci", "curie", "babbage", "ada", "o1", "o3", "o4",
-		"text-embedding", "dall-e", "whisper", "tts", "chatgpt",
-	}
-
-	return matchesAnyPattern(model, openaiPatterns)
-}
-
-// isAzureModel checks for Azure OpenAI specific patterns
-func isAzureModel(model string) bool {
-	azurePatterns := []string{
-		"azure", "model-router", "computer-use-preview",
-	}
-
-	return matchesAnyPattern(model, azurePatterns)
-}
-
-// isAnthropicModel checks for Anthropic Claude model patterns
-func isAnthropicModel(model string) bool {
-	anthropicPatterns := []string{
-		"claude", "anthropic/",
-	}
-
-	return matchesAnyPattern(model, anthropicPatterns)
-}
-
-// isVertexModel checks for Google Vertex AI model patterns
-func isVertexModel(model string) bool {
-	vertexPatterns := []string{
-		"gemini", "palm", "bison", "gecko", "vertex/", "google/",
-	}
-
-	return matchesAnyPattern(model, vertexPatterns)
-}
-
-// isBedrockModel checks for AWS Bedrock model patterns
-func isBedrockModel(model string) bool {
-	bedrockPatterns := []string{
-		"bedrock", "bedrock.amazonaws.com/", "bedrock/",
-		"amazon.titan", "amazon.nova", "aws/amazon.",
-		"ai21.jamba", "ai21.j2", "aws/ai21.",
-		"meta.llama", "aws/meta.",
-		"stability.stable-diffusion", "stability.sd3", "aws/stability.",
-		"anthropic.claude", "aws/anthropic.",
-		"cohere.command", "cohere.embed", "aws/cohere.",
-		"mistral.mistral", "mistral.mixtral", "aws/mistral.",
-		"titan-text", "titan-embed", "nova-micro", "nova-lite", "nova-pro",
-		"jamba-instruct", "j2-ultra", "j2-mid",
-		"llama-2", "llama-3", "llama-3.1", "llama-3.2",
-		"stable-diffusion-xl", "sd3-large",
-	}
-
-	return matchesAnyPattern(model, bedrockPatterns)
-}
-
-// isCohereModel checks for Cohere model patterns
-func isCohereModel(model string) bool {
-	coherePatterns := []string{
-		"command-", "embed-", "cohere",
-	}
-
-	return matchesAnyPattern(model, coherePatterns)
-}
-
-// matchesAnyPattern checks if the model matches any of the given patterns
-func matchesAnyPattern(model string, patterns []string) bool {
-	for _, pattern := range patterns {
-		if strings.Contains(model, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
-// This helper function reduces code duplication when handling non-Bifrost errors.
-func newBifrostError(err error, message string) *schemas.BifrostError {
-	if err == nil {
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: message,
-			},
-		}
-	}
-
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: schemas.ErrorField{
-			Message: message,
-			Error:   err,
-		},
-	}
 }
