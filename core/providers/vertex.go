@@ -236,7 +236,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 		}
 
-		var openAIErr OpenAIError
+		var openAIErr schemas.BifrostError
 		var vertexErr []VertexError
 
 		provider.logger.Debug(fmt.Sprintf("error from vertex provider: %s", string(body)))
@@ -303,7 +303,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 			Created:           response.Created,
 			ServiceTier:       response.ServiceTier,
 			SystemFingerprint: response.SystemFingerprint,
-			Usage:             &response.Usage,
+			Usage:             response.Usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Provider:    schemas.Vertex,
 				RawResponse: rawResponse,

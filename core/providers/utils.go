@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
@@ -287,7 +287,7 @@ func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skip
 func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 
-	if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
+	if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
 		return &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     &statusCode,
@@ -309,7 +309,7 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
 func handleProviderResponse[T any](responseBody []byte, response *T) (interface{}, *schemas.BifrostError) {
-	var rawResponse interface{}
+	// var rawResponse interface{}
 
 	var wg sync.WaitGroup
 	var structuredErr, rawErr error
@@ -317,11 +317,11 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		structuredErr = json.Unmarshal(responseBody, response)
+		structuredErr = sonic.Unmarshal(responseBody, response)
 	}()
 	go func() {
 		defer wg.Done()
-		rawErr = json.Unmarshal(responseBody, &rawResponse)
+		// rawErr = sonic.Unmarshal(responseBody, &rawResponse)
 	}()
 	wg.Wait()
 
@@ -345,7 +345,7 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 		}
 	}
 
-	return rawResponse, nil
+	return nil, nil
 }
 
 // getRoleFromMessage extracts and validates the role from a message map.

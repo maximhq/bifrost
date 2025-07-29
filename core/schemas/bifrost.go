@@ -2,8 +2,9 @@
 package schemas
 
 import (
-	"encoding/json"
 	"fmt"
+
+	"github.com/bytedance/sonic"
 )
 
 const (
@@ -93,13 +94,13 @@ func (tc SpeechVoiceInput) MarshalJSON() ([]byte, error) {
 	}
 
 	if tc.Voice != nil {
-		return json.Marshal(*tc.Voice)
+		return sonic.Marshal(*tc.Voice)
 	}
 	if len(tc.MultiVoiceConfig) > 0 {
-		return json.Marshal(tc.MultiVoiceConfig)
+		return sonic.Marshal(tc.MultiVoiceConfig)
 	}
 	// If both are nil, return null
-	return json.Marshal(nil)
+	return sonic.Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for SpeechVoiceInput.
@@ -108,14 +109,14 @@ func (tc SpeechVoiceInput) MarshalJSON() ([]byte, error) {
 func (tc *SpeechVoiceInput) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := json.Unmarshal(data, &stringContent); err == nil {
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
 		tc.Voice = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as an array of VoiceConfig objects
 	var voiceConfigs []VoiceConfig
-	if err := json.Unmarshal(data, &voiceConfigs); err == nil {
+	if err := sonic.Unmarshal(data, &voiceConfigs); err == nil {
 		// Validate each VoiceConfig and append to MultiVoiceConfig
 		for _, config := range voiceConfigs {
 			if config.Voice == "" {
@@ -245,13 +246,13 @@ func (tc ToolChoice) MarshalJSON() ([]byte, error) {
 	}
 
 	if tc.ToolChoiceStr != nil {
-		return json.Marshal(*tc.ToolChoiceStr)
+		return sonic.Marshal(*tc.ToolChoiceStr)
 	}
 	if tc.ToolChoiceStruct != nil {
-		return json.Marshal(*tc.ToolChoiceStruct)
+		return sonic.Marshal(*tc.ToolChoiceStruct)
 	}
 	// If both are nil, return null
-	return json.Marshal(nil)
+	return sonic.Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolChoice.
@@ -260,14 +261,14 @@ func (tc ToolChoice) MarshalJSON() ([]byte, error) {
 func (tc *ToolChoice) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := json.Unmarshal(data, &stringContent); err == nil {
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
 		tc.ToolChoiceStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct struct of ToolChoiceStruct
 	var toolChoiceStruct ToolChoiceStruct
-	if err := json.Unmarshal(data, &toolChoiceStruct); err == nil {
+	if err := sonic.Unmarshal(data, &toolChoiceStruct); err == nil {
 		// Validate the Type field is not empty and is a valid value
 		if toolChoiceStruct.Type == "" {
 			return fmt.Errorf("tool_choice struct has empty type field")
@@ -305,13 +306,13 @@ func (mc MessageContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return json.Marshal(*mc.ContentStr)
+		return sonic.Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return json.Marshal(*mc.ContentBlocks)
+		return sonic.Marshal(*mc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return json.Marshal(nil)
+	return sonic.Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for MessageContent.
@@ -320,14 +321,14 @@ func (mc MessageContent) MarshalJSON() ([]byte, error) {
 func (mc *MessageContent) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := json.Unmarshal(data, &stringContent); err == nil {
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
 		mc.ContentStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ContentBlock
-	if err := json.Unmarshal(data, &arrayContent); err == nil {
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
 		mc.ContentBlocks = &arrayContent
 		return nil
 	}
