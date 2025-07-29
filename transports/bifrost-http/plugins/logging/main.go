@@ -80,7 +80,7 @@ type InitialLogData struct {
 	Params             *schemas.ModelParameters
 	SpeechInput        *schemas.SpeechInput
 	TranscriptionInput *schemas.TranscriptionInput
-	Tools              *[]schemas.Tool
+	Tools              []schemas.Tool
 }
 
 // SearchFilters represents the available filters for log searches
@@ -331,9 +331,9 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		TranscriptionInput: req.Input.TranscriptionInput,
 	}
 
-	if req.Params != nil && req.Params.Tools != nil {
-		initialData.Tools = req.Params.Tools
-	}
+	// if req.Params != nil && req.Params.Tools != nil {
+	// 	initialData.Tools = req.Params.Tools
+	// }
 
 	// Store created timestamp in context for latency calculation optimization
 	createdTimestamp := time.Now()
@@ -363,10 +363,10 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 					Model:              logMsg.InitialData.Model,
 					InputHistoryParsed: logMsg.InitialData.InputHistory,
 					ParamsParsed:       logMsg.InitialData.Params,
-					ToolsParsed:        logMsg.InitialData.Tools,
-					Status:             "processing",
-					Stream:             false, // Initially false, will be updated if streaming
-					CreatedAt:          logMsg.Timestamp,
+					// ToolsParsed:        logMsg.InitialData.Tools,
+					Status:    "processing",
+					Stream:    false, // Initially false, will be updated if streaming
+					CreatedAt: logMsg.Timestamp,
 				}
 				p.logCallback(initialEntry)
 			}
