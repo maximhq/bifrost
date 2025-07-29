@@ -12,8 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -263,7 +262,7 @@ func (provider *AnthropicProvider) prepareTextCompletionParams(params map[string
 // Returns the response body or an error if the request fails.
 func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, url string, key string) ([]byte, *schemas.BifrostError) {
 	// Marshal the request body
-	jsonData, err := json.Marshal(requestBody)
+	jsonData, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Anthropic)
 	}
@@ -548,7 +547,7 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 						if toolCall.Function.Name != nil {
 							var input map[string]interface{}
 							if toolCall.Function.Arguments != "" {
-								if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+								if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
 									// If unmarshaling fails, use a simple string representation
 									input = map[string]interface{}{"arguments": toolCall.Function.Arguments}
 								}
@@ -712,7 +711,7 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 				Name: &c.Name,
 			}
 
-			args, err := json.Marshal(c.Input)
+			args, err := sonic.Marshal(c.Input)
 			if err != nil {
 				function.Arguments = fmt.Sprintf("%v", c.Input)
 			} else {
@@ -826,7 +825,7 @@ func handleAnthropicStreaming(
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerType)
 	}
@@ -903,7 +902,7 @@ func handleAnthropicStreaming(
 			switch eventType {
 			case "message_start":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
 					continue
 				}
@@ -914,7 +913,7 @@ func handleAnthropicStreaming(
 
 			case "content_block_start":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse content_block_start event: %v", err))
 					continue
 				}
@@ -1002,7 +1001,7 @@ func handleAnthropicStreaming(
 
 			case "content_block_delta":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse content_block_delta event: %v", err))
 					continue
 				}
@@ -1122,7 +1121,7 @@ func handleAnthropicStreaming(
 
 			case "message_delta":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_delta event: %v", err))
 					continue
 				}
@@ -1160,7 +1159,7 @@ func handleAnthropicStreaming(
 
 			case "message_stop":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_stop event: %v", err))
 					continue
 				}
@@ -1203,7 +1202,7 @@ func handleAnthropicStreaming(
 
 			case "error":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse error event: %v", err))
 					continue
 				}

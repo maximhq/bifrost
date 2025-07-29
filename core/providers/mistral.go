@@ -10,8 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -127,7 +126,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model strin
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
@@ -234,7 +233,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 		}
 	}
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
@@ -271,18 +270,18 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 		return nil, bifrostErr
 	}
 
-	// Parse response using json.RawMessage to avoid double parsing
-	var rawMessage json.RawMessage = resp.Body()
+	// Parse response using sonic.RawMessage to avoid double parsing
+	rawMessage := resp.Body()
 
 	// Parse into structured response
 	var mistralResp MistralEmbeddingResponse
-	if err := json.Unmarshal(rawMessage, &mistralResp); err != nil {
+	if err := sonic.Unmarshal(rawMessage, &mistralResp); err != nil {
 		return nil, newBifrostOperationError("error parsing Mistral embedding response", err, schemas.Mistral)
 	}
 
 	// Parse raw response for consistent format
 	var rawResponse interface{}
-	if err := json.Unmarshal(rawMessage, &rawResponse); err != nil {
+	if err := sonic.Unmarshal(rawMessage, &rawResponse); err != nil {
 		return nil, newBifrostOperationError("error parsing raw response for Mistral embedding", err, schemas.Mistral)
 	}
 

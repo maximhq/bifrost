@@ -10,8 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -114,7 +113,7 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, k
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,

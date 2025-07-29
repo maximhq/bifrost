@@ -12,10 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
 	"net/http"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -205,7 +204,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 	}
 
 	// Marshal request body
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -270,7 +269,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 				Name: &tool.Name,
 			}
 
-			args, err := json.Marshal(tool.Parameters)
+			args, err := sonic.Marshal(tool.Parameters)
 			if err != nil {
 				function.Arguments = fmt.Sprintf("%v", tool.Parameters)
 			} else {
@@ -359,7 +358,7 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
 					var arguments map[string]interface{}
 					var parsedJSON interface{}
-					err := json.Unmarshal([]byte(toolCall.Function.Arguments), &parsedJSON)
+					err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &parsedJSON)
 					if err == nil {
 						if arr, ok := parsedJSON.(map[string]interface{}); ok {
 							arguments = arr
@@ -395,7 +394,7 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 
 							// Found the matching tool call, extract its parameters
 							var parsedJSON interface{}
-							err := json.Unmarshal([]byte(toolCall.Function.Arguments), &parsedJSON)
+							err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &parsedJSON)
 							if err == nil {
 								if arr, ok := parsedJSON.(map[string]interface{}); ok {
 									toolCallParameters = arr
@@ -563,7 +562,7 @@ func convertChatHistory(history []struct {
 					Name: &tool.Name,
 				}
 
-				args, err := json.Marshal(tool.Parameters)
+				args, err := sonic.Marshal(tool.Parameters)
 				if err != nil {
 					function.Arguments = fmt.Sprintf("%v", tool.Parameters)
 				} else {
@@ -624,7 +623,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 	}
 
 	// Marshal request body
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Cohere)
 	}
@@ -664,13 +663,13 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 
 	// Parse response
 	var cohereResp CohereEmbeddingResponse
-	if err := json.Unmarshal(resp.Body(), &cohereResp); err != nil {
+	if err := sonic.Unmarshal(resp.Body(), &cohereResp); err != nil {
 		return nil, newBifrostOperationError("error parsing Cohere embedding response", err, schemas.Cohere)
 	}
 
 	// Parse raw response for consistent format
 	var rawResponse interface{}
-	if err := json.Unmarshal(resp.Body(), &rawResponse); err != nil {
+	if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
 		return nil, newBifrostOperationError("error parsing raw response for Cohere embedding", err, schemas.Cohere)
 	}
 
@@ -709,7 +708,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 		return nil, newBifrostOperationError("failed to prepare Cohere chat request", err, schemas.Cohere)
 	}
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Cohere)
 	}
@@ -773,7 +772,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 				// Parse the streaming event
 				var streamEvent map[string]interface{}
-				if err := json.Unmarshal([]byte(jsonData), &streamEvent); err != nil {
+				if err := sonic.Unmarshal([]byte(jsonData), &streamEvent); err != nil {
 					provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere stream event: %v", err))
 					continue
 				}
@@ -786,7 +785,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 				switch eventType {
 				case "stream-start":
 					var startEvent CohereStreamStartEvent
-					if err := json.Unmarshal([]byte(jsonData), &startEvent); err != nil {
+					if err := sonic.Unmarshal([]byte(jsonData), &startEvent); err != nil {
 						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere stream-start event: %v", err))
 						continue
 					}
@@ -823,7 +822,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 				case "text-generation":
 					var textEvent CohereStreamTextEvent
-					if err := json.Unmarshal([]byte(jsonData), &textEvent); err != nil {
+					if err := sonic.Unmarshal([]byte(jsonData), &textEvent); err != nil {
 						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere text-generation event: %v", err))
 						continue
 					}
@@ -858,7 +857,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 				case "tool-calls-chunk":
 					var toolEvent CohereStreamToolCallEvent
-					if err := json.Unmarshal([]byte(jsonData), &toolEvent); err != nil {
+					if err := sonic.Unmarshal([]byte(jsonData), &toolEvent); err != nil {
 						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere tool-use event: %v", err))
 						continue
 					}
@@ -902,7 +901,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 				case "stream-end":
 					var stopEvent CohereStreamStopEvent
-					if err := json.Unmarshal([]byte(jsonData), &stopEvent); err != nil {
+					if err := sonic.Unmarshal([]byte(jsonData), &stopEvent); err != nil {
 						provider.logger.Warn(fmt.Sprintf("Failed to parse Cohere stream-end event: %v", err))
 						continue
 					}
@@ -914,7 +913,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 							Name: &toolCall.Name,
 						}
 
-						args, err := json.Marshal(toolCall.Parameters)
+						args, err := sonic.Marshal(toolCall.Parameters)
 						if err != nil {
 							function.Arguments = fmt.Sprintf("%v", toolCall.Parameters)
 						} else {

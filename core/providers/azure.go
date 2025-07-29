@@ -9,8 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -169,7 +168,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	}
 
 	// Marshal the request body
-	jsonData, err := json.Marshal(requestBody)
+	jsonData, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Azure)
 	}
@@ -392,7 +391,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 
 	// Parse response
 	var response AzureEmbeddingResponse
-	if err := json.Unmarshal(responseBody, &response); err != nil {
+	if err := sonic.Unmarshal(responseBody, &response); err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Azure)
 	}
 

@@ -14,9 +14,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/goccy/go-json"
 	"golang.org/x/oauth2/google"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -159,7 +159,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 
 	delete(requestBody, "region")
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Vertex)
 	}
@@ -236,14 +236,14 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 		}
 
-		var openAIErr OpenAIError
+		var openAIErr schemas.BifrostError
 		var vertexErr []VertexError
 
 		provider.logger.Debug(fmt.Sprintf("error from vertex provider: %s", string(body)))
 
-		if err := json.Unmarshal(body, &openAIErr); err != nil {
+		if err := sonic.Unmarshal(body, &openAIErr); err != nil {
 			// Try Vertex error format if OpenAI format fails
-			if err := json.Unmarshal(body, &vertexErr); err != nil {
+			if err := sonic.Unmarshal(body, &vertexErr); err != nil {
 				return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
 			}
 
@@ -303,7 +303,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 			Created:           response.Created,
 			ServiceTier:       response.ServiceTier,
 			SystemFingerprint: response.SystemFingerprint,
-			Usage:             &response.Usage,
+			Usage:             response.Usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Provider:    schemas.Vertex,
 				RawResponse: rawResponse,
