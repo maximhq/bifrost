@@ -55,9 +55,11 @@ import (
 	"log"
 	"mime"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -373,14 +375,27 @@ func main() {
 	// Apply CORS middleware to all routes
 	corsHandler := corsMiddleware(r.Handler)
 
-	log.Printf("Successfully started bifrost. Serving UI on http://localhost:%s", port)
-	if err := fasthttp.ListenAndServe(":"+port, corsHandler); err != nil {
-		log.Fatalf("Error starting server: %v", err)
-	}
+	// Set up signal handling for graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
+	// Start server in a goroutine
+	go func() {
+		log.Printf("Successfully started bifrost. Serving UI on http://localhost:%s", port)
+		if err := fasthttp.ListenAndServe(":"+port, corsHandler); err != nil {
+			log.Fatalf("Error starting server: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal
+	<-c
+	log.Println("Received interrupt signal, initiating graceful shutdown...")
+
+	// Perform cleanup
 	if wsHandler != nil {
 		wsHandler.Stop()
 	}
 
 	client.Cleanup()
+	log.Println("Graceful shutdown completed")
 }

@@ -120,7 +120,7 @@ func (provider *MistralProvider) TextCompletion(ctx context.Context, model strin
 
 // ChatCompletion performs a chat completion request to the Mistral API.
 func (provider *MistralProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params, nil)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
@@ -318,7 +318,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 // Uses Mistral's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params, nil)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,

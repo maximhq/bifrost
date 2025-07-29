@@ -141,7 +141,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 	if strings.Contains(model, "claude") {
 		formattedMessages, preparedParams = prepareAnthropicChatRequest(messages, params)
 	} else {
-		formattedMessages, preparedParams = prepareOpenAIChatRequest(messages, params)
+		formattedMessages, preparedParams = prepareOpenAIChatRequest(messages, params, nil)
 	}
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -388,7 +388,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		)
 	} else {
 		// Use OpenAI-style streaming for non-Claude models
-		formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+		formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params, nil)
 
 		requestBody := mergeConfig(map[string]interface{}{
 			"model":    model,

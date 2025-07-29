@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -43,12 +44,14 @@ type OpenAIResponse struct {
 // openAIResponsePool provides a pool for OpenAI response objects.
 var openAIResponsePool = sync.Pool{
 	New: func() interface{} {
+		openAIPoolGets.Add(1)
 		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireOpenAIResponse gets an OpenAI response from the pool and resets it.
 func acquireOpenAIResponse() *schemas.BifrostResponse {
+	openAIPoolGets.Add(1)
 	resp := openAIResponsePool.Get().(*schemas.BifrostResponse)
 	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
@@ -57,6 +60,7 @@ func acquireOpenAIResponse() *schemas.BifrostResponse {
 // releaseOpenAIResponse returns an OpenAI response to the pool.
 func releaseOpenAIResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
+		openAIPoolPuts.Add(1)
 		openAIResponsePool.Put(resp)
 	}
 }
@@ -67,6 +71,7 @@ type OpenAIProvider struct {
 	client        *fasthttp.Client      // HTTP client for API requests
 	streamClient  *http.Client          // HTTP client for streaming requests
 	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	metrics       OpenAIMetrics         // Performance metrics for this provider
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -105,6 +110,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		client:        client,
 		streamClient:  streamClient,
 		networkConfig: config.NetworkConfig,
+		metrics:       OpenAIMetrics{}, // Initialize metrics
 	}
 }
 
@@ -123,17 +129,33 @@ func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model string
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	timings := make(map[string]time.Duration)
 
+	// Track overall message preparation time
+	msgPrepStart := time.Now()
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params, &timings)
+	timings["total_message_preparation"] = time.Since(msgPrepStart)
+
+	// Track request body preparation time
+	bodyStart := time.Now()
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
 		"messages": formattedMessages,
 	}, preparedParams)
+	timings["request_body_preparation"] = time.Since(bodyStart)
 
+	// Track JSON marshaling time
+	marshalStart := time.Now()
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
+		timings["json_marshaling"] = time.Since(marshalStart)
+		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.OpenAI)
 	}
+	timings["json_marshaling"] = time.Since(marshalStart)
+
+	// Track request setup time
+	setupStart := time.Now()
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -151,27 +173,48 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 
 	req.SetBody(jsonBody)
 
+	timings["request_setup"] = time.Since(setupStart)
+
+	// Track HTTP request time
+	httpStart := time.Now()
+
 	// Make request
 	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	timings["http_request"] = time.Since(httpStart)
 	if bifrostErr != nil {
+		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		return nil, bifrostErr
 	}
 
+	// Track error handling time
+	errorStart := time.Now()
+
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		timings["error_handling"] = time.Since(errorStart)
+		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		provider.logger.Debug(fmt.Sprintf("error from openai provider: %s", string(resp.Body())))
 		return nil, parseOpenAIError(resp)
 	}
 
+	timings["error_handling"] = time.Since(errorStart)
+
+	// Track response parsing time (more granular)
+	parseStart := time.Now()
+
 	responseBody := resp.Body()
 
-	// Pre-allocate response structs from pools
+	// Track pool acquisition time
+	poolStart := time.Now()
 	response := acquireOpenAIResponse()
+	timings["pool_acquisition"] = time.Since(poolStart)
 	defer releaseOpenAIResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
 	_, bifrostErr = handleProviderResponse(responseBody, response)
 	if bifrostErr != nil {
+		timings["total_response_parsing"] = time.Since(parseStart)
+		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		return nil, bifrostErr
 	}
 
@@ -179,13 +222,22 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 		response.ExtraFields.Params = *params
 	}
 
+	timings["total_response_parsing"] = time.Since(parseStart)
+
+	response.ExtraFields.RawResponse = map[string]interface{}{
+		"timings": timings,
+	}
+
+	provider.recordOpenAIMetrics(timings, true) // Record metrics for successful request
 	return response, nil
 }
 
 // prepareOpenAIChatRequest formats messages for the OpenAI API.
 // It handles both text and image content in messages.
 // Returns a slice of formatted messages and any additional parameters.
-func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
+func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters, timings *map[string]time.Duration) ([]map[string]interface{}, map[string]interface{}) {
+	formatStart := time.Now()
+
 	// Format messages for OpenAI API
 	var formattedMessages []map[string]interface{}
 	for _, msg := range messages {
@@ -225,7 +277,16 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 		}
 	}
 
+	if timings != nil {
+		(*timings)["message_formatting"] = time.Since(formatStart)
+	}
+
+	prepareParamsStart := time.Now()
 	preparedParams := prepareParams(params)
+
+	if timings != nil {
+		(*timings)["params_preparation"] = time.Since(prepareParamsStart)
+	}
 
 	return formattedMessages, preparedParams
 }
@@ -369,7 +430,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 // It formats messages, prepares request body, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
 func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params, nil)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
@@ -1196,4 +1257,117 @@ func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
 	}
 
 	return bifrostErr
+}
+
+// PERFORMANCE TRACKING
+
+// OpenAIMetrics stores provider-specific metrics using atomic operations for high-throughput scenarios
+type OpenAIMetrics struct {
+	// Counters
+	RequestCount int64
+	ErrorCount   int64
+
+	// Time accumulators (in nanoseconds for atomic operations)
+	TotalTimeNs                  int64
+	MessagePreparationTimeNs     int64
+	RequestBodyPreparationTimeNs int64
+	JSONMarshalingTimeNs         int64
+	RequestSetupTimeNs           int64
+	HTTPRequestTimeNs            int64
+	ErrorHandlingTimeNs          int64
+	PoolAcquisitionTimeNs        int64
+	JSONUnmarshalingTimeNs       int64
+	ResponseParsingTimeNs        int64
+}
+
+// Counters for pool usage
+var (
+	openAIPoolGets      atomic.Int64
+	openAIPoolPuts      atomic.Int64
+	openAIPoolCreations atomic.Int64
+)
+
+// GetPoolStats returns the current pool usage statistics
+func GetPoolStats() map[string]int64 {
+	return map[string]int64{
+		"openai_pool_gets":      openAIPoolGets.Load(),
+		"openai_pool_puts":      openAIPoolPuts.Load(),
+		"openai_pool_creations": openAIPoolCreations.Load(),
+	}
+}
+
+// recordOpenAIMetrics records provider-specific metrics atomically in a goroutine
+func (provider *OpenAIProvider) recordOpenAIMetrics(timings map[string]time.Duration, success bool) {
+	// Spawn goroutine to avoid blocking the request path
+	go func() {
+		atomic.AddInt64(&provider.metrics.RequestCount, 1)
+		if !success {
+			atomic.AddInt64(&provider.metrics.ErrorCount, 1)
+		}
+
+		// Calculate total time from all timings
+		var totalTime time.Duration
+		for _, duration := range timings {
+			totalTime += duration
+		}
+
+		// Add to accumulators
+		atomic.AddInt64(&provider.metrics.TotalTimeNs, totalTime.Nanoseconds())
+
+		if msgPrepTime, exists := timings["total_message_preparation"]; exists {
+			atomic.AddInt64(&provider.metrics.MessagePreparationTimeNs, msgPrepTime.Nanoseconds())
+		}
+		if bodyPrepTime, exists := timings["request_body_preparation"]; exists {
+			atomic.AddInt64(&provider.metrics.RequestBodyPreparationTimeNs, bodyPrepTime.Nanoseconds())
+		}
+		if marshalTime, exists := timings["json_marshaling"]; exists {
+			atomic.AddInt64(&provider.metrics.JSONMarshalingTimeNs, marshalTime.Nanoseconds())
+		}
+		if setupTime, exists := timings["request_setup"]; exists {
+			atomic.AddInt64(&provider.metrics.RequestSetupTimeNs, setupTime.Nanoseconds())
+		}
+		if httpTime, exists := timings["http_request"]; exists {
+			atomic.AddInt64(&provider.metrics.HTTPRequestTimeNs, httpTime.Nanoseconds())
+		}
+		if errorTime, exists := timings["error_handling"]; exists {
+			atomic.AddInt64(&provider.metrics.ErrorHandlingTimeNs, errorTime.Nanoseconds())
+		}
+		if poolTime, exists := timings["pool_acquisition"]; exists {
+			atomic.AddInt64(&provider.metrics.PoolAcquisitionTimeNs, poolTime.Nanoseconds())
+		}
+		if unmarshalTime, exists := timings["json_unmarshaling"]; exists {
+			atomic.AddInt64(&provider.metrics.JSONUnmarshalingTimeNs, unmarshalTime.Nanoseconds())
+		}
+		if parseTime, exists := timings["total_response_parsing"]; exists {
+			atomic.AddInt64(&provider.metrics.ResponseParsingTimeNs, parseTime.Nanoseconds())
+		}
+	}()
+}
+
+// GetOpenAIMetrics returns averaged provider metrics
+func (provider *OpenAIProvider) GetOpenAIMetrics() map[string]interface{} {
+	// Read atomic values and calculate averages
+	requestCount := atomic.LoadInt64(&provider.metrics.RequestCount)
+	if requestCount == 0 {
+		return map[string]interface{}{
+			"request_count": 0,
+			"error_count":   0,
+		}
+	}
+
+	return map[string]interface{}{
+		"request_count":                requestCount,
+		"error_count":                  atomic.LoadInt64(&provider.metrics.ErrorCount),
+		"error_rate":                   fmt.Sprintf("%.2f%%", float64(atomic.LoadInt64(&provider.metrics.ErrorCount))/float64(requestCount)*100),
+		"avg_total_time":               time.Duration(atomic.LoadInt64(&provider.metrics.TotalTimeNs) / requestCount).String(),
+		"avg_message_preparation_time": time.Duration(atomic.LoadInt64(&provider.metrics.MessagePreparationTimeNs) / requestCount).String(),
+		"avg_request_body_prep_time":   time.Duration(atomic.LoadInt64(&provider.metrics.RequestBodyPreparationTimeNs) / requestCount).String(),
+		"avg_json_marshaling_time":     time.Duration(atomic.LoadInt64(&provider.metrics.JSONMarshalingTimeNs) / requestCount).String(),
+		"avg_request_setup_time":       time.Duration(atomic.LoadInt64(&provider.metrics.RequestSetupTimeNs) / requestCount).String(),
+		"avg_http_request_time":        time.Duration(atomic.LoadInt64(&provider.metrics.HTTPRequestTimeNs) / requestCount).String(),
+		"avg_error_handling_time":      time.Duration(atomic.LoadInt64(&provider.metrics.ErrorHandlingTimeNs) / requestCount).String(),
+		"avg_pool_acquisition_time":    time.Duration(atomic.LoadInt64(&provider.metrics.PoolAcquisitionTimeNs) / requestCount).String(),
+		"avg_json_unmarshaling_time":   time.Duration(atomic.LoadInt64(&provider.metrics.JSONUnmarshalingTimeNs) / requestCount).String(),
+		"avg_response_parsing_time":    time.Duration(atomic.LoadInt64(&provider.metrics.ResponseParsingTimeNs) / requestCount).String(),
+	}
 }

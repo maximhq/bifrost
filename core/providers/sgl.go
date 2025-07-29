@@ -107,7 +107,7 @@ func (provider *SGLProvider) TextCompletion(ctx context.Context, model string, k
 
 // ChatCompletion performs a chat completion request to the SGL API.
 func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params, nil)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
@@ -202,7 +202,7 @@ func (provider *SGLProvider) Embedding(ctx context.Context, model string, key sc
 // Uses SGL's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params, nil)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
