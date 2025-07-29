@@ -107,12 +107,7 @@ func (provider *OllamaProvider) TextCompletion(ctx context.Context, model string
 
 // ChatCompletion performs a chat completion request to the Ollama API.
 func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
@@ -196,13 +191,10 @@ func (provider *OllamaProvider) Embedding(ctx context.Context, model string, key
 // Uses Ollama's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	stream := true
+	requestBody.Stream = &stream
 
 	// Prepare Ollama headers (Ollama typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{

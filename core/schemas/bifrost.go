@@ -173,7 +173,9 @@ type ModelParameters struct {
 	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
 	EncodingFormat    *string     `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
 	Dimensions        *int        `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
-	User              *string     `json:"user,omitempty"`                // User identifier for tracking
+	User              *string     `json:"user,omitempty"`
+	N                 *int        `json:"n,omitempty"`
+	Logprobs           *bool     `json:"logprobs,omitempty"`
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`

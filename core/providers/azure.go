@@ -163,7 +163,7 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Azure's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key schemas.Key, model string) ([]byte, *schemas.BifrostError) {
+func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody interface{}, path string, key schemas.Key, model string) ([]byte, *schemas.BifrostError) {
 	if key.AzureKeyConfig == nil {
 		return nil, newConfigurationError("azure key config not set", schemas.Azure)
 	}
@@ -315,13 +315,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	// Merge additional parameters
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
 	responseBody, err := provider.completeRequest(ctx, requestBody, "chat/completions", key, model)
 	if err != nil {
@@ -452,18 +446,14 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 // Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	if key.AzureKeyConfig == nil {
 		return nil, newConfigurationError("azure key config not set", schemas.Azure)
 	}
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
-	// Merge additional parameters and set stream to true
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	stream := true
+	requestBody.Stream = &stream
 
 	// Construct Azure-specific URL with deployment
 	if key.AzureKeyConfig.Endpoint == "" {

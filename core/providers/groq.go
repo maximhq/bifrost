@@ -106,12 +106,7 @@ func (provider *GroqProvider) TextCompletion(ctx context.Context, model string, 
 
 // ChatCompletion performs a chat completion request to the Groq API.
 func (provider *GroqProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
@@ -193,13 +188,10 @@ func (provider *GroqProvider) Embedding(ctx context.Context, model string, key s
 // Uses Groq's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	stream := true
+	requestBody.Stream = &stream
 
 	// Prepare Groq headers (Groq typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{

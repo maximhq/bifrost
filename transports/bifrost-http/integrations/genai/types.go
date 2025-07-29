@@ -8,7 +8,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	genai_sdk "google.golang.org/genai"
 )
 
@@ -155,7 +155,7 @@ type GeminiChatRequestErrorStruct struct {
 }
 
 func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
-	provider, model := integrations.ParseModelString(r.Model, schemas.Vertex)
+	provider, model := api.ParseModelString(r.Model, schemas.Vertex)
 
 	bifrostReq := &schemas.BifrostRequest{
 		Provider: provider,

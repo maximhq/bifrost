@@ -5,6 +5,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 )
 
@@ -20,11 +21,11 @@ func NewAnthropicRouter(client *bifrost.Bifrost) *AnthropicRouter {
 			Path:   "/anthropic/v1/messages",
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &AnthropicMessageRequest{}
+				return &api.AnthropicMessageRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if anthropicReq, ok := req.(*AnthropicMessageRequest); ok {
-					return anthropicReq.ConvertToBifrostRequest(), nil
+				if anthropicReq, ok := req.(*api.AnthropicMessageRequest); ok {
+					return ConvertToBifrostRequest(anthropicReq), nil
 				}
 				return nil, errors.New("invalid request type")
 			},

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,134 +16,9 @@ import (
 	"github.com/goccy/go-json"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/valyala/fasthttp"
 )
-
-// AnthropicToolChoice represents the tool choice configuration for Anthropic's API.
-// It specifies how tools should be used in the completion request.
-type AnthropicToolChoice struct {
-	Type                   schemas.ToolChoiceType `json:"type"`                      // Type of tool choice
-	Name                   *string                `json:"name"`                      // Name of the tool to use
-	DisableParallelToolUse *bool                  `json:"disable_parallel_tool_use"` // Whether to disable parallel tool use
-}
-
-// AnthropicTextResponse represents the response structure from Anthropic's text completion API.
-// It includes the completion text, model information, and token usage statistics.
-type AnthropicTextResponse struct {
-	ID         string `json:"id"`         // Unique identifier for the completion
-	Type       string `json:"type"`       // Type of completion
-	Completion string `json:"completion"` // Generated completion text
-	Model      string `json:"model"`      // Model used for the completion
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`  // Number of input tokens used
-		OutputTokens int `json:"output_tokens"` // Number of output tokens generated
-	} `json:"usage"` // Token usage statistics
-}
-
-// AnthropicChatResponse represents the response structure from Anthropic's chat completion API.
-// It includes message content, model information, and token usage statistics.
-type AnthropicChatResponse struct {
-	ID      string `json:"id"`   // Unique identifier for the completion
-	Type    string `json:"type"` // Type of completion
-	Role    string `json:"role"` // Role of the message sender
-	Content []struct {
-		Type     string                 `json:"type"`               // Type of content
-		Text     string                 `json:"text,omitempty"`     // Text content
-		Thinking string                 `json:"thinking,omitempty"` // Thinking process
-		ID       string                 `json:"id"`                 // Content identifier
-		Name     string                 `json:"name"`               // Name of the content
-		Input    map[string]interface{} `json:"input"`              // Input parameters
-	} `json:"content"` // Array of content items
-	Model        string  `json:"model"`                   // Model used for the completion
-	StopReason   string  `json:"stop_reason,omitempty"`   // Reason for completion termination
-	StopSequence *string `json:"stop_sequence,omitempty"` // Sequence that caused completion to stop
-	Usage        struct {
-		InputTokens  int `json:"input_tokens"`  // Number of input tokens used
-		OutputTokens int `json:"output_tokens"` // Number of output tokens generated
-	} `json:"usage"` // Token usage statistics
-}
-
-// AnthropicStreamEvent represents a single event in the Anthropic streaming response.
-// It corresponds to the various event types defined in Anthropic's Messages API streaming documentation.
-type AnthropicStreamEvent struct {
-	Type         string                  `json:"type"`
-	Message      *AnthropicStreamMessage `json:"message,omitempty"`
-	Index        *int                    `json:"index,omitempty"`
-	ContentBlock *AnthropicContentBlock  `json:"content_block,omitempty"`
-	Delta        *AnthropicDelta         `json:"delta,omitempty"`
-	Usage        *schemas.LLMUsage       `json:"usage,omitempty"`
-	Error        *AnthropicStreamError   `json:"error,omitempty"`
-}
-
-// AnthropicStreamMessage represents the message structure in streaming events.
-// This appears in message_start events and contains the initial message structure.
-type AnthropicStreamMessage struct {
-	ID           string                  `json:"id"`
-	Type         string                  `json:"type"`
-	Role         string                  `json:"role"`
-	Content      []AnthropicContentBlock `json:"content"`
-	Model        string                  `json:"model"`
-	StopReason   *string                 `json:"stop_reason"`
-	StopSequence *string                 `json:"stop_sequence"`
-	Usage        *schemas.LLMUsage       `json:"usage"`
-}
-
-// AnthropicContentBlock represents a content block in Anthropic responses.
-// This includes text, tool_use, thinking, and web_search_tool_result blocks.
-type AnthropicContentBlock struct {
-	Type     string                 `json:"type"`
-	Text     string                 `json:"text,omitempty"`
-	ID       string                 `json:"id,omitempty"`
-	Name     string                 `json:"name,omitempty"`
-	Input    map[string]interface{} `json:"input,omitempty"`
-	Thinking string                 `json:"thinking,omitempty"`
-	// Web search tool result specific fields
-	ToolUseID string                 `json:"tool_use_id,omitempty"`
-	Content   []AnthropicToolContent `json:"content,omitempty"`
-}
-
-// AnthropicToolContent represents content within tool result blocks
-type AnthropicToolContent struct {
-	Type             string  `json:"type"`
-	Title            string  `json:"title,omitempty"`
-	URL              string  `json:"url,omitempty"`
-	EncryptedContent string  `json:"encrypted_content,omitempty"`
-	PageAge          *string `json:"page_age,omitempty"`
-}
-
-// AnthropicDelta represents incremental updates to content blocks during streaming.
-// This includes all delta types: text_delta, input_json_delta, thinking_delta, and signature_delta.
-type AnthropicDelta struct {
-	Type         string  `json:"type"`
-	Text         string  `json:"text,omitempty"`
-	PartialJSON  string  `json:"partial_json,omitempty"`
-	Thinking     string  `json:"thinking,omitempty"`
-	Signature    string  `json:"signature,omitempty"`
-	StopReason   *string `json:"stop_reason,omitempty"`
-	StopSequence *string `json:"stop_sequence,omitempty"`
-}
-
-// AnthropicStreamError represents error events in the streaming response.
-type AnthropicStreamError struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
-// AnthropicError represents the error response structure from Anthropic's API.
-// It includes error type and message information.
-type AnthropicError struct {
-	Type  string `json:"type"` // always "error"
-	Error struct {
-		Type    string `json:"type"`    // Error type
-		Message string `json:"message"` // Error message
-	} `json:"error"` // Error details
-}
-
-type AnthropicImageContent struct {
-	Type      ImageContentType `json:"type"`
-	URL       string           `json:"url"`
-	MediaType string           `json:"media_type,omitempty"`
-}
 
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API.
 type AnthropicProvider struct {
@@ -156,40 +32,40 @@ type AnthropicProvider struct {
 // anthropicChatResponsePool provides a pool for Anthropic chat response objects.
 var anthropicChatResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &AnthropicChatResponse{}
+		return &api.AnthropicChatResponse{}
 	},
 }
 
 // anthropicTextResponsePool provides a pool for Anthropic text response objects.
 var anthropicTextResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &AnthropicTextResponse{}
+		return &api.AnthropicTextResponse{}
 	},
 }
 
 // acquireAnthropicChatResponse gets an Anthropic chat response from the pool and resets it.
-func acquireAnthropicChatResponse() *AnthropicChatResponse {
-	resp := anthropicChatResponsePool.Get().(*AnthropicChatResponse)
-	*resp = AnthropicChatResponse{} // Reset the struct
+func acquireAnthropicChatResponse() *api.AnthropicChatResponse {
+	resp := anthropicChatResponsePool.Get().(*api.AnthropicChatResponse)
+	*resp = api.AnthropicChatResponse{} // Reset the struct
 	return resp
 }
 
 // releaseAnthropicChatResponse returns an Anthropic chat response to the pool.
-func releaseAnthropicChatResponse(resp *AnthropicChatResponse) {
+func releaseAnthropicChatResponse(resp *api.AnthropicChatResponse) {
 	if resp != nil {
 		anthropicChatResponsePool.Put(resp)
 	}
 }
 
 // acquireAnthropicTextResponse gets an Anthropic text response from the pool and resets it.
-func acquireAnthropicTextResponse() *AnthropicTextResponse {
-	resp := anthropicTextResponsePool.Get().(*AnthropicTextResponse)
-	*resp = AnthropicTextResponse{} // Reset the struct
+func acquireAnthropicTextResponse() *api.AnthropicTextResponse {
+	resp := anthropicTextResponsePool.Get().(*api.AnthropicTextResponse)
+	*resp = api.AnthropicTextResponse{} // Reset the struct
 	return resp
 }
 
 // releaseAnthropicTextResponse returns an Anthropic text response to the pool.
-func releaseAnthropicTextResponse(resp *AnthropicTextResponse) {
+func releaseAnthropicTextResponse(resp *api.AnthropicTextResponse) {
 	if resp != nil {
 		anthropicTextResponsePool.Put(resp)
 	}
@@ -214,8 +90,8 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		anthropicTextResponsePool.Put(&AnthropicTextResponse{})
-		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
+		anthropicTextResponsePool.Put(&api.AnthropicTextResponse{})
+		anthropicChatResponsePool.Put(&api.AnthropicChatResponse{})
 
 	}
 
@@ -242,28 +118,224 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Anthropic
 }
 
-// prepareTextCompletionParams prepares text completion parameters for Anthropic's API.
-// It handles parameter mapping and conversion to the format expected by Anthropic.
-// Returns the modified parameters map.
-func (provider *AnthropicProvider) prepareTextCompletionParams(params map[string]interface{}) map[string]interface{} {
-	// Check if there is a key entry for max_tokens
-	if maxTokens, exists := params["max_tokens"]; exists {
-		// Check if max_tokens_to_sample is already present
-		if _, exists := params["max_tokens_to_sample"]; !exists {
-			// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
-			params["max_tokens_to_sample"] = maxTokens
-		}
-		delete(params, "max_tokens")
+// buildAnthropicTextRequest creates a type-safe Anthropic text completion request
+// from Bifrost text input and parameters.
+func buildAnthropicTextRequest(model string, text string, params *schemas.ModelParameters) *api.AnthropicTextRequest {
+	// Format the prompt with Anthropic's expected format
+	prompt := fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text)
+
+	// Build the request
+	request := &api.AnthropicTextRequest{
+		Model: model,
+		Prompt: prompt,
 	}
-	return params
+
+	// Add parameters if provided
+	if params != nil {
+		request.MaxTokensToSample = params.MaxTokens
+		request.Temperature = params.Temperature
+		request.TopP = params.TopP
+		request.TopK = params.TopK
+		if params.StopSequences != nil {
+			request.StopSequences = *params.StopSequences
+		}
+
+		if params.ExtraParams != nil {
+			request.ExtraParams = params.ExtraParams
+		}
+	}
+
+	return request
+}
+
+// buildAnthropicChatRequest creates a type-safe Anthropic chat completion request
+// from Bifrost messages and parameters.
+func buildAnthropicChatRequest(model string, messages []schemas.BifrostMessage, params *schemas.ModelParameters) *api.AnthropicMessageRequest {
+	// Convert Bifrost messages to Anthropic format
+	var anthropicMessages []api.AnthropicMessage
+	var systemContent *api.AnthropicContent
+
+	for _, msg := range messages {
+		if msg.Role == schemas.ModelChatMessageRoleSystem {
+			// Handle system messages separately
+			if msg.Content.ContentStr != nil {
+				systemContent = &api.AnthropicContent{
+					ContentStr: msg.Content.ContentStr,
+				}
+			} else if msg.Content.ContentBlocks != nil {
+				// Convert content blocks to Anthropic format
+				contentBlocks := make([]api.AnthropicContentBlock, 0, len(*msg.Content.ContentBlocks))
+				for _, block := range *msg.Content.ContentBlocks {
+					if block.Text != nil {
+						contentBlocks = append(contentBlocks, api.AnthropicContentBlock{
+							Type: "text",
+							Text: block.Text,
+						})
+					}
+				}
+				if len(contentBlocks) > 0 {
+					systemContent = &api.AnthropicContent{
+						ContentBlocks: &contentBlocks,
+					}
+				}
+			}
+		} else {
+			// Convert regular messages
+			anthropicMsg := api.AnthropicMessage{
+				Role: string(msg.Role),
+			}
+
+			if msg.Content.ContentStr != nil {
+				anthropicMsg.Content = api.AnthropicContent{
+					ContentStr: msg.Content.ContentStr,
+				}
+			} else if msg.Content.ContentBlocks != nil {
+				// Convert content blocks to Anthropic format
+				contentBlocks := make([]api.AnthropicContentBlock, 0, len(*msg.Content.ContentBlocks))
+				for _, block := range *msg.Content.ContentBlocks {
+					if block.Text != nil {
+						contentBlocks = append(contentBlocks, api.AnthropicContentBlock{
+							Type: "text",
+							Text: block.Text,
+						})
+					}
+					if block.ImageURL != nil {
+						// Handle image content
+						imageSource := buildAnthropicImageSourceMap(block.ImageURL)
+						contentBlocks = append(contentBlocks, api.AnthropicContentBlock{
+							Type:   "image",
+							Source: imageSource,
+						})
+					}
+				}
+				if len(contentBlocks) > 0 {
+					anthropicMsg.Content = api.AnthropicContent{
+						ContentBlocks: &contentBlocks,
+					}
+				}
+			}
+
+			anthropicMessages = append(anthropicMessages, anthropicMsg)
+		}
+	}
+
+	// Build the request
+	request := &api.AnthropicMessageRequest{
+		Model:    model,
+		Messages: anthropicMessages,
+	}
+
+	// Add system content if present
+	if systemContent != nil {
+		request.System = systemContent
+	}
+
+	// Add parameters if provided
+	if params != nil {
+		request.MaxTokens = 0 // Default value, will be set below if provided
+		if params.MaxTokens != nil {
+			request.MaxTokens = *params.MaxTokens
+		}
+		request.Temperature = params.Temperature
+		request.TopP = params.TopP
+		request.TopK = params.TopK
+		if params.StopSequences != nil {
+			request.StopSequences = params.StopSequences
+		}
+
+		// Handle tools if present
+		if params.Tools != nil {
+			tools := make([]api.AnthropicTool, 0, len(*params.Tools))
+			for _, tool := range *params.Tools {
+				anthropicTool := api.AnthropicTool{
+					Name:        tool.Function.Name,
+					Description: tool.Function.Description,
+				}
+
+				// Convert function parameters to input schema
+				if tool.Function.Parameters.Type != "" {
+					anthropicTool.InputSchema = &struct {
+						Type       string                 `json:"type"`
+						Properties map[string]interface{} `json:"properties"`
+						Required   []string               `json:"required"`
+					}{
+						Type:       tool.Function.Parameters.Type,
+						Properties: tool.Function.Parameters.Properties,
+						Required:   tool.Function.Parameters.Required,
+					}
+				}
+
+				tools = append(tools, anthropicTool)
+			}
+			request.Tools = &tools
+		}
+
+		// Handle tool choice if present
+		if params.ToolChoice != nil {
+			if params.ToolChoice.ToolChoiceStr != nil {
+				request.ToolChoice = &api.AnthropicToolChoice{
+					Type: schemas.ToolChoiceType(*params.ToolChoice.ToolChoiceStr),
+				}
+			} else if params.ToolChoice.ToolChoiceStruct != nil {
+				toolChoice := &api.AnthropicToolChoice{
+					Type: params.ToolChoice.ToolChoiceStruct.Type,
+				}
+				if params.ToolChoice.ToolChoiceStruct.Function.Name != "" {
+					toolChoice.Name = &params.ToolChoice.ToolChoiceStruct.Function.Name
+				}
+				request.ToolChoice = toolChoice
+			}
+		}
+
+		// Handle extra parameters by mapping them to specific fields
+		if params.ExtraParams != nil {
+			// Create a copy of ExtraParams to avoid modifying the original
+			remainingExtraParams := make(map[string]interface{})
+			maps.Copy(remainingExtraParams, params.ExtraParams)
+
+			// Track fields to be deleted
+			fieldsToDelete := []string{}
+
+			// Extract known fields
+			if stream, ok := remainingExtraParams["stream"].(bool); ok {
+				request.Stream = &stream
+				fieldsToDelete = append(fieldsToDelete, "stream")
+			}
+			if anthropicVersion, ok := remainingExtraParams["anthropic_version"].(string); ok {
+				request.AnthropicVersion = &anthropicVersion
+				fieldsToDelete = append(fieldsToDelete, "anthropic_version")
+			}
+			if region, ok := remainingExtraParams["region"].(string); ok {
+				request.Region = &region
+				fieldsToDelete = append(fieldsToDelete, "region")
+			}
+
+			// Delete all extracted fields at once
+			deleteFields(remainingExtraParams, fieldsToDelete)
+
+			// Add any remaining extra params to the request's ExtraParams field
+			if len(remainingExtraParams) > 0 {
+				request.ExtraParams = remainingExtraParams
+			}
+		}
+	}
+
+	return request
 }
 
 // completeRequest sends a request to Anthropic's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, url string, key string) ([]byte, *schemas.BifrostError) {
-	// Marshal the request body
-	jsonData, err := json.Marshal(requestBody)
+func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestBody api.AnthropicRequestConfig, key string) ([]byte, *schemas.BifrostError) {
+
+	var jsonData []byte
+	var err error
+	if requestBody.AnthropicTextRequest != nil {
+		jsonData, err = json.Marshal(requestBody.AnthropicTextRequest)
+	} else if requestBody.AnthropicMessageRequest != nil {
+		jsonData, err = json.Marshal(requestBody.AnthropicMessageRequest)
+	}
+
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Anthropic)
 	}
@@ -277,7 +349,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	// Set any extra headers from network config
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(url)
+	req.SetRequestURI(requestBody.URL)
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("x-api-key", key)
@@ -295,7 +367,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from anthropic provider: %s", string(resp.Body())))
 
-		var errorResp AnthropicError
+		var errorResp api.AnthropicError
 
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 		bifrostErr.Error.Type = &errorResp.Error.Type
@@ -314,15 +386,14 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	preparedParams := provider.prepareTextCompletionParams(prepareParams(params))
+	request := buildAnthropicTextRequest(model, text, params)
 
-	// Merge additional parameters
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":  model,
-		"prompt": fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
-	}, preparedParams)
+	requestBody := api.AnthropicRequestConfig{
+		URL: provider.networkConfig.BaseURL + "/v1/complete",
+		AnthropicTextRequest: request,
+	}
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/complete", key.Value)
+	responseBody, err := provider.completeRequest(ctx, requestBody, key.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -375,15 +446,15 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
+	// Build type-safe request
+	request := buildAnthropicChatRequest(model, messages, params)
 
-	// Merge additional parameters
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	requestBody := api.AnthropicRequestConfig{
+		URL:                     provider.networkConfig.BaseURL + "/v1/messages",
+		AnthropicMessageRequest: request,
+	}
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, provider.networkConfig.BaseURL+"/v1/messages", key.Value)
+	responseBody, err := provider.completeRequest(ctx, requestBody, key.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +488,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model str
 }
 
 // buildAnthropicImageSourceMap creates the "source" map for an Anthropic image content part.
-func buildAnthropicImageSourceMap(imgContent *schemas.ImageURLStruct) map[string]interface{} {
+func buildAnthropicImageSourceMap(imgContent *schemas.ImageURLStruct) *api.AnthropicImageSource {
 	if imgContent == nil {
 		return nil
 	}
@@ -425,273 +496,24 @@ func buildAnthropicImageSourceMap(imgContent *schemas.ImageURLStruct) map[string
 	sanitizedURL, _ := SanitizeImageURL(imgContent.URL)
 	urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
 
-	formattedImgContent := AnthropicImageContent{
-		Type: urlTypeInfo.Type,
+	imageSource := &api.AnthropicImageSource{
+		Type: string(urlTypeInfo.Type),
 	}
 
 	if urlTypeInfo.MediaType != nil {
-		formattedImgContent.MediaType = *urlTypeInfo.MediaType
+		imageSource.MediaType = urlTypeInfo.MediaType
 	}
 
 	if urlTypeInfo.DataURLWithoutPrefix != nil {
-		formattedImgContent.URL = *urlTypeInfo.DataURLWithoutPrefix
+		imageSource.Data = urlTypeInfo.DataURLWithoutPrefix
 	} else {
-		formattedImgContent.URL = sanitizedURL
+		imageSource.URL = &sanitizedURL
 	}
 
-	sourceMap := map[string]interface{}{
-		"type": string(formattedImgContent.Type), // "base64" or "url"
-	}
-
-	if formattedImgContent.Type == ImageContentTypeURL {
-		sourceMap["url"] = formattedImgContent.URL
-	} else {
-		if formattedImgContent.MediaType != "" {
-			sourceMap["media_type"] = formattedImgContent.MediaType
-		}
-		sourceMap["data"] = formattedImgContent.URL // URL field contains base64 data string
-	}
-	return sourceMap
+	return imageSource
 }
 
-func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
-	// Add system messages if present
-	var systemMessages []BedrockAnthropicSystemMessage
-	for _, msg := range messages {
-		if msg.Role == schemas.ModelChatMessageRoleSystem {
-			if msg.Content.ContentStr != nil {
-				systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
-					Text: *msg.Content.ContentStr,
-				})
-			} else if msg.Content.ContentBlocks != nil {
-				for _, block := range *msg.Content.ContentBlocks {
-					if block.Text != nil {
-						systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
-							Text: *block.Text,
-						})
-					}
-				}
-			}
-		}
-	}
-
-	// Format messages for Anthropic API
-	var formattedMessages []map[string]interface{}
-	for _, msg := range messages {
-		var content []interface{}
-
-		if msg.Role != schemas.ModelChatMessageRoleSystem {
-			if msg.Role == schemas.ModelChatMessageRoleTool && msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
-				toolCallResult := map[string]interface{}{
-					"type":        "tool_result",
-					"tool_use_id": *msg.ToolMessage.ToolCallID,
-				}
-
-				var toolCallResultContent []map[string]interface{}
-
-				if msg.Content.ContentStr != nil {
-					toolCallResultContent = append(toolCallResultContent, map[string]interface{}{
-						"type": "text",
-						"text": *msg.Content.ContentStr,
-					})
-				} else if msg.Content.ContentBlocks != nil {
-					for _, block := range *msg.Content.ContentBlocks {
-						if block.Text != nil {
-							toolCallResultContent = append(toolCallResultContent, map[string]interface{}{
-								"type": "text",
-								"text": *block.Text,
-							})
-						}
-					}
-				}
-
-				toolCallResult["content"] = toolCallResultContent
-				content = append(content, toolCallResult)
-			} else {
-				// Add text content if present
-				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-					content = append(content, map[string]interface{}{
-						"type": "text",
-						"text": *msg.Content.ContentStr,
-					})
-				} else if msg.Content.ContentBlocks != nil {
-					for _, block := range *msg.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							content = append(content, map[string]interface{}{
-								"type": "text",
-								"text": *block.Text,
-							})
-						}
-						if block.ImageURL != nil {
-							imageSource := buildAnthropicImageSourceMap(block.ImageURL)
-							if imageSource != nil {
-								content = append(content, map[string]interface{}{
-									"type":   "image",
-									"source": imageSource,
-								})
-							}
-						}
-					}
-				}
-
-				// Add thinking content if present in AssistantMessage
-				if msg.AssistantMessage != nil && msg.AssistantMessage.Thought != nil {
-					content = append(content, map[string]interface{}{
-						"type":     "thinking",
-						"thinking": *msg.AssistantMessage.Thought,
-					})
-				}
-
-				// Add tool calls as content if present
-				if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-					for _, toolCall := range *msg.AssistantMessage.ToolCalls {
-						if toolCall.Function.Name != nil {
-							var input map[string]interface{}
-							if toolCall.Function.Arguments != "" {
-								if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-									// If unmarshaling fails, use a simple string representation
-									input = map[string]interface{}{"arguments": toolCall.Function.Arguments}
-								}
-							}
-
-							toolUseContent := map[string]interface{}{
-								"type":  "tool_use",
-								"name":  *toolCall.Function.Name,
-								"input": input,
-							}
-
-							if toolCall.ID != nil {
-								toolUseContent["id"] = *toolCall.ID
-							}
-
-							content = append(content, toolUseContent)
-						}
-					}
-				}
-			}
-
-			if len(content) > 0 {
-				formattedMessages = append(formattedMessages, map[string]interface{}{
-					"role":    msg.Role,
-					"content": content,
-				})
-			}
-		}
-	}
-
-	preparedParams := prepareParams(params)
-
-	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
-		var tools []map[string]interface{}
-		for _, tool := range *params.Tools {
-			tools = append(tools, map[string]interface{}{
-				"name":         tool.Function.Name,
-				"description":  tool.Function.Description,
-				"input_schema": tool.Function.Parameters,
-			})
-		}
-
-		preparedParams["tools"] = tools
-	}
-
-	// Transform tool choice if present
-	if params != nil && params.ToolChoice != nil {
-		if params.ToolChoice.ToolChoiceStr != nil {
-			preparedParams["tool_choice"] = map[string]interface{}{
-				"type": *params.ToolChoice.ToolChoiceStr,
-			}
-		} else if params.ToolChoice.ToolChoiceStruct != nil {
-			switch toolChoice := params.ToolChoice.ToolChoiceStruct.Type; toolChoice {
-			case schemas.ToolChoiceTypeFunction:
-				fallthrough
-			case "tool":
-				preparedParams["tool_choice"] = map[string]interface{}{
-					"type": "tool",
-					"name": params.ToolChoice.ToolChoiceStruct.Function.Name,
-				}
-			default:
-				preparedParams["tool_choice"] = map[string]interface{}{
-					"type": toolChoice,
-				}
-			}
-		}
-	}
-
-	if len(systemMessages) > 0 {
-		var messages []string
-		for _, message := range systemMessages {
-			messages = append(messages, message.Text)
-		}
-
-		preparedParams["system"] = strings.Join(messages, " ")
-	}
-
-	// Post-process formattedMessages for tool call results
-	processedFormattedMessages := []map[string]interface{}{} // Use a new slice
-	i := 0
-	for i < len(formattedMessages) {
-		currentMsg := formattedMessages[i]
-		currentRole, roleOk := getRoleFromMessage(currentMsg)
-
-		if !roleOk || currentRole == "" {
-			// If role is of an unexpected type, missing, or empty, treat as non-tool message
-			processedFormattedMessages = append(processedFormattedMessages, currentMsg)
-			i++
-			continue
-		}
-
-		if currentRole == schemas.ModelChatMessageRoleTool {
-			// Content of a tool message is the toolCallResult map
-			// Initialize accumulatedToolResults with the content of the current tool message.
-			var accumulatedToolResults []interface{}
-
-			// Safely extract content from current message
-			if content, ok := currentMsg["content"].([]interface{}); ok {
-				accumulatedToolResults = content
-			} else {
-				// If content is not the expected type, skip this message
-				processedFormattedMessages = append(processedFormattedMessages, currentMsg)
-				i++
-				continue
-			}
-
-			// Look ahead for more sequential tool messages
-			j := i + 1
-			for j < len(formattedMessages) {
-				nextMsg := formattedMessages[j]
-				nextRole, nextRoleOk := getRoleFromMessage(nextMsg)
-
-				if !nextRoleOk || nextRole == "" || nextRole != schemas.ModelChatMessageRoleTool {
-					break // Not a sequential tool message or role is invalid/missing/empty
-				}
-
-				// Safely extract content from next message
-				if nextContent, ok := nextMsg["content"].([]interface{}); ok {
-					accumulatedToolResults = append(accumulatedToolResults, nextContent...)
-				}
-				j++
-			}
-
-			// Create a new message with role User and accumulated content
-			mergedMsg := map[string]interface{}{
-				"role":    schemas.ModelChatMessageRoleUser, // Final role is User
-				"content": accumulatedToolResults,
-			}
-			processedFormattedMessages = append(processedFormattedMessages, mergedMsg)
-			i = j // Advance main loop index past all merged messages
-		} else {
-			// Not a tool message, add it as is
-			processedFormattedMessages = append(processedFormattedMessages, currentMsg)
-			i++
-		}
-	}
-	formattedMessages = processedFormattedMessages // Update with processed messages
-
-	return formattedMessages, preparedParams
-}
-
-func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *schemas.BifrostResponse) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func parseAnthropicResponse(response *api.AnthropicChatResponse, bifrostResponse *schemas.BifrostResponse) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Collect all content and tool calls into a single message
 	var toolCalls []schemas.ToolCall
 	var thinking string
@@ -778,14 +600,12 @@ func (provider *AnthropicProvider) Embedding(ctx context.Context, model string, 
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
+	// Build type-safe request
+	requestBody := buildAnthropicChatRequest(model, messages, params)
 
-	// Merge additional parameters and set stream to true
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	// Set streaming flag
+	stream := true
+	requestBody.Stream = &stream
 
 	// Prepare Anthropic headers
 	headers := map[string]string{
@@ -817,7 +637,7 @@ func handleAnthropicStreaming(
 	ctx context.Context,
 	httpClient *http.Client,
 	url string,
-	requestBody map[string]interface{},
+	requestBody *api.AnthropicMessageRequest,
 	headers map[string]string,
 	extraHeaders map[string]string,
 	providerType schemas.ModelProvider,
@@ -902,7 +722,7 @@ func handleAnthropicStreaming(
 			// Handle different event types
 			switch eventType {
 			case "message_start":
-				var event AnthropicStreamEvent
+				var event api.AnthropicStreamEvent
 				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
 					continue
@@ -913,7 +733,7 @@ func handleAnthropicStreaming(
 				}
 
 			case "content_block_start":
-				var event AnthropicStreamEvent
+				var event api.AnthropicStreamEvent
 				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse content_block_start event: %v", err))
 					continue
@@ -924,7 +744,7 @@ func handleAnthropicStreaming(
 					switch event.ContentBlock.Type {
 					case "tool_use":
 						// Tool use content block initialization
-						if event.ContentBlock.Name != "" && event.ContentBlock.ID != "" {
+						if event.ContentBlock.Name != nil && event.ContentBlock.ID != nil {
 							// Create streaming response for tool start
 							streamResponse := &schemas.BifrostResponse{
 								ID:     messageID,
@@ -938,9 +758,9 @@ func handleAnthropicStreaming(
 												ToolCalls: []schemas.ToolCall{
 													{
 														Type: func() *string { s := "function"; return &s }(),
-														ID:   &event.ContentBlock.ID,
+														ID:   event.ContentBlock.ID,
 														Function: schemas.FunctionCall{
-															Name: &event.ContentBlock.Name,
+															Name: event.ContentBlock.Name,
 														},
 													},
 												},
@@ -962,12 +782,12 @@ func handleAnthropicStreaming(
 						}
 					default:
 						thought := ""
-						if event.ContentBlock.Thinking != "" {
-							thought = event.ContentBlock.Thinking
+						if event.ContentBlock.Text != nil {
+							thought = *event.ContentBlock.Text
 						}
 						content := ""
-						if event.ContentBlock.Text != "" {
-							content = event.ContentBlock.Text
+						if event.ContentBlock.Text != nil {
+							content = *event.ContentBlock.Text
 						}
 
 						// Send empty message for other content block types
@@ -1001,7 +821,7 @@ func handleAnthropicStreaming(
 				}
 
 			case "content_block_delta":
-				var event AnthropicStreamEvent
+				var event api.AnthropicStreamEvent
 				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse content_block_delta event: %v", err))
 					continue
@@ -1121,7 +941,7 @@ func handleAnthropicStreaming(
 				continue
 
 			case "message_delta":
-				var event AnthropicStreamEvent
+				var event api.AnthropicStreamEvent
 				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_delta event: %v", err))
 					continue
@@ -1159,7 +979,7 @@ func handleAnthropicStreaming(
 				}
 
 			case "message_stop":
-				var event AnthropicStreamEvent
+				var event api.AnthropicStreamEvent
 				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_stop event: %v", err))
 					continue
@@ -1202,7 +1022,7 @@ func handleAnthropicStreaming(
 				continue
 
 			case "error":
-				var event AnthropicStreamEvent
+				var event api.AnthropicStreamEvent
 				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse error event: %v", err))
 					continue
