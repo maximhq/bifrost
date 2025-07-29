@@ -74,6 +74,7 @@ export interface ProviderConfig {
   meta_config?: MetaConfig
   concurrency_and_buffer_size: ConcurrencyAndBufferSize
   proxy_config?: ProxyConfig
+  send_back_raw_response?: boolean
 }
 
 // ProviderResponse matching Go's ProviderResponse
@@ -95,6 +96,7 @@ export interface AddProviderRequest {
   meta_config?: MetaConfig
   concurrency_and_buffer_size?: ConcurrencyAndBufferSize
   proxy_config?: ProxyConfig
+  send_back_raw_response?: boolean
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -104,6 +106,7 @@ export interface UpdateProviderRequest {
   meta_config?: MetaConfig
   concurrency_and_buffer_size: ConcurrencyAndBufferSize
   proxy_config: ProxyConfig
+  send_back_raw_response?: boolean
 }
 
 // BifrostErrorResponse matching Go's schemas.BifrostError

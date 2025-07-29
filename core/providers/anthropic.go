@@ -145,11 +145,12 @@ type AnthropicImageContent struct {
 
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API.
 type AnthropicProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	apiVersion    string                // API version for the provider
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	apiVersion          string                // API version for the provider
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // anthropicChatResponsePool provides a pool for Anthropic chat response objects.
@@ -228,11 +229,12 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &AnthropicProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		apiVersion:    "2023-06-01",
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		apiVersion:          "2023-06-01",
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
 
@@ -330,7 +332,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 	response := acquireAnthropicTextResponse()
 	defer releaseAnthropicTextResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -358,9 +360,13 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 		},
 		Model: response.Model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Anthropic,
-			RawResponse: rawResponse,
+			Provider: schemas.Anthropic,
 		},
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -391,7 +397,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model str
 	response := acquireAnthropicChatResponse()
 	defer releaseAnthropicChatResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -404,8 +410,12 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model str
 	}
 
 	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.Anthropic,
-		RawResponse: rawResponse,
+		Provider: schemas.Anthropic,
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {

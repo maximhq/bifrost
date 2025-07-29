@@ -41,15 +41,17 @@ type AddProviderRequest struct {
 	MetaConfig               *map[string]interface{}           `json:"meta_config,omitempty"`                 // Provider-specific metadata
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
+	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
 }
 
 // UpdateProviderRequest represents the request body for updating a provider
 type UpdateProviderRequest struct {
-	Keys                     []schemas.Key                    `json:"keys"`                        // API keys for the provider
-	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`              // Network-related settings
-	MetaConfig               *map[string]interface{}          `json:"meta_config,omitempty"`       // Provider-specific metadata
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
-	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`      // Proxy configuration
+	Keys                     []schemas.Key                    `json:"keys"`                             // API keys for the provider
+	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
+	MetaConfig               *map[string]interface{}          `json:"meta_config,omitempty"`            // Provider-specific metadata
+	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
+	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
+	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
 }
 
 // ProviderResponse represents the response for provider operations
@@ -60,6 +62,7 @@ type ProviderResponse struct {
 	MetaConfig               *schemas.MetaConfig              `json:"meta_config"`                 // Provider-specific metadata
 	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                // Proxy configuration
+	SendBackRawResponse      bool                             `json:"send_back_raw_response"`      // Include raw response in BifrostResponse
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -182,6 +185,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 		Keys:                     req.Keys,
 		NetworkConfig:            req.NetworkConfig,
 		ConcurrencyAndBufferSize: req.ConcurrencyAndBufferSize,
+		SendBackRawResponse:      req.SendBackRawResponse != nil && *req.SendBackRawResponse,
 	}
 
 	// Handle meta config if provided
@@ -312,6 +316,9 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	config.ConcurrencyAndBufferSize = &req.ConcurrencyAndBufferSize
 	config.NetworkConfig = &req.NetworkConfig
 	config.ProxyConfig = req.ProxyConfig
+	if req.SendBackRawResponse != nil {
+		config.SendBackRawResponse = *req.SendBackRawResponse
+	}
 
 	// Update provider config in store (env vars will be processed by store)
 	if err := h.store.UpdateProviderConfig(provider, config); err != nil {
@@ -547,6 +554,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		MetaConfig:               config.MetaConfig,
 		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
 		ProxyConfig:              config.ProxyConfig,
+		SendBackRawResponse:      config.SendBackRawResponse,
 	}
 }
 

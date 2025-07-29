@@ -63,10 +63,11 @@ func releaseOpenAIResponse(resp *schemas.BifrostResponse) {
 
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -101,10 +102,11 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &OpenAIProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
 
@@ -170,9 +172,14 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	defer releaseOpenAIResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
-	_, bifrostErr = handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -859,9 +866,12 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, model string,
 		Model:      model,
 		Transcribe: transcribeResponse,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.OpenAI,
-			RawResponse: rawResponse,
+			Provider: schemas.OpenAI,
 		},
+	}
+
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {

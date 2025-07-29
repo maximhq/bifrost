@@ -15,32 +15,22 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// GroqResponse represents the response structure from the Groq API.
-type GroqResponse struct {
-	ID      string                          `json:"id"`
-	Object  string                          `json:"object"`
-	Choices []schemas.BifrostResponseChoice `json:"choices"`
-	Model   string                          `json:"model"`
-	Created int                             `json:"created"`
-	Usage   schemas.LLMUsage                `json:"usage"`
-}
-
 // groqResponsePool provides a pool for Groq response objects.
 var groqResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &GroqResponse{}
+		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireGroqResponse gets a Groq response from the pool and resets it.
-func acquireGroqResponse() *GroqResponse {
-	resp := groqResponsePool.Get().(*GroqResponse)
-	*resp = GroqResponse{} // Reset the struct
+func acquireGroqResponse() *schemas.BifrostResponse {
+	resp := groqResponsePool.Get().(*schemas.BifrostResponse)
+	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
 }
 
 // releaseGroqResponse returns a Groq response to the pool.
-func releaseGroqResponse(resp *GroqResponse) {
+func releaseGroqResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
 		groqResponsePool.Put(resp)
 	}
@@ -48,10 +38,11 @@ func releaseGroqResponse(resp *GroqResponse) {
 
 // GroqProvider implements the Provider interface for Groq's API.
 type GroqProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewGroqProvider creates a new Groq provider instance.
@@ -73,7 +64,7 @@ func NewGroqProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Gr
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		groqResponsePool.Put(&GroqResponse{})
+		groqResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
 	// Configure proxy if provided
@@ -86,10 +77,11 @@ func NewGroqProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Gr
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &GroqProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -156,30 +148,23 @@ func (provider *GroqProvider) ChatCompletion(ctx context.Context, model string, 
 	defer releaseGroqResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:      response.ID,
-		Object:  response.Object,
-		Choices: response.Choices,
-		Model:   response.Model,
-		Created: response.Created,
-		Usage:   &response.Usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Groq,
-			RawResponse: rawResponse,
-		},
+	response.ExtraFields.Provider = schemas.Groq
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		response.ExtraFields.Params = *params
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // Embedding is not supported by the Groq provider.

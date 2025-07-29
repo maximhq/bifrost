@@ -84,5 +84,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		providerConfig.ConcurrencyAndBufferSize = schemas.DefaultConcurrencyAndBufferSize
 	}
 
+	providerConfig.SendBackRawResponse = config.SendBackRawResponse
+
 	return providerConfig, nil
 }

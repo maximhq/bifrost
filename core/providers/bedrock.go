@@ -193,10 +193,11 @@ type BedrockStreamMetadataEvent struct {
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *http.Client          // HTTP client for API requests
-	meta          schemas.MetaConfig    // Bedrock-specific configuration
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *http.Client          // HTTP client for API requests
+	meta                schemas.MetaConfig    // Bedrock-specific configuration
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
@@ -239,10 +240,11 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	return &BedrockProvider{
-		logger:        logger,
-		client:        client,
-		meta:          config.MetaConfig,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		meta:                config.MetaConfig,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -836,13 +838,14 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 		return nil, err
 	}
 
-	// Parse raw response
-	var rawResponse interface{}
-	if err := sonic.Unmarshal(body, &rawResponse); err != nil {
-		return nil, newBifrostOperationError("error parsing raw response", err, schemas.Bedrock)
+	// Parse raw response if enabled
+	if provider.sendBackRawResponse {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
+			return nil, newBifrostOperationError("error parsing raw response", err, schemas.Bedrock)
+		}
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
-
-	bifrostResponse.ExtraFields.RawResponse = rawResponse
 
 	if params != nil {
 		bifrostResponse.ExtraFields.Params = *params
@@ -955,7 +958,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	response := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1033,10 +1036,14 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		},
 		Model: model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:     &latency,
-			Provider:    schemas.Bedrock,
-			RawResponse: rawResponse,
+			Latency:  &latency,
+			Provider: schemas.Bedrock,
 		},
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {

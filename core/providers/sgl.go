@@ -15,32 +15,22 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// SGLResponse represents the response structure from the SGL API.
-type SGLResponse struct {
-	ID      string                          `json:"id"`
-	Object  string                          `json:"object"`
-	Choices []schemas.BifrostResponseChoice `json:"choices"`
-	Model   string                          `json:"model"`
-	Created int                             `json:"created"`
-	Usage   schemas.LLMUsage                `json:"usage"`
-}
-
 // sglResponsePool provides a pool for SGL response objects.
 var sglResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &SGLResponse{}
+		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireSGLResponse gets a SGL response from the pool and resets it.
-func acquireSGLResponse() *SGLResponse {
-	resp := sglResponsePool.Get().(*SGLResponse)
-	*resp = SGLResponse{} // Reset the struct
+func acquireSGLResponse() *schemas.BifrostResponse {
+	resp := sglResponsePool.Get().(*schemas.BifrostResponse)
+	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
 }
 
 // releaseSGLResponse returns a SGL response to the pool.
-func releaseSGLResponse(resp *SGLResponse) {
+func releaseSGLResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
 		sglResponsePool.Put(resp)
 	}
@@ -48,10 +38,11 @@ func releaseSGLResponse(resp *SGLResponse) {
 
 // SGLProvider implements the Provider interface for SGL's API.
 type SGLProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewSGLProvider creates a new SGL provider instance.
@@ -73,7 +64,7 @@ func NewSGLProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SGL
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		sglResponsePool.Put(&SGLResponse{})
+		sglResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
 	// Configure proxy if provided
@@ -87,10 +78,11 @@ func NewSGLProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SGL
 	}
 
 	return &SGLProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -165,30 +157,22 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, k
 	defer releaseSGLResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:      response.ID,
-		Object:  response.Object,
-		Choices: response.Choices,
-		Model:   response.Model,
-		Created: response.Created,
-		Usage:   &response.Usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.SGL,
-			RawResponse: rawResponse,
-		},
+	response.ExtraFields.Provider = schemas.SGL
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		response.ExtraFields.Params = *params
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // Embedding is not supported by the SGL provider.

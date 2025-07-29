@@ -104,8 +104,9 @@ type ProviderConfig struct {
 	MetaConfig               MetaConfig               `json:"meta_config,omitempty"`       // Provider-specific configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger      Logger       `json:"logger"`
-	ProxyConfig *ProxyConfig `json:"proxy_config,omitempty"` // Proxy configuration
+	Logger              Logger       `json:"logger"`
+	ProxyConfig         *ProxyConfig `json:"proxy_config,omitempty"` // Proxy configuration
+	SendBackRawResponse bool         `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

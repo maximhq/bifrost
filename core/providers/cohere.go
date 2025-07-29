@@ -105,10 +105,11 @@ type CohereEmbeddingResponse struct {
 
 // CohereProvider implements the Provider interface for Cohere.
 type CohereProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // CohereStreamStartEvent represents the start of a stream event.
@@ -169,10 +170,11 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &CohereProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
 
@@ -256,7 +258,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 	response := acquireCohereResponse()
 	defer releaseCohereResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -327,8 +329,11 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 				CompletionTokens: float64Ptr(response.Meta.BilledUnits.OutputTokens),
 			},
 			ChatHistory: convertChatHistory(response.ChatHistory),
-			RawResponse: rawResponse,
 		},
+	}
+
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {

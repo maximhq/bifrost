@@ -15,32 +15,22 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// OllamaResponse represents the response structure from the Ollama API.
-type OllamaResponse struct {
-	ID      string                          `json:"id"`
-	Object  string                          `json:"object"`
-	Choices []schemas.BifrostResponseChoice `json:"choices"`
-	Model   string                          `json:"model"`
-	Created int                             `json:"created"`
-	Usage   schemas.LLMUsage                `json:"usage"`
-}
-
 // ollamaResponsePool provides a pool for Ollama response objects.
 var ollamaResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &OllamaResponse{}
+		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireOllamaResponse gets a Ollama response from the pool and resets it.
-func acquireOllamaResponse() *OllamaResponse {
-	resp := ollamaResponsePool.Get().(*OllamaResponse)
-	*resp = OllamaResponse{} // Reset the struct
+func acquireOllamaResponse() *schemas.BifrostResponse {
+	resp := ollamaResponsePool.Get().(*schemas.BifrostResponse)
+	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
 }
 
 // releaseOllamaResponse returns a Ollama response to the pool.
-func releaseOllamaResponse(resp *OllamaResponse) {
+func releaseOllamaResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
 		ollamaResponsePool.Put(resp)
 	}
@@ -48,10 +38,11 @@ func releaseOllamaResponse(resp *OllamaResponse) {
 
 // OllamaProvider implements the Provider interface for Ollama's API.
 type OllamaProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewOllamaProvider creates a new Ollama provider instance.
@@ -73,7 +64,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		ollamaResponsePool.Put(&OllamaResponse{})
+		ollamaResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
 	// Configure proxy if provided
@@ -87,10 +78,11 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	}
 
 	return &OllamaProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -159,30 +151,22 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model string
 	defer releaseOllamaResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:      response.ID,
-		Object:  response.Object,
-		Choices: response.Choices,
-		Model:   response.Model,
-		Created: response.Created,
-		Usage:   &response.Usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Ollama,
-			RawResponse: rawResponse,
-		},
+	response.ExtraFields.Provider = schemas.Ollama
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		response.ExtraFields.Params = *params
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // Embedding is not supported by the Ollama provider.
