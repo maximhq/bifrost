@@ -10,21 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
-
-// MistralResponse represents the response structure from the Mistral API.
-type MistralResponse struct {
-	ID      string                          `json:"id"`
-	Object  string                          `json:"object"`
-	Choices []schemas.BifrostResponseChoice `json:"choices"`
-	Model   string                          `json:"model"`
-	Created int                             `json:"created"`
-	Usage   schemas.LLMUsage                `json:"usage"`
-}
 
 // MistralEmbeddingResponse represents the response structure from Mistral's embedding API.
 type MistralEmbeddingResponse struct {
@@ -43,19 +32,19 @@ type MistralEmbeddingResponse struct {
 // mistralResponsePool provides a pool for Mistral response objects.
 var mistralResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &MistralResponse{}
+		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireMistralResponse gets a Mistral response from the pool and resets it.
-func acquireMistralResponse() *MistralResponse {
-	resp := mistralResponsePool.Get().(*MistralResponse)
-	*resp = MistralResponse{} // Reset the struct
+func acquireMistralResponse() *schemas.BifrostResponse {
+	resp := mistralResponsePool.Get().(*schemas.BifrostResponse)
+	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
 }
 
 // releaseMistralResponse returns a Mistral response to the pool.
-func releaseMistralResponse(resp *MistralResponse) {
+func releaseMistralResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
 		mistralResponsePool.Put(resp)
 	}
@@ -63,10 +52,11 @@ func releaseMistralResponse(resp *MistralResponse) {
 
 // MistralProvider implements the Provider interface for Mistral's API.
 type MistralProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewMistralProvider creates a new Mistral provider instance.
@@ -88,7 +78,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		mistralResponsePool.Put(&MistralResponse{})
+		mistralResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
 	// Configure proxy if provided
@@ -101,10 +91,11 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &MistralProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
 
@@ -122,7 +113,7 @@ func (provider *MistralProvider) TextCompletion(ctx context.Context, model strin
 func (provider *MistralProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
@@ -166,30 +157,22 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model strin
 	defer releaseMistralResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:      response.ID,
-		Object:  response.Object,
-		Choices: response.Choices,
-		Model:   response.Model,
-		Created: response.Created,
-		Usage:   &response.Usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Mistral,
-			RawResponse: rawResponse,
-		},
+	response.ExtraFields.Provider = schemas.Mistral
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		response.ExtraFields.Params = *params
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // Embedding generates embeddings for the given input text(s) using the Mistral API.
@@ -229,7 +212,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 		}
 	}
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
@@ -266,18 +249,18 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 		return nil, bifrostErr
 	}
 
-	// Parse response using json.RawMessage to avoid double parsing
-	var rawMessage json.RawMessage = resp.Body()
+	// Parse response using sonic.RawMessage to avoid double parsing
+	rawMessage := resp.Body()
 
 	// Parse into structured response
 	var mistralResp MistralEmbeddingResponse
-	if err := json.Unmarshal(rawMessage, &mistralResp); err != nil {
+	if err := sonic.Unmarshal(rawMessage, &mistralResp); err != nil {
 		return nil, newBifrostOperationError("error parsing Mistral embedding response", err, schemas.Mistral)
 	}
 
 	// Parse raw response for consistent format
 	var rawResponse interface{}
-	if err := json.Unmarshal(rawMessage, &rawResponse); err != nil {
+	if err := sonic.Unmarshal(rawMessage, &rawResponse); err != nil {
 		return nil, newBifrostOperationError("error parsing raw response for Mistral embedding", err, schemas.Mistral)
 	}
 

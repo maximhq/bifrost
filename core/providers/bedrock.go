@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,13 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
 	"bufio"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -193,10 +193,11 @@ type BedrockStreamMetadataEvent struct {
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *http.Client          // HTTP client for API requests
-	meta          schemas.MetaConfig    // Bedrock-specific configuration
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *http.Client          // HTTP client for API requests
+	meta                schemas.MetaConfig    // Bedrock-specific configuration
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
@@ -239,10 +240,11 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	return &BedrockProvider{
-		logger:        logger,
-		client:        client,
-		meta:          config.MetaConfig,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		meta:                config.MetaConfig,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -269,7 +271,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		region = *provider.meta.GetRegion()
 	}
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &schemas.BifrostError{
@@ -346,7 +348,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	if resp.StatusCode != http.StatusOK {
 		var errorResp BedrockError
 
-		if err := json.Unmarshal(body, &errorResp); err != nil {
+		if err := sonic.Unmarshal(body, &errorResp); err != nil {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				StatusCode:     &resp.StatusCode,
@@ -379,7 +381,7 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 		fallthrough
 	case "anthropic.claude-v2:1":
 		var response BedrockAnthropicTextResponse
-		if err := json.Unmarshal(result, &response); err != nil {
+		if err := sonic.Unmarshal(result, &response); err != nil {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				Error: schemas.ErrorField{
@@ -421,7 +423,7 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 		fallthrough
 	case "mistral.mistral-small-2402-v1:0":
 		var response BedrockMistralTextResponse
-		if err := json.Unmarshal(result, &response); err != nil {
+		if err := sonic.Unmarshal(result, &response); err != nil {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				Error: schemas.ErrorField{
@@ -465,7 +467,7 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 func parseBedrockAnthropicMessageToolCallContent(content string) map[string]interface{} {
 	toolResultContentBlock := map[string]interface{}{}
 	var parsedJSON interface{}
-	err := json.Unmarshal([]byte(content), &parsedJSON)
+	err := sonic.Unmarshal([]byte(content), &parsedJSON)
 	if err == nil {
 		if arr, ok := parsedJSON.([]interface{}); ok {
 			toolResultContentBlock["json"] = map[string]interface{}{"content": arr}
@@ -549,7 +551,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 						for _, toolCall := range *msg.AssistantMessage.ToolCalls {
 							var input map[string]interface{}
 							if toolCall.Function.Arguments != "" {
-								if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+								if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
 									input = map[string]interface{}{"arguments": toolCall.Function.Arguments}
 								}
 							}
@@ -836,13 +838,14 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 		return nil, err
 	}
 
-	// Parse raw response
-	var rawResponse interface{}
-	if err := json.Unmarshal(body, &rawResponse); err != nil {
-		return nil, newBifrostOperationError("error parsing raw response", err, schemas.Bedrock)
+	// Parse raw response if enabled
+	if provider.sendBackRawResponse {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
+			return nil, newBifrostOperationError("error parsing raw response", err, schemas.Bedrock)
+		}
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
-
-	bifrostResponse.ExtraFields.RawResponse = rawResponse
 
 	if params != nil {
 		bifrostResponse.ExtraFields.Params = *params
@@ -955,7 +958,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	response := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -978,7 +981,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 			if input == nil {
 				input = map[string]any{}
 			}
-			arguments, err := json.Marshal(input)
+			arguments, err := sonic.Marshal(input)
 			if err != nil {
 				arguments = []byte("{}")
 			}
@@ -1033,10 +1036,14 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		},
 		Model: model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:     &latency,
-			Provider:    schemas.Bedrock,
-			RawResponse: rawResponse,
+			Latency:  &latency,
+			Provider: schemas.Bedrock,
 		},
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -1159,7 +1166,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 		Embedding           []float32 `json:"embedding"`
 		InputTextTokenCount int       `json:"inputTextTokenCount"`
 	}
-	if err := json.Unmarshal(rawResponse, &titanResp); err != nil {
+	if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
 		return nil, newBifrostOperationError("error parsing Titan embedding response", err, schemas.Bedrock)
 	}
 
@@ -1210,7 +1217,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 		ID         string      `json:"id"`
 		Texts      []string    `json:"texts"`
 	}
-	if err := json.Unmarshal(rawResponse, &cohereResp); err != nil {
+	if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
 		return nil, newBifrostOperationError("error parsing Cohere embedding response", err, schemas.Bedrock)
 	}
 
@@ -1292,7 +1299,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	}
 
 	// Create the streaming request
-	jsonBody, jsonErr := json.Marshal(requestBody)
+	jsonBody, jsonErr := sonic.Marshal(requestBody)
 	if jsonErr != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, jsonErr, schemas.Bedrock)
 	}
@@ -1386,7 +1393,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 			// Parse the JSON event
 			var event map[string]interface{}
-			if err := json.Unmarshal([]byte(jsonStr), &event); err != nil {
+			if err := sonic.Unmarshal([]byte(jsonStr), &event); err != nil {
 				provider.logger.Debug(fmt.Sprintf("Failed to parse JSON from stream: %v, data: %s", err, jsonStr))
 				continue
 			}
@@ -1456,7 +1463,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 						// Extract and marshal input as arguments
 						if input, hasInput := toolUse["input"].(map[string]interface{}); hasInput {
-							inputBytes, err := json.Marshal(input)
+							inputBytes, err := sonic.Marshal(input)
 							if err != nil {
 								toolCall.Function.Arguments = "{}"
 							} else {

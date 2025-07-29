@@ -9,8 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -114,10 +113,11 @@ func releaseAzureTextResponse(resp *AzureTextResponse) {
 
 // AzureProvider implements the Provider interface for Azure's OpenAI API.
 type AzureProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewAzureProvider creates a new Azure provider instance.
@@ -148,10 +148,11 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 	client = configureProxy(client, config.ProxyConfig, logger)
 
 	return &AzureProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -169,7 +170,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	}
 
 	// Marshal the request body
-	jsonData, err := json.Marshal(requestBody)
+	jsonData, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Azure)
 	}
@@ -264,7 +265,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 	response := acquireAzureTextResponse()
 	defer releaseAzureTextResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -299,9 +300,13 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 		SystemFingerprint: response.SystemFingerprint,
 		Usage:             &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Azure,
-			RawResponse: rawResponse,
+			Provider: schemas.Azure,
 		},
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -326,7 +331,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 	response := acquireAzureChatResponse()
 	defer releaseAzureChatResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -340,9 +345,13 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 		SystemFingerprint: response.SystemFingerprint,
 		Usage:             &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Azure,
-			RawResponse: rawResponse,
+			Provider: schemas.Azure,
 		},
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -386,7 +395,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 
 	// Parse response
 	var response AzureEmbeddingResponse
-	if err := json.Unmarshal(responseBody, &response); err != nil {
+	if err := sonic.Unmarshal(responseBody, &response); err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Azure)
 	}
 

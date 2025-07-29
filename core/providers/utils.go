@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas/api"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -273,7 +273,7 @@ func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skip
 func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 
-	if err := json.Unmarshal(resp.Body(), &errorResp); err != nil {
+	if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
 		return &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     &statusCode,
@@ -294,7 +294,8 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 // handleProviderResponse handles common response parsing logic for provider responses.
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
-func handleProviderResponse[T any](responseBody []byte, response *T) (interface{}, *schemas.BifrostError) {
+// If sendBackRawResponse is true, it returns the raw response interface, otherwise nil.
+func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRawResponse bool) (interface{}, *schemas.BifrostError) {
 	var rawResponse interface{}
 
 	var wg sync.WaitGroup
@@ -303,11 +304,13 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		structuredErr = json.Unmarshal(responseBody, response)
+		structuredErr = sonic.Unmarshal(responseBody, response)
 	}()
 	go func() {
 		defer wg.Done()
-		rawErr = json.Unmarshal(responseBody, &rawResponse)
+		if sendBackRawResponse {
+			rawErr = sonic.Unmarshal(responseBody, &rawResponse)
+		}
 	}()
 	wg.Wait()
 
@@ -321,17 +324,21 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 		}
 	}
 
-	if rawErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderDecodeRaw,
-				Error:   rawErr,
-			},
+	if sendBackRawResponse {
+		if rawErr != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: schemas.ErrorField{
+					Message: schemas.ErrProviderDecodeRaw,
+					Error:   rawErr,
+				},
+			}
 		}
+
+		return rawResponse, nil
 	}
 
-	return rawResponse, nil
+	return nil, nil
 }
 
 // getRoleFromMessage extracts and validates the role from a message map.
