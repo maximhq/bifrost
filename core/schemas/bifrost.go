@@ -230,7 +230,7 @@ type ToolChoiceFunction struct {
 // ToolChoiceStruct represents a specific tool choice.
 type ToolChoiceStruct struct {
 	Type     ToolChoiceType     `json:"type"`               // Type of tool choice
-	Function ToolChoiceFunction `json:"function,omitempty"` // Function to call if type is ToolChoiceTypeFunction
+	Function *ToolChoiceFunction `json:"function,omitempty"` // Function to call if type is ToolChoiceTypeFunction
 }
 
 // ToolChoice represents how a tool should be chosen for a request. (either a string or a struct)

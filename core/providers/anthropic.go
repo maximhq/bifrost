@@ -283,7 +283,7 @@ func buildAnthropicChatRequest(model string, messages []schemas.BifrostMessage, 
 				toolChoice := &api.AnthropicToolChoice{
 					Type: params.ToolChoice.ToolChoiceStruct.Type,
 				}
-				if params.ToolChoice.ToolChoiceStruct.Function.Name != "" {
+				if params.ToolChoice.ToolChoiceStruct.Function != nil && params.ToolChoice.ToolChoiceStruct.Function.Name != "" {
 					toolChoice.Name = &params.ToolChoice.ToolChoiceStruct.Function.Name
 				}
 				request.ToolChoice = toolChoice

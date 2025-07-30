@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	
+
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -234,7 +234,7 @@ func ConvertToBifrostRequest(r *api.AnthropicMessageRequest) *schemas.BifrostReq
 			},
 		}
 		if r.ToolChoice.Type == "tool" && r.ToolChoice.Name != nil {
-			toolChoice.ToolChoiceStruct.Function = schemas.ToolChoiceFunction{
+			toolChoice.ToolChoiceStruct.Function = &schemas.ToolChoiceFunction{
 				Name: *r.ToolChoice.Name,
 			}
 		}

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/bytedance/sonic"
@@ -265,16 +264,15 @@ func (mr *AnthropicMessageRequest) MarshalJSON() ([]byte, error) {
 	result["model"] = mr.Model
 	result["max_tokens"] = mr.MaxTokens
 	result["messages"] = mr.Messages
+	result["system"] = mr.System
 
 	// Track which JSON field names are set to avoid conflicts
 	setFields := make(map[string]bool)
 	setFields["model"] = true
 	setFields["max_tokens"] = true
 	setFields["messages"] = true
+	setFields["system"] = true
 
-	if mr.System != nil {
-		result["system"] = mr.System
-	}
 	if mr.Temperature != nil {
 		result["temperature"] = *mr.Temperature
 		setFields["temperature"] = true
@@ -420,14 +418,14 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := json.Unmarshal(data, &stringContent); err == nil {
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
 		mc.ContentStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []AnthropicContentBlock
-	if err := json.Unmarshal(data, &arrayContent); err == nil {
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
 		mc.ContentBlocks = &arrayContent
 		return nil
 	}
