@@ -82,7 +82,7 @@ type InitialLogData struct {
 	Params             *schemas.ModelParameters
 	SpeechInput        *schemas.SpeechInput
 	TranscriptionInput *schemas.TranscriptionInput
-	Tools              *[]schemas.Tool
+	Tools              []schemas.Tool
 }
 
 // LogEntry represents a complete log entry for a request/response cycle
@@ -99,7 +99,7 @@ type LogEntry struct {
 	TranscriptionInput  *schemas.TranscriptionInput `json:"transcription_input,omitempty"`
 	SpeechOutput        *schemas.BifrostSpeech      `json:"speech_output,omitempty"`
 	TranscriptionOutput *schemas.BifrostTranscribe  `json:"transcription_output,omitempty"`
-	Tools               *[]schemas.Tool             `json:"tools,omitempty"`
+	Tools               []schemas.Tool              `json:"tools,omitempty"`
 	ToolCalls           *[]schemas.ToolCall         `json:"tool_calls,omitempty"`
 	Latency             *float64                    `json:"latency,omitempty"`
 	TokenUsage          *schemas.LLMUsage           `json:"token_usage,omitempty"`

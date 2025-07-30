@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 )
 
 // BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.
@@ -277,7 +278,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: schemas.ErrorField{
-					Type:    StrPtr(schemas.RequestCancelled),
+					Type:    ptr(schemas.RequestCancelled),
 					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 					Error:   err,
 				},
@@ -583,7 +584,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 								sanitizedURL, _ := SanitizeImageURL(block.ImageURL.URL)
 								urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
 
-								formattedImgContent := AnthropicImageContent{
+								formattedImgContent := api.AnthropicImageContent{
 									Type: urlTypeInfo.Type,
 								}
 
@@ -777,7 +778,7 @@ func (provider *BedrockProvider) getChatCompletionTools(params *schemas.ModelPar
 	case "anthropic.claude-3-opus-20240229-v1:0":
 		fallthrough
 	case "anthropic.claude-3-7-sonnet-20250219-v1:0":
-		for _, tool := range *params.Tools {
+		for _, tool := range params.Tools {
 			tools = append(tools, BedrockAnthropicToolCall{
 				ToolSpec: BedrockAnthropicToolSpec{
 					Name:        tool.Function.Name,
@@ -916,7 +917,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	preparedParams := prepareParams(params)
 
 	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+	if params != nil && params.Tools != nil && len(params.Tools) > 0 {
 		preparedParams["toolConfig"] = map[string]interface{}{
 			"tools": provider.getChatCompletionTools(params, model),
 		}
@@ -987,7 +988,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 			}
 
 			toolCalls = append(toolCalls, schemas.ToolCall{
-				Type: StrPtr("function"),
+				Type: ptr("function"),
 				ID:   &choice.ToolUse.ToolUseID,
 				Function: schemas.FunctionCall{
 					Name:      &choice.ToolUse.Name,
@@ -1257,7 +1258,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	preparedParams := prepareParams(params)
 
 	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+	if params != nil && params.Tools != nil && len(params.Tools) > 0 {
 		preparedParams["toolConfig"] = map[string]interface{}{
 			"tools": provider.getChatCompletionTools(params, model),
 		}

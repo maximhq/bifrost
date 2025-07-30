@@ -31,18 +31,6 @@ type AzureTextResponse struct {
 	Usage             schemas.LLMUsage `json:"usage"`              // Token usage statistics
 }
 
-// AzureChatResponse represents the response structure from Azure's chat completion API.
-// It includes completion choices, model information, and usage statistics.
-type AzureChatResponse struct {
-	ID                string                          `json:"id"`                 // Unique identifier for the completion
-	Object            string                          `json:"object"`             // Type of completion (always "chat.completion")
-	Choices           []schemas.BifrostResponseChoice `json:"choices"`            // Array of completion choices
-	Model             string                          `json:"model"`              // Model used for the completion
-	Created           int                             `json:"created"`            // Unix timestamp of completion creation
-	SystemFingerprint *string                         `json:"system_fingerprint"` // System fingerprint for the request
-	Usage             schemas.LLMUsage                `json:"usage"`              // Token usage statistics
-}
-
 // AzureEmbeddingResponse represents the response structure from Azure's embedding API.
 type AzureEmbeddingResponse struct {
 	Object string `json:"object"`
@@ -79,19 +67,19 @@ var azureTextCompletionResponsePool = sync.Pool{
 // azureChatResponsePool provides a pool for Azure chat response objects.
 var azureChatResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &AzureChatResponse{}
+		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireAzureChatResponse gets an Azure chat response from the pool and resets it.
-func acquireAzureChatResponse() *AzureChatResponse {
-	resp := azureChatResponsePool.Get().(*AzureChatResponse)
-	*resp = AzureChatResponse{} // Reset the struct
+func acquireAzureChatResponse() *schemas.BifrostResponse {
+	resp := azureChatResponsePool.Get().(*schemas.BifrostResponse)
+	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
 }
 
 // releaseAzureChatResponse returns an Azure chat response to the pool.
-func releaseAzureChatResponse(resp *AzureChatResponse) {
+func releaseAzureChatResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
 		azureChatResponsePool.Put(resp)
 	}
@@ -139,7 +127,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		azureChatResponsePool.Put(&AzureChatResponse{})
+		azureChatResponsePool.Put(&schemas.BifrostResponse{})
 		azureTextCompletionResponsePool.Put(&AzureTextResponse{})
 
 	}
@@ -164,7 +152,7 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Azure's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key schemas.Key, model string) ([]byte, *schemas.BifrostError) {
+func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody interface{}, path string, key schemas.Key, model string) ([]byte, *schemas.BifrostError) {
 	if key.AzureKeyConfig == nil {
 		return nil, newConfigurationError("azure key config not set", schemas.Azure)
 	}
@@ -189,7 +177,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
-			apiVersion = StrPtr("2024-02-01")
+			apiVersion = ptr("2024-02-01")
 		}
 
 		url = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", url, deployment, path, *apiVersion)
@@ -320,13 +308,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	// Merge additional parameters
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
 	responseBody, err := provider.completeRequest(ctx, requestBody, "chat/completions", key, model)
 	if err != nil {
@@ -342,29 +324,18 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 		return nil, bifrostErr
 	}
 
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:                response.ID,
-		Choices:           response.Choices,
-		Model:             response.Model,
-		Created:           response.Created,
-		SystemFingerprint: response.SystemFingerprint,
-		Usage:             &response.Usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Azure,
-		},
-	}
+	response.ExtraFields.Provider = schemas.Azure
 
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		response.ExtraFields.Params = *params
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // Embedding generates embeddings for the given input text(s) using Azure OpenAI.
@@ -461,18 +432,14 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 // Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	if key.AzureKeyConfig == nil {
 		return nil, newConfigurationError("azure key config not set", schemas.Azure)
 	}
+	requestBody := buildOpenAIChatCompletionRequest(model, messages, params)
 
-	// Merge additional parameters and set stream to true
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	stream := true
+	requestBody.Stream = &stream
 
 	// Construct Azure-specific URL with deployment
 	if key.AzureKeyConfig.Endpoint == "" {
@@ -490,7 +457,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
-			apiVersion = StrPtr("2024-02-01")
+			apiVersion = ptr("2024-02-01")
 		}
 
 		fullURL = fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", baseURL, deployment, *apiVersion)

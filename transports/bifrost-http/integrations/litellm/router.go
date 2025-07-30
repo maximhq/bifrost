@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
@@ -89,9 +90,9 @@ func NewLiteLLMRouter(client *bifrost.Bifrost) *LiteLLMRouter {
 		var actualReq interface{}
 		switch provider {
 		case schemas.OpenAI, schemas.Azure:
-			actualReq = &openai.OpenAIChatRequest{}
+			actualReq = &api.OpenAIChatRequest{}
 		case schemas.Anthropic:
-			actualReq = &anthropic.AnthropicMessageRequest{}
+			actualReq = &api.AnthropicMessageRequest{}
 		case schemas.Vertex:
 			actualReq = &genai.GeminiChatRequest{}
 		default:
@@ -122,13 +123,13 @@ func NewLiteLLMRouter(client *bifrost.Bifrost) *LiteLLMRouter {
 
 		// Handle different provider-specific request types
 		switch actualReq := wrapper.ActualRequest.(type) {
-		case *openai.OpenAIChatRequest:
-			bifrostReq := actualReq.ConvertToBifrostRequest()
+		case *api.OpenAIChatRequest:
+			bifrostReq := openai.ConvertChatRequestToBifrostRequest(actualReq)
 			bifrostReq.Provider = wrapper.Provider
 			return bifrostReq, nil
 
-		case *anthropic.AnthropicMessageRequest:
-			bifrostReq := actualReq.ConvertToBifrostRequest()
+		case *api.AnthropicMessageRequest:
+			bifrostReq := anthropic.ConvertToBifrostRequest(actualReq)
 			bifrostReq.Provider = wrapper.Provider
 			return bifrostReq, nil
 

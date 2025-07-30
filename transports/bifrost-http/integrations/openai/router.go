@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/api"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/valyala/fasthttp"
 )
@@ -30,11 +31,11 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 			Path:   path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &OpenAIChatRequest{}
+				return &api.OpenAIChatRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if openaiReq, ok := req.(*OpenAIChatRequest); ok {
-					return openaiReq.ConvertToBifrostRequest(), nil
+				if openaiReq, ok := req.(*api.OpenAIChatRequest); ok {
+					return ConvertChatRequestToBifrostRequest(openaiReq), nil
 				}
 				return nil, errors.New("invalid request type")
 			},
@@ -64,11 +65,11 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 			Path:   path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &OpenAISpeechRequest{}
+				return &api.OpenAISpeechRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if speechReq, ok := req.(*OpenAISpeechRequest); ok {
-					return speechReq.ConvertToBifrostRequest(), nil
+				if speechReq, ok := req.(*api.OpenAISpeechRequest); ok {
+					return ConvertSpeechRequestToBifrostRequest(speechReq), nil
 				}
 				return nil, errors.New("invalid speech request type")
 			},
@@ -103,12 +104,12 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 			Path:   path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &OpenAITranscriptionRequest{}
+				return &api.OpenAITranscriptionRequest{}
 			},
 			RequestParser: parseTranscriptionMultipartRequest, // Handle multipart form parsing
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if transcriptionReq, ok := req.(*OpenAITranscriptionRequest); ok {
-					return transcriptionReq.ConvertToBifrostRequest(), nil
+				if transcriptionReq, ok := req.(*api.OpenAITranscriptionRequest); ok {
+					return ConvertTranscriptionRequestToBifrostRequest(transcriptionReq), nil
 				}
 				return nil, errors.New("invalid transcription request type")
 			},
@@ -136,7 +137,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 
 // parseTranscriptionMultipartRequest is a RequestParser that handles multipart/form-data for transcription requests
 func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
-	transcriptionReq, ok := req.(*OpenAITranscriptionRequest)
+	transcriptionReq, ok := req.(*api.OpenAITranscriptionRequest)
 	if !ok {
 		return errors.New("invalid request type for transcription")
 	}

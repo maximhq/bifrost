@@ -380,7 +380,7 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 		}
 
 		if len(tools) > 0 {
-			bifrostReq.Params.Tools = &tools
+			bifrostReq.Params.Tools = tools
 		}
 	}
 
@@ -420,7 +420,7 @@ func (r *GeminiChatRequest) convertGenerationConfigToParams() *schemas.ModelPara
 		params.ExtraParams["candidate_count"] = config.CandidateCount
 	}
 	if len(config.StopSequences) > 0 {
-		params.StopSequences = &config.StopSequences
+		params.StopSequences = config.StopSequences
 	}
 	if config.PresencePenalty != nil {
 		params.PresencePenalty = bifrost.Ptr(float64(*config.PresencePenalty))
