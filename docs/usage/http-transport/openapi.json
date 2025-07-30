@@ -56,31 +56,29 @@
                         "content": "What's the weather in San Francisco?"
                       }
                     ],
-                    "params": {
-                      "tools": [
-                        {
-                          "type": "function",
-                          "function": {
-                            "name": "get_weather",
-                            "description": "Get current weather for a location",
-                            "parameters": {
-                              "type": "object",
-                              "properties": {
-                                "location": {
-                                  "type": "string",
-                                  "description": "The city and state, e.g. San Francisco, CA"
-                                }
-                              },
-                              "required": ["location"]
-                            }
-                          }
-                        }
-                      ],
-                      "tool_choice": {
+                    "tools": [
+                      {
                         "type": "function",
                         "function": {
-                          "name": "get_weather"
+                          "name": "get_weather",
+                          "description": "Get current weather for a location",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {
+                              "location": {
+                                "type": "string",
+                                "description": "The city and state, e.g. San Francisco, CA"
+                              }
+                            },
+                            "required": ["location"]
+                          }
                         }
+                      }
+                    ],
+                    "tool_choice": {
+                      "type": "function",
+                      "function": {
+                        "name": "get_weather"
                       }
                     }
                   }
@@ -123,10 +121,8 @@
                         ]
                       }
                     ],
-                    "params": {
-                      "max_tokens": 1000,
-                      "temperature": 0.7
-                    }
+                    "max_tokens": 1000,
+                    "temperature": 0.7
                   }
                 }
               }
@@ -250,10 +246,8 @@
                   "value": {
                     "model": "anthropic/claude-2.1",
                     "text": "The future of artificial intelligence is",
-                    "params": {
-                      "max_tokens": 100,
-                      "temperature": 0.7
-                    }
+                    "max_tokens": 100,
+                    "temperature": 0.7
                   }
                 },
                 "with_stop_sequences": {
@@ -262,11 +256,9 @@
                     "provider": "anthropic",
                     "model": "claude-2.1",
                     "text": "Write a short story about a robot:",
-                    "params": {
-                      "max_tokens": 200,
-                      "temperature": 0.8,
-                      "stop_sequences": ["\n\n", "THE END"]
-                    }
+                    "max_tokens": 200,
+                    "temperature": 0.8,
+                    "stop_sequences": ["\n\n", "THE END"]
                   }
                 }
               }
@@ -1737,8 +1729,11 @@
             "description": "Array of chat messages",
             "minItems": 1
           },
-          "params": {
-            "$ref": "#/components/schemas/ModelParameters"
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of tokens to generate",
+            "example": 1000
           },
           "fallbacks": {
             "type": "array",
@@ -1764,9 +1759,26 @@
             "description": "Text prompt for completion",
             "example": "The benefits of artificial intelligence include"
           },
-          "params": {
-            "$ref": "#/components/schemas/ModelParameters"
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of tokens to generate",
+            "example": 1000
           },
+          "temperature": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 2.0,
+            "description": "Controls randomness in the output",
+            "example": 0.7
+          },
+          "stop_sequences": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sequences that stop generation"
+          },  
           "fallbacks": {
             "type": "array",
             "items": {
