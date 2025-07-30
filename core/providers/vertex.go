@@ -14,9 +14,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/goccy/go-json"
 	"golang.org/x/oauth2/google"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -53,8 +53,9 @@ func removeVertexClient(authCredentials string) {
 
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
 type VertexProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewVertexProvider creates a new Vertex provider instance.
@@ -71,8 +72,9 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	}
 
 	return &VertexProvider{
-		logger:        logger,
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -159,7 +161,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 
 	delete(requestBody, "region")
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Vertex)
 	}
@@ -241,9 +243,9 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 
 		provider.logger.Debug(fmt.Sprintf("error from vertex provider: %s", string(body)))
 
-		if err := json.Unmarshal(body, &openAIErr); err != nil {
+		if err := sonic.Unmarshal(body, &openAIErr); err != nil {
 			// Try Vertex error format if OpenAI format fails
-			if err := json.Unmarshal(body, &vertexErr); err != nil {
+			if err := sonic.Unmarshal(body, &vertexErr); err != nil {
 				return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
 			}
 
@@ -260,7 +262,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		response := acquireAnthropicChatResponse()
 		defer releaseAnthropicChatResponse(response)
 
-		rawResponse, bifrostErr := handleProviderResponse(body, response)
+		rawResponse, bifrostErr := handleProviderResponse(body, response, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -289,7 +291,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		defer releaseOpenAIResponse(response)
 
 		// Use enhanced response handler with pre-allocated response
-		rawResponse, bifrostErr := handleProviderResponse(body, response)
+		rawResponse, bifrostErr := handleProviderResponse(body, response, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}

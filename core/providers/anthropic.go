@@ -12,8 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
-
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -146,11 +145,12 @@ type AnthropicImageContent struct {
 
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API.
 type AnthropicProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	apiVersion    string                // API version for the provider
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	apiVersion          string                // API version for the provider
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // anthropicChatResponsePool provides a pool for Anthropic chat response objects.
@@ -229,11 +229,12 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &AnthropicProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		apiVersion:    "2023-06-01",
-		networkConfig: config.NetworkConfig,
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		apiVersion:          "2023-06-01",
+		networkConfig:       config.NetworkConfig,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
 
@@ -263,7 +264,7 @@ func (provider *AnthropicProvider) prepareTextCompletionParams(params map[string
 // Returns the response body or an error if the request fails.
 func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, url string, key string) ([]byte, *schemas.BifrostError) {
 	// Marshal the request body
-	jsonData, err := json.Marshal(requestBody)
+	jsonData, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Anthropic)
 	}
@@ -331,7 +332,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 	response := acquireAnthropicTextResponse()
 	defer releaseAnthropicTextResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -359,9 +360,13 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 		},
 		Model: response.Model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Anthropic,
-			RawResponse: rawResponse,
+			Provider: schemas.Anthropic,
 		},
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -392,7 +397,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model str
 	response := acquireAnthropicChatResponse()
 	defer releaseAnthropicChatResponse(response)
 
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -405,8 +410,12 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model str
 	}
 
 	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    schemas.Anthropic,
-		RawResponse: rawResponse,
+		Provider: schemas.Anthropic,
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -548,7 +557,7 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 						if toolCall.Function.Name != nil {
 							var input map[string]interface{}
 							if toolCall.Function.Arguments != "" {
-								if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+								if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
 									// If unmarshaling fails, use a simple string representation
 									input = map[string]interface{}{"arguments": toolCall.Function.Arguments}
 								}
@@ -712,7 +721,7 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 				Name: &c.Name,
 			}
 
-			args, err := json.Marshal(c.Input)
+			args, err := sonic.Marshal(c.Input)
 			if err != nil {
 				function.Arguments = fmt.Sprintf("%v", c.Input)
 			} else {
@@ -826,7 +835,7 @@ func handleAnthropicStreaming(
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 
-	jsonBody, err := json.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerType)
 	}
@@ -903,7 +912,7 @@ func handleAnthropicStreaming(
 			switch eventType {
 			case "message_start":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
 					continue
 				}
@@ -914,7 +923,7 @@ func handleAnthropicStreaming(
 
 			case "content_block_start":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse content_block_start event: %v", err))
 					continue
 				}
@@ -1002,7 +1011,7 @@ func handleAnthropicStreaming(
 
 			case "content_block_delta":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse content_block_delta event: %v", err))
 					continue
 				}
@@ -1122,7 +1131,7 @@ func handleAnthropicStreaming(
 
 			case "message_delta":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_delta event: %v", err))
 					continue
 				}
@@ -1160,7 +1169,7 @@ func handleAnthropicStreaming(
 
 			case "message_stop":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse message_stop event: %v", err))
 					continue
 				}
@@ -1203,7 +1212,7 @@ func handleAnthropicStreaming(
 
 			case "error":
 				var event AnthropicStreamEvent
-				if err := json.Unmarshal([]byte(eventData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse error event: %v", err))
 					continue
 				}

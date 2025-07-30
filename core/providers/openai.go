@@ -67,11 +67,12 @@ func releaseOpenAIResponse(resp *schemas.BifrostResponse) {
 
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
-	logger        schemas.Logger        // Logger for provider operations
-	client        *fasthttp.Client      // HTTP client for API requests
-	streamClient  *http.Client          // HTTP client for streaming requests
-	networkConfig schemas.NetworkConfig // Network configuration including extra headers
-	metrics       OpenAIMetrics         // Performance metrics for this provider
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	streamClient        *http.Client          // HTTP client for streaming requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	metrics             OpenAIMetrics         // Performance metrics for this provider
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -106,11 +107,12 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &OpenAIProvider{
-		logger:        logger,
-		client:        client,
-		streamClient:  streamClient,
-		networkConfig: config.NetworkConfig,
-		metrics:       OpenAIMetrics{}, // Initialize metrics
+		logger:              logger,
+		client:              client,
+		streamClient:        streamClient,
+		networkConfig:       config.NetworkConfig,
+		metrics:             OpenAIMetrics{}, // Initialize metrics
+		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
 
@@ -211,11 +213,16 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	defer releaseOpenAIResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
-	_, bifrostErr = handleProviderResponse(responseBody, response)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		timings["total_response_parsing"] = time.Since(parseStart)
 		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		return nil, bifrostErr
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -553,34 +560,14 @@ func handleOpenAIStreaming(
 
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
-				var openAIError schemas.BifrostError
-				if err := sonic.Unmarshal([]byte(jsonData), &openAIError); err != nil {
+				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
+				if err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
 					continue
 				}
 
-				// Send error through channel
-				errorResponse := &schemas.BifrostStream{
-					BifrostError: &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: schemas.ErrorField{
-							Type:    openAIError.Error.Type,
-							Code:    openAIError.Error.Code,
-							Message: openAIError.Error.Message,
-							Param:   openAIError.Error.Param,
-						},
-					},
-				}
-
-				if openAIError.EventID != nil {
-					errorResponse.BifrostError.EventID = openAIError.EventID
-				}
-				if openAIError.Error.EventID != nil {
-					errorResponse.BifrostError.Error.EventID = openAIError.Error.EventID
-				}
-
 				select {
-				case responseChan <- errorResponse:
+				case responseChan <- errorStream:
 				case <-ctx.Done():
 				}
 				return // Stop processing on error
@@ -831,34 +818,14 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
-				var openAIError schemas.BifrostError
-				if err := sonic.Unmarshal([]byte(jsonData), &openAIError); err != nil {
+				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
+				if err != nil {
 					provider.logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
 					continue
 				}
 
-				// Send error through channel
-				errorResponse := &schemas.BifrostStream{
-					BifrostError: &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: schemas.ErrorField{
-							Type:    openAIError.Error.Type,
-							Code:    openAIError.Error.Code,
-							Message: openAIError.Error.Message,
-							Param:   openAIError.Error.Param,
-						},
-					},
-				}
-
-				if openAIError.EventID != nil {
-					errorResponse.BifrostError.EventID = openAIError.EventID
-				}
-				if openAIError.Error.EventID != nil {
-					errorResponse.BifrostError.Error.EventID = openAIError.Error.EventID
-				}
-
 				select {
-				case responseChan <- errorResponse:
+				case responseChan <- errorStream:
 				case <-ctx.Done():
 				}
 				return // Stop processing on error
@@ -960,9 +927,12 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, model string,
 		Model:      model,
 		Transcribe: transcribeResponse,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.OpenAI,
-			RawResponse: rawResponse,
+			Provider: schemas.OpenAI,
 		},
+	}
+
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
@@ -1065,34 +1035,14 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
-				var openAIError schemas.BifrostError
-				if err := sonic.Unmarshal([]byte(jsonData), &openAIError); err != nil {
+				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
+				if err != nil {
 					provider.logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
 					continue
 				}
 
-				// Send error through channel
-				errorResponse := &schemas.BifrostStream{
-					BifrostError: &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: schemas.ErrorField{
-							Type:    openAIError.Error.Type,
-							Code:    openAIError.Error.Code,
-							Message: openAIError.Error.Message,
-							Param:   openAIError.Error.Param,
-						},
-					},
-				}
-
-				if openAIError.EventID != nil {
-					errorResponse.BifrostError.EventID = openAIError.EventID
-				}
-				if openAIError.Error.EventID != nil {
-					errorResponse.BifrostError.Error.EventID = openAIError.Error.EventID
-				}
-
 				select {
-				case responseChan <- errorResponse:
+				case responseChan <- errorStream:
 				case <-ctx.Done():
 				}
 				return // Stop processing on error
@@ -1370,4 +1320,33 @@ func (provider *OpenAIProvider) GetOpenAIMetrics() map[string]interface{} {
 		"avg_json_unmarshaling_time":   time.Duration(atomic.LoadInt64(&provider.metrics.JSONUnmarshalingTimeNs) / requestCount).String(),
 		"avg_response_parsing_time":    time.Duration(atomic.LoadInt64(&provider.metrics.ResponseParsingTimeNs) / requestCount).String(),
 	}
+}
+
+func parseOpenAIErrorForStreamDataLine(jsonData string) (*schemas.BifrostStream, error) {
+	var openAIError schemas.BifrostError
+	if err := sonic.Unmarshal([]byte(jsonData), &openAIError); err != nil {
+		return nil, err
+	}
+
+	// Send error through channel
+	errorStream := &schemas.BifrostStream{
+		BifrostError: &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Type:    openAIError.Error.Type,
+				Code:    openAIError.Error.Code,
+				Message: openAIError.Error.Message,
+				Param:   openAIError.Error.Param,
+			},
+		},
+	}
+
+	if openAIError.EventID != nil {
+		errorStream.BifrostError.EventID = openAIError.EventID
+	}
+	if openAIError.Error.EventID != nil {
+		errorStream.BifrostError.Error.EventID = openAIError.Error.EventID
+	}
+
+	return errorStream, nil
 }

@@ -308,8 +308,9 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 // handleProviderResponse handles common response parsing logic for provider responses.
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
-func handleProviderResponse[T any](responseBody []byte, response *T) (interface{}, *schemas.BifrostError) {
-	// var rawResponse interface{}
+// If sendBackRawResponse is true, it returns the raw response interface, otherwise nil.
+func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRawResponse bool) (interface{}, *schemas.BifrostError) {
+	var rawResponse interface{}
 
 	var wg sync.WaitGroup
 	var structuredErr, rawErr error
@@ -321,7 +322,9 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 	}()
 	go func() {
 		defer wg.Done()
-		// rawErr = sonic.Unmarshal(responseBody, &rawResponse)
+		if sendBackRawResponse {
+			rawErr = sonic.Unmarshal(responseBody, &rawResponse)
+		}
 	}()
 	wg.Wait()
 
@@ -335,14 +338,18 @@ func handleProviderResponse[T any](responseBody []byte, response *T) (interface{
 		}
 	}
 
-	if rawErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: schemas.ErrorField{
-				Message: schemas.ErrProviderDecodeRaw,
-				Error:   rawErr,
-			},
+	if sendBackRawResponse {
+		if rawErr != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: schemas.ErrorField{
+					Message: schemas.ErrProviderDecodeRaw,
+					Error:   rawErr,
+				},
+			}
 		}
+
+		return rawResponse, nil
 	}
 
 	return nil, nil

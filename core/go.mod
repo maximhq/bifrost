@@ -5,7 +5,7 @@ go 1.24.1
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.14
-	github.com/goccy/go-json v0.10.5
+	github.com/bytedance/sonic v1.14.0
 	github.com/mark3labs/mcp-go v0.32.0
 	github.com/valyala/fasthttp v1.60.0
 	golang.org/x/oauth2 v0.30.0

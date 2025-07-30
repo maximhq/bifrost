@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TagInput } from '@/components/ui/tag-input'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -85,6 +86,7 @@ const createInitialState = (provider?: ProviderResponse | null, defaultProvider?
       username: '',
       password: '',
     },
+    sendBackRawResponse: provider?.send_back_raw_response || false,
   }
 }
 
@@ -95,6 +97,7 @@ interface ProviderFormData {
   performanceConfig: ConcurrencyAndBufferSize
   metaConfig: MetaConfig
   proxyConfig: ProxyConfig
+  sendBackRawResponse: boolean
   isDirty: boolean
 }
 
@@ -108,7 +111,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
   })
   const [isLoading, setIsLoading] = useState(false)
 
-  const { selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, isDirty } = formData
+  const { selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, sendBackRawResponse, isDirty } = formData
 
   const baseURLRequired = selectedProvider === 'ollama' || selectedProvider === 'sgl'
   const keysRequired = !['ollama', 'sgl'].includes(selectedProvider) // Vertex needs keys for config
@@ -226,6 +229,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
         concurrency_and_buffer_size: performanceConfig,
         meta_config: metaConfig,
         proxy_config: proxyConfig,
+        send_back_raw_response: sendBackRawResponse,
       }
       ;[, error] = await apiService.updateProvider(provider.name, data)
     } else {
@@ -913,6 +917,21 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                               })
                             }
                             className={`transition-all duration-200 ease-in-out ${!performanceValid ? 'border-destructive' : ''}`}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-6 space-y-4">
+                        <div className="flex items-center justify-between space-x-2">
+                          <div className="space-y-0.5">
+                            <label className="text-sm font-medium">Include Raw Response</label>
+                            <p className="text-muted-foreground text-xs">
+                              Include the raw provider response alongside the parsed response for debugging and advanced use cases
+                            </p>
+                          </div>
+                          <Switch
+                            checked={sendBackRawResponse}
+                            onCheckedChange={(checked) => updateField('sendBackRawResponse', checked)}
                           />
                         </div>
                       </div>
