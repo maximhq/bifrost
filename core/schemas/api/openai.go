@@ -157,7 +157,7 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 
 type OpenAIEmbeddingRequest struct {
 	Model          string                 `json:"model"`
-	Input          []string               `json:"input"` // Can be string or []string
+	Input          []string               `json:"input"` // Array of strings to embed
 	EncodingFormat *string                `json:"encoding_format,omitempty"`
 	Dimensions     *int                   `json:"dimensions,omitempty"`
 	User           *string                `json:"user,omitempty"`

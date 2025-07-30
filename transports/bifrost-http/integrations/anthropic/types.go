@@ -3,7 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
-
+	"log"
+	
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -512,6 +513,7 @@ func jsonifyInput(input interface{}) string {
 	}
 	jsonBytes, err := sonic.Marshal(input)
 	if err != nil {
+		log.Printf("Failed to marshal tool input: %v", err)
 		return "{}"
 	}
 	return string(jsonBytes)

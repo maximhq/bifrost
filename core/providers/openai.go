@@ -308,53 +308,6 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	return response, nil
 }
 
-// prepareOpenAIChatRequest formats messages for the OpenAI API.
-// It handles both text and image content in messages.
-// Returns a slice of formatted messages and any additional parameters.
-func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
-	// Format messages for OpenAI API
-	var formattedMessages []map[string]interface{}
-	for _, msg := range messages {
-		if msg.Role == schemas.ModelChatMessageRoleAssistant {
-			assistantMessage := map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
-			}
-			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-				assistantMessage["tool_calls"] = *msg.AssistantMessage.ToolCalls
-			}
-			formattedMessages = append(formattedMessages, assistantMessage)
-		} else {
-			message := map[string]interface{}{
-				"role": msg.Role,
-			}
-
-			if msg.Content.ContentStr != nil {
-				message["content"] = *msg.Content.ContentStr
-			} else if msg.Content.ContentBlocks != nil {
-				contentBlocks := *msg.Content.ContentBlocks
-				for i := range contentBlocks {
-					if contentBlocks[i].Type == schemas.ContentBlockTypeImage && contentBlocks[i].ImageURL != nil {
-						sanitizedURL, _ := SanitizeImageURL(contentBlocks[i].ImageURL.URL)
-						contentBlocks[i].ImageURL.URL = sanitizedURL
-					}
-				}
-
-				message["content"] = contentBlocks
-			}
-
-			if msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
-				message["tool_call_id"] = *msg.ToolMessage.ToolCallID
-			}
-
-			formattedMessages = append(formattedMessages, message)
-		}
-	}
-
-	preparedParams := prepareParams(params)
-
-	return formattedMessages, preparedParams
-}
 
 // Embedding generates embeddings for the given input text(s).
 // The input can be either a single string or a slice of strings for batch embedding.

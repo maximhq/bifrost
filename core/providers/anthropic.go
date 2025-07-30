@@ -777,10 +777,6 @@ func handleAnthropicStreaming(
 							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
 						}
 					default:
-						thought := ""
-						if event.ContentBlock.Text != nil {
-							thought = *event.ContentBlock.Text
-						}
 						content := ""
 						if event.ContentBlock.Text != nil {
 							content = *event.ContentBlock.Text
@@ -796,7 +792,7 @@ func handleAnthropicStreaming(
 									Index: *event.Index,
 									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
 										Delta: schemas.BifrostStreamDelta{
-											Thought: &thought,
+											Thought: &content,
 											Content: &content,
 										},
 									},

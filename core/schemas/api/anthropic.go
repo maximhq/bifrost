@@ -25,37 +25,33 @@ type AnthropicToolChoice struct {
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API.
 // It includes the completion text, model information, and token usage statistics.
 type AnthropicTextResponse struct {
-	ID         string `json:"id"`         // Unique identifier for the completion
-	Type       string `json:"type"`       // Type of completion
-	Completion string `json:"completion"` // Generated completion text
-	Model      string `json:"model"`      // Model used for the completion
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`  // Number of input tokens used
-		OutputTokens int `json:"output_tokens"` // Number of output tokens generated
-	} `json:"usage"` // Token usage statistics
+	ID         string          `json:"id"`         // Unique identifier for the completion
+	Type       string          `json:"type"`       // Type of completion
+	Completion string          `json:"completion"` // Generated completion text
+	Model      string          `json:"model"`      // Model used for the completion
+	Usage      *AnthropicUsage `json:"usage"`      // Token usage statistics
 }
 
 // AnthropicChatResponse represents the response structure from Anthropic's chat completion API.
 // It includes message content, model information, and token usage statistics.
 type AnthropicChatResponse struct {
-	ID      string `json:"id"`   // Unique identifier for the completion
-	Type    string `json:"type"` // Type of completion
-	Role    string `json:"role"` // Role of the message sender
-	Content []struct {
-		Type     string                 `json:"type"`               // Type of content
-		Text     string                 `json:"text,omitempty"`     // Text content
-		Thinking string                 `json:"thinking,omitempty"` // Thinking process
-		ID       string                 `json:"id"`                 // Content identifier
-		Name     string                 `json:"name"`               // Name of the content
-		Input    map[string]interface{} `json:"input"`              // Input parameters
-	} `json:"content"` // Array of content items
-	Model        string  `json:"model"`                   // Model used for the completion
-	StopReason   string  `json:"stop_reason,omitempty"`   // Reason for completion termination
-	StopSequence *string `json:"stop_sequence,omitempty"` // Sequence that caused completion to stop
-	Usage        struct {
-		InputTokens  int `json:"input_tokens"`  // Number of input tokens used
-		OutputTokens int `json:"output_tokens"` // Number of output tokens generated
-	} `json:"usage"` // Token usage statistics
+	ID           string                     `json:"id"`                      // Unique identifier for the completion
+	Type         string                     `json:"type"`                    // Type of completion
+	Role         string                     `json:"role"`                    // Role of the message sender
+	Content      []AnthropicResponseContent `json:"content"`                 // Array of content items
+	Model        string                     `json:"model"`                   // Model used for the completion
+	StopReason   string                     `json:"stop_reason,omitempty"`   // Reason for completion termination
+	StopSequence *string                    `json:"stop_sequence,omitempty"` // Sequence that caused completion to stop
+	Usage        *AnthropicUsage            `json:"usage"`                   // Token usage statistics
+}
+
+type AnthropicResponseContent struct {
+	Type     string                 `json:"type"`               // Type of content
+	Text     string                 `json:"text,omitempty"`     // Text content
+	Thinking string                 `json:"thinking,omitempty"` // Thinking process
+	ID       string                 `json:"id"`                 // Content identifier
+	Name     string                 `json:"name"`               // Name of the content
+	Input    map[string]interface{} `json:"input"`              // Input parameters
 }
 
 // AnthropicStreamEvent represents a single event in the Anthropic streaming response.
@@ -341,6 +337,7 @@ type AnthropicTextRequest struct {
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 
+
 func (r *AnthropicTextRequest) MarshalJSON() ([]byte, error) {
 	// Use standard marshaling when no extra params - gives us type safety and performance
 	if len(r.ExtraParams) == 0 {
@@ -353,6 +350,7 @@ func (r *AnthropicTextRequest) MarshalJSON() ([]byte, error) {
 
 	result["model"] = r.Model
 	result["prompt"] = r.Prompt
+	result["max_tokens_to_sample"] = r.MaxTokensToSample
 
 	// Track which JSON field names are set to avoid conflicts
 	setFields := make(map[string]bool)

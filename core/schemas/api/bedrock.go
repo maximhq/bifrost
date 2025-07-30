@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"maps"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -22,30 +21,55 @@ type BedrockTextRequest struct {
 }
 
 func (r *BedrockTextRequest) MarshalJSON() ([]byte, error) {
+	// Use standard marshaling when no extra params - gives us type safety and performance
+	if len(r.ExtraParams) == 0 {
+		type Alias BedrockTextRequest
+		return sonic.Marshal((*Alias)(r))
+	}
+
+	// When ExtraParams exist, use dynamic approach with conflict detection
 	result := make(map[string]interface{}, 7+len(r.ExtraParams))
 
+	// Add all fields directly - no reflection overhead
 	result["prompt"] = r.Prompt
+
+	// Track which JSON field names are set to avoid conflicts
+	setFields := make(map[string]bool)
+	setFields["prompt"] = true
 
 	if r.MaxTokensToSample != nil {
 		result["max_tokens_to_sample"] = *r.MaxTokensToSample
+		setFields["max_tokens_to_sample"] = true
 	}
 	if r.MaxTokens != nil {
 		result["max_tokens"] = *r.MaxTokens
+		setFields["max_tokens"] = true
 	}
 	if r.Temperature != nil {
 		result["temperature"] = *r.Temperature
+		setFields["temperature"] = true
 	}
 	if r.TopP != nil {
 		result["top_p"] = *r.TopP
+		setFields["top_p"] = true
 	}
 	if r.TopK != nil {
 		result["top_k"] = *r.TopK
+		setFields["top_k"] = true
 	}
 	if len(r.StopSequences) > 0 {
 		result["stop_sequences"] = r.StopSequences
+		setFields["stop_sequences"] = true
 	}
 
-	maps.Copy(result, r.ExtraParams)
+	// Add ExtraParams only if they don't conflict with existing fields
+	for key, value := range r.ExtraParams {
+		if !setFields[key] {
+			result[key] = value
+		}
+		// Silently skip conflicting fields - this prevents overwriting typed fields
+		// while still allowing unknown fields to pass through
+	}
 
 	return sonic.Marshal(result)
 }
@@ -227,27 +251,51 @@ type BedrockChatRequest struct {
 }
 
 func (r *BedrockChatRequest) MarshalJSON() ([]byte, error) {
+	// Use standard marshaling when no extra params - gives us type safety and performance
+	if len(r.ExtraParams) == 0 {
+		type Alias BedrockChatRequest
+		return sonic.Marshal((*Alias)(r))
+	}
+
+	// When ExtraParams exist, use dynamic approach with conflict detection
 	result := make(map[string]interface{}, 6+len(r.ExtraParams))
 
+	// Add all fields directly - no reflection overhead
 	result["messages"] = r.Messages
+
+	// Track which JSON field names are set to avoid conflicts
+	setFields := make(map[string]bool)
+	setFields["messages"] = true
 
 	if r.MaxTokens != nil {
 		result["max_tokens"] = *r.MaxTokens
+		setFields["max_tokens"] = true
 	}
 	if r.Temperature != nil {
 		result["temperature"] = *r.Temperature
+		setFields["temperature"] = true
 	}
 	if r.TopP != nil {
 		result["top_p"] = *r.TopP
+		setFields["top_p"] = true
 	}
 	if r.Tools != nil {
 		result["tools"] = r.Tools
+		setFields["tools"] = true
 	}
 	if r.ToolChoice != nil {
 		result["tool_choice"] = *r.ToolChoice
+		setFields["tool_choice"] = true
 	}
 
-	maps.Copy(result, r.ExtraParams)
+	// Add ExtraParams only if they don't conflict with existing fields
+	for key, value := range r.ExtraParams {
+		if !setFields[key] {
+			result[key] = value
+		}
+		// Silently skip conflicting fields - this prevents overwriting typed fields
+		// while still allowing unknown fields to pass through
+	}
 
 	return sonic.Marshal(result)
 }
@@ -280,21 +328,43 @@ type BedrockTitanEmbeddingRequest struct {
 }
 
 func (r *BedrockTitanEmbeddingRequest) MarshalJSON() ([]byte, error) {
+	// Use standard marshaling when no extra params - gives us type safety and performance
+	if len(r.ExtraParams) == 0 {
+		type Alias BedrockTitanEmbeddingRequest
+		return sonic.Marshal((*Alias)(r))
+	}
+
+	// When ExtraParams exist, use dynamic approach with conflict detection
 	result := make(map[string]interface{}, 4+len(r.ExtraParams))
 
+	// Add all fields directly - no reflection overhead
 	result["inputText"] = r.InputText
+
+	// Track which JSON field names are set to avoid conflicts
+	setFields := make(map[string]bool)
+	setFields["inputText"] = true
 
 	if r.Dimensions != nil {
 		result["dimensions"] = *r.Dimensions
+		setFields["dimensions"] = true
 	}
 	if r.Normalize != nil {
 		result["normalize"] = *r.Normalize
+		setFields["normalize"] = true
 	}
 	if len(r.EmbeddingTypes) > 0 {
 		result["embeddingTypes"] = r.EmbeddingTypes
+		setFields["embeddingTypes"] = true
 	}
 
-	maps.Copy(result, r.ExtraParams)
+	// Add ExtraParams only if they don't conflict with existing fields
+	for key, value := range r.ExtraParams {
+		if !setFields[key] {
+			result[key] = value
+		}
+		// Silently skip conflicting fields - this prevents overwriting typed fields
+		// while still allowing unknown fields to pass through
+	}
 
 	return sonic.Marshal(result)
 }
@@ -310,22 +380,45 @@ type BedrockCohereEmbeddingRequest struct {
 }
 
 func (r *BedrockCohereEmbeddingRequest) MarshalJSON() ([]byte, error) {
+	// Use standard marshaling when no extra params - gives us type safety and performance
+	if len(r.ExtraParams) == 0 {
+		type Alias BedrockCohereEmbeddingRequest
+		return sonic.Marshal((*Alias)(r))
+	}
+
+	// When ExtraParams exist, use dynamic approach with conflict detection
 	result := make(map[string]interface{}, 5+len(r.ExtraParams))
 
+	// Add all fields directly - no reflection overhead
 	result["texts"] = r.Texts
 	result["input_type"] = r.InputType
 
+	// Track which JSON field names are set to avoid conflicts
+	setFields := make(map[string]bool)
+	setFields["texts"] = true
+	setFields["input_type"] = true
+
 	if r.Truncate != nil {
 		result["truncate"] = *r.Truncate
+		setFields["truncate"] = true
 	}
 	if r.Images != nil {
 		result["images"] = r.Images
+		setFields["images"] = true
 	}
 	if len(r.EmbeddingTypes) > 0 {
 		result["embedding_types"] = r.EmbeddingTypes
+		setFields["embedding_types"] = true
 	}
 
-	maps.Copy(result, r.ExtraParams)
+	// Add ExtraParams only if they don't conflict with existing fields
+	for key, value := range r.ExtraParams {
+		if !setFields[key] {
+			result[key] = value
+		}
+		// Silently skip conflicting fields - this prevents overwriting typed fields
+		// while still allowing unknown fields to pass through
+	}
 
 	return sonic.Marshal(result)
 }

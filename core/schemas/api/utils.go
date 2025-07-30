@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-// isOpenAIModel checks for OpenAI model patterns
+// IsOpenAIModel checks for OpenAI model patterns
 func IsOpenAIModel(model string) bool {
 	// Exclude Azure models to prevent overlap
 	if strings.Contains(model, "azure/") {
@@ -19,7 +19,7 @@ func IsOpenAIModel(model string) bool {
 	return matchesAnyPattern(model, openaiPatterns)
 }
 
-// isAzureModel checks for Azure OpenAI specific patterns
+// IsAzureModel checks for Azure OpenAI specific patterns
 func IsAzureModel(model string) bool {
 	azurePatterns := []string{
 		"azure", "model-router", "computer-use-preview",
@@ -28,7 +28,7 @@ func IsAzureModel(model string) bool {
 	return matchesAnyPattern(model, azurePatterns)
 }
 
-// isAnthropicModel checks for Anthropic Claude model patterns
+// IsAnthropicModel checks for Anthropic Claude model patterns
 func IsAnthropicModel(model string) bool {
 	anthropicPatterns := []string{
 		"claude", "anthropic/",
@@ -37,7 +37,7 @@ func IsAnthropicModel(model string) bool {
 	return matchesAnyPattern(model, anthropicPatterns)
 }
 
-// isVertexModel checks for Google Vertex AI model patterns
+// IsVertexModel checks for Google Vertex AI model patterns
 func IsVertexModel(model string) bool {
 	vertexPatterns := []string{
 		"gemini", "palm", "bison", "gecko", "vertex/", "google/",
@@ -46,7 +46,7 @@ func IsVertexModel(model string) bool {
 	return matchesAnyPattern(model, vertexPatterns)
 }
 
-// isBedrockModel checks for AWS Bedrock model patterns
+// IsBedrockModel checks for AWS Bedrock model patterns
 func IsBedrockModel(model string) bool {
 	bedrockPatterns := []string{
 		"bedrock", "bedrock.amazonaws.com/", "bedrock/",
@@ -66,7 +66,7 @@ func IsBedrockModel(model string) bool {
 	return matchesAnyPattern(model, bedrockPatterns)
 }
 
-// isCohereModel checks for Cohere model patterns
+// IsCohereModel checks for Cohere model patterns
 func IsCohereModel(model string) bool {
 	coherePatterns := []string{
 		"command-", "embed-", "cohere",
@@ -77,6 +77,7 @@ func IsCohereModel(model string) bool {
 
 // matchesAnyPattern checks if the model matches any of the given patterns
 func matchesAnyPattern(model string, patterns []string) bool {
+	model = strings.ToLower(model) // <- normalise once
 	for _, pattern := range patterns {
 		if strings.Contains(model, pattern) {
 			return true
