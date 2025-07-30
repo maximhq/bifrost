@@ -212,6 +212,8 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	timings["pool_acquisition"] = time.Since(poolStart)
 	defer releaseOpenAIResponse(response)
 
+	unMarshalStart := time.Now()
+
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
@@ -229,6 +231,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 		response.ExtraFields.Params = *params
 	}
 
+	timings["json_unmarshaling"] = time.Since(unMarshalStart)
 	timings["total_response_parsing"] = time.Since(parseStart)
 
 	response.ExtraFields.RawResponse = map[string]interface{}{
