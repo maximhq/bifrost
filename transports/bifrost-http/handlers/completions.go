@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -35,12 +36,38 @@ func NewCompletionHandler(client *bifrost.Bifrost, logger schemas.Logger) *Compl
 	}
 }
 
+// Known fields for CompletionRequest
+var completionRequestKnownFields = map[string]bool{
+	"model":               true,
+	"messages":            true,
+	"text":                true,
+	"fallbacks":           true,
+	"stream":              true,
+	"input":               true,
+	"voice":               true,
+	"instructions":        true,
+	"response_format":     true,
+	"stream_format":       true,
+	"tool_choice":         true,
+	"tools":               true,
+	"temperature":         true,
+	"top_p":               true,
+	"top_k":               true,
+	"max_tokens":          true,
+	"stop_sequences":      true,
+	"presence_penalty":    true,
+	"frequency_penalty":   true,
+	"parallel_tool_calls": true,
+	"encoding_format":     true,
+	"dimensions":          true,
+	"user":                true,
+}
+
 // CompletionRequest represents a request for either text or chat completion
 type CompletionRequest struct {
 	Model     string                   `json:"model"`     // Model to use in "provider/model" format
 	Messages  []schemas.BifrostMessage `json:"messages"`  // Chat messages (for chat completion)
 	Text      string                   `json:"text"`      // Text input (for text completion)
-	Params    *schemas.ModelParameters `json:"params"`    // Additional model parameters
 	Fallbacks []string                 `json:"fallbacks"` // Fallback providers and models in "provider/model" format
 	Stream    *bool                    `json:"stream"`    // Whether to stream the response
 
@@ -50,6 +77,85 @@ type CompletionRequest struct {
 	Instructions   string                   `json:"instructions"`
 	ResponseFormat string                   `json:"response_format"`
 	StreamFormat   *string                  `json:"stream_format,omitempty"`
+
+	ToolChoice        *schemas.ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
+	Tools             *[]schemas.Tool     `json:"tools,omitempty"`               // Tools to use
+	Temperature       *float64            `json:"temperature,omitempty"`         // Controls randomness in the output
+	TopP              *float64            `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
+	TopK              *int                `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
+	MaxTokens         *int                `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
+	StopSequences     *[]string           `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	PresencePenalty   *float64            `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
+	FrequencyPenalty  *float64            `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
+	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
+	EncodingFormat    *string             `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
+	Dimensions        *int                `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
+	User              *string             `json:"user,omitempty"`                // User identifier for tracking
+	// Dynamic parameters that can be provider-specific, they are directly
+	// added to the request as is.
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+func (cr *CompletionRequest) UnmarshalJSON(data []byte) error {
+	// Use type alias to avoid infinite recursion
+	type Alias CompletionRequest
+	aux := (*Alias)(cr)
+
+	// First unmarshal known fields
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Then unmarshal to map for unknown fields
+	var rawData map[string]json.RawMessage
+	if err := sonic.Unmarshal(data, &rawData); err != nil {
+		return err
+	}
+
+	// Initialize ExtraParams
+	if cr.ExtraParams == nil {
+		cr.ExtraParams = make(map[string]interface{})
+	}
+
+	// Extract unknown fields
+	for key, value := range rawData {
+		if !completionRequestKnownFields[key] {
+			var v interface{}
+			if err := sonic.Unmarshal(value, &v); err != nil {
+				continue // Skip fields that can't be unmarshaled
+			}
+			cr.ExtraParams[key] = v
+		}
+	}
+
+	return nil
+}
+
+func (cr *CompletionRequest) GetModelParameters() *schemas.ModelParameters {
+	params := &schemas.ModelParameters{
+		ExtraParams:       make(map[string]interface{}),
+		ToolChoice:        cr.ToolChoice,
+		Tools:             cr.Tools,
+		Temperature:       cr.Temperature,
+		TopP:              cr.TopP,
+		TopK:              cr.TopK,
+		MaxTokens:         cr.MaxTokens,
+		StopSequences:     cr.StopSequences,
+		PresencePenalty:   cr.PresencePenalty,
+		FrequencyPenalty:  cr.FrequencyPenalty,
+		ParallelToolCalls: cr.ParallelToolCalls,
+		EncodingFormat:    cr.EncodingFormat,
+		Dimensions:        cr.Dimensions,
+		User:              cr.User,
+	}
+
+	if cr.ExtraParams != nil {
+		for k, v := range cr.ExtraParams {
+			params.ExtraParams[k] = v
+		}
+	}
+
+	return params
 }
 
 type CompletionType string
@@ -290,7 +396,7 @@ func (h *CompletionHandler) TranscriptionCompletion(ctx *fasthttp.RequestCtx) {
 // It handles request parsing, validation, and response formatting
 func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionType CompletionType) {
 	var req CompletionRequest
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
 		return
 	}
@@ -326,7 +432,7 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 	bifrostReq := &schemas.BifrostRequest{
 		Model:     modelName,
 		Provider:  schemas.ModelProvider(provider),
-		Params:    req.Params,
+		Params:    req.GetModelParameters(),
 		Fallbacks: fallbacks,
 	}
 
@@ -458,7 +564,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 
 			// Convert response to JSON
-			responseJSON, err := json.Marshal(data)
+			responseJSON, err := sonic.Marshal(data)
 			if err != nil {
 				h.logger.Warn(fmt.Sprintf("Failed to marshal streaming response: %v", err))
 				continue

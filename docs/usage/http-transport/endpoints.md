@@ -38,10 +38,8 @@ Chat conversation endpoint supporting all providers.
       "content": "Hello, how are you?"
     }
   ],
-  "params": {
-    "temperature": 0.7,
-    "max_tokens": 1000
-  },
+  "temperature": 0.7,
+  "max_tokens": 1000,
   "fallbacks": ["anthropic/claude-3-sonnet-20240229"]
 }
 ```
@@ -128,10 +126,8 @@ Text completion endpoint for simple text generation.
 {
   "model": "openai/gpt-4o-mini",
   "text": "The future of AI is",
-  "params": {
-    "temperature": 0.8,
-    "max_tokens": 150
-  }
+  "temperature": 0.8,
+  "max_tokens": 150
 }
 ```
 
@@ -422,7 +418,6 @@ bifrost_provider_errors_total{provider="openai",error_type="rate_limit"} 23
 | Parameter   | Type   | Description             | Example                                  |
 | ----------- | ------ | ----------------------- | ---------------------------------------- |
 | `model`     | string | Provider and model name | `"openai/gpt-4o-mini"`                   |
-| `params`    | object | Model parameters        | `{"temperature": 0.7}`                   |
 | `fallbacks` | array  | Fallback model names    | `["anthropic/claude-3-sonnet-20240229"]` |
 
 ### **Model Parameters**

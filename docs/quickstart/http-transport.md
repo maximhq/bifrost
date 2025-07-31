@@ -245,7 +245,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 # Use Anthropic
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "anthropic/claude-3-sonnet-20240229", "messages": [{"role": "user", "content": "Hello from Anthropic!"}], "params":{"max_tokens": 100}}'
+  -d '{"model": "anthropic/claude-3-sonnet-20240229", "messages": [{"role": "user", "content": "Hello from Anthropic!"}], "max_tokens": 100}'
 ```
 
 ### **🔄 Add Automatic Fallbacks**
@@ -258,7 +258,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}],
     "fallbacks": ["anthropic/claude-3-sonnet-20240229"],
-    "params": {"max_tokens": 100}
+    "max_tokens": 100
   }'
 ```
 
