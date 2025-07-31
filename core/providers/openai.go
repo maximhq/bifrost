@@ -198,11 +198,22 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 	for _, msg := range messages {
 		if msg.Role == schemas.ModelChatMessageRoleAssistant {
 			assistantMessage := map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
+				"role": msg.Role,
 			}
 			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
 				assistantMessage["tool_calls"] = *msg.AssistantMessage.ToolCalls
+			}
+			if msg.Content.ContentStr != nil {
+				assistantMessage["content"] = *msg.Content.ContentStr
+			} else if msg.Content.ContentBlocks != nil && len(*msg.Content.ContentBlocks) > 0 {
+				var sb strings.Builder
+				for _, block := range *msg.Content.ContentBlocks {
+					if block.Text != nil && *block.Text != "" {
+						sb.WriteString(*block.Text)
+						sb.WriteString(" ")
+					}
+				}
+				assistantMessage["content"] = sb.String()
 			}
 			formattedMessages = append(formattedMessages, assistantMessage)
 		} else {
@@ -226,6 +237,24 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 
 			if msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
 				message["tool_call_id"] = *msg.ToolMessage.ToolCallID
+				if msg.IsError != nil {
+					message["is_error"] = *msg.IsError
+				}
+
+				content := message["content"]
+				if contentBlocks, ok := content.([]schemas.ContentBlock); ok {
+					var sb strings.Builder
+					for _, block := range contentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							sb.WriteString(*block.Text)
+							sb.WriteString(" ")
+						} else if block.ImageURL != nil {
+							sb.WriteString(block.ImageURL.URL)
+							sb.WriteString(" ")
+						}
+					}
+					message["content"] = sb.String()
+				}
 			}
 
 			formattedMessages = append(formattedMessages, message)
@@ -521,6 +550,9 @@ func handleOpenAIStreaming(
 
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if len(response.Choices) == 0 && response.Usage != nil {
+				// Empty choices array.
+				response.Choices = []schemas.BifrostResponseChoice{}
+
 				// This is a usage information chunk at the end of stream
 				if params != nil {
 					response.ExtraFields.Params = *params
@@ -546,9 +578,7 @@ func handleOpenAIStreaming(
 				response.ExtraFields.Provider = providerType
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
-
-				// End stream processing after finish reason
-				break
+				continue
 			}
 
 			// Handle regular content chunks
@@ -559,6 +589,7 @@ func handleOpenAIStreaming(
 				response.ExtraFields.Provider = providerType
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				continue
 			}
 		}
 

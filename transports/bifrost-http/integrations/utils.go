@@ -84,8 +84,8 @@ type RequestConverter func(req interface{}) (*schemas.BifrostRequest, error)
 type ResponseConverter func(*schemas.BifrostResponse) (interface{}, error)
 
 // StreamResponseConverter is a function that converts Bifrost responses to integration-specific streaming format.
-// It takes a BifrostResponse and returns the streaming format expected by the specific integration.
-type StreamResponseConverter func(*schemas.BifrostResponse) (interface{}, error)
+// It takes a BifrostResponse and the index of the stream in the response and returns the streaming format expected by the specific integration.
+type StreamResponseConverter func(*schemas.BifrostResponse, int) (interface{}, error)
 
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
@@ -433,6 +433,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer w.Flush()
 
+		// Received BifrostStream Index
+		streamIndex := -1
+
 		// Process streaming responses
 		for response := range streamChan {
 			if response == nil {
@@ -508,12 +511,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 
 			// Handle successful responses
 			if response.BifrostResponse != nil {
+				streamIndex++
+
 				// Convert response to integration-specific streaming format
 				var convertedResponse interface{}
 				var err error
 
 				if config.StreamConfig.ResponseConverter != nil {
-					convertedResponse, err = config.StreamConfig.ResponseConverter(response.BifrostResponse)
+					convertedResponse, err = config.StreamConfig.ResponseConverter(response.BifrostResponse, streamIndex)
 				} else {
 					// Fallback to regular response converter
 					convertedResponse, err = config.ResponseConverter(response.BifrostResponse)

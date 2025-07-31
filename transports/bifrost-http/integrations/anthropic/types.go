@@ -20,6 +20,7 @@ type AnthropicContentBlock struct {
 	Name      *string               `json:"name,omitempty"`        // For tool_use content
 	Input     interface{}           `json:"input,omitempty"`       // For tool_use content
 	Content   AnthropicContent      `json:"content,omitempty"`     // For tool_result content
+	IsError   *bool                 `json:"is_error,omitempty"`    // For tool_result content
 	Source    *AnthropicImageSource `json:"source,omitempty"`      // For image content
 }
 
@@ -62,17 +63,18 @@ type AnthropicToolChoice struct {
 
 // AnthropicMessageRequest represents an Anthropic messages API request
 type AnthropicMessageRequest struct {
-	Model         string               `json:"model"`
-	MaxTokens     int                  `json:"max_tokens"`
-	Messages      []AnthropicMessage   `json:"messages"`
-	System        *AnthropicContent    `json:"system,omitempty"`
-	Temperature   *float64             `json:"temperature,omitempty"`
-	TopP          *float64             `json:"top_p,omitempty"`
-	TopK          *int                 `json:"top_k,omitempty"`
-	StopSequences *[]string            `json:"stop_sequences,omitempty"`
-	Stream        *bool                `json:"stream,omitempty"`
-	Tools         *[]AnthropicTool     `json:"tools,omitempty"`
-	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
+	Model         string                 `json:"model"`
+	MaxTokens     int                    `json:"max_tokens"`
+	Messages      []AnthropicMessage     `json:"messages"`
+	System        *AnthropicContent      `json:"system,omitempty"`
+	Temperature   *float64               `json:"temperature,omitempty"`
+	TopP          *float64               `json:"top_p,omitempty"`
+	TopK          *int                   `json:"top_k,omitempty"`
+	StopSequences *[]string              `json:"stop_sequences,omitempty"`
+	Stream        *bool                  `json:"stream,omitempty"`
+	StreamOptions *schemas.StreamOptions `json:"stream_options,omitempty"`
+	Tools         *[]AnthropicTool       `json:"tools,omitempty"`
+	ToolChoice    *AnthropicToolChoice   `json:"tool_choice,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -94,8 +96,10 @@ type AnthropicMessageResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // AnthropicMessageError represents an Anthropic messages API error response
@@ -123,6 +127,14 @@ type AnthropicStreamResponse struct {
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 }
 
+func (s *AnthropicStreamResponse) ToSSE() string {
+	jsonData, err := json.Marshal(s)
+	if err != nil {
+		return "event: error\ndata: {\"type\": \"error\", \"error\": {\"type\": \"internal_error\", \"message\": \"Failed to marshal stream response\"}}\n\n"
+	}
+	return fmt.Sprintf("event: %s\ndata: %s\n\n", s.Type, string(jsonData))
+}
+
 // AnthropicStreamMessage represents the message structure in streaming events
 type AnthropicStreamMessage struct {
 	ID           string                  `json:"id"`
@@ -137,7 +149,7 @@ type AnthropicStreamMessage struct {
 
 // AnthropicStreamDelta represents the incremental content in a streaming chunk
 type AnthropicStreamDelta struct {
-	Type         string  `json:"type"`
+	Type         string  `json:"type,omitempty"`
 	Text         *string `json:"text,omitempty"`
 	Thinking     *string `json:"thinking,omitempty"`
 	PartialJSON  *string `json:"partial_json,omitempty"`
@@ -235,6 +247,8 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 			var toolCalls []schemas.ToolCall
 			var contentBlocks []schemas.ContentBlock
 
+			skipAppendMessage := false
+
 			for _, content := range *msg.Content.ContentBlocks {
 				switch content.Type {
 				case "text":
@@ -278,46 +292,67 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 						toolCalls = append(toolCalls, tc)
 					}
 				case "tool_result":
-					if content.ToolUseID != nil {
-						bifrostMsg.ToolMessage = &schemas.ToolMessage{
-							ToolCallID: content.ToolUseID,
-						}
-						if content.Content.ContentStr != nil {
-							contentBlocks = append(contentBlocks, schemas.ContentBlock{
-								Type: schemas.ContentBlockTypeText,
-								Text: content.Content.ContentStr,
-							})
-						} else if content.Content.ContentBlocks != nil {
-							for _, block := range *content.Content.ContentBlocks {
-								if block.Text != nil {
-									contentBlocks = append(contentBlocks, schemas.ContentBlock{
-										Type: schemas.ContentBlockTypeText,
-										Text: block.Text,
-									})
-								} else if block.Source != nil {
-									contentBlocks = append(contentBlocks, schemas.ContentBlock{
-										Type: schemas.ContentBlockTypeImage,
-										ImageURL: &schemas.ImageURLStruct{
-											URL: func() string {
-												if block.Source.Data != nil {
-													mime := "image/png"
-													if block.Source.MediaType != nil && *block.Source.MediaType != "" {
-														mime = *block.Source.MediaType
-													}
-													return "data:" + mime + ";base64," + *block.Source.Data
+					if content.ToolUseID == nil || *content.ToolUseID == "" {
+						continue
+					}
+
+					skipAppendMessage = true
+
+					bifrostMsg.Role = schemas.ModelChatMessageRoleTool
+					bifrostMsg.ToolMessage = &schemas.ToolMessage{
+						ToolCallID: content.ToolUseID,
+						IsError:    content.IsError,
+					}
+					if content.Content.ContentStr != nil {
+						contentBlocks = append(contentBlocks, schemas.ContentBlock{
+							Type: schemas.ContentBlockTypeText,
+							Text: content.Content.ContentStr,
+						})
+					} else if content.Content.ContentBlocks != nil {
+						for _, block := range *content.Content.ContentBlocks {
+							if block.Text != nil {
+								contentBlocks = append(contentBlocks, schemas.ContentBlock{
+									Type: schemas.ContentBlockTypeText,
+									Text: block.Text,
+								})
+							} else if block.Source != nil {
+								contentBlocks = append(contentBlocks, schemas.ContentBlock{
+									Type: schemas.ContentBlockTypeImage,
+									ImageURL: &schemas.ImageURLStruct{
+										URL: func() string {
+											if block.Source.Data != nil {
+												mime := "image/png"
+												if block.Source.MediaType != nil && *block.Source.MediaType != "" {
+													mime = *block.Source.MediaType
 												}
-												if block.Source.URL != nil {
-													return *block.Source.URL
-												}
-												return ""
-											}()},
-									})
-								}
+												return "data:" + mime + ";base64," + *block.Source.Data
+											}
+											if block.Source.URL != nil {
+												return *block.Source.URL
+											}
+											return ""
+										}()},
+								})
 							}
 						}
-						bifrostMsg.Role = schemas.ModelChatMessageRoleTool
 					}
+
+					if len(contentBlocks) > 0 {
+						blocks := make([]schemas.ContentBlock, len(contentBlocks))
+						copy(blocks, contentBlocks)
+						bifrostMsg.Content = schemas.MessageContent{
+							ContentBlocks: &blocks,
+						}
+						messages = append(messages, bifrostMsg)
+						bifrostMsg = schemas.BifrostMessage{}
+						contentBlocks = contentBlocks[:0]
+					}
+					continue
 				}
+			}
+
+			if skipAppendMessage {
+				continue
 			}
 
 			// Concatenate all text contents
@@ -356,6 +391,9 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 		}
 		if r.StopSequences != nil {
 			params.StopSequences = r.StopSequences
+		}
+		if r.StreamOptions != nil {
+			params.StreamOptions = r.StreamOptions
 		}
 
 		bifrostReq.Params = params
@@ -447,6 +485,9 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
 		}
+		if bifrostResp.Usage.TokenDetails != nil {
+			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.TokenDetails.CachedTokens
+		}
 	}
 
 	// Convert choices to content
@@ -518,12 +559,12 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 }
 
 // DeriveAnthropicStreamFromBifrostResponse converts a Bifrost streaming response to Anthropic SSE string format
-func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse) string {
+func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse, streamIndex int) []*AnthropicStreamResponse {
 	if bifrostResp == nil {
-		return ""
+		return nil
 	}
 
-	streamResp := &AnthropicStreamResponse{}
+	var streamRespList []*AnthropicStreamResponse
 
 	// Handle different streaming event types based on the response content
 	if len(bifrostResp.Choices) > 0 {
@@ -533,18 +574,63 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 		if choice.BifrostStreamResponseChoice != nil {
 			delta := choice.BifrostStreamResponseChoice.Delta
 
+			// Handle message start event
+			if streamIndex == 0 {
+				streamResp := &AnthropicStreamResponse{}
+				var usage *AnthropicUsage
+
+				if bifrostResp.Usage != nil {
+					usage = &AnthropicUsage{
+						InputTokens:              bifrostResp.Usage.PromptTokens,
+						OutputTokens:             bifrostResp.Usage.CompletionTokens,
+						CacheCreationInputTokens: 0,
+					}
+					if bifrostResp.Usage.TokenDetails != nil {
+						usage.CacheReadInputTokens = bifrostResp.Usage.TokenDetails.CachedTokens
+					}
+				} else {
+					// Default to 1 token for input and output, e.g. for DeepSeek api.
+					// Return the actual usage in the final message delta.
+					usage = &AnthropicUsage{
+						InputTokens:  1,
+						OutputTokens: 1,
+					}
+				}
+				streamResp.Type = "message_start"
+				streamResp.Message = &AnthropicStreamMessage{
+					ID:      bifrostResp.ID,
+					Type:    "message",
+					Role:    "assistant",
+					Model:   bifrostResp.Model,
+					Usage:   usage,
+					Content: []AnthropicContentBlock{},
+				}
+
+				streamRespList = append(streamRespList, streamResp)
+			}
+
+			streamResp := &AnthropicStreamResponse{
+				Index: &choice.Index,
+			}
+
 			// Handle text content deltas
 			if delta.Content != nil {
-				streamResp.Type = "content_block_delta"
-				streamResp.Index = &choice.Index
-				streamResp.Delta = &AnthropicStreamDelta{
-					Type: "text_delta",
-					Text: delta.Content,
+				if streamIndex == 0 {
+					streamResp.Type = "content_block_start"
+					streamResp.ContentBlock = &AnthropicContentBlock{
+						Type: "text",
+						Text: delta.Content,
+					}
+				} else {
+					streamResp.Type = "content_block_delta"
+					streamResp.Delta = &AnthropicStreamDelta{
+						Type: "text_delta",
+						Text: delta.Content,
+					}
 				}
 			} else if delta.Thought != nil {
 				// Handle thinking content deltas
 				streamResp.Type = "content_block_delta"
-				streamResp.Index = &choice.Index
 				streamResp.Delta = &AnthropicStreamDelta{
 					Type:     "thinking_delta",
 					Thinking: delta.Thought,
@@ -571,16 +657,39 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 						PartialJSON: &toolCall.Function.Arguments,
 					}
 				}
-			} else if choice.FinishReason != nil && *choice.FinishReason != "" {
-				// Handle finish reason
-				streamResp.Type = "message_delta"
-				streamResp.Delta = &AnthropicStreamDelta{
-					Type:       "message_delta",
-					StopReason: choice.FinishReason,
+			}
+
+			// Handle finish reason
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				streamRespList = append(streamRespList, streamResp)
+
+				// Handle content block stop
+				streamRespList = append(streamRespList, &AnthropicStreamResponse{
+					Index: &choice.Index,
+					Type:  "content_block_stop",
+				})
+
+				// Handle message delta
+				usage := &AnthropicUsage{
+					OutputTokens: bifrostResp.Usage.CompletionTokens,
+					InputTokens:  bifrostResp.Usage.PromptTokens,
+				}
+				if bifrostResp.Usage.TokenDetails != nil {
+					usage.CacheReadInputTokens = bifrostResp.Usage.TokenDetails.CachedTokens
+				}
+				streamResp = &AnthropicStreamResponse{
+					Type: "message_delta",
+					Delta: &AnthropicStreamDelta{
+						StopReason: choice.FinishReason,
+					},
+					Usage: usage,
 				}
 			}
 
+			streamRespList = append(streamRespList, streamResp)
 		} else if choice.BifrostNonStreamResponseChoice != nil {
+			streamResp := &AnthropicStreamResponse{}
+
 			// Handle non-streaming response converted to streaming format
 			streamResp.Type = "message_start"
 
@@ -603,46 +712,23 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 
 			streamMessage.Content = content
 			streamResp.Message = streamMessage
+
+			streamRespList = append(streamRespList, streamResp)
 		}
+
 	}
 
-	// Handle usage information
-	if bifrostResp.Usage != nil {
+	result := make([]*AnthropicStreamResponse, 0, len(streamRespList))
+	for _, streamResp := range streamRespList {
+		// Ignore empty stream responses
 		if streamResp.Type == "" {
-			streamResp.Type = "message_delta"
+			continue
 		}
-		streamResp.Usage = &AnthropicUsage{
-			InputTokens:  bifrostResp.Usage.PromptTokens,
-			OutputTokens: bifrostResp.Usage.CompletionTokens,
-		}
+
+		result = append(result, streamResp)
 	}
 
-	// Set common fields
-	if bifrostResp.ID != "" {
-		streamResp.ID = &bifrostResp.ID
-	}
-	if bifrostResp.Model != "" {
-		streamResp.Model = &bifrostResp.Model
-	}
-
-	// Default to empty content_block_delta if no specific type was set
-	if streamResp.Type == "" {
-		streamResp.Type = "content_block_delta"
-		streamResp.Index = bifrost.Ptr(0)
-		streamResp.Delta = &AnthropicStreamDelta{
-			Type: "text_delta",
-			Text: bifrost.Ptr(""),
-		}
-	}
-
-	// Marshal to JSON and format as SSE
-	jsonData, err := json.Marshal(streamResp)
-	if err != nil {
-		return ""
-	}
-
-	// Format as Anthropic SSE
-	return fmt.Sprintf("event: %s\ndata: %s\n\n", streamResp.Type, jsonData)
+	return result
 }
 
 // DeriveAnthropicErrorFromBifrostError derives a AnthropicMessageError from a BifrostError
