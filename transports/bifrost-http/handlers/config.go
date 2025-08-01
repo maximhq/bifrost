@@ -71,6 +71,8 @@ func (h *ConfigHandler) handleUpdateConfig(ctx *fasthttp.RequestCtx) {
 
 	updatedConfig.EnableLogging = req.EnableLogging
 
+	updatedConfig.EnforceGovernance = req.EnforceGovernance
+
 	// Update the store with the new config
 	h.store.ClientConfig = updatedConfig
 

@@ -35,6 +35,17 @@ type DBProvider struct {
 	NetworkConfig            *schemas.NetworkConfig            `gorm:"-" json:"network_config,omitempty"`
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `gorm:"-" json:"concurrency_and_buffer_size,omitempty"`
 	MetaConfig               *schemas.MetaConfig               `gorm:"-" json:"meta_config,omitempty"`
+
+	// Foreign keys
+	Models []DBModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
+}
+
+type DBModel struct {
+	ID         string    `gorm:"primaryKey" json:"id"`
+	ProviderID uint      `gorm:"index;not null" json:"provider_id"`
+	Name       string    `gorm:"unique" json:"name"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // DBKey represents an API key configuration in the database
@@ -89,6 +100,7 @@ type DBClientConfig struct {
 	PrometheusLabelsJSON string    `gorm:"type:text" json:"-"` // JSON serialized []string
 	InitialPoolSize      int       `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging        bool      `gorm:"default:true" json:"enable_logging"`
+	EnforceGovernance    bool      `gorm:"default:false" json:"enforce_governance"`
 	CreatedAt            time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt            time.Time `gorm:"index;not null" json:"updated_at"`
 

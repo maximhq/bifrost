@@ -18,6 +18,7 @@ export default function CoreSettingsList() {
     drop_excess_requests: false,
     initial_pool_size: 300,
     enable_logging: true,
+    enforce_governance: false,
   })
   const [droppedRequests, setDroppedRequests] = useState<number>(0)
   const [isLoading, setIsLoading] = useState(true)
@@ -160,7 +161,21 @@ export default function CoreSettingsList() {
           />
         </div>
 
-        <Separator />
+        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+          <div className="space-y-0.5">
+            <label htmlFor="enforce-governance" className="text-sm font-medium">
+              Enforce Virtual Keys
+            </label>
+            <p className="text-muted-foreground text-sm">
+              Enforce the use of a virtual key for all requests. If enabled, requests without the <b>x-bf-vk</b> header will be rejected.
+            </p>
+          </div>
+          <Switch
+            id="enforce-governance"
+            checked={config.enforce_governance}
+            onCheckedChange={(checked) => handleConfigChange('enforce_governance', checked)}
+          />
+        </div>
 
         <Alert>
           <AlertTriangle className="h-4 w-4" />

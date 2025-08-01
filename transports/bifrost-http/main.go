@@ -65,6 +65,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -253,7 +254,7 @@ func main() {
 	logsDBPath := filepath.Join(appDir, "logs.db")
 
 	// Config database: Optimized for fast reads, rare writes
-	configDB, err := gorm.Open(sqlite.Open(configDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=1000"), &gorm.Config{
+	configDB, err := gorm.Open(sqlite.Open(configDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=1000&_busy_timeout=30000"), &gorm.Config{
 		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
 	if err != nil {
@@ -326,6 +327,12 @@ func main() {
 
 	promPlugin := telemetry.NewPrometheusPlugin()
 
+	// Initialize governance plugin
+	governancePlugin, err := governance.NewGovernancePlugin(configDB, logger, store.ClientConfig.EnforceGovernance)
+	if err != nil {
+		log.Fatalf("failed to initialize governance plugin: %v", err)
+	}
+
 	var loggingPlugin *logging.LoggerPlugin
 	var loggingHandler *handlers.LoggingHandler
 	var wsHandler *handlers.WebSocketHandler
@@ -337,11 +344,13 @@ func main() {
 			log.Fatalf("failed to initialize logging plugin: %v", err)
 		}
 
-		loadedPlugins = append(loadedPlugins, promPlugin, loggingPlugin)
+		loadedPlugins = append(loadedPlugins, loggingPlugin)
 
 		loggingHandler = handlers.NewLoggingHandler(loggingPlugin.GetPluginLogManager(), logger)
 		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), logger)
 	}
+
+	loadedPlugins = append(loadedPlugins, promPlugin, governancePlugin)
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
 		Account:            account,
@@ -363,6 +372,7 @@ func main() {
 	mcpHandler := handlers.NewMCPHandler(client, logger, store)
 	integrationHandler := handlers.NewIntegrationHandler(client)
 	configHandler := handlers.NewConfigHandler(client, logger, store)
+	governanceHandler := handlers.NewGovernanceHandler(governancePlugin, configDB, logger)
 
 	// Set up WebSocket callback for real-time log updates
 	if wsHandler != nil && loggingPlugin != nil {
@@ -380,6 +390,7 @@ func main() {
 	mcpHandler.RegisterRoutes(r)
 	integrationHandler.RegisterRoutes(r)
 	configHandler.RegisterRoutes(r)
+	governanceHandler.RegisterRoutes(r)
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(r)
 	}
@@ -406,6 +417,7 @@ func main() {
 		log.Fatalf("Error starting server: %v", err)
 	}
 
+	// Cleanup resources on shutdown
 	if wsHandler != nil {
 		wsHandler.Stop()
 	}

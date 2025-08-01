@@ -2,7 +2,7 @@ import Header from '@/components/header'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { BookOpen, ExternalLink, Zap, Settings, Code, Users, FileText, Play, GitBranch } from 'lucide-react'
+import { BookOpen, ExternalLink, Zap, Settings, Code, Users, FileText, Play, GitBranch, Shield, Icon } from 'lucide-react'
 import Link from 'next/link'
 import GradientHeader from '@/components/ui/gradient-header'
 
@@ -50,6 +50,31 @@ const docSections = [
     icon: Zap,
     url: 'https://github.com/maximhq/bifrost/blob/main/docs/benchmarks.md',
     items: ['5K RPS Test Results', 'Performance Metrics', 'Configuration Tuning', 'Hardware Comparisons'],
+  },
+]
+
+const featuredDocs = [
+  {
+    title: 'MCP Documentation',
+    description: 'Comprehensive guide to Model Context Protocol integration',
+    content: 'Learn how to build sophisticated AI agents with MCP support, tool calling, and external integrations.',
+    href: 'https://github.com/maximhq/bifrost/blob/main/docs/mcp.md',
+    icon: FileText,
+    buttonText: 'View MCP Guide',
+    borderColor: 'border-primary/20',
+    backgroundColor: 'bg-primary/5',
+    iconColor: 'text-primary',
+  },
+  {
+    title: 'Governance Plugin',
+    description: 'Complete access control, budgets, and rate limiting guide',
+    content: 'Master Virtual Keys, hierarchical budgets, rate limiting, and usage tracking for secure AI infrastructure.',
+    href: 'https://github.com/maximhq/bifrost/blob/main/docs/governance.md',
+    icon: Shield,
+    buttonText: 'View Governance Guide',
+    borderColor: 'border-green-200 dark:border-green-800',
+    backgroundColor: 'bg-green-50 dark:bg-green-950/20',
+    iconColor: 'text-green-600',
   },
 ]
 
@@ -127,49 +152,28 @@ export default function DocsPage() {
             })}
           </div>
 
-          {/* Additional Resources */}
+          {/* Featured Documentation */}
           <div className="grid gap-6 pt-8 md:grid-cols-2">
-            <Card className="border-primary/20 bg-primary/5">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <FileText className="text-primary h-5 w-5" />
-                  MCP Documentation
-                </CardTitle>
-                <CardDescription>Comprehensive guide to Model Context Protocol integration</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="text-muted-foreground mb-4 text-sm">
-                  Learn how to build sophisticated AI agents with MCP support, tool calling, and external integrations.
-                </p>
-                <Button asChild className="w-full">
-                  <Link href="https://github.com/maximhq/bifrost/blob/main/docs/mcp.md" target="_blank">
-                    <BookOpen className="mr-2 h-4 w-4" />
-                    View MCP Guide
-                  </Link>
-                </Button>
-              </CardContent>
-            </Card>
-
-            <Card className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/20">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Settings className="h-5 w-5 text-green-600" />
-                  Configuration Reference
-                </CardTitle>
-                <CardDescription>Complete reference for all configuration options</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="text-muted-foreground mb-4 text-sm">
-                  Detailed documentation on provider setup, key management, and advanced configuration options.
-                </p>
-                <Button asChild variant="outline" className="w-full">
-                  <Link href="https://github.com/maximhq/bifrost/tree/main/docs/usage/http-transport/configuration" target="_blank">
-                    <Settings className="mr-2 h-4 w-4" />
-                    Configuration Docs
-                  </Link>
-                </Button>
-              </CardContent>
-            </Card>
+            {featuredDocs.map((doc, index) => (
+              <Card className={`${doc.borderColor} ${doc.backgroundColor}`} key={index}>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <doc.icon className={`h-5 w-5 ${doc.iconColor}`} />
+                    {doc.title}
+                  </CardTitle>
+                  <CardDescription>{doc.description}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-muted-foreground mb-4 text-sm">{doc.content}</p>
+                  <Button asChild className="w-full">
+                    <Link href={doc.href} target="_blank">
+                      <doc.icon className="mr-2 h-4 w-4" />
+                      {doc.buttonText}
+                    </Link>
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </div>
       </div>
