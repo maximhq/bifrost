@@ -265,7 +265,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./config.json:/app/config/config.json
+      - ./data:/app/data  # Recommended: persist both config and database
     environment:
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY

@@ -72,6 +72,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	gormLogger "gorm.io/gorm/logger"
 )
 
 //go:embed all:ui
@@ -93,7 +96,7 @@ func init() {
 	pluginString := ""
 
 	flag.StringVar(&port, "port", "8080", "Port to run the server on")
-	flag.StringVar(&appDir, "app-dir", ".", "Application data directory (contains config.json and logs)")
+	flag.StringVar(&appDir, "app-dir", "./bifrost-data", "Application data directory (contains config.json and logs)")
 	flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
 	flag.Parse()
 
@@ -238,29 +241,65 @@ func main() {
 		log.Fatalf("failed to create app directory %s: %v", appDir, err)
 	}
 
-	// Derive paths from app-dir
-	configPath := filepath.Join(appDir, "config.json")
-	logDir := filepath.Join(appDir, "logs")
-
 	// Register Prometheus collectors
 	registerCollectorSafely(collectors.NewGoCollector())
 	registerCollectorSafely(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
-	// Initialize high-performance configuration store with caching
-	store, err := lib.NewConfigStore(logger)
+	// Initialize separate database connections for optimal performance at scale
+	configDBPath := filepath.Join(appDir, "config.db")
+	configFilePath := filepath.Join(appDir, "config.json")
+	logsDBPath := filepath.Join(appDir, "logs.db")
+
+	// Config database: Optimized for fast reads, rare writes
+	configDB, err := gorm.Open(sqlite.Open(configDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=1000"), &gorm.Config{
+		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
+	})
+	if err != nil {
+		log.Fatalf("failed to initialize config database: %v", err)
+	}
+
+	// Configure config database for read-heavy workload
+	configSQLDB, err := configDB.DB()
+	if err != nil {
+		log.Fatalf("failed to get config database: %v", err)
+	}
+	configSQLDB.SetMaxIdleConns(2) // Minimal connections for config
+	configSQLDB.SetMaxOpenConns(5) // Config doesn't need many connections
+
+	// Initialize high-performance configuration store with dedicated database
+	store, err := lib.NewConfigStore(logger, configDB, configFilePath)
 	if err != nil {
 		log.Fatalf("failed to initialize config store: %v", err)
 	}
 
-	// Load configuration from JSON file into the store with full preprocessing
-	// This processes environment variables and stores all configurations in memory for ultra-fast access
-	if err := store.LoadFromConfig(configPath); err != nil {
+	// Load configuration using hybrid file-database approach
+	// This checks for config.json file, compares hash with database, and loads accordingly
+	if err := store.LoadConfiguration(); err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	// Create account backed by the high-performance store (all processing is done in LoadFromConfig)
+	// Logs database: Optimized for high-volume writes
+	var logsDB *gorm.DB
+	if store.ClientConfig.EnableLogging {
+		logsDB, err = gorm.Open(sqlite.Open(logsDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=2000&_busy_timeout=30000"), &gorm.Config{
+			Logger: gormLogger.Default.LogMode(gormLogger.Silent),
+		})
+		if err != nil {
+			log.Fatalf("failed to initialize logs database: %v", err)
+		}
+
+		// Configure logs database for write-heavy workload at scale
+		logsSQLDB, err := logsDB.DB()
+		if err != nil {
+			log.Fatalf("failed to get logs database: %v", err)
+		}
+		logsSQLDB.SetMaxIdleConns(20) // Higher for concurrent writes
+		logsSQLDB.SetMaxOpenConns(50) // Support high concurrent logging
+	}
+
+	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
 	// The account interface now benefits from ultra-fast config access times via in-memory storage
 	account := lib.NewBaseAccount(store)
 
@@ -297,14 +336,9 @@ func main() {
 	var loggingHandler *handlers.LoggingHandler
 	var wsHandler *handlers.WebSocketHandler
 
-	if store.ClientConfig.EnableLogging {
-		// Initialize logging plugin with app-dir based path
-		loggingConfig := &logging.Config{
-			DatabasePath: logDir,
-		}
-
-		var err error
-		loggingPlugin, err = logging.NewLoggerPlugin(loggingConfig, logger)
+	if store.ClientConfig.EnableLogging && logsDB != nil {
+		// Use dedicated logs database with high-scale optimizations
+		loggingPlugin, err = logging.NewLoggerPlugin(logsDB, logger)
 		if err != nil {
 			log.Fatalf("failed to initialize logging plugin: %v", err)
 		}
@@ -334,7 +368,7 @@ func main() {
 	completionHandler := handlers.NewCompletionHandler(client, logger)
 	mcpHandler := handlers.NewMCPHandler(client, logger, store)
 	integrationHandler := handlers.NewIntegrationHandler(client)
-	configHandler := handlers.NewConfigHandler(client, logger, store, configPath)
+	configHandler := handlers.NewConfigHandler(client, logger, store)
 
 	// Set up WebSocket callback for real-time log updates
 	if wsHandler != nil && loggingPlugin != nil {

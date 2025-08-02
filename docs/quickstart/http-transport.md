@@ -69,6 +69,11 @@ docker run -p 8080:8080 \
 npx @maximhq/bifrost -port 8080
 ```
 
+> **🔄 Smart Configuration Loading**: Bifrost intelligently manages configuration sources:
+> - **If `config.json` exists**: Checks if the file has changed. If unchanged, loads from database (fast path). If changed, uses file as source of truth and syncs to database.
+> - **Without `config.json`**: Loads configuration from database only.
+> - **Web UI changes**: Always update the database, making it the source of truth for subsequent loads.
+
 ---
 
 ## 📁 Understanding App Directory & Docker Volumes
@@ -92,6 +97,7 @@ npx @maximhq/bifrost -port 8080
 
 - `config.json` - Configuration file (if using file-based config)
 - `logs/` - Database logs and request history
+- Database files - Configuration data and hash tracking
 - Any other persistent data
 
 ### **How Docker Volumes Work with App Directory**
@@ -114,8 +120,9 @@ docker run -p 8080:8080 maximhq/bifrost
 | Scenario                     | Command                                                       | Result                                  |
 | ---------------------------- | ------------------------------------------------------------- | --------------------------------------- |
 | **Ephemeral (testing)**      | `docker run -p 8080:8080 maximhq/bifrost`                     | No persistence, configure via web UI    |
-| **Persistent (recommended)** | `docker run -p 8080:8080 -v $(pwd):/app/data maximhq/bifrost` | Saves config & logs to host directory   |
+| **Persistent (recommended)** | `docker run -p 8080:8080 -v $(pwd):/app/data maximhq/bifrost` | Saves config, logs & DB to host directory |
 | **Pre-configured**           | Create `config.json`, then run with volume                    | Starts with your existing configuration |
+| **Web UI configured**        | Configure via web UI, then restart                            | Database becomes source of truth        |
 
 ### **Best Practices**
 
@@ -123,6 +130,7 @@ docker run -p 8080:8080 maximhq/bifrost
 - **🚀 Production**: Mount dedicated volume for data persistence
 - **🧪 Testing**: Run without volume for clean ephemeral instances
 - **👥 Teams**: Share `config.json` in version control, mount directory with volume
+- **⚠️ Important**: After configuring via web UI, your `config.json` may become outdated. The database becomes the source of truth once you make changes through the UI.
 
 ### 3. Test the API
 
@@ -139,6 +147,34 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 **🎉 Success!** You should see an AI response in JSON format.
 
 > **📋 Note**: All Bifrost responses follow OpenAI's response structure, regardless of the underlying provider. This ensures consistent integration across different AI providers.
+
+---
+
+## 🔄 Configuration Loading Behavior
+
+Bifrost intelligently manages configuration sources to ensure your settings are always up-to-date:
+
+### **When `config.json` exists:**
+1. **File unchanged**: Loads from database (fast path)
+2. **File modified**: Uses `config.json` as source of truth, syncs to database
+3. **First time**: Uses `config.json` as source of truth, syncs to database
+
+### **When no `config.json` exists:**
+
+- Loads configuration from database only
+- If database is empty, starts with default configuration
+
+### **Web UI Configuration:**
+
+- All changes made via web UI update the database
+- Database becomes the source of truth for subsequent loads
+- Your `config.json` may become outdated if you configure via web UI
+
+### **Important Notes:**
+
+- **Database is always the source of truth** after web UI changes
+- **File changes take precedence** over database when file is modified
+- **No data loss**: Configuration is always preserved in database
 
 ---
 
@@ -319,7 +355,7 @@ response, err := http.Post(
 | **Docker**      | No Go installation needed, isolated environment      | Production, CI/CD, quick testing |
 | **Binary**   | Direct execution, easier debugging                   | Development, custom builds       |
 
-**Note:** When using file-based config, Bifrost only looks for `config.json` in your specified app directory.
+ **Note:** When using file-based config, Bifrost only looks for `config.json` in your specified app directory. The database tracks file changes to optimize loading performance.
 
 ---
 
