@@ -7,7 +7,7 @@ tmp_dir = "./tmp"
   bin = "./tmp/main"
   cmd = "go build -o ./tmp/main ."
   delay = 1000
-  exclude_dir = ["assets", "tmp", "vendor", "testdata", "ui", "node_modules"]
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", "node_modules","ui"]
   exclude_file = []
   exclude_regex = ["_test.go"]
   exclude_unchanged = false
@@ -66,3 +66,6 @@ tmp_dir = "./tmp"
   
 [[build.watch_dirs]]
   dir = "./plugins"
+
+[[build.watch_dirs]]
+  dir = "../../ui"

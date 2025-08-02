@@ -1,15 +1,16 @@
-import axios, { AxiosInstance, isAxiosError } from "axios";
 import {
-	ListProvidersResponse,
-	ProviderResponse,
-	CoreConfig,
-	AddProviderRequest,
-	UpdateProviderRequest,
-	BifrostErrorResponse,
+    AddProviderRequest,
+    BifrostErrorResponse,
+    CoreConfig,
+    ListProvidersResponse,
+    ProviderResponse,
+    UpdateProviderRequest,
 } from "@/lib/types/config";
-import { MCPClient, CreateMCPClientRequest, UpdateMCPClientRequest } from "@/lib/types/mcp";
-import { LogEntry, LogFilters, LogStats, Pagination } from "./types/logs";
+import { CreateMCPClientRequest, MCPClient, UpdateMCPClientRequest } from "@/lib/types/mcp";
 import { getApiBaseUrl } from "@/lib/utils/port";
+import axios, { AxiosInstance, isAxiosError } from "axios";
+import { LogEntry, LogFilters, LogStats, Pagination } from "./types/logs";
+import { CreateRoutingRuleRequest, ListRoutingRulesResponse, RoutingRule, UpdateRoutingRuleRequest } from "./types/routing";
 
 type ServiceResponse<T> = Promise<[T | null, string | null]>;
 
@@ -134,6 +135,52 @@ class ApiService {
 	async deleteProvider(provider: string): ServiceResponse<ProviderResponse> {
 		try {
 			const response = await this.client.delete(`/providers/${provider}`);
+			return [response.data, null];
+		} catch (error) {
+			return [null, this.getErrorMessage(error)];
+		}
+	}
+
+	// Routing rule endpoints
+	async getRoutingRules(): ServiceResponse<ListRoutingRulesResponse> {
+		try {
+			const response = await this.client.get("/routing/rules");
+			return [response.data, null];
+		} catch (error) {
+			return [null, this.getErrorMessage(error)];
+		}
+	}
+
+	async getRoutingRule(id: string): ServiceResponse<RoutingRule> {
+		try {
+			const response = await this.client.get(`/routing/rules/${id}`);
+			return [response.data, null];
+		} catch (error) {
+			return [null, this.getErrorMessage(error)];
+		}
+	}
+
+	async createRoutingRule(data: CreateRoutingRuleRequest): ServiceResponse<RoutingRule> {
+		try {
+			const response = await this.client.post("/routing/rules", data);
+			return [response.data, null];
+		} catch (error) {
+			return [null, this.getErrorMessage(error)];
+		}
+	}
+
+	async updateRoutingRule(id: string, data: UpdateRoutingRuleRequest): ServiceResponse<RoutingRule> {
+		try {
+			const response = await this.client.put(`/routing/rules/${id}`, data);
+			return [response.data, null];
+		} catch (error) {
+			return [null, this.getErrorMessage(error)];
+		}
+	}
+
+	async deleteRoutingRule(id: string): ServiceResponse<RoutingRule> {
+		try {
+			const response = await this.client.delete(`/routing/rules/${id}`);
 			return [response.data, null];
 		} catch (error) {
 			return [null, this.getErrorMessage(error)];
