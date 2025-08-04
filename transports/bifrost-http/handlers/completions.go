@@ -218,11 +218,11 @@ func (h *CompletionHandler) TranscriptionCompletion(ctx *fasthttp.RequestCtx) {
 
 	fileHeader := fileHeaders[0]
 
-	// Validate file size and format
-	if err := h.validateAudioFile(fileHeader); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error(), h.logger)
-		return
-	}
+	// // Validate file size and format
+	// if err := h.validateAudioFile(fileHeader); err != nil {
+	// 	SendError(ctx, fasthttp.StatusBadRequest, err.Error(), h.logger)
+	// 	return
+	// }
 
 	file, err := fileHeader.Open()
 	if err != nil {

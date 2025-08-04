@@ -3,8 +3,8 @@ package logging
 
 import (
 	"encoding/json"
-	"time"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
@@ -20,6 +20,7 @@ type LogEntry struct {
 	Model               string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.BifrostMessage
 	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostMessage
+	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *[][]float32
 	Params              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
 	Tools               string    `gorm:"type:text" json:"-"` // JSON serialized *[]schemas.Tool
 	ToolCalls           string    `gorm:"type:text" json:"-"` // JSON serialized *[]schemas.ToolCall
@@ -44,6 +45,7 @@ type LogEntry struct {
 	// Virtual fields for JSON output - these will be populated when needed
 	InputHistoryParsed        []schemas.BifrostMessage    `gorm:"-" json:"input_history,omitempty"`
 	OutputMessageParsed       *schemas.BifrostMessage     `gorm:"-" json:"output_message,omitempty"`
+	EmbeddingOutputParsed     *[][]float32                `gorm:"-" json:"embedding_output,omitempty"`
 	ParamsParsed              *schemas.ModelParameters    `gorm:"-" json:"params,omitempty"`
 	ToolsParsed               *[]schemas.Tool             `gorm:"-" json:"tools,omitempty"`
 	ToolCallsParsed           *[]schemas.ToolCall         `gorm:"-" json:"tool_calls,omitempty"`
@@ -93,6 +95,14 @@ func (l *LogEntry) serializeFields() error {
 			return err
 		} else {
 			l.OutputMessage = string(data)
+		}
+	}
+
+	if l.EmbeddingOutputParsed != nil {
+		if data, err := json.Marshal(l.EmbeddingOutputParsed); err != nil {
+			return err
+		} else {
+			l.EmbeddingOutput = string(data)
 		}
 	}
 
@@ -191,6 +201,13 @@ func (l *LogEntry) deserializeFields() error {
 		if err := json.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.OutputMessageParsed = nil
+		}
+	}
+
+	if l.EmbeddingOutput != "" {
+		if err := json.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.EmbeddingOutputParsed = nil
 		}
 	}
 

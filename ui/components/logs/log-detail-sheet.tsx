@@ -13,6 +13,7 @@ import LogMessageView from './ui/log-message-view'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import SpeechView from './ui/speech-view'
 import TranscriptionView from './ui/transcription-view'
+import { renderProviderIcon, ProviderIconType } from '@/lib/constants/icons'
 
 interface LogDetailSheetProps {
   log: LogEntry | null
@@ -97,7 +98,16 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
           <div className="space-y-4">
             <BlockHeader title="Request Details" icon={<FileText className="h-5 w-5 text-gray-600" />} />
             <div className="grid w-full grid-cols-3 items-center justify-between gap-4">
-              <LogEntryDetailsView className="w-full" label="Provider" value={PROVIDER_LABELS[log.provider as Provider]} />
+              <LogEntryDetailsView
+                className="w-full"
+                label="Provider"
+                value={
+                  <Badge variant="secondary" className={`uppercase`}>
+                    {renderProviderIcon(log.provider as ProviderIconType, { size: 'sm' })}
+                    {log.provider}
+                  </Badge>
+                }
+              />
               <LogEntryDetailsView className="w-full" label="Model" value={log.model} />
               <LogEntryDetailsView
                 className="w-full"
@@ -221,6 +231,17 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
                   )}
                 </div>
                 <LogMessageView message={log.output_message} />
+              </>
+            )}
+            {log.embedding_output && (
+              <>
+                <div className="mt-4 w-full text-center text-sm font-medium">Embedding</div>
+                <LogMessageView
+                  message={{
+                    role: 'assistant',
+                    content: JSON.stringify(log.embedding_output, null, 2),
+                  }}
+                />
               </>
             )}
             {log.error_details?.error.message && (

@@ -66,6 +66,13 @@ func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, dat
 		}
 	}
 
+	if data.EmbeddingOutput != nil {
+		tempEntry.EmbeddingOutputParsed = data.EmbeddingOutput
+		if err := tempEntry.serializeFields(); err == nil {
+			updates["embedding_output"] = tempEntry.EmbeddingOutput
+		}
+	}
+
 	if data.ToolCalls != nil {
 		tempEntry.ToolCallsParsed = data.ToolCalls
 		if err := tempEntry.serializeFields(); err == nil {
@@ -472,5 +479,3 @@ func (p *LoggerPlugin) SearchLogs(filters SearchFilters, pagination PaginationOp
 		Stats:      stats,
 	}, nil
 }
-
-

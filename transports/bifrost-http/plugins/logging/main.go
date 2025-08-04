@@ -41,6 +41,7 @@ type UpdateLogData struct {
 	Status              string
 	TokenUsage          *schemas.LLMUsage
 	OutputMessage       *schemas.BifrostMessage
+	EmbeddingOutput     *[][]float32
 	ToolCalls           *[]schemas.ToolCall
 	ErrorDetails        *schemas.BifrostError
 	Model               string                     // May be different from request
@@ -515,6 +516,10 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 			}
 
+			if result.Embedding != nil {
+				updateData.EmbeddingOutput = &result.Embedding
+			}
+
 			// Handle speech and transcription outputs for NON-streaming responses
 			if result.Speech != nil {
 				updateData.SpeechOutput = result.Speech
@@ -686,6 +691,23 @@ func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas
 				Role: schemas.ModelChatMessageRoleUser,
 				Content: schemas.MessageContent{
 					ContentStr: input.TextCompletionInput,
+				},
+			},
+		}
+	}
+	if input.EmbeddingInput != nil {
+		contentBlocks := make([]schemas.ContentBlock, len(input.EmbeddingInput.Texts))
+		for i, text := range input.EmbeddingInput.Texts {
+			contentBlocks[i] = schemas.ContentBlock{
+				Type: schemas.ContentBlockTypeText,
+				Text: &text,
+			}
+		}
+		return []schemas.BifrostMessage{
+			{
+				Role: schemas.ModelChatMessageRoleUser,
+				Content: schemas.MessageContent{
+					ContentBlocks: &contentBlocks,
 				},
 			},
 		}

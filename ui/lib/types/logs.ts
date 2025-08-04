@@ -217,6 +217,7 @@ export interface LogEntry {
   model: string
   input_history: BifrostMessage[]
   output_message?: BifrostMessage
+  embedding_output?: number[][]
   params?: ModelParameters
   speech_input?: SpeechInput
   transcription_input?: TranscriptionInput
