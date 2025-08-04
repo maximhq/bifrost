@@ -57,6 +57,7 @@ type CompletionType string
 const (
 	CompletionTypeText          CompletionType = "text"
 	CompletionTypeChat          CompletionType = "chat"
+	CompletionTypeEmbeddings    CompletionType = "embeddings"
 	CompletionTypeSpeech        CompletionType = "speech"
 	CompletionTypeTranscription CompletionType = "transcription"
 )
@@ -158,6 +159,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router) {
 	// Completion endpoints
 	r.POST("/v1/text/completions", h.TextCompletion)
 	r.POST("/v1/chat/completions", h.ChatCompletion)
+	r.POST("/v1/embeddings", h.Embeddings)
 	r.POST("/v1/audio/speech", h.SpeechCompletion)
 	r.POST("/v1/audio/transcriptions", h.TranscriptionCompletion)
 }
@@ -170,6 +172,11 @@ func (h *CompletionHandler) TextCompletion(ctx *fasthttp.RequestCtx) {
 // ChatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) ChatCompletion(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeChat)
+}
+
+// Embeddings handles POST /v1/embeddings - Process embeddings requests
+func (h *CompletionHandler) Embeddings(ctx *fasthttp.RequestCtx) {
+	h.handleRequest(ctx, CompletionTypeEmbeddings)
 }
 
 // SpeechCompletion handles POST /v1/audio/speech - Process speech completion requests
@@ -348,6 +355,16 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		bifrostReq.Input = schemas.RequestInput{
 			ChatCompletionInput: &req.Messages,
 		}
+	case CompletionTypeEmbeddings:
+		if req.Input == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "Input is required for embeddings completion", h.logger)
+			return
+		}
+		bifrostReq.Input = schemas.RequestInput{
+			EmbeddingInput: &schemas.EmbeddingInput{
+				Texts: []string{req.Input},
+			},
+		}
 	case CompletionTypeSpeech:
 		if req.Input == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "Input is required for speech completion", h.logger)
@@ -398,6 +415,8 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		resp, bifrostErr = h.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
 	case CompletionTypeChat:
 		resp, bifrostErr = h.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
+	case CompletionTypeEmbeddings:
+		resp, bifrostErr = h.client.EmbeddingRequest(*bifrostCtx, bifrostReq)
 	case CompletionTypeSpeech:
 		resp, bifrostErr = h.client.SpeechRequest(*bifrostCtx, bifrostReq)
 	}
