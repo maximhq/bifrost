@@ -52,6 +52,15 @@ type OpenAITranscriptionRequest struct {
 	Stream                 *bool    `json:"stream,omitempty"`
 }
 
+// OpenAIEmbeddingRequest represents an OpenAI embedding request
+type OpenAIEmbeddingRequest struct {
+	Model          string      `json:"model"`
+	Input          interface{} `json:"input"` // Can be string or []string
+	EncodingFormat *string     `json:"encoding_format,omitempty"`
+	Dimensions     *int        `json:"dimensions,omitempty"`
+	User           *string     `json:"user,omitempty"`
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *OpenAIChatRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
@@ -67,6 +76,12 @@ func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
+// IsStreamingRequested implements the StreamingRequest interface for embeddings
+// Note: Embeddings don't support streaming in OpenAI API
+func (r *OpenAIEmbeddingRequest) IsStreamingRequested() bool {
+	return false
+}
+
 // OpenAIChatResponse represents an OpenAI chat completion response
 type OpenAIChatResponse struct {
 	ID                string                          `json:"id"`
@@ -77,6 +92,23 @@ type OpenAIChatResponse struct {
 	Usage             *schemas.LLMUsage               `json:"usage,omitempty"` // Reuse schema type
 	ServiceTier       *string                         `json:"service_tier,omitempty"`
 	SystemFingerprint *string                         `json:"system_fingerprint,omitempty"`
+}
+
+// OpenAIEmbeddingResponse represents an OpenAI embedding response
+type OpenAIEmbeddingResponse struct {
+	Object            string            `json:"object"`
+	Data              []OpenAIEmbedding `json:"data"`
+	Model             string            `json:"model"`
+	Usage             *schemas.LLMUsage `json:"usage,omitempty"`
+	ServiceTier       *string           `json:"service_tier,omitempty"`
+	SystemFingerprint *string           `json:"system_fingerprint,omitempty"`
+}
+
+// OpenAIEmbedding represents a single embedding in the response
+type OpenAIEmbedding struct {
+	Object    string    `json:"object"`
+	Embedding []float32 `json:"embedding"`
+	Index     int       `json:"index"`
 }
 
 // OpenAIChatError represents an OpenAI chat completion error response
@@ -215,6 +247,46 @@ func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest() *schemas.BifrostR
 	return bifrostReq
 }
 
+// ConvertToBifrostRequest converts an OpenAI embedding request to Bifrost format
+func (r *OpenAIEmbeddingRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
+	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI)
+
+	// Prepare input texts array
+	var texts []string
+	switch input := r.Input.(type) {
+	case string:
+		texts = []string{input}
+	case []string:
+		texts = input
+	case []interface{}:
+		// Handle JSON unmarshaling which converts arrays to []interface{}
+		texts = make([]string, len(input))
+		for i, v := range input {
+			if str, ok := v.(string); ok {
+				texts[i] = str
+			}
+		}
+	}
+
+	// Create embedding input
+	embeddingInput := &schemas.EmbeddingInput{
+		Texts: texts,
+	}
+
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: provider,
+		Model:    model,
+		Input: schemas.RequestInput{
+			EmbeddingInput: embeddingInput,
+		},
+	}
+
+	// Map parameters
+	bifrostReq.Params = r.convertEmbeddingParameters()
+
+	return bifrostReq
+}
+
 // convertParameters converts OpenAI request parameters to Bifrost ModelParameters
 // using direct field access for better performance and type safety.
 func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
@@ -303,6 +375,26 @@ func (r *OpenAITranscriptionRequest) convertTranscriptionParameters() *schemas.M
 	return params
 }
 
+// convertEmbeddingParameters converts OpenAI embedding request parameters to Bifrost ModelParameters
+func (r *OpenAIEmbeddingRequest) convertEmbeddingParameters() *schemas.ModelParameters {
+	params := &schemas.ModelParameters{
+		ExtraParams: make(map[string]interface{}),
+	}
+
+	// Add embedding-specific parameters
+	if r.EncodingFormat != nil {
+		params.EncodingFormat = r.EncodingFormat
+	}
+	if r.Dimensions != nil {
+		params.Dimensions = r.Dimensions
+	}
+	if r.User != nil {
+		params.User = r.User
+	}
+
+	return params
+}
+
 // DeriveOpenAIFromBifrostResponse converts a Bifrost response to OpenAI format
 func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIChatResponse {
 	if bifrostResp == nil {
@@ -338,6 +430,31 @@ func DeriveOpenAITranscriptionFromBifrostResponse(bifrostResp *schemas.BifrostRe
 		return nil
 	}
 	return bifrostResp.Transcribe
+}
+
+// DeriveOpenAIEmbeddingFromBifrostResponse converts a Bifrost embedding response to OpenAI format
+func DeriveOpenAIEmbeddingFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIEmbeddingResponse {
+	if bifrostResp == nil || bifrostResp.Embedding == nil {
+		return nil
+	}
+
+	var embeddingData []OpenAIEmbedding
+	for i, embedding := range bifrostResp.Embedding {
+		embeddingData = append(embeddingData, OpenAIEmbedding{
+			Object:    "embedding",
+			Embedding: embedding,
+			Index:     i,
+		})
+	}
+
+	return &OpenAIEmbeddingResponse{
+		Object:            "list",
+		Data:              embeddingData,
+		Model:             bifrostResp.Model,
+		Usage:             bifrostResp.Usage,
+		ServiceTier:       bifrostResp.ServiceTier,
+		SystemFingerprint: bifrostResp.SystemFingerprint,
+	}
 }
 
 // DeriveOpenAIErrorFromBifrostError derives a OpenAIChatError from a BifrostError

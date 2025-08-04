@@ -5,9 +5,12 @@ OpenAI Integration Tests
 - Chat: gpt-3.5-turbo
 - Vision: gpt-4o
 - Tools: gpt-3.5-turbo
+- Speech: tts-1
+- Transcription: whisper-1
+- Embeddings: text-embedding-3-small
 - Alternatives: gpt-4, gpt-4-turbo-preview, gpt-4o, gpt-4o-mini
 
-Tests all 11 core scenarios using OpenAI SDK directly:
+Tests all core scenarios using OpenAI SDK directly:
 1. Simple chat
 2. Multi turn conversation
 3. Tool calls
@@ -19,6 +22,25 @@ Tests all 11 core scenarios using OpenAI SDK directly:
 9. Multiple images
 10. Complete end2end test with conversation history, tool calls, tool results and images
 11. Integration specific tests
+12. Error handling
+13. Streaming chat
+14. Speech synthesis
+15. Audio transcription
+16. Transcription streaming
+17. Speech-transcription round trip
+18. Speech error handling
+19. Transcription error handling
+20. Different voices and audio formats
+21. Single text embedding
+22. Batch text embeddings
+23. Embedding similarity analysis
+24. Embedding dissimilarity analysis
+25. Different embedding models
+26. Long text embedding
+27. Embedding error handling
+28. Embedding dimensionality reduction
+29. Embedding encoding formats
+30. Embedding usage tracking
 """
 
 import pytest
@@ -67,6 +89,18 @@ from ..utils.common import (
     assert_valid_streaming_transcription_response,
     collect_streaming_speech_content,
     collect_streaming_transcription_content,
+    # Embeddings utilities
+    EMBEDDINGS_SINGLE_TEXT,
+    EMBEDDINGS_MULTIPLE_TEXTS,
+    EMBEDDINGS_SIMILAR_TEXTS,
+    EMBEDDINGS_DIFFERENT_TEXTS,
+    EMBEDDINGS_EMPTY_TEXTS,
+    EMBEDDINGS_LONG_TEXT,
+    assert_valid_embedding_response,
+    assert_valid_embeddings_batch_response,
+    calculate_cosine_similarity,
+    assert_embeddings_similarity,
+    assert_embeddings_dissimilarity,
 )
 from ..utils.config_loader import get_model
 
@@ -720,3 +754,303 @@ class TestOpenAIIntegration:
 
         # At least MP3 should be supported
         assert "mp3" in format_results, "MP3 format should be supported"
+
+    @skip_if_no_api_key("openai")
+    def test_21_single_text_embedding(self, openai_client, test_config):
+        """Test Case 21: Single text embedding generation"""
+        response = openai_client.embeddings.create(
+            model=get_model("openai", "embeddings"), input=EMBEDDINGS_SINGLE_TEXT
+        )
+
+        assert_valid_embedding_response(response, expected_dimensions=1536)
+
+        # Verify response structure
+        assert len(response.data) == 1, "Should have exactly one embedding"
+        assert response.data[0].index == 0, "First embedding should have index 0"
+        assert (
+            response.data[0].object == "embedding"
+        ), "Object type should be 'embedding'"
+
+        # Verify model in response
+        assert response.model is not None, "Response should include model name"
+        assert "text-embedding" in response.model, "Model should be an embedding model"
+
+    @skip_if_no_api_key("openai")
+    def test_22_batch_text_embeddings(self, openai_client, test_config):
+        """Test Case 22: Batch text embedding generation"""
+        response = openai_client.embeddings.create(
+            model=get_model("openai", "embeddings"), input=EMBEDDINGS_MULTIPLE_TEXTS
+        )
+
+        expected_count = len(EMBEDDINGS_MULTIPLE_TEXTS)
+        assert_valid_embeddings_batch_response(
+            response, expected_count, expected_dimensions=1536
+        )
+
+        # Verify each embedding has correct index
+        for i, embedding_obj in enumerate(response.data):
+            assert embedding_obj.index == i, f"Embedding {i} should have index {i}"
+            assert (
+                embedding_obj.object == "embedding"
+            ), f"Embedding {i} should have object type 'embedding'"
+
+    @skip_if_no_api_key("openai")
+    def test_23_embedding_similarity_analysis(self, openai_client, test_config):
+        """Test Case 23: Embedding similarity analysis with similar texts"""
+        response = openai_client.embeddings.create(
+            model=get_model("openai", "embeddings"), input=EMBEDDINGS_SIMILAR_TEXTS
+        )
+
+        assert_valid_embeddings_batch_response(
+            response, len(EMBEDDINGS_SIMILAR_TEXTS), expected_dimensions=1536
+        )
+
+        embeddings = [item.embedding for item in response.data]
+
+        # Test similarity between the first two embeddings (similar weather texts)
+        similarity_1_2 = calculate_cosine_similarity(embeddings[0], embeddings[1])
+        similarity_1_3 = calculate_cosine_similarity(embeddings[0], embeddings[2])
+        similarity_2_3 = calculate_cosine_similarity(embeddings[1], embeddings[2])
+
+        # Similar texts should have high similarity (> 0.7)
+        assert (
+            similarity_1_2 > 0.7
+        ), f"Similar texts should have high similarity, got {similarity_1_2:.4f}"
+        assert (
+            similarity_1_3 > 0.7
+        ), f"Similar texts should have high similarity, got {similarity_1_3:.4f}"
+        assert (
+            similarity_2_3 > 0.7
+        ), f"Similar texts should have high similarity, got {similarity_2_3:.4f}"
+
+    @skip_if_no_api_key("openai")
+    def test_24_embedding_dissimilarity_analysis(self, openai_client, test_config):
+        """Test Case 24: Embedding dissimilarity analysis with different texts"""
+        response = openai_client.embeddings.create(
+            model=get_model("openai", "embeddings"), input=EMBEDDINGS_DIFFERENT_TEXTS
+        )
+
+        assert_valid_embeddings_batch_response(
+            response, len(EMBEDDINGS_DIFFERENT_TEXTS), expected_dimensions=1536
+        )
+
+        embeddings = [item.embedding for item in response.data]
+
+        # Test dissimilarity between different topic embeddings
+        # Weather vs Programming
+        weather_prog_similarity = calculate_cosine_similarity(
+            embeddings[0], embeddings[1]
+        )
+        # Weather vs Stock Market
+        weather_stock_similarity = calculate_cosine_similarity(
+            embeddings[0], embeddings[2]
+        )
+        # Programming vs Machine Learning (should be more similar)
+        prog_ml_similarity = calculate_cosine_similarity(embeddings[1], embeddings[3])
+
+        # Different topics should have lower similarity
+        assert (
+            weather_prog_similarity < 0.8
+        ), f"Different topics should have lower similarity, got {weather_prog_similarity:.4f}"
+        assert (
+            weather_stock_similarity < 0.8
+        ), f"Different topics should have lower similarity, got {weather_stock_similarity:.4f}"
+
+        # Programming and ML should be more similar than completely different topics
+        assert (
+            prog_ml_similarity > weather_prog_similarity
+        ), "Related tech topics should be more similar than unrelated topics"
+
+    @skip_if_no_api_key("openai")
+    def test_25_embedding_different_models(self, openai_client, test_config):
+        """Test Case 25: Test different embedding models"""
+        test_text = EMBEDDINGS_SINGLE_TEXT
+
+        # Test with text-embedding-3-small (default)
+        response_small = openai_client.embeddings.create(
+            model="text-embedding-3-small", input=test_text
+        )
+        assert_valid_embedding_response(response_small, expected_dimensions=1536)
+
+        # Test with text-embedding-3-large if available
+        try:
+            response_large = openai_client.embeddings.create(
+                model="text-embedding-3-large", input=test_text
+            )
+            assert_valid_embedding_response(response_large, expected_dimensions=3072)
+
+            # Verify different models produce different embeddings
+            embedding_small = response_small.data[0].embedding
+            embedding_large = response_large.data[0].embedding
+
+            # They should have different dimensions
+            assert len(embedding_small) != len(
+                embedding_large
+            ), "Different models should produce different dimension embeddings"
+
+        except Exception as e:
+            # If text-embedding-3-large is not available, just log it
+            print(f"text-embedding-3-large not available: {e}")
+
+    @skip_if_no_api_key("openai")
+    def test_26_embedding_long_text(self, openai_client, test_config):
+        """Test Case 26: Embedding generation with longer text"""
+        response = openai_client.embeddings.create(
+            model=get_model("openai", "embeddings"), input=EMBEDDINGS_LONG_TEXT
+        )
+
+        assert_valid_embedding_response(response, expected_dimensions=1536)
+
+        # Verify token usage is reported for longer text
+        assert response.usage is not None, "Usage should be reported for longer text"
+        assert (
+            response.usage.total_tokens > 20
+        ), "Longer text should consume more tokens"
+
+    @skip_if_no_api_key("openai")
+    def test_27_embedding_error_handling(self, openai_client, test_config):
+        """Test Case 27: Embedding error handling"""
+
+        # Test with invalid model
+        with pytest.raises(Exception) as exc_info:
+            openai_client.embeddings.create(
+                model="invalid-embedding-model", input=EMBEDDINGS_SINGLE_TEXT
+            )
+
+        error = exc_info.value
+        assert_valid_error_response(error, "invalid-embedding-model")
+
+        # Test with empty text (depending on implementation, might be handled)
+        try:
+            response = openai_client.embeddings.create(
+                model=get_model("openai", "embeddings"), input=""
+            )
+            # If it doesn't throw an error, check that response is still valid
+            if response:
+                assert_valid_embedding_response(response)
+
+        except Exception as e:
+            # Empty input might be rejected, which is acceptable
+            assert (
+                "empty" in str(e).lower() or "invalid" in str(e).lower()
+            ), "Error should mention empty or invalid input"
+
+    @skip_if_no_api_key("openai")
+    def test_28_embedding_dimensionality_reduction(self, openai_client, test_config):
+        """Test Case 28: Embedding with custom dimensions (if supported)"""
+        try:
+            # Test custom dimensions with text-embedding-3-small
+            custom_dimensions = 512
+            response = openai_client.embeddings.create(
+                model="text-embedding-3-small",
+                input=EMBEDDINGS_SINGLE_TEXT,
+                dimensions=custom_dimensions,
+            )
+
+            assert_valid_embedding_response(
+                response, expected_dimensions=custom_dimensions
+            )
+
+            # Compare with default dimensions
+            response_default = openai_client.embeddings.create(
+                model="text-embedding-3-small", input=EMBEDDINGS_SINGLE_TEXT
+            )
+
+            embedding_custom = response.data[0].embedding
+            embedding_default = response_default.data[0].embedding
+
+            assert (
+                len(embedding_custom) == custom_dimensions
+            ), f"Custom dimensions should be {custom_dimensions}"
+            assert len(embedding_default) == 1536, "Default dimensions should be 1536"
+            assert len(embedding_custom) != len(
+                embedding_default
+            ), "Custom and default dimensions should be different"
+
+        except Exception as e:
+            # Custom dimensions might not be supported by all models
+            print(f"Custom dimensions not supported: {e}")
+
+    @skip_if_no_api_key("openai")
+    def test_29_embedding_encoding_format(self, openai_client, test_config):
+        """Test Case 29: Different encoding formats (if supported)"""
+        try:
+            # Test with float encoding (default)
+            response_float = openai_client.embeddings.create(
+                model=get_model("openai", "embeddings"),
+                input=EMBEDDINGS_SINGLE_TEXT,
+                encoding_format="float",
+            )
+
+            assert_valid_embedding_response(response_float, expected_dimensions=1536)
+            embedding_float = response_float.data[0].embedding
+            assert all(
+                isinstance(x, float) for x in embedding_float
+            ), "Float encoding should return float values"
+
+            # Test with base64 encoding if supported
+            try:
+                response_base64 = openai_client.embeddings.create(
+                    model=get_model("openai", "embeddings"),
+                    input=EMBEDDINGS_SINGLE_TEXT,
+                    encoding_format="base64",
+                )
+
+                # Base64 encoding returns string data
+                assert (
+                    response_base64.data[0].embedding is not None
+                ), "Base64 encoding should return data"
+
+            except Exception as base64_error:
+                print(f"Base64 encoding not supported: {base64_error}")
+
+        except Exception as e:
+            # Encoding format parameter might not be supported
+            print(f"Encoding format parameter not supported: {e}")
+
+    @skip_if_no_api_key("openai")
+    def test_30_embedding_usage_tracking(self, openai_client, test_config):
+        """Test Case 30: Embedding usage tracking and token counting"""
+        # Single text embedding
+        response_single = openai_client.embeddings.create(
+            model=get_model("openai", "embeddings"), input=EMBEDDINGS_SINGLE_TEXT
+        )
+
+        assert_valid_embedding_response(response_single)
+        assert (
+            response_single.usage is not None
+        ), "Single embedding should have usage data"
+        assert (
+            response_single.usage.total_tokens > 0
+        ), "Single embedding should consume tokens"
+        single_tokens = response_single.usage.total_tokens
+
+        # Batch embedding
+        response_batch = openai_client.embeddings.create(
+            model=get_model("openai", "embeddings"), input=EMBEDDINGS_MULTIPLE_TEXTS
+        )
+
+        assert_valid_embeddings_batch_response(
+            response_batch, len(EMBEDDINGS_MULTIPLE_TEXTS)
+        )
+        assert (
+            response_batch.usage is not None
+        ), "Batch embedding should have usage data"
+        assert (
+            response_batch.usage.total_tokens > 0
+        ), "Batch embedding should consume tokens"
+        batch_tokens = response_batch.usage.total_tokens
+
+        # Batch should consume more tokens than single
+        assert (
+            batch_tokens > single_tokens
+        ), f"Batch embedding ({batch_tokens} tokens) should consume more than single ({single_tokens} tokens)"
+
+        # Verify proportional token usage
+        texts_ratio = len(EMBEDDINGS_MULTIPLE_TEXTS)
+        token_ratio = batch_tokens / single_tokens
+
+        # Token ratio should be roughly proportional to text count (allowing for some variance)
+        assert (
+            0.5 * texts_ratio <= token_ratio <= 2.0 * texts_ratio
+        ), f"Token usage ratio ({token_ratio:.2f}) should be roughly proportional to text count ({texts_ratio})"

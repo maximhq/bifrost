@@ -1977,7 +1977,7 @@ func (s *ConfigStore) LoadConfiguration() error {
 		return s.loadWithFileCheck(s.configPath)
 	} else {
 		// No file - load from DB only
-		s.logger.Info("No config.json file found, loading from database only")
+		s.logger.Info("No config.json file found, loading from database")
 		return s.loadFromDatabaseInternal()
 	}
 }

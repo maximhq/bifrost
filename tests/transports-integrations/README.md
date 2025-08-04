@@ -1,6 +1,6 @@
 # Bifrost Integration Tests
 
-Production-ready end-to-end test suite for testing AI integrations through Bifrost proxy. This test suite provides uniform testing across multiple AI integrations with comprehensive coverage of chat, tool calling, image processing, and multimodal workflows.
+Production-ready end-to-end test suite for testing AI integrations through Bifrost proxy. This test suite provides uniform testing across multiple AI integrations with comprehensive coverage of chat, tool calling, image processing, embeddings, speech synthesis, and multimodal workflows.
 
 ## 🌉 Architecture Overview
 
@@ -27,15 +27,16 @@ The Bifrost integration tests use a centralized configuration system that routes
 - **🌉 Bifrost Gateway Integration**: All integrations route through Bifrost proxy
 - **🤖 Centralized Configuration**: YAML-based configuration with environment variable support
 - **🔧 Integration-Specific Clients**: Type-safe, integration-optimized implementations
-- **📋 Comprehensive Test Coverage**: 13 categories covering all major AI functionality
+- **📋 Comprehensive Test Coverage**: 14 categories covering all major AI functionality
 - **⚙️ Flexible Execution**: Selective test running with command-line flags
 - **🛡️ Robust Error Handling**: Graceful error handling and detailed error reporting
 - **🎯 Production-Ready**: Async support, timeouts, retries, and logging
 - **🎵 Speech & Audio Support**: Text-to-speech synthesis and speech-to-text transcription testing
+- **🔗 Embeddings Support**: Text-to-vector conversion and similarity analysis testing
 
 ## 📋 Test Categories
 
-Our test suite covers 21 comprehensive scenarios for each integration:
+Our test suite covers 30 comprehensive scenarios for each integration:
 
 ### Core Chat & Conversation Tests
 1. **Simple Chat** - Basic single-message conversations
@@ -62,10 +63,22 @@ Our test suite covers 21 comprehensive scenarios for each integration:
 16. **Transcription Error Handling** - Invalid audio format and model error handling
 17. **Voice & Format Testing** - Multiple voices and audio format validation
 
+### Embeddings Tests (OpenAI)
+18. **Single Text Embedding** - Basic text-to-vector conversion
+19. **Batch Text Embeddings** - Multiple text embeddings in single request
+20. **Embedding Similarity Analysis** - Cosine similarity testing for similar texts
+21. **Embedding Dissimilarity Analysis** - Validation of different topic embeddings
+22. **Different Embedding Models** - Testing various embedding model capabilities
+23. **Long Text Embedding** - Handling of longer text inputs and token usage
+24. **Embedding Error Handling** - Invalid model and input error processing
+25. **Dimensionality Reduction** - Custom embedding dimensions (if supported)
+26. **Encoding Format Testing** - Different embedding output formats
+27. **Usage Tracking** - Token consumption and batch processing validation
+
 ### Integration & Error Tests
-19. **Complex End-to-End** - Comprehensive multimodal workflows
-20. **Integration-Specific Features** - Integration-unique capabilities
-21. **Error Handling** - Invalid request error processing and propagation
+28. **Complex End-to-End** - Comprehensive multimodal workflows
+29. **Integration-Specific Features** - Integration-unique capabilities
+30. **Error Handling** - Invalid request error processing and propagation
 
 ## 📁 Directory Structure
 
@@ -649,10 +662,10 @@ vision_model = get_model("anthropic", "vision")
 #### OpenAI
 
 - ✅ **Full Bifrost Integration**: Complete base URL support
-- ✅ **Models**: gpt-3.5-turbo, gpt-4, gpt-4o, gpt-4o-mini
-- ✅ **Features**: Chat, tools, vision
+- ✅ **Models**: gpt-3.5-turbo, gpt-4, gpt-4o, gpt-4o-mini, text-embedding-3-small, tts-1, whisper-1
+- ✅ **Features**: Chat, tools, vision, speech synthesis, transcription, embeddings
 - ✅ **Settings**: Organization/project IDs, timeouts, retries
-- ✅ **All Test Categories**: 11/11 scenarios supported
+- ✅ **All Test Categories**: 30/30 scenarios supported (including speech & embeddings)
 
 #### Anthropic
 
@@ -815,6 +828,12 @@ pytest tests/integrations/test_google.py::TestGoogleIntegration::test_07_image_u
 
 # Test 9: Multiple Images
 pytest tests/integrations/test_litellm.py::TestLiteLLMIntegration::test_09_multiple_images -v
+
+# Test 21: Single Text Embedding (OpenAI only)
+pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_21_single_text_embedding -v
+
+# Test 23: Embedding Similarity Analysis (OpenAI only)
+pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_23_embedding_similarity_analysis -v
 ```
 
 #### Running Test Categories by Pattern
@@ -829,11 +848,17 @@ pytest tests/integrations/ -k "tool_call" -v
 # Run all image-related tests
 pytest tests/integrations/ -k "image" -v
 
+# Run all embedding tests (OpenAI only)
+pytest tests/integrations/test_openai.py -k "embedding" -v
+
+# Run all speech and audio tests (OpenAI only)
+pytest tests/integrations/test_openai.py -k "speech or transcription" -v
+
 # Run all end-to-end tests
 pytest tests/integrations/ -k "end2end" -v
 
 # Run integration-specific feature tests
-pytest tests/integrations/ -k "test_11_integration_specific" -v
+pytest tests/integrations/ -k "integration_specific" -v
 ```
 
 #### Running Tests by Integration

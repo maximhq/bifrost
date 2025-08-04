@@ -55,6 +55,32 @@ func NewOpenAIRouter(client *bifrost.Bifrost) *OpenAIRouter {
 		})
 	}
 
+	// Embeddings endpoint
+	for _, path := range []string{
+		"/openai/v1/embeddings",
+		"/openai/embeddings",
+	} {
+		routes = append(routes, integrations.RouteConfig{
+			Path:   path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &OpenAIEmbeddingRequest{}
+			},
+			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				if embeddingReq, ok := req.(*OpenAIEmbeddingRequest); ok {
+					return embeddingReq.ConvertToBifrostRequest(), nil
+				}
+				return nil, errors.New("invalid embedding request type")
+			},
+			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				return DeriveOpenAIEmbeddingFromBifrostResponse(resp), nil
+			},
+			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				return DeriveOpenAIErrorFromBifrostError(err)
+			},
+		})
+	}
+
 	// Speech synthesis endpoint
 	for _, path := range []string{
 		"/openai/v1/audio/speech",

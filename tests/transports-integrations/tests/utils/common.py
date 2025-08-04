@@ -80,6 +80,41 @@ SEARCH_TOOL = {
 
 ALL_TOOLS = [WEATHER_TOOL, CALCULATOR_TOOL, SEARCH_TOOL]
 
+# Embeddings Test Data
+EMBEDDINGS_SINGLE_TEXT = "The quick brown fox jumps over the lazy dog."
+
+EMBEDDINGS_MULTIPLE_TEXTS = [
+    "Artificial intelligence is transforming our world.",
+    "Machine learning algorithms learn from data to make predictions.",
+    "Natural language processing helps computers understand human language.",
+    "Computer vision enables machines to interpret and analyze visual information.",
+    "Robotics combines AI with mechanical engineering to create autonomous systems.",
+]
+
+EMBEDDINGS_SIMILAR_TEXTS = [
+    "The weather is sunny and warm today.",
+    "Today has bright sunshine and pleasant temperatures.",
+    "It's a beautiful day with clear skies and warmth.",
+]
+
+EMBEDDINGS_DIFFERENT_TEXTS = [
+    "The weather is sunny and warm today.",
+    "Python is a popular programming language.",
+    "The stock market closed higher yesterday.",
+    "Machine learning requires large datasets.",
+]
+
+EMBEDDINGS_EMPTY_TEXTS = ["", "   ", "\n\t", ""]
+
+EMBEDDINGS_LONG_TEXT = """
+This is a longer text sample designed to test how embedding models handle 
+larger inputs. It contains multiple sentences with various topics including 
+technology, science, literature, and general knowledge. The purpose is to 
+ensure that the embedding generation works correctly with substantial text 
+inputs that might be closer to real-world usage scenarios where users 
+embed entire paragraphs or documents rather than just short phrases.
+""".strip()
+
 # Tool Call Test Messages
 SINGLE_TOOL_CALL_MESSAGES = [
     {"role": "user", "content": "What's the weather like in San Francisco?"}
@@ -991,6 +1026,168 @@ def assert_valid_transcription_response(response: Any, min_text_length: int = 1)
     assert (
         len(text_content.strip()) >= min_text_length
     ), f"Transcribed text should be at least {min_text_length} characters, got: '{text_content}'"
+
+
+def assert_valid_embedding_response(
+    response: Any, expected_dimensions: Optional[int] = None
+) -> None:
+    """Assert that an embedding response is valid"""
+    assert response is not None, "Embedding response should not be None"
+
+    # Check if it's an OpenAI-style response object
+    if hasattr(response, "data"):
+        assert (
+            len(response.data) > 0
+        ), "Embedding response should contain at least one embedding"
+
+        embedding = response.data[0].embedding
+        assert isinstance(
+            embedding, list
+        ), f"Embedding should be a list, got {type(embedding)}"
+        assert len(embedding) > 0, "Embedding should not be empty"
+        assert all(
+            isinstance(x, (int, float)) for x in embedding
+        ), "All embedding values should be numeric"
+
+        if expected_dimensions:
+            assert (
+                len(embedding) == expected_dimensions
+            ), f"Expected {expected_dimensions} dimensions, got {len(embedding)}"
+
+        # Check if usage information is present
+        if hasattr(response, "usage") and response.usage:
+            assert hasattr(
+                response.usage, "total_tokens"
+            ), "Usage should include total_tokens"
+            assert (
+                response.usage.total_tokens > 0
+            ), "Token usage should be greater than 0"
+
+    # Check if it's a direct list (embedding vector)
+    elif isinstance(response, list):
+        assert len(response) > 0, "Embedding should not be empty"
+        assert all(
+            isinstance(x, (int, float)) for x in response
+        ), "All embedding values should be numeric"
+
+        if expected_dimensions:
+            assert (
+                len(response) == expected_dimensions
+            ), f"Expected {expected_dimensions} dimensions, got {len(response)}"
+
+    else:
+        raise AssertionError(f"Invalid embedding response format: {type(response)}")
+
+
+def assert_valid_embeddings_batch_response(
+    response: Any, expected_count: int, expected_dimensions: Optional[int] = None
+) -> None:
+    """Assert that a batch embeddings response is valid"""
+    assert response is not None, "Embeddings batch response should not be None"
+
+    # Check if it's an OpenAI-style response object
+    if hasattr(response, "data"):
+        assert (
+            len(response.data) == expected_count
+        ), f"Expected {expected_count} embeddings, got {len(response.data)}"
+
+        for i, embedding_obj in enumerate(response.data):
+            assert hasattr(
+                embedding_obj, "embedding"
+            ), f"Embedding object {i} should have 'embedding' attribute"
+            embedding = embedding_obj.embedding
+
+            assert isinstance(
+                embedding, list
+            ), f"Embedding {i} should be a list, got {type(embedding)}"
+            assert len(embedding) > 0, f"Embedding {i} should not be empty"
+            assert all(
+                isinstance(x, (int, float)) for x in embedding
+            ), f"All values in embedding {i} should be numeric"
+
+            if expected_dimensions:
+                assert (
+                    len(embedding) == expected_dimensions
+                ), f"Embedding {i}: expected {expected_dimensions} dimensions, got {len(embedding)}"
+
+        # Check usage information
+        if hasattr(response, "usage") and response.usage:
+            assert hasattr(
+                response.usage, "total_tokens"
+            ), "Usage should include total_tokens"
+            assert (
+                response.usage.total_tokens > 0
+            ), "Token usage should be greater than 0"
+
+    # Check if it's a direct list of embeddings
+    elif isinstance(response, list):
+        assert (
+            len(response) == expected_count
+        ), f"Expected {expected_count} embeddings, got {len(response)}"
+
+        for i, embedding in enumerate(response):
+            assert isinstance(
+                embedding, list
+            ), f"Embedding {i} should be a list, got {type(embedding)}"
+            assert len(embedding) > 0, f"Embedding {i} should not be empty"
+            assert all(
+                isinstance(x, (int, float)) for x in embedding
+            ), f"All values in embedding {i} should be numeric"
+
+            if expected_dimensions:
+                assert (
+                    len(embedding) == expected_dimensions
+                ), f"Embedding {i}: expected {expected_dimensions} dimensions, got {len(embedding)}"
+
+    else:
+        raise AssertionError(
+            f"Invalid embeddings batch response format: {type(response)}"
+        )
+
+
+def calculate_cosine_similarity(
+    embedding1: List[float], embedding2: List[float]
+) -> float:
+    """Calculate cosine similarity between two embedding vectors"""
+    import math
+
+    assert len(embedding1) == len(embedding2), "Embeddings must have the same dimension"
+
+    # Calculate dot product
+    dot_product = sum(a * b for a, b in zip(embedding1, embedding2))
+
+    # Calculate magnitudes
+    magnitude1 = math.sqrt(sum(a * a for a in embedding1))
+    magnitude2 = math.sqrt(sum(b * b for b in embedding2))
+
+    # Avoid division by zero
+    if magnitude1 == 0 or magnitude2 == 0:
+        return 0.0
+
+    return dot_product / (magnitude1 * magnitude2)
+
+
+def assert_embeddings_similarity(
+    embedding1: List[float],
+    embedding2: List[float],
+    min_similarity: float = 0.8,
+    max_similarity: float = 1.0,
+) -> None:
+    """Assert that two embeddings have expected similarity"""
+    similarity = calculate_cosine_similarity(embedding1, embedding2)
+    assert (
+        min_similarity <= similarity <= max_similarity
+    ), f"Embedding similarity {similarity:.4f} should be between {min_similarity} and {max_similarity}"
+
+
+def assert_embeddings_dissimilarity(
+    embedding1: List[float], embedding2: List[float], max_similarity: float = 0.5
+) -> None:
+    """Assert that two embeddings are sufficiently different"""
+    similarity = calculate_cosine_similarity(embedding1, embedding2)
+    assert (
+        similarity <= max_similarity
+    ), f"Embedding similarity {similarity:.4f} should be at most {max_similarity} for dissimilar texts"
 
 
 def assert_valid_streaming_speech_response(chunk: Any, integration: str):

@@ -300,6 +300,8 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
 	} else if bifrostReq.Input.ChatCompletionInput != nil {
 		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
+	} else if bifrostReq.Input.EmbeddingInput != nil {
+		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq)
 	} else if bifrostReq.Input.SpeechInput != nil {
 		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq)
 	} else if bifrostReq.Input.TranscriptionInput != nil {
