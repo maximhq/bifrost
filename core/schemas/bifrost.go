@@ -11,6 +11,11 @@ const (
 	DefaultInitialPoolSize = 100
 )
 
+// StreamOptions represents the options for streaming requests.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
@@ -162,19 +167,20 @@ type Fallback struct {
 // your request to the model. Bifrost follows a standard set of parameters which
 // mapped to the provider's parameters.
 type ModelParameters struct {
-	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
-	Tools             *[]Tool     `json:"tools,omitempty"`               // Tools to use
-	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
-	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
-	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
-	MaxTokens         *int        `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
-	StopSequences     *[]string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
-	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
-	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
-	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
-	EncodingFormat    *string     `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
-	Dimensions        *int        `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
-	User              *string     `json:"user,omitempty"`                // User identifier for tracking
+	ToolChoice        *ToolChoice    `json:"tool_choice,omitempty"`         // Whether to call a tool
+	Tools             *[]Tool        `json:"tools,omitempty"`               // Tools to use
+	Temperature       *float64       `json:"temperature,omitempty"`         // Controls randomness in the output
+	TopP              *float64       `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
+	TopK              *int           `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
+	MaxTokens         *int           `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
+	StopSequences     *[]string      `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	PresencePenalty   *float64       `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
+	FrequencyPenalty  *float64       `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
+	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
+	EncodingFormat    *string        `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
+	Dimensions        *int           `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
+	User              *string        `json:"user,omitempty"`                // User identifier for tracking
+	StreamOptions     *StreamOptions `json:"stream_options,omitempty"`      // Stream options for streaming requests
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -352,6 +358,7 @@ type ContentBlock struct {
 // ToolMessage represents a message from a tool
 type ToolMessage struct {
 	ToolCallID *string `json:"tool_call_id,omitempty"`
+	IsError    *bool   `json:"is_error,omitempty"`
 }
 
 // AssistantMessage represents a message from an assistant
@@ -372,18 +379,41 @@ type ImageURLStruct struct {
 
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
-	ID                string                     `json:"id,omitempty"`
-	Object            string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
-	Choices           []BifrostResponseChoice    `json:"choices,omitempty"`
-	Embedding         [][]float32                `json:"data,omitempty"`       // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
-	Speech            *BifrostSpeech             `json:"speech,omitempty"`     // Maps to "speech" field in provider responses (e.g., OpenAI speech format)
-	Transcribe        *BifrostTranscribe         `json:"transcribe,omitempty"` // Maps to "transcribe" field in provider responses (e.g., OpenAI transcription format)
-	Model             string                     `json:"model,omitempty"`
-	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
-	Usage             *LLMUsage                  `json:"usage,omitempty"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ID                  string                     `json:"id,omitempty"`
+	Object              string                     `json:"object,omitempty"` // text.completion, chat.completion, or embedding
+	Choices             []BifrostResponseChoice    `json:"choices,omitempty"`
+	Embedding           [][]float32                `json:"data,omitempty"`       // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
+	Speech              *BifrostSpeech             `json:"speech,omitempty"`     // Maps to "speech" field in provider responses (e.g., OpenAI speech format)
+	Transcribe          *BifrostTranscribe         `json:"transcribe,omitempty"` // Maps to "transcribe" field in provider responses (e.g., OpenAI transcription format)
+	Model               string                     `json:"model,omitempty"`
+	Created             int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
+	ServiceTier         *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint   *string                    `json:"system_fingerprint,omitempty"`
+	Usage               *LLMUsage                  `json:"usage,omitempty"`
+	PromptFilterResults *[]PromptFilterResult      `json:"prompt_filter_results,omitempty"` // Azure OpenAI Service
+	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// FilterResult represents the result of a content filter.
+type FilterResult struct {
+	Filtered bool `json:"filtered"`
+	Severity bool `json:"severity"`
+}
+
+// ContentFilterResult represents the result of a content filter.
+type ContentFilterResult struct {
+	HateSpeech FilterResult `json:"hate_speech,omitempty"`
+	SelfHarm   FilterResult `json:"self_harm,omitempty"`
+	Sexual     FilterResult `json:"sexual,omitempty"`
+	Violence   FilterResult `json:"violence,omitempty"`
+	Jailbreak  FilterResult `json:"jailbreak,omitempty"`
+	Profanity  FilterResult `json:"profanity,omitempty"`
+}
+
+// PromptFilterResult represents the result of a prompt filter.
+type PromptFilterResult struct {
+	PromptIndex          int                  `json:"prompt_index"`
+	ContentFilterResults *ContentFilterResult `json:"content_filter_results"`
 }
 
 // LLMUsage represents token usage information
@@ -393,6 +423,36 @@ type LLMUsage struct {
 	TotalTokens             int                      `json:"total_tokens"`
 	TokenDetails            *TokenDetails            `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+func (u *LLMUsage) Clone() *LLMUsage {
+	if u == nil {
+		return nil
+	}
+
+	ret := &LLMUsage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
+
+	if u.TokenDetails != nil {
+		ret.TokenDetails = &TokenDetails{
+			CachedTokens: u.TokenDetails.CachedTokens,
+			AudioTokens:  u.TokenDetails.AudioTokens,
+		}
+	}
+
+	if u.CompletionTokensDetails != nil {
+		ret.CompletionTokensDetails = &CompletionTokensDetails{
+			ReasoningTokens:          u.CompletionTokensDetails.ReasoningTokens,
+			AudioTokens:              u.CompletionTokensDetails.AudioTokens,
+			AcceptedPredictionTokens: u.CompletionTokensDetails.AcceptedPredictionTokens,
+			RejectedPredictionTokens: u.CompletionTokensDetails.RejectedPredictionTokens,
+		}
+	}
+
+	return ret
 }
 
 type AudioLLMUsage struct {
@@ -495,8 +555,9 @@ type Annotation struct {
 // IMPORTANT: Only one of BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
-	Index        int     `json:"index"`
-	FinishReason *string `json:"finish_reason,omitempty"`
+	Index                int                  `json:"index"`
+	FinishReason         *string              `json:"finish_reason,omitempty"`
+	ContentFilterResults *ContentFilterResult `json:"content_filter_results,omitempty"` // Azure OpenAI Service or DeepSeek
 
 	*BifrostNonStreamResponseChoice
 	*BifrostStreamResponseChoice
