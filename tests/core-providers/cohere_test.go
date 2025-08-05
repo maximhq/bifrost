@@ -35,9 +35,6 @@ func TestCohere(t *testing.T) {
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
 		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
-		},
 	}
 
 	runAllComprehensiveTests(t, client, ctx, testConfig)
