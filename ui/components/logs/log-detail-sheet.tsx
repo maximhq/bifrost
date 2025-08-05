@@ -184,7 +184,6 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
         {/* Speech and Transcription Views */}
         {(log.speech_input || log.speech_output) && (
           <>
-            <div className="mt-4 w-full text-center text-sm font-medium">Speech</div>
             <SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
           </>
         )}
@@ -200,11 +199,19 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
           </>
         )}
 
-        {/* Show conversation history for chat/text completions */}
+        {/* Show input for chat/text completions */}
         {log.input_history && log.input_history.length > 0 && (
           <>
-            <div className="mt-4 w-full text-center text-sm font-medium">Conversation History</div>
-            {log.input_history.map((message, index) => (
+            <div className="mt-4 w-full text-left text-sm font-medium">Input</div>
+            <LogMessageView message={log.input_history[log.input_history.length - 1]} />
+          </>
+        )}
+        
+        {/* Show conversation history for chat/text completions */}
+        {log.input_history && log.input_history.length > 1 && (
+          <>
+            <div className="mt-4 w-full text-left text-sm font-medium">Conversation History</div>
+            {log.input_history.slice(0, -1).map((message, index) => (
               <LogMessageView key={index} message={message} />
             ))}
           </>
@@ -214,7 +221,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
           <>
             {log.output_message && (
               <>
-                <div className="mt-4 flex w-full items-center justify-center gap-2">
+                <div className="mt-4 flex w-full items-center  gap-2">
                   <div className="text-sm font-medium">Response</div>
                   {log.stream && (
                     <TooltipProvider>
@@ -235,7 +242,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
             )}
             {log.embedding_output && (
               <>
-                <div className="mt-4 w-full text-center text-sm font-medium">Embedding</div>
+                <div className="mt-4 w-full text-left text-sm font-medium">Embedding</div>
                 <LogMessageView
                   message={{
                     role: 'assistant',
@@ -246,7 +253,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
             )}
             {log.error_details?.error.message && (
               <>
-                <div className="mt-4 w-full text-center text-sm font-medium">Error</div>
+                <div className="mt-4 w-full text-left text-sm font-medium">Error</div>
                 <div className="w-full rounded-sm border">
                   <div className="border-b px-6 py-2 text-sm font-medium">Error</div>
                   <div className="px-6 py-2 font-mono text-xs">{log.error_details.error.message}</div>

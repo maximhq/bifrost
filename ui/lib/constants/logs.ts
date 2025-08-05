@@ -38,7 +38,7 @@ export const REQUEST_TYPE_LABELS = {
   'chat.completion': 'Chat',
   'text.completion': 'Text',
   embedding: 'Embedding',
-  list: 'Embedding',
+  list: 'List',
   'audio.speech': 'Speech',
   'audio.transcription': 'Transcription',
   'chat.completion.chunk': 'Chat Stream',

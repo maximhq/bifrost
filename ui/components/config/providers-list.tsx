@@ -18,7 +18,7 @@ import { apiService } from '@/lib/api'
 import { ProviderIconType, renderProviderIcon } from '@/lib/constants/icons'
 import { PROVIDER_LABELS } from '@/lib/constants/logs'
 import { ProviderResponse } from '@/lib/types/config'
-import { Edit, Key, Loader2, Plus, Trash2 } from 'lucide-react'
+import { Settings, Key, Loader2, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { CardDescription, CardHeader, CardTitle } from '../ui/card'
@@ -31,7 +31,7 @@ interface ProvidersListProps {
 
 export default function ProvidersList({ providers, onRefresh }: ProvidersListProps) {
   const [showProviderForm, setShowProviderForm] = useState(false)
-  const [editingProvider, setEditingProvider] = useState<ProviderResponse | null>(null)
+  const [selectedProvider, setSelectedProvider] = useState<ProviderResponse | null>(null)
   const [deletingProvider, setDeletingProvider] = useState<string | null>(null)
 
   const handleDelete = async (providerKey: string) => {
@@ -48,37 +48,45 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
   }
 
   const handleAddProvider = () => {
-    setEditingProvider(null)
+    // Open with first existing provider if any exist, otherwise null (which will default to first available)
+    const firstExistingProvider = providers.find(p => p.name === 'openai') || null
+    setSelectedProvider(firstExistingProvider)
     setShowProviderForm(true)
   }
 
   const handleEditProvider = (provider: ProviderResponse) => {
-    setEditingProvider(provider)
+    setSelectedProvider(provider)
     setShowProviderForm(true)
   }
 
   const handleProviderSaved = () => {
     setShowProviderForm(false)
-    setEditingProvider(null)
+    setSelectedProvider(null)
     onRefresh()
+  }
+
+  const handleProviderFormCancel = () => {
+    setShowProviderForm(false)
+    setSelectedProvider(null)
   }
 
   return (
     <>
       {showProviderForm && (
         <ProviderForm
-          provider={editingProvider}
+          provider={selectedProvider}
           onSave={handleProviderSaved}
-          onCancel={() => setShowProviderForm(false)}
+          onCancel={handleProviderFormCancel}
           existingProviders={providers.map((p) => p.name)}
+          allProviders={providers}
         />
       )}
       <CardHeader className="mb-4 px-0">
         <CardTitle className="flex items-center justify-between">
           <div className="flex items-center gap-2">AI Providers</div>
           <Button onClick={handleAddProvider}>
-            <Plus className="h-4 w-4" />
-            Add Provider
+            <Settings className="h-4 w-4" />
+            Manage Providers
           </Button>
         </CardTitle>
         <CardDescription>Manage AI model providers, their API keys, and configuration settings.</CardDescription>
@@ -104,7 +112,11 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
               </TableRow>
             )}
             {providers.map((provider) => (
-              <TableRow key={provider.name}>
+              <TableRow 
+                key={provider.name}
+                className="cursor-pointer hover:bg-muted/50 transition-colors"
+                onClick={() => handleEditProvider(provider)}
+              >
                 <TableCell>
                   <div className="flex items-center space-x-2">
                     {renderProviderIcon(provider.name as ProviderIconType, { size: 16 })}
@@ -140,9 +152,6 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end space-x-2">
-                    <Button variant="outline" size="sm" onClick={() => handleEditProvider(provider)}>
-                      <Edit className="h-4 w-4" />
-                    </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button variant="outline" size="sm" disabled={deletingProvider === provider.name}>

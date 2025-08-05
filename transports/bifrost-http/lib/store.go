@@ -380,6 +380,8 @@ func (s *ConfigStore) loadProvidersFromDB() error {
 			NetworkConfig:            dbProvider.NetworkConfig,
 			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
 			MetaConfig:               dbProvider.MetaConfig,
+			ProxyConfig:              dbProvider.ProxyConfig,
+			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		}
 
 		processedProviders[provider] = providerConfig
@@ -749,6 +751,8 @@ func (s *ConfigStore) saveProvidersToDB() error {
 			NetworkConfig:            providerConfig.NetworkConfig,
 			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
 			MetaConfig:               providerConfig.MetaConfig,
+			ProxyConfig:              providerConfig.ProxyConfig,
+			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 		}
 
 		// Create provider first
@@ -1049,6 +1053,8 @@ func (s *ConfigStore) GetProviderConfigRedacted(provider schemas.ModelProvider) 
 	redactedConfig := ProviderConfig{
 		NetworkConfig:            config.NetworkConfig,
 		ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
+		ProxyConfig:              config.ProxyConfig,
+		SendBackRawResponse:      config.SendBackRawResponse,
 	}
 
 	// Create redacted keys

@@ -185,6 +185,7 @@ export default function ConfigPage() {
             </div>
             <Switch
               id="drop-excess-requests"
+              size="md"
               checked={config.drop_excess_requests}
               onCheckedChange={(checked) => handleConfigChange('drop_excess_requests', checked)}
             />
@@ -203,6 +204,7 @@ export default function ConfigPage() {
               </div>
               <Switch
                 id="enforce-governance"
+                size="md"
                 checked={config.enforce_governance_header}
                 onCheckedChange={(checked) => handleConfigChange('enforce_governance_header', checked)}
               />
@@ -249,6 +251,7 @@ export default function ConfigPage() {
               </div>
               <Switch
                 id="enable-logging"
+                size="md"
                 checked={config.enable_logging}
                 onCheckedChange={(checked) => handleConfigChange('enable_logging', checked)}
               />
@@ -268,6 +271,7 @@ export default function ConfigPage() {
               </div>
               <Switch
                 id="enable-governance"
+                size="md"
                 checked={config.enable_governance}
                 onCheckedChange={(checked) => handleConfigChange('enable_governance', checked)}
               />

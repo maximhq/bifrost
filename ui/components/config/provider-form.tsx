@@ -42,6 +42,7 @@ interface ProviderFormProps {
   onSave: () => void
   onCancel: () => void
   existingProviders: string[]
+  allProviders?: ProviderResponse[]
 }
 
 // A helper function to create a clean initial state
@@ -101,15 +102,28 @@ interface ProviderFormData {
   isDirty: boolean
 }
 
-export default function ProviderForm({ provider, onSave, onCancel, existingProviders }: ProviderFormProps) {
-  // Find the first available provider if adding a new provider
-  const firstAvailableProvider = !provider ? Providers.find((p) => !existingProviders.includes(p)) || '' : undefined
-  const [initialState] = useState<Omit<ProviderFormData, 'isDirty'>>(createInitialState(provider, firstAvailableProvider))
+export default function ProviderForm({ provider, onSave, onCancel, existingProviders, allProviders = [] }: ProviderFormProps) {
+  const getDefaultProvider = () => {
+    if (provider) return provider.name
+    return Providers.find((p) => !existingProviders.includes(p)) || ''
+  }
+
+  const [initialState, setInitialState] = useState<Omit<ProviderFormData, 'isDirty'>>(createInitialState(provider, getDefaultProvider()))
   const [formData, setFormData] = useState<ProviderFormData>({
     ...initialState,
     isDirty: false,
   })
   const [isLoading, setIsLoading] = useState(false)
+
+  // Update form when provider prop changes
+  useEffect(() => {
+    const newInitialState = createInitialState(provider, getDefaultProvider())
+    setInitialState(newInitialState)
+    setFormData({
+      ...newInitialState,
+      isDirty: false,
+    })
+  }, [provider])
 
   const { selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, sendBackRawResponse, isDirty } = formData
 
@@ -125,6 +139,11 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
   const performanceChanged =
     performanceConfig.concurrency !== initialState.performanceConfig.concurrency ||
     performanceConfig.buffer_size !== initialState.performanceConfig.buffer_size
+
+  const networkChanged =
+    networkConfig.base_url !== initialState.networkConfig.base_url ||
+    networkConfig.default_request_timeout_in_seconds !== initialState.networkConfig.default_request_timeout_in_seconds ||
+    networkConfig.max_retries !== initialState.networkConfig.max_retries
 
   /* Key-level configuration validation for Azure and Vertex */
   const getKeyValidation = () => {
@@ -204,8 +223,6 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     updateField('proxyConfig', { ...proxyConfig, [field]: value })
   }
 
-  const availableProviders = provider ? Providers : Providers.filter((p) => !existingProviders.includes(p))
-
   const handleSubmit = async (e: React.FormEvent) => {
     if (!validator.isValid()) {
       toast.error(validator.getFirstError())
@@ -217,7 +234,11 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
     let error: string | null = null
 
-    if (provider) {
+    // Check if the selected provider already exists
+    const existingProvider = allProviders.find((p) => p.name === selectedProvider)
+    const isUpdating = !!existingProvider
+
+    if (isUpdating) {
       const data: UpdateProviderRequest = {
         keys: keysRequired
           ? keys.filter((k) =>
@@ -232,7 +253,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
         proxy_config: proxyConfig,
         send_back_raw_response: sendBackRawResponse,
       }
-      ;[, error] = await apiService.updateProvider(provider.name, data)
+      ;[, error] = await apiService.updateProvider(selectedProvider, data)
     } else {
       const data: AddProviderRequest = {
         provider: selectedProvider as ModelProvider,
@@ -256,7 +277,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     if (error) {
       toast.error(error)
     } else {
-      toast.success(`Provider ${provider ? 'updated' : 'added'} successfully`)
+      toast.success(`Provider ${isUpdating ? 'updated' : 'added'} successfully`)
       onSave()
     }
   }
@@ -265,13 +286,10 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     // Provider selection
     Validator.required(selectedProvider, 'Please select a provider'),
 
-    // Check if anything is dirty
-    Validator.custom(isDirty, 'No changes to save'),
-
     // Base URL validation
     ...(baseURLRequired
       ? [
-          Validator.required(networkConfig.base_url, 'Base URL is required for Ollama provider'),
+          Validator.required(networkConfig.base_url, 'Base URL is required for this provider'),
           Validator.pattern(networkConfig.base_url || '', /^https?:\/\/.+/, 'Base URL must start with http:// or https://'),
         ]
       : []),
@@ -328,6 +346,17 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     }
 
     updateField('keys', [...keys, newKey])
+
+    // Smooth scroll to bottom of API keys section after adding key
+    setTimeout(() => {
+      const apiKeysSection = document.querySelector('[data-tab="api-keys"]')
+      if (apiKeysSection) {
+        apiKeysSection.scrollTo({
+          top: apiKeysSection.scrollHeight,
+          behavior: 'smooth',
+        })
+      }
+    }, 150)
   }
 
   const removeKey = (index: number) => {
@@ -446,53 +475,66 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       <DialogContent className="custom-scrollbar max-h-[90vh] overflow-y-auto p-0 sm:max-w-4xl" showCloseButton={false}>
         <DialogHeader className="z-10 px-6 pt-6">
           <DialogTitle>
-            {provider ? (
-              <div className="flex items-center gap-2">
-                {renderProviderIcon(provider.name as ProviderIconType, { size: 20 })}
-                <span className="font-semibold">{PROVIDER_LABELS[provider.name]}</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">Add Provider</div>
-            )}
+            <div className="flex items-center gap-2">
+              {selectedProvider && (
+                <>
+                  {renderProviderIcon(selectedProvider as ProviderIconType, { size: 20 })}
+                  <span className="font-semibold">
+                    {allProviders.find((p) => p.name === selectedProvider)
+                      ? `Edit ${PROVIDER_LABELS[selectedProvider as keyof typeof PROVIDER_LABELS] || selectedProvider}`
+                      : `Add ${PROVIDER_LABELS[selectedProvider as keyof typeof PROVIDER_LABELS] || selectedProvider}`}
+                  </span>
+                </>
+              )}
+            </div>
           </DialogTitle>
           <DialogDescription>Configure AI provider settings, API keys, and network options.</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="flex gap-2 px-6 pt-6">
-          {/* Provider Selection */}
-          {!provider && (
-            <TooltipProvider>
-              <div className="flex w-[250px] flex-col gap-1 pb-10">
-                {Providers.map((p) => (
-                  <Tooltip key={p}>
-                    <TooltipTrigger
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-all duration-200 ease-in-out',
-                        selectedProvider === p
-                          ? 'bg-secondary opacity-100 hover:opacity-100'
-                          : availableProviders.includes(p)
-                            ? 'hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border'
-                            : 'cursor-not-allowed border-transparent opacity-30',
-                      )}
-                      onClick={(e) => {
-                        e.preventDefault()
-                        if (availableProviders.includes(p)) {
-                          updateField('selectedProvider', p)
-                        }
-                      }}
-                      asChild
-                    >
-                      <span>
-                        {renderProviderIcon(p as ProviderIconType, { size: 'sm', className: 'w-5 h-5' })}
-                        <div className="text-sm">{PROVIDER_LABELS[p as keyof typeof PROVIDER_LABELS]}</div>
-                      </span>
-                    </TooltipTrigger>
-                    {!availableProviders.includes(p) && <TooltipContent>Provider is already configured</TooltipContent>}
-                  </Tooltip>
-                ))}
+          {/* Provider Selection Sidebar */}
+          <TooltipProvider>
+            <div className="flex w-[250px] flex-col gap-1 pb-10">
+              <div className="mb-4">
+                <h3 className="text-muted-foreground mb-2 text-sm font-medium">Providers</h3>
+                {Providers.map((p) => {
+                  const existingProvider = allProviders.find((provider) => provider.name === p)
+                  return (
+                    <Tooltip key={p}>
+                      <TooltipTrigger
+                        className={cn(
+                          'mb-1 flex w-full items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-all duration-200 ease-in-out',
+                          selectedProvider === p
+                            ? 'bg-secondary opacity-100 hover:opacity-100'
+                            : 'hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border',
+                        )}
+                        onClick={(e) => {
+                          e.preventDefault()
+                          if (existingProvider) {
+                            // Load existing provider data
+                            const initialState = createInitialState(existingProvider)
+                            setFormData({ ...initialState, isDirty: false })
+                            setInitialState(initialState)
+                          } else {
+                            // Reset form for new provider
+                            const initialState = createInitialState(null, p)
+                            setFormData({ ...initialState, isDirty: false })
+                            setInitialState(initialState)
+                          }
+                        }}
+                        asChild
+                      >
+                        <span>
+                          {renderProviderIcon(p as ProviderIconType, { size: 'sm', className: 'w-5 h-5' })}
+                          <div className="text-sm">{PROVIDER_LABELS[p as keyof typeof PROVIDER_LABELS]}</div>
+                        </span>
+                      </TooltipTrigger>
+                    </Tooltip>
+                  )
+                })}
               </div>
-            </TooltipProvider>
-          )}
+            </div>
+          </TooltipProvider>
 
           <div className="flex h-full w-full flex-col justify-between px-2">
             <Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
@@ -515,7 +557,10 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                 >
                   {/* API Keys Tab */}
                   {keysRequired && selectedTab === 'api-keys' && (
-                    <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 duration-300">
+                    <div
+                      data-tab="api-keys"
+                      className="animate-in fade-in-0 slide-in-from-right-2 max-h-[60vh] space-y-4 overflow-y-auto overflow-x-hidden duration-300"
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <h3 className="text-base font-medium">API Keys</h3>
@@ -556,7 +601,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                     value={key.value}
                                     onChange={(e) => updateKey(index, 'value', e.target.value)}
                                     type="text"
-                                    className={`flex-1 transition-all duration-200 ease-in-out ${keysRequired && selectedProvider !== 'vertex' && key.value.trim() === '' ? 'border-destructive' : ''}`}
+                                    className="flex-1 transition-all duration-200 ease-in-out"
                                   />
                                 </div>
                               )}
@@ -584,9 +629,10 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                   type="number"
                                   step="0.01"
                                   min="0"
-                                  className={`w-20 transition-all duration-200 ease-in-out ${
-                                    keysRequired && (key.weight < 0 || key.weight > 1) ? 'border-destructive' : ''
-                                  }`}
+                                  className={cn(
+                                    'w-20 transition-all duration-200 ease-in-out',
+                                    keysRequired && (key.weight < 0 || key.weight > 1) && 'border-destructive',
+                                  )}
                                 />
                               </div>
                             </div>
@@ -622,7 +668,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                     placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT"
                                     value={key.azure_key_config?.endpoint || ''}
                                     onChange={(e) => updateKeyAzureConfig(index, 'endpoint', e.target.value)}
-                                    className={`transition-all duration-200 ease-in-out ${!key.azure_key_config?.endpoint?.trim() ? 'border-destructive' : ''}`}
+                                    className="transition-all duration-200 ease-in-out"
                                   />
                                 </div>
                                 <div>
@@ -679,7 +725,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                     placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID"
                                     value={key.vertex_key_config?.project_id || ''}
                                     onChange={(e) => updateKeyVertexConfig(index, 'project_id', e.target.value)}
-                                    className={`transition-all duration-200 ease-in-out ${!key.vertex_key_config?.project_id?.trim() ? 'border-destructive' : ''}`}
+                                    className="transition-all duration-200 ease-in-out"
                                   />
                                 </div>
                                 <div>
@@ -688,7 +734,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                     placeholder="us-central1 or env.VERTEX_REGION"
                                     value={key.vertex_key_config?.region || ''}
                                     onChange={(e) => updateKeyVertexConfig(index, 'region', e.target.value)}
-                                    className={`transition-all duration-200 ease-in-out ${!key.vertex_key_config?.region?.trim() ? 'border-destructive' : ''}`}
+                                    className="transition-all duration-200 ease-in-out"
                                   />
                                 </div>
                                 <div>
@@ -702,11 +748,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                       updateKeyVertexConfig(index, 'auth_credentials', e.target.value)
                                     }}
                                     rows={4}
-                                    className={`wrap-anywhere max-w-full font-mono text-sm ${
-                                      !isValidVertexAuthCredentials(key.vertex_key_config?.auth_credentials || '')
-                                        ? 'border-destructive'
-                                        : ''
-                                    }`}
+                                    className="wrap-anywhere max-w-full font-mono text-sm"
                                   />
                                   {isRedacted(key.vertex_key_config?.auth_credentials || '') && (
                                     <div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
@@ -746,7 +788,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                   {/* Network Tab */}
                   {selectedTab === 'network' && (
                     <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-6 duration-300">
-                      {provider && (
+                      <div
+                        className="overflow-hidden transition-all duration-300 ease-in-out"
+                        style={{
+                          maxHeight: networkChanged ? '200px' : '0px',
+                          opacity: networkChanged ? 1 : 0,
+                        }}
+                      >
                         <Alert>
                           <AlertTriangle className="h-4 w-4" />
                           <AlertDescription>
@@ -754,7 +802,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                             existing settings until restart.
                           </AlertDescription>
                         </Alert>
-                      )}
+                      </div>
 
                       {/* Network Configuration */}
                       <div className="space-y-4">
@@ -774,7 +822,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                                   base_url: e.target.value,
                                 })
                               }
-                              className={`transition-all duration-200 ease-in-out ${baseURLRequired && !networkConfig.base_url ? 'border-destructive' : ''}`}
+                              className={`transition-all duration-200 ease-in-out`}
                             />
                           </div>
                           <div className="grid grid-cols-2 gap-4">
@@ -943,6 +991,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                             </p>
                           </div>
                           <Switch
+                            size="md"
                             checked={sendBackRawResponse}
                             onCheckedChange={(checked) => updateField('sendBackRawResponse', checked)}
                           />
@@ -956,35 +1005,37 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
             {/* Form Actions */}
             <div className="bg-background sticky bottom-0 py-3">
-              {availableProviders.length > 0 && (
-                <div className="flex justify-end space-x-3">
-                  <Button type="button" variant="outline" onClick={onCancel} className="transition-all duration-200 ease-in-out">
-                    Cancel
-                  </Button>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span>
-                          <Button
-                            type="submit"
-                            disabled={!validator.isValid() || isLoading}
-                            isLoading={isLoading}
-                            className="transition-all duration-200 ease-in-out"
-                          >
-                            <Save className="h-4 w-4" />
-                            {isLoading ? 'Saving...' : 'Save Provider'}
-                          </Button>
-                        </span>
-                      </TooltipTrigger>
-                      {(!validator.isValid() || isLoading) && (
-                        <TooltipContent>
-                          <p>{isLoading ? 'Saving...' : validator.getFirstError() || 'Please fix validation errors'}</p>
-                        </TooltipContent>
-                      )}
-                    </Tooltip>
-                  </TooltipProvider>
-                </div>
-              )}
+              <div className="flex justify-end space-x-3">
+                <Button type="button" variant="outline" onClick={onCancel} className="transition-all duration-200 ease-in-out">
+                  Cancel
+                </Button>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span>
+                        <Button
+                          type="submit"
+                          disabled={!validator.isValid() || isLoading}
+                          isLoading={isLoading}
+                          className="transition-all duration-200 ease-in-out"
+                        >
+                          <Save className="h-4 w-4" />
+                          {isLoading
+                            ? 'Saving...'
+                            : allProviders.find((p) => p.name === selectedProvider)
+                              ? 'Update Provider'
+                              : 'Add Provider'}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    {(!validator.isValid() || isLoading) && (
+                      <TooltipContent>
+                        <p>{isLoading ? 'Saving...' : validator.getFirstError() || 'Please fix validation errors'}</p>
+                      </TooltipContent>
+                    )}
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
             </div>
           </div>
         </form>

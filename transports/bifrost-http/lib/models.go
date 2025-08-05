@@ -25,6 +25,8 @@ type DBProvider struct {
 	ConcurrencyBufferJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
 	MetaConfigJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.MetaConfig
 	MetaConfigType        string    `gorm:"type:varchar(20)" json:"-"`                         // Type of meta config ("bedrock", etc.)
+	ProxyConfigJSON       string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
+	SendBackRawResponse   bool      `json:"send_back_raw_response"`
 	CreatedAt             time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt             time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -35,7 +37,7 @@ type DBProvider struct {
 	NetworkConfig            *schemas.NetworkConfig            `gorm:"-" json:"network_config,omitempty"`
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `gorm:"-" json:"concurrency_and_buffer_size,omitempty"`
 	MetaConfig               *schemas.MetaConfig               `gorm:"-" json:"meta_config,omitempty"`
-
+	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
 	// Foreign keys
 	Models []DBModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
 }
@@ -164,6 +166,14 @@ func (p *DBProvider) BeforeSave(tx *gorm.DB) error {
 		}
 	}
 
+	if p.ProxyConfig != nil {
+		data, err := json.Marshal(p.ProxyConfig)
+		if err != nil {
+			return err
+		}
+		p.ProxyConfigJSON = string(data)
+	}
+
 	return nil
 }
 
@@ -267,6 +277,14 @@ func (p *DBProvider) AfterFind(tx *gorm.DB) error {
 		}
 
 		p.MetaConfig = &metaConfig
+	}
+
+	if p.ProxyConfigJSON != "" {
+		var proxyConfig schemas.ProxyConfig
+		if err := json.Unmarshal([]byte(p.ProxyConfigJSON), &proxyConfig); err != nil {
+			return err
+		}
+		p.ProxyConfig = &proxyConfig
 	}
 
 	return nil

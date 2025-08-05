@@ -668,7 +668,7 @@ func (p *LoggerPlugin) determineObjectType(input schemas.RequestInput) string {
 		return "text.completion"
 	}
 	if input.EmbeddingInput != nil {
-		return "embedding"
+		return "list"
 	}
 	if input.SpeechInput != nil {
 		return "speech"
