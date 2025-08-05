@@ -41,7 +41,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-platforms=("windows/amd64" "windows/386" "darwin/amd64" "darwin/arm64" "linux/386" "linux/amd64")
+platforms=("windows/amd64" "darwin/amd64" "darwin/arm64" "linux/amd64")
 cd "$app_dir" || { echo "Error: Failed to change to directory $app_dir"; exit 1; }
 for platform in "${platforms[@]}"
 do

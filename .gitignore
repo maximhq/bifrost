@@ -19,3 +19,4 @@ node_modules
 **/tmp/
 temp*/
 tmp/
+.buildx-cache/
