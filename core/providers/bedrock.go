@@ -1130,14 +1130,6 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, model string, ke
 
 // handleTitanEmbedding handles embedding requests for Amazon Titan models.
 func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Titan Text Embeddings V1/V2 - only supports single text input
-	if len(input.Texts) == 0 {
-		return nil, newConfigurationError("no input text provided for embedding", schemas.Bedrock)
-	}
-	if len(input.Texts) > 1 {
-		return nil, newConfigurationError("Amazon Titan embedding models support only single text input, received multiple texts", schemas.Bedrock)
-	}
-
 	requestBody := map[string]interface{}{
 		"inputText": input.Texts[0],
 	}
@@ -1171,8 +1163,17 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 	}
 
 	bifrostResponse := &schemas.BifrostResponse{
-		Embedding: [][]float32{titanResp.Embedding},
-		Model:     model,
+		Object: "list",
+		Data: []schemas.BifrostEmbedding{
+			{
+				Index:  0,
+				Object: "embedding",
+				Embedding: schemas.BifrostEmbeddingResponse{
+					Embedding2DArray: &[][]float32{titanResp.Embedding},
+				},
+			},
+		},
+		Model: model,
 		Usage: &schemas.LLMUsage{
 			PromptTokens: titanResp.InputTextTokenCount,
 			TotalTokens:  titanResp.InputTextTokenCount,
@@ -1192,10 +1193,6 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 
 // handleCohereEmbedding handles embedding requests for Cohere models on Bedrock.
 func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if len(input.Texts) == 0 {
-		return nil, newConfigurationError("no input text provided for embedding", schemas.Bedrock)
-	}
-
 	requestBody := map[string]interface{}{
 		"texts":      input.Texts,
 		"input_type": "search_document",
@@ -1225,9 +1222,18 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 	totalInputTokens := approximateTokenCount(input.Texts)
 
 	bifrostResponse := &schemas.BifrostResponse{
-		Embedding: cohereResp.Embeddings,
-		ID:        cohereResp.ID,
-		Model:     model,
+		Object: "list",
+		Data: []schemas.BifrostEmbedding{
+			{
+				Index:  0,
+				Object: "embedding",
+				Embedding: schemas.BifrostEmbeddingResponse{
+					Embedding2DArray: &cohereResp.Embeddings,
+				},
+			},
+		},
+		ID:    cohereResp.ID,
+		Model: model,
 		Usage: &schemas.LLMUsage{
 			PromptTokens: totalInputTokens,
 			TotalTokens:  totalInputTokens,

@@ -107,6 +107,12 @@ export interface BifrostMessage {
   thought?: string
 }
 
+export interface BifrostEmbedding {
+  index: number
+  object: string
+  embedding: string | number[] | number[][]
+}
+
 // Tool related types
 export interface FunctionParameters {
   type: string
@@ -217,7 +223,7 @@ export interface LogEntry {
   model: string
   input_history: BifrostMessage[]
   output_message?: BifrostMessage
-  embedding_output?: number[][]
+  embedding_output?: BifrostEmbedding[]
   params?: ModelParameters
   speech_input?: SpeechInput
   transcription_input?: TranscriptionInput

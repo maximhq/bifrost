@@ -239,7 +239,11 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
                 <LogMessageView
                   message={{
                     role: 'assistant',
-                    content: JSON.stringify(log.embedding_output, null, 2),
+                    content: JSON.stringify(
+                      log.embedding_output.map((embedding) => embedding.embedding),
+                      null,
+                      2,
+                    ),
                   }}
                 />
               </>

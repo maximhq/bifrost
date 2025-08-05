@@ -6,11 +6,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"io"
-	"math"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -21,24 +18,6 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
-
-// OpenAIResponse represents the response structure from the OpenAI API.
-// It includes completion choices, model information, and usage statistics.
-type OpenAIResponse struct {
-	ID      string                          `json:"id"`      // Unique identifier for the completion
-	Object  string                          `json:"object"`  // Type of completion (text.completion, chat.completion, or embedding)
-	Choices []schemas.BifrostResponseChoice `json:"choices"` // Array of completion choices
-	Data    []struct {                      // Embedding data
-		Object    string `json:"object"`
-		Embedding any    `json:"embedding"`
-		Index     int    `json:"index"`
-	} `json:"data,omitempty"`
-	Model             string           `json:"model"`              // Model used for the completion
-	Created           int              `json:"created"`            // Unix timestamp of completion creation
-	ServiceTier       *string          `json:"service_tier"`       // Service tier used for the request
-	SystemFingerprint *string          `json:"system_fingerprint"` // System fingerprint for the request
-	Usage             schemas.LLMUsage `json:"usage"`              // Token usage statistics
-}
 
 // openAIResponsePool provides a pool for OpenAI response objects.
 var openAIResponsePool = sync.Pool{
@@ -241,11 +220,6 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Validate input texts are not empty
-	if len(input.Texts) == 0 {
-		return nil, newBifrostOperationError("input texts cannot be empty", nil, schemas.OpenAI)
-	}
-
 	// Prepare request body with base parameters
 	requestBody := map[string]interface{}{
 		"model": model,
@@ -302,74 +276,29 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 		return nil, parseOpenAIError(resp)
 	}
 
-	// Parse response
-	var response OpenAIResponse
-	if err := sonic.Unmarshal(resp.Body(), &response); err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.OpenAI)
+	responseBody := resp.Body()
+
+	// Pre-allocate response structs from pools
+	response := acquireOpenAIResponse()
+	defer releaseOpenAIResponse(response)
+
+	// Use enhanced response handler with pre-allocated response
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:                response.ID,
-		Object:            response.Object,
-		Model:             response.Model,
-		Created:           response.Created,
-		Usage:             &response.Usage,
-		ServiceTier:       response.ServiceTier,
-		SystemFingerprint: response.SystemFingerprint,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.OpenAI,
-		},
-	}
-
-	// Extract embeddings from response data
-	if len(response.Data) > 0 {
-		embeddings := make([][]float32, len(response.Data))
-		for i, data := range response.Data {
-			switch v := data.Embedding.(type) {
-			case []float32:
-				embeddings[i] = v
-			case []interface{}:
-				// Convert []interface{} to []float32
-				floatArray := make([]float32, len(v))
-				for j := range v {
-					if num, ok := v[j].(float64); ok {
-						floatArray[j] = float32(num)
-					} else {
-						return nil, newBifrostOperationError(fmt.Sprintf("unsupported number type in embedding array: %T", v[j]), nil, schemas.OpenAI)
-					}
-				}
-				embeddings[i] = floatArray
-			case string:
-				// Decode base64 string into float32 array
-				decodedData, err := base64.StdEncoding.DecodeString(v)
-				if err != nil {
-					return nil, newBifrostOperationError("failed to decode base64 embedding", err, schemas.OpenAI)
-				}
-
-				// Validate that decoded data length is divisible by 4 (size of float32)
-				const sizeOfFloat32 = 4
-				if len(decodedData)%sizeOfFloat32 != 0 {
-					return nil, newBifrostOperationError("malformed base64 embedding data: length not divisible by 4", nil, schemas.OpenAI)
-				}
-
-				floats := make([]float32, len(decodedData)/sizeOfFloat32)
-				for i := 0; i < len(floats); i++ {
-					floats[i] = math.Float32frombits(binary.LittleEndian.Uint32(decodedData[i*4 : (i+1)*4]))
-				}
-				embeddings[i] = floats
-			default:
-				return nil, newBifrostOperationError(fmt.Sprintf("unsupported embedding type: %T", data.Embedding), nil, schemas.OpenAI)
-			}
-		}
-		bifrostResponse.Embedding = embeddings
-	}
+	response.ExtraFields.Provider = schemas.OpenAI
 
 	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		response.ExtraFields.Params = *params
 	}
 
-	return bifrostResponse, nil
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // ChatCompletionStream handles streaming for OpenAI chat completions.

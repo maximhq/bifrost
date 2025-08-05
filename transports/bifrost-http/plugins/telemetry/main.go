@@ -59,6 +59,8 @@ func (p *PrometheusPlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 		*ctx = context.WithValue(*ctx, methodKey, "chat")
 	} else if req.Input.TextCompletionInput != nil {
 		*ctx = context.WithValue(*ctx, methodKey, "text")
+	} else if req.Input.EmbeddingInput != nil {
+		*ctx = context.WithValue(*ctx, methodKey, "embedding")
 	} else if req.Input.SpeechInput != nil {
 		*ctx = context.WithValue(*ctx, methodKey, "speech")
 	} else if req.Input.TranscriptionInput != nil {

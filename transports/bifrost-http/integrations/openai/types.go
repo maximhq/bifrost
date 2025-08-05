@@ -96,19 +96,12 @@ type OpenAIChatResponse struct {
 
 // OpenAIEmbeddingResponse represents an OpenAI embedding response
 type OpenAIEmbeddingResponse struct {
-	Object            string            `json:"object"`
-	Data              []OpenAIEmbedding `json:"data"`
-	Model             string            `json:"model"`
-	Usage             *schemas.LLMUsage `json:"usage,omitempty"`
-	ServiceTier       *string           `json:"service_tier,omitempty"`
-	SystemFingerprint *string           `json:"system_fingerprint,omitempty"`
-}
-
-// OpenAIEmbedding represents a single embedding in the response
-type OpenAIEmbedding struct {
-	Object    string    `json:"object"`
-	Embedding []float32 `json:"embedding"`
-	Index     int       `json:"index"`
+	Object            string                     `json:"object"`
+	Data              []schemas.BifrostEmbedding `json:"data"`
+	Model             string                     `json:"model"`
+	Usage             *schemas.LLMUsage          `json:"usage,omitempty"`
+	ServiceTier       *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
 }
 
 // OpenAIChatError represents an OpenAI chat completion error response
@@ -434,22 +427,13 @@ func DeriveOpenAITranscriptionFromBifrostResponse(bifrostResp *schemas.BifrostRe
 
 // DeriveOpenAIEmbeddingFromBifrostResponse converts a Bifrost embedding response to OpenAI format
 func DeriveOpenAIEmbeddingFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIEmbeddingResponse {
-	if bifrostResp == nil || bifrostResp.Embedding == nil {
+	if bifrostResp == nil || bifrostResp.Data == nil {
 		return nil
-	}
-
-	var embeddingData []OpenAIEmbedding
-	for i, embedding := range bifrostResp.Embedding {
-		embeddingData = append(embeddingData, OpenAIEmbedding{
-			Object:    "embedding",
-			Embedding: embedding,
-			Index:     i,
-		})
 	}
 
 	return &OpenAIEmbeddingResponse{
 		Object:            "list",
-		Data:              embeddingData,
+		Data:              bifrostResp.Data,
 		Model:             bifrostResp.Model,
 		Usage:             bifrostResp.Usage,
 		ServiceTier:       bifrostResp.ServiceTier,

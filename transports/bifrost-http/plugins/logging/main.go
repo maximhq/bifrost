@@ -41,7 +41,7 @@ type UpdateLogData struct {
 	Status              string
 	TokenUsage          *schemas.LLMUsage
 	OutputMessage       *schemas.BifrostMessage
-	EmbeddingOutput     *[][]float32
+	EmbeddingOutput     *[]schemas.BifrostEmbedding
 	ToolCalls           *[]schemas.ToolCall
 	ErrorDetails        *schemas.BifrostError
 	Model               string                     // May be different from request
@@ -516,8 +516,8 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 			}
 
-			if result.Embedding != nil {
-				updateData.EmbeddingOutput = &result.Embedding
+			if result.Data != nil {
+				updateData.EmbeddingOutput = &result.Data
 			}
 
 			// Handle speech and transcription outputs for NON-streaming responses

@@ -45,7 +45,7 @@ type LogEntry struct {
 	// Virtual fields for JSON output - these will be populated when needed
 	InputHistoryParsed        []schemas.BifrostMessage    `gorm:"-" json:"input_history,omitempty"`
 	OutputMessageParsed       *schemas.BifrostMessage     `gorm:"-" json:"output_message,omitempty"`
-	EmbeddingOutputParsed     *[][]float32                `gorm:"-" json:"embedding_output,omitempty"`
+	EmbeddingOutputParsed     *[]schemas.BifrostEmbedding `gorm:"-" json:"embedding_output,omitempty"`
 	ParamsParsed              *schemas.ModelParameters    `gorm:"-" json:"params,omitempty"`
 	ToolsParsed               *[]schemas.Tool             `gorm:"-" json:"tools,omitempty"`
 	ToolCallsParsed           *[]schemas.ToolCall         `gorm:"-" json:"tool_calls,omitempty"`
