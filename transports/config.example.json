@@ -73,7 +73,12 @@
             "mistral.mistral-large-2402-v1:0",
             "anthropic.claude-3-sonnet-20240229-v1:0"
           ],
-          "weight": 1.0
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "us-east-1"
+          }
         }
       ],
       "network_config": {
@@ -81,10 +86,6 @@
         "max_retries": 1,
         "retry_backoff_initial_ms": 100,
         "retry_backoff_max_ms": 2000
-      },
-      "meta_config": {
-        "secret_access_key": "env.AWS_SECRET_ACCESS_KEY",
-        "region": "us-east-1"
       },
       "concurrency_and_buffer_size": {
         "concurrency": 3,

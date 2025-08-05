@@ -2635,11 +2635,6 @@
           "network_config": {
             "$ref": "#/components/schemas/NetworkConfig"
           },
-          "meta_config": {
-            "type": "object",
-            "additionalProperties": true,
-            "description": "Provider-specific metadata"
-          },
           "concurrency_and_buffer_size": {
             "$ref": "#/components/schemas/ConcurrencyAndBufferSize"
           },
@@ -2661,11 +2656,6 @@
           },
           "network_config": {
             "$ref": "#/components/schemas/NetworkConfig"
-          },
-          "meta_config": {
-            "type": "object",
-            "additionalProperties": true,
-            "description": "Provider-specific metadata"
           },
           "concurrency_and_buffer_size": {
             "$ref": "#/components/schemas/ConcurrencyAndBufferSize"
@@ -2691,11 +2681,6 @@
           },
           "network_config": {
             "$ref": "#/components/schemas/NetworkConfig"
-          },
-          "meta_config": {
-            "type": "object",
-            "additionalProperties": true,
-            "description": "Provider-specific metadata"
           },
           "concurrency_and_buffer_size": {
             "$ref": "#/components/schemas/ConcurrencyAndBufferSize"
@@ -2788,6 +2773,43 @@
               }
             },
             "description": "Vertex key configuration"
+          },
+          "bedrock_key_config": {
+            "type": "object",
+            "properties": {
+              "access_key": {
+                "type": "string",
+                "description": "Bedrock access key",
+                "example": "env.AWS_ACCESS_KEY"
+              },
+              "secret_key": {
+                "type": "string",
+                "description": "Bedrock secret key",
+                "example": "env.AWS_SECRET_KEY"
+              },
+              "session_token": {
+                "type": "string",
+                "description": "Bedrock session token",
+                "example": "env.AWS_SESSION_TOKEN"
+              },
+              "region": {
+                "type": "string",
+                "description": "Bedrock region",
+                "example": "us-east-1"
+              },
+              "arn": {
+                "type": "string",
+                "description": "Bedrock ARN",
+                "example": "arn:aws:iam::123456789012:role/BedrockRole"
+              },
+              "deployments": {
+                "type": "object",
+                "description": "Bedrock deployments",
+                "example": {
+                  "gpt-4o": "gpt-4o-deployment"
+                }
+              }
+            }
           }
         }
       },

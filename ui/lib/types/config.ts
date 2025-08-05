@@ -17,6 +17,16 @@ export interface VertexKeyConfig {
   auth_credentials: string // Always string - JSON string or env var
 }
 
+// BedrockKeyConfig matching Go's schemas.BedrockKeyConfig
+export interface BedrockKeyConfig {
+  access_key: string
+  secret_key: string
+  session_token?: string
+  region?: string
+  arn?: string
+  deployments?: Record<string, string> | string // Allow string during editing
+}
+
 // Key structure matching Go's schemas.Key
 export interface Key {
   id: string
@@ -25,6 +35,7 @@ export interface Key {
   weight: number
   azure_key_config?: AzureKeyConfig
   vertex_key_config?: VertexKeyConfig
+  bedrock_key_config?: BedrockKeyConfig
 }
 
 // NetworkConfig matching Go's schemas.NetworkConfig
@@ -43,19 +54,6 @@ export interface ConcurrencyAndBufferSize {
   buffer_size: number
 }
 
-// MetaConfig interface - provider-specific configuration
-export interface MetaConfig {
-  // AWS Bedrock specific
-  secret_access_key?: string
-  region?: string
-  session_token?: string
-  arn?: string
-  inference_profiles?: Record<string, string>
-
-  // Generic fields for extensibility
-  [key: string]: unknown
-}
-
 // Proxy types matching Go's schemas.ProxyType
 export type ProxyType = 'none' | 'http' | 'socks5' | 'environment'
 
@@ -71,7 +69,6 @@ export interface ProxyConfig {
 export interface ProviderConfig {
   keys: Key[]
   network_config: NetworkConfig
-  meta_config?: MetaConfig
   concurrency_and_buffer_size: ConcurrencyAndBufferSize
   proxy_config?: ProxyConfig
   send_back_raw_response?: boolean
@@ -93,7 +90,6 @@ export interface AddProviderRequest {
   provider: ModelProvider
   keys: Key[]
   network_config?: NetworkConfig
-  meta_config?: MetaConfig
   concurrency_and_buffer_size?: ConcurrencyAndBufferSize
   proxy_config?: ProxyConfig
   send_back_raw_response?: boolean
@@ -103,7 +99,6 @@ export interface AddProviderRequest {
 export interface UpdateProviderRequest {
   keys: Key[]
   network_config: NetworkConfig
-  meta_config?: MetaConfig
   concurrency_and_buffer_size: ConcurrencyAndBufferSize
   proxy_config: ProxyConfig
   send_back_raw_response?: boolean

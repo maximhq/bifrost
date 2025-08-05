@@ -12,7 +12,6 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/meta"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -38,7 +37,6 @@ type AddProviderRequest struct {
 	Provider                 schemas.ModelProvider             `json:"provider"`
 	Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider
 	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
-	MetaConfig               *map[string]interface{}           `json:"meta_config,omitempty"`                 // Provider-specific metadata
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
@@ -48,7 +46,6 @@ type AddProviderRequest struct {
 type UpdateProviderRequest struct {
 	Keys                     []schemas.Key                    `json:"keys"`                             // API keys for the provider
 	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
-	MetaConfig               *map[string]interface{}          `json:"meta_config,omitempty"`            // Provider-specific metadata
 	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
 	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
@@ -59,7 +56,6 @@ type ProviderResponse struct {
 	Name                     schemas.ModelProvider            `json:"name"`
 	Keys                     []schemas.Key                    `json:"keys"`                        // API keys for the provider
 	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`              // Network-related settings
-	MetaConfig               *schemas.MetaConfig              `json:"meta_config"`                 // Provider-specific metadata
 	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                // Proxy configuration
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`      // Include raw response in BifrostResponse
@@ -188,17 +184,6 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 		SendBackRawResponse:      req.SendBackRawResponse != nil && *req.SendBackRawResponse,
 	}
 
-	// Handle meta config if provided
-	if req.MetaConfig != nil && len(*req.MetaConfig) > 0 {
-		// Convert to appropriate meta config type based on provider
-		metaConfig, err := h.convertToProviderMetaConfig(req.Provider, *req.MetaConfig)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid meta config: %v", err), h.logger)
-			return
-		}
-		config.MetaConfig = metaConfig
-	}
-
 	// Add provider to store (env vars will be processed by store)
 	if err := h.store.AddProvider(req.Provider, config); err != nil {
 		h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", req.Provider, err))
@@ -288,17 +273,6 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	}
 	config.Keys = keys
 
-	// Handle meta config if provided
-	if req.MetaConfig != nil && len(*req.MetaConfig) > 0 {
-		// Merge new meta config with old, preserving redacted values
-		metaConfig, err := h.mergeMetaConfig(provider, oldConfigRaw.MetaConfig, *req.MetaConfig)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid meta config: %v", err), h.logger)
-			return
-		}
-		config.MetaConfig = metaConfig
-	}
-
 	if req.ConcurrencyAndBufferSize.Concurrency == 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be greater than 0", h.logger)
 		return
@@ -381,33 +355,6 @@ func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, response, h.logger)
-}
-
-// convertToProviderMetaConfig converts a generic map to the appropriate provider-specific meta config
-func (h *ProviderHandler) convertToProviderMetaConfig(provider schemas.ModelProvider, metaConfigMap map[string]interface{}) (*schemas.MetaConfig, error) {
-	if len(metaConfigMap) == 0 {
-		return nil, nil
-	}
-
-	// Convert map to JSON and then to specific meta config type
-	metaConfigJSON, err := json.Marshal(metaConfigMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal meta config: %w", err)
-	}
-
-	switch provider {
-	case schemas.Bedrock:
-		var bedrockMetaConfig meta.BedrockMetaConfig
-		if err := json.Unmarshal(metaConfigJSON, &bedrockMetaConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal Bedrock meta config: %w", err)
-		}
-		var metaConfig schemas.MetaConfig = &bedrockMetaConfig
-		return &metaConfig, nil
-
-	default:
-		// For providers that don't support meta config, return nil
-		return nil, nil
-	}
 }
 
 // mergeKeys merges new keys with old, preserving values that are redacted in the new config
@@ -499,46 +446,6 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 	return resultKeys, nil
 }
 
-// mergeMetaConfig merges new meta config with old, preserving values that are redacted in the new config
-func (h *ProviderHandler) mergeMetaConfig(provider schemas.ModelProvider, oldConfig *schemas.MetaConfig, newConfigMap map[string]interface{}) (*schemas.MetaConfig, error) {
-	if oldConfig == nil || len(newConfigMap) == 0 {
-		return h.convertToProviderMetaConfig(provider, newConfigMap)
-	}
-
-	switch provider {
-	case schemas.Bedrock:
-		var newBedrockConfig meta.BedrockMetaConfig
-		newConfigJSON, _ := json.Marshal(newConfigMap)
-		if err := json.Unmarshal(newConfigJSON, &newBedrockConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal new Bedrock meta config: %w", err)
-		}
-
-		oldBedrockConfig, ok := (*oldConfig).(*meta.BedrockMetaConfig)
-		if !ok {
-			return nil, fmt.Errorf("existing meta config type mismatch: expected BedrockMetaConfig")
-		}
-
-		// Preserve old values if new ones are redacted
-		if lib.IsRedacted(newBedrockConfig.SecretAccessKey) {
-			newBedrockConfig.SecretAccessKey = oldBedrockConfig.SecretAccessKey
-		}
-		if newBedrockConfig.Region != nil && oldBedrockConfig.Region != nil && lib.IsRedacted(*newBedrockConfig.Region) {
-			newBedrockConfig.Region = oldBedrockConfig.Region
-		}
-		if newBedrockConfig.SessionToken != nil && oldBedrockConfig.SessionToken != nil && lib.IsRedacted(*newBedrockConfig.SessionToken) {
-			newBedrockConfig.SessionToken = oldBedrockConfig.SessionToken
-		}
-		if newBedrockConfig.ARN != nil && oldBedrockConfig.ARN != nil && lib.IsRedacted(*newBedrockConfig.ARN) {
-			newBedrockConfig.ARN = oldBedrockConfig.ARN
-		}
-
-		var metaConfig schemas.MetaConfig = &newBedrockConfig
-		return &metaConfig, nil
-	default:
-		return nil, nil
-	}
-}
-
 func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config lib.ProviderConfig) ProviderResponse {
 	if config.NetworkConfig == nil {
 		config.NetworkConfig = &schemas.DefaultNetworkConfig
@@ -551,7 +458,6 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		Name:                     provider,
 		Keys:                     config.Keys,
 		NetworkConfig:            *config.NetworkConfig,
-		MetaConfig:               config.MetaConfig,
 		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
 		ProxyConfig:              config.ProxyConfig,
 		SendBackRawResponse:      config.SendBackRawResponse,

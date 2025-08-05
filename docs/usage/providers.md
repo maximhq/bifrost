@@ -258,15 +258,17 @@ func useWithFallback(bf *bifrost.Bifrost) {
     "bedrock": {
       "keys": [
         {
-          "value": "env.AWS_ACCESS_KEY_ID",
           "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0"],
-          "weight": 1.0
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "session_token": "env.AWS_SESSION_TOKEN",
+            "region": "us-east-1",
+            "arn": "arn:aws:iam::123456789012:role/BedrockRole"
+          }
         }
       ],
-      "meta_config": {
-        "region": "us-east-1",
-        "secret_access_key": "env.AWS_SECRET_ACCESS_KEY"
-      }
     }
   }
 }

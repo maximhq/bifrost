@@ -173,7 +173,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 
 	region := key.VertexKeyConfig.Region
 	if region == "" {
-		return nil, newConfigurationError("region is not set in meta config", schemas.Vertex)
+		return nil, newConfigurationError("region is not set in key config", schemas.Vertex)
 	}
 
 	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
@@ -340,7 +340,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	region := key.VertexKeyConfig.Region
 	if region == "" {
-		return nil, newConfigurationError("region is not set in meta config", schemas.Vertex)
+		return nil, newConfigurationError("region is not set in key config", schemas.Vertex)
 	}
 
 	client, err := getAuthClient(key)

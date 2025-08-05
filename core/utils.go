@@ -17,6 +17,13 @@ func providerRequiresKey(providerKey schemas.ModelProvider) bool {
 	return providerKey != schemas.Ollama && providerKey != schemas.SGL
 }
 
+// canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
+// Some providers like Vertex and Bedrock have their credentials in additional key configs..
+func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock
+}
+
+// isStreamRequestType returns true if the given request type is a stream request.
 func isStreamRequestType(reqType RequestType) bool {
 	return reqType == ChatCompletionStreamRequest || reqType == SpeechStreamRequest || reqType == TranscriptionStreamRequest
 }

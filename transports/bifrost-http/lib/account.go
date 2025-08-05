@@ -11,7 +11,7 @@ import (
 
 // BaseAccount implements the Account interface for Bifrost.
 // It manages provider configurations using a in-memory store for persistent storage.
-// All data processing (environment variables, meta configs) is done upfront in the store.
+// All data processing (environment variables, key configs) is done upfront in the store.
 type BaseAccount struct {
 	store *ConfigStore // store for in-memory configuration
 }
@@ -50,7 +50,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, provide
 }
 
 // GetConfigForProvider returns the complete configuration for a specific provider.
-// Configuration is already fully processed (environment variables, meta configs) by the store.
+// Configuration is already fully processed (environment variables, key configs) by the store.
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	if baseAccount.store == nil {
@@ -72,10 +72,6 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		providerConfig.NetworkConfig = *config.NetworkConfig
 	} else {
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
-	}
-
-	if config.MetaConfig != nil {
-		providerConfig.MetaConfig = *config.MetaConfig
 	}
 
 	if config.ConcurrencyAndBufferSize != nil {

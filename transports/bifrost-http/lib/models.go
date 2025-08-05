@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/meta"
 	"gorm.io/gorm"
 )
 
@@ -23,8 +22,6 @@ type DBProvider struct {
 	Name                  string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
 	NetworkConfigJSON     string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
 	ConcurrencyBufferJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
-	MetaConfigJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.MetaConfig
-	MetaConfigType        string    `gorm:"type:varchar(20)" json:"-"`                         // Type of meta config ("bedrock", etc.)
 	ProxyConfigJSON       string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
 	SendBackRawResponse   bool      `json:"send_back_raw_response"`
 	CreatedAt             time.Time `gorm:"index;not null" json:"created_at"`
@@ -36,7 +33,6 @@ type DBProvider struct {
 	// Virtual fields for runtime use (not stored in DB)
 	NetworkConfig            *schemas.NetworkConfig            `gorm:"-" json:"network_config,omitempty"`
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `gorm:"-" json:"concurrency_and_buffer_size,omitempty"`
-	MetaConfig               *schemas.MetaConfig               `gorm:"-" json:"meta_config,omitempty"`
 	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
 	// Foreign keys
 	Models []DBModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -71,10 +67,19 @@ type DBKey struct {
 	VertexRegion          *string `gorm:"type:varchar(100)" json:"vertex_region,omitempty"`
 	VertexAuthCredentials *string `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
 
+	// Bedrock config fields (embedded)
+	BedrockAccessKey       *string `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
+	BedrockSecretKey       *string `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
+	BedrockSessionToken    *string `gorm:"type:text" json:"bedrock_session_token,omitempty"`
+	BedrockRegion          *string `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
+	BedrockARN             *string `gorm:"type:text" json:"bedrock_arn,omitempty"`
+	BedrockDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+
 	// Virtual fields for runtime use (not stored in DB)
-	Models          []string                 `gorm:"-" json:"models"`
-	AzureKeyConfig  *schemas.AzureKeyConfig  `gorm:"-" json:"azure_key_config,omitempty"`
-	VertexKeyConfig *schemas.VertexKeyConfig `gorm:"-" json:"vertex_key_config,omitempty"`
+	Models           []string                  `gorm:"-" json:"models"`
+	AzureKeyConfig   *schemas.AzureKeyConfig   `gorm:"-" json:"azure_key_config,omitempty"`
+	VertexKeyConfig  *schemas.VertexKeyConfig  `gorm:"-" json:"vertex_key_config,omitempty"`
+	BedrockKeyConfig *schemas.BedrockKeyConfig `gorm:"-" json:"bedrock_key_config,omitempty"`
 }
 
 // DBMCPClient represents an MCP client configuration in the database
@@ -116,7 +121,7 @@ type DBEnvKey struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	EnvVar     string    `gorm:"type:varchar(255);index;not null" json:"env_var"`
 	Provider   string    `gorm:"type:varchar(50);index" json:"provider"`        // Empty for MCP/client configs
-	KeyType    string    `gorm:"type:varchar(50);not null" json:"key_type"`     // "api_key", "azure_config", "vertex_config", "meta_config", "connection_string"
+	KeyType    string    `gorm:"type:varchar(50);not null" json:"key_type"`     // "api_key", "azure_config", "vertex_config", "bedrock_config", "connection_string"
 	ConfigPath string    `gorm:"type:varchar(500);not null" json:"config_path"` // Descriptive path of where this env var is used
 	KeyID      string    `gorm:"type:varchar(255);index" json:"key_id"`         // Key UUID (empty for non-key configs)
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
@@ -150,22 +155,6 @@ func (p *DBProvider) BeforeSave(tx *gorm.DB) error {
 		p.ConcurrencyBufferJSON = string(data)
 	}
 
-	if p.MetaConfig != nil {
-		data, err := json.Marshal(*p.MetaConfig)
-		if err != nil {
-			return err
-		}
-		p.MetaConfigJSON = string(data)
-
-		// Set meta config type for proper deserialization
-		switch (*p.MetaConfig).(type) {
-		case *meta.BedrockMetaConfig:
-			p.MetaConfigType = "bedrock"
-		default:
-
-		}
-	}
-
 	if p.ProxyConfig != nil {
 		data, err := json.Marshal(p.ProxyConfig)
 		if err != nil {
@@ -193,6 +182,15 @@ func (k *DBKey) BeforeSave(tx *gorm.DB) error {
 		}
 		deployments := string(data)
 		k.AzureDeploymentsJSON = &deployments
+	}
+
+	if k.BedrockKeyConfig != nil && k.BedrockKeyConfig.Deployments != nil {
+		data, err := json.Marshal(k.BedrockKeyConfig.Deployments)
+		if err != nil {
+			return err
+		}
+		deployments := string(data)
+		k.BedrockDeploymentsJSON = &deployments
 	}
 
 	return nil
@@ -261,24 +259,6 @@ func (p *DBProvider) AfterFind(tx *gorm.DB) error {
 		p.ConcurrencyAndBufferSize = &config
 	}
 
-	if p.MetaConfigJSON != "" {
-		var metaConfig schemas.MetaConfig
-
-		switch p.MetaConfigType {
-		case "bedrock":
-			var bedrockConfig meta.BedrockMetaConfig
-			if err := json.Unmarshal([]byte(p.MetaConfigJSON), &bedrockConfig); err != nil {
-				return err
-			}
-			metaConfig = &bedrockConfig
-		default:
-			// Unknown meta config type, skip
-			return nil
-		}
-
-		p.MetaConfig = &metaConfig
-	}
-
 	if p.ProxyConfigJSON != "" {
 		var proxyConfig schemas.ProxyConfig
 		if err := json.Unmarshal([]byte(p.ProxyConfigJSON), &proxyConfig); err != nil {
@@ -329,6 +309,30 @@ func (k *DBKey) AfterFind(tx *gorm.DB) error {
 		}
 
 		k.VertexKeyConfig = config
+	}
+
+	// Reconstruct Bedrock config if fields are present
+	if k.BedrockAccessKey != nil {
+		bedrockConfig := &schemas.BedrockKeyConfig{
+			AccessKey:    *k.BedrockAccessKey,
+			SessionToken: k.BedrockSessionToken,
+			Region:       k.BedrockRegion,
+			ARN:          k.BedrockARN,
+		}
+
+		if k.BedrockSecretKey != nil {
+			bedrockConfig.SecretKey = *k.BedrockSecretKey
+		}
+
+		if k.BedrockDeploymentsJSON != nil {
+			var deployments map[string]string
+			if err := json.Unmarshal([]byte(*k.BedrockDeploymentsJSON), &deployments); err != nil {
+				return err
+			}
+			bedrockConfig.Deployments = deployments
+		}
+
+		k.BedrockKeyConfig = bedrockConfig
 	}
 
 	return nil

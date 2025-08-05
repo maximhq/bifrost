@@ -143,9 +143,14 @@ func (a *MultiProviderAccount) GetKeysForProvider(ctx *context.Context, provider
 
     case schemas.Bedrock:
         return []schemas.Key{{
-            Value:  os.Getenv("BEDROCK_API_KEY"),
             Models: []string{"anthropic.claude-3-sonnet-20240229-v1:0"},
             Weight: 1.0,
+            BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                AccessKey:    os.Getenv("AWS_ACCESS_KEY"),
+                SecretKey:    os.Getenv("AWS_SECRET_KEY"),
+                SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
+                Region:       bifrost.Ptr("us-east-1"),
+            },
         }}, nil
 
     case schemas.Vertex:

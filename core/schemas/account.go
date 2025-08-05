@@ -6,12 +6,13 @@ import "context"
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
-	ID              string           `json:"id"`                          // The unique identifier for the key (not used by bifrost, but can be used by users to identify the key)
-	Value           string           `json:"value"`                       // The actual API key value
-	Models          []string         `json:"models"`                      // List of models this key can access
-	Weight          float64          `json:"weight"`                      // Weight for load balancing between multiple keys
-	AzureKeyConfig  *AzureKeyConfig  `json:"azure_key_config,omitempty"`  // Azure-specific key configuration
-	VertexKeyConfig *VertexKeyConfig `json:"vertex_key_config,omitempty"` // Vertex-specific key configuration
+	ID               string            `json:"id"`                           // The unique identifier for the key (not used by bifrost, but can be used by users to identify the key)
+	Value            string            `json:"value"`                        // The actual API key value
+	Models           []string          `json:"models"`                       // List of models this key can access
+	Weight           float64           `json:"weight"`                       // Weight for load balancing between multiple keys
+	AzureKeyConfig   *AzureKeyConfig   `json:"azure_key_config,omitempty"`   // Azure-specific key configuration
+	VertexKeyConfig  *VertexKeyConfig  `json:"vertex_key_config,omitempty"`  // Vertex-specific key configuration
+	BedrockKeyConfig *BedrockKeyConfig `json:"bedrock_key_config,omitempty"` // AWS Bedrock-specific key configuration
 }
 
 // AzureKeyConfig represents the Azure-specific configuration.
@@ -28,6 +29,17 @@ type VertexKeyConfig struct {
 	ProjectID       string `json:"project_id,omitempty"`
 	Region          string `json:"region,omitempty"`
 	AuthCredentials string `json:"auth_credentials,omitempty"`
+}
+
+// BedrockKeyConfig represents the AWS Bedrock-specific configuration.
+// It contains AWS-specific settings required for authentication and service access.
+type BedrockKeyConfig struct {
+	AccessKey    string            `json:"access_key,omitempty"`    // AWS access key for authentication
+	SecretKey    string            `json:"secret_key,omitempty"`    // AWS secret access key for authentication
+	SessionToken *string           `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Region       *string           `json:"region,omitempty"`        // AWS region for service access
+	ARN          *string           `json:"arn,omitempty"`           // Amazon Resource Name for resource identification
+	Deployments  map[string]string `json:"deployments,omitempty"`   // Mapping of model identifiers to inference profiles
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

@@ -32,7 +32,6 @@ Provider configuration in `config.json` defines:
 - **Supported models** for each provider
 - **Network settings** and retry behavior
 - **Concurrency controls** and performance tuning
-- **Provider-specific metadata** (regions, endpoints, etc.)
 
 ```json
 {
@@ -135,14 +134,19 @@ Provider configuration in `config.json` defines:
     "bedrock": {
       "keys": [
         {
-          "value": "env.BEDROCK_API_KEY",
           "models": [
             "anthropic.claude-v2:1",
             "mistral.mixtral-8x7b-instruct-v0:1",
             "mistral.mistral-large-2402-v1:0",
             "anthropic.claude-3-sonnet-20240229-v1:0"
           ],
-          "weight": 1.0
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "session_token": "env.AWS_SESSION_TOKEN",
+            "region": "us-east-1"
+          }
         }
       ],
       "network_config": {
@@ -150,10 +154,6 @@ Provider configuration in `config.json` defines:
         "max_retries": 1,
         "retry_backoff_initial_ms": 100,
         "retry_backoff_max_ms": 2000
-      },
-      "meta_config": {
-        "secret_access_key": "env.AWS_SECRET_ACCESS_KEY",
-        "region": "us-east-1"
       },
       "concurrency_and_buffer_size": {
         "concurrency": 3,
@@ -433,15 +433,16 @@ For production workloads:
     "bedrock": {
       "keys": [
         {
-          "value": "env.BEDROCK_API_KEY",
           "models": ["anthropic.claude-3-sonnet-20240229-v1:0"],
           "weight": 1.0
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "session_token": "env.AWS_SESSION_TOKEN",
+            "region": "us-east-1"
+          }
         }
       ],
-      "meta_config": {
-        "secret_access_key": "env.AWS_SECRET_ACCESS_KEY",
-        "region": "us-east-1"
-      },
       "concurrency_and_buffer_size": {
         "concurrency": 8,
         "buffer_size": 40
@@ -480,8 +481,8 @@ export OPENAI_API_KEY="sk-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # AWS Bedrock
-export BEDROCK_API_KEY="your-access-key"
-export AWS_SECRET_ACCESS_KEY="your-secret-key"
+export AWS_ACCESS_KEY="your-access-key"
+export AWS_SECRET_KEY="your-secret-key"
 
 # Azure OpenAI
 export AZURE_API_KEY="your-azure-key"
@@ -506,8 +507,9 @@ docker run -p 8080:8080 \
   -v $(pwd):/app/data \
   -e OPENAI_API_KEY \
   -e ANTHROPIC_API_KEY \
-  -e BEDROCK_API_KEY \
+  -e AWS_ACCESS_KEY \
   -e AWS_SECRET_ACCESS_KEY \
+  -e AWS_SESSION_TOKEN \
   maximhq/bifrost
 
 # Legacy: Direct config.json mount
@@ -515,8 +517,9 @@ docker run -p 8080:8080 \
   -v $(pwd)/config.json:/app/config/config.json \
   -e OPENAI_API_KEY \
   -e ANTHROPIC_API_KEY \
-  -e BEDROCK_API_KEY \
+  -e AWS_ACCESS_KEY \
   -e AWS_SECRET_ACCESS_KEY \
+  -e AWS_SESSION_TOKEN \
   maximhq/bifrost
 ```
 

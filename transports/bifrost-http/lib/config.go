@@ -18,11 +18,10 @@ type ClientConfig struct {
 }
 
 // ProviderConfig represents the configuration for a specific AI model provider.
-// It includes API keys, network settings, provider-specific metadata, and concurrency settings.
+// It includes API keys, network settings, and concurrency settings.
 type ProviderConfig struct {
 	Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider with UUIDs
 	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
-	MetaConfig               *schemas.MetaConfig               `json:"-"`                                     // Provider-specific metadata
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse

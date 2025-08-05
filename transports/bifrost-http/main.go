@@ -17,7 +17,7 @@
 //   - Environment variable processing for secure configuration management
 //   - Real-time configuration updates via HTTP API
 //   - Explicit persistence control via POST /config/save endpoint
-//   - Provider-specific meta config support (Azure, Bedrock, Vertex)
+//   - Provider-specific key config support (Azure, Bedrock, Vertex)
 //   - Thread-safe operations with concurrent request handling
 //   - Statistics and monitoring endpoints for operational insights
 //

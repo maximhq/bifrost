@@ -243,7 +243,6 @@ core/
     ├── bifrost.go         # Core types
     ├── provider.go        # Provider interfaces
     ├── plugin.go          # Plugin types
-    └── meta/              # Provider-specific metadata
 ```
 
 ### **Import Organization**

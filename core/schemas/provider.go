@@ -47,21 +47,6 @@ var DefaultNetworkConfig = NetworkConfig{
 	RetryBackoffMax:                DefaultRetryBackoffMax,
 }
 
-// MetaConfig defines the interface for provider-specific configuration.
-// Check /meta folder for implemented provider-specific meta configurations.
-type MetaConfig interface {
-	// GetSecretAccessKey returns the secret access key for authentication
-	GetSecretAccessKey() *string
-	// GetRegion returns the region for the provider
-	GetRegion() *string
-	// GetSessionToken returns the session token for authentication
-	GetSessionToken() *string
-	// GetARN returns the Amazon Resource Name (ARN)
-	GetARN() *string
-	// GetInferenceProfiles returns the inference profiles
-	GetInferenceProfiles() map[string]string
-}
-
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
 type ConcurrencyAndBufferSize struct {
 	Concurrency int `json:"concurrency"` // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
@@ -101,7 +86,6 @@ type ProxyConfig struct {
 // in your account interface implementation.
 type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
-	MetaConfig               MetaConfig               `json:"meta_config,omitempty"`       // Provider-specific configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
 	Logger              Logger       `json:"logger"`

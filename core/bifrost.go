@@ -1432,7 +1432,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 	// filter out keys which dont support the model, if the key has no models, it is supported for all models
 	var supportedKeys []schemas.Key
 	for _, key := range keys {
-		if (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || providerKey == schemas.Vertex)) || len(key.Models) == 0 {
+		if (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || canProviderKeyValueBeEmpty(providerKey))) || len(key.Models) == 0 {
 			supportedKeys = append(supportedKeys, key)
 		}
 	}

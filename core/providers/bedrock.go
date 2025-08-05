@@ -195,7 +195,6 @@ type BedrockStreamMetadataEvent struct {
 type BedrockProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *http.Client          // HTTP client for API requests
-	meta                schemas.MetaConfig    // Bedrock-specific configuration
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
@@ -227,10 +226,6 @@ func releaseBedrockChatResponse(resp *BedrockChatResponse) {
 func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*BedrockProvider, error) {
 	config.CheckAndSetDefaults()
 
-	if config.MetaConfig == nil {
-		return nil, fmt.Errorf("meta config is not set")
-	}
-
 	client := &http.Client{Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)}
 
 	// Pre-warm response pools
@@ -242,7 +237,6 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	return &BedrockProvider{
 		logger:              logger,
 		client:              client,
-		meta:                config.MetaConfig,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -256,19 +250,10 @@ func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 // CompleteRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, accessKey string) ([]byte, *schemas.BifrostError) {
-	if provider.meta == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "meta config for bedrock is not provided",
-			},
-		}
-	}
-
+func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, config schemas.BedrockKeyConfig) ([]byte, *schemas.BifrostError) {
 	region := "us-east-1"
-	if provider.meta.GetRegion() != nil {
-		region = *provider.meta.GetRegion()
+	if config.Region != nil {
+		region = *config.Region
 	}
 
 	jsonBody, err := sonic.Marshal(requestBody)
@@ -307,8 +292,8 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	// Set any extra headers from network config
 	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
 
-	if provider.meta.GetSecretAccessKey() != nil {
-		if err := signAWSRequest(req, accessKey, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); err != nil {
+	if config.SecretKey != "" {
+		if err := signAWSRequest(req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock"); err != nil {
 			return nil, err
 		}
 	} else {
@@ -822,13 +807,17 @@ func (provider *BedrockProvider) prepareTextCompletionParams(params map[string]i
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if key.BedrockKeyConfig == nil {
+		return nil, newConfigurationError("bedrock key config is not provided", schemas.Bedrock)
+	}
+
 	preparedParams := provider.prepareTextCompletionParams(prepareParams(params), model)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"prompt": text,
 	}, preparedParams)
 
-	body, err := provider.completeRequest(ctx, requestBody, fmt.Sprintf("%s/invoke", model), key.Value)
+	body, err := provider.completeRequest(ctx, requestBody, fmt.Sprintf("%s/invoke", model), *key.BedrockKeyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -908,6 +897,10 @@ func (provider *BedrockProvider) extractToolsFromHistory(messages []schemas.Bifr
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if key.BedrockKeyConfig == nil {
+		return nil, newConfigurationError("bedrock key config is not provided", schemas.Bedrock)
+	}
+
 	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
 	if err != nil {
 		return nil, err
@@ -939,17 +932,17 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	// Format the path with proper model identifier
 	path := fmt.Sprintf("%s/converse", model)
 
-	if provider.meta != nil && provider.meta.GetInferenceProfiles() != nil {
-		if inferenceProfileId, ok := provider.meta.GetInferenceProfiles()[model]; ok {
-			if provider.meta.GetARN() != nil {
-				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *provider.meta.GetARN(), inferenceProfileId))
+	if key.BedrockKeyConfig.Deployments != nil {
+		if inferenceProfileId, ok := key.BedrockKeyConfig.Deployments[model]; ok {
+			if key.BedrockKeyConfig.ARN != nil {
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileId))
 				path = fmt.Sprintf("%s/converse", encodedModelIdentifier)
 			}
 		}
 	}
 
 	// Create the signed request
-	responseBody, err := provider.completeRequest(ctx, requestBody, path, key.Value)
+	responseBody, err := provider.completeRequest(ctx, requestBody, path, *key.BedrockKeyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -1088,7 +1081,7 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 				AccessKeyID:     accessKey,
 				SecretAccessKey: secretKey,
 			}
-			if sessionToken != nil {
+			if sessionToken != nil && *sessionToken != "" {
 				creds.SessionToken = *sessionToken
 			}
 			return creds, nil
@@ -1118,18 +1111,30 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
 // Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *BedrockProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if key.BedrockKeyConfig == nil {
+		return nil, newConfigurationError("bedrock key config is not provided", schemas.Bedrock)
+	}
+
 	switch {
 	case strings.HasPrefix(model, "amazon.titan-embed-text"):
-		return provider.handleTitanEmbedding(ctx, model, key.Value, input, params)
+		return provider.handleTitanEmbedding(ctx, model, *key.BedrockKeyConfig, input, params)
 	case strings.HasPrefix(model, "cohere.embed"):
-		return provider.handleCohereEmbedding(ctx, model, key.Value, input, params)
+		return provider.handleCohereEmbedding(ctx, model, *key.BedrockKeyConfig, input, params)
 	default:
 		return nil, newConfigurationError("embedding is not supported for this Bedrock model", schemas.Bedrock)
 	}
 }
 
 // handleTitanEmbedding handles embedding requests for Amazon Titan models.
-func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model string, config schemas.BedrockKeyConfig, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Titan Text Embeddings V1/V2 - only supports single text input
+	if len(input.Texts) == 0 {
+		return nil, newConfigurationError("no input text provided for embedding", schemas.Bedrock)
+	}
+	if len(input.Texts) > 1 {
+		return nil, newConfigurationError("Amazon Titan embedding models support only single text input, received multiple texts", schemas.Bedrock)
+	}
+
 	requestBody := map[string]interface{}{
 		"inputText": input.Texts[0],
 	}
@@ -1148,7 +1153,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 
 	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
 	path := url.PathEscape(model) + "/invoke"
-	rawResponse, err := provider.completeRequest(ctx, requestBody, path, key)
+	rawResponse, err := provider.completeRequest(ctx, requestBody, path, config)
 	if err != nil {
 		return nil, err
 	}
@@ -1192,7 +1197,11 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 }
 
 // handleCohereEmbedding handles embedding requests for Cohere models on Bedrock.
-func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, model string, key string, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, model string, config schemas.BedrockKeyConfig, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if len(input.Texts) == 0 {
+		return nil, newConfigurationError("no input text provided for embedding", schemas.Bedrock)
+	}
+
 	requestBody := map[string]interface{}{
 		"texts":      input.Texts,
 		"input_type": "search_document",
@@ -1203,7 +1212,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 
 	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
 	path := url.PathEscape(model) + "/invoke"
-	rawResponse, err := provider.completeRequest(ctx, requestBody, path, key)
+	rawResponse, err := provider.completeRequest(ctx, requestBody, path, config)
 	if err != nil {
 		return nil, err
 	}
@@ -1255,6 +1264,10 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 // It formats the request, sends it to Bedrock, and processes the streaming response.
 // Returns a channel for streaming BifrostResponse objects or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if key.BedrockKeyConfig == nil {
+		return nil, newConfigurationError("bedrock key config is not provided", schemas.Bedrock)
+	}
+
 	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
 	if err != nil {
 		return nil, err
@@ -1286,22 +1299,18 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	// Format the path with proper model identifier for streaming
 	path := fmt.Sprintf("%s/converse-stream", model)
 
-	if provider.meta != nil && provider.meta.GetInferenceProfiles() != nil {
-		if inferenceProfileId, ok := provider.meta.GetInferenceProfiles()[model]; ok {
-			if provider.meta.GetARN() != nil {
-				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *provider.meta.GetARN(), inferenceProfileId))
+	if key.BedrockKeyConfig.Deployments != nil {
+		if inferenceProfileId, ok := key.BedrockKeyConfig.Deployments[model]; ok {
+			if key.BedrockKeyConfig.ARN != nil {
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileId))
 				path = fmt.Sprintf("%s/converse-stream", encodedModelIdentifier)
 			}
 		}
 	}
 
-	if provider.meta == nil {
-		return nil, newConfigurationError("meta config for bedrock is not provided", schemas.Bedrock)
-	}
-
 	region := "us-east-1"
-	if provider.meta.GetRegion() != nil {
-		region = *provider.meta.GetRegion()
+	if key.BedrockKeyConfig.Region != nil {
+		region = *key.BedrockKeyConfig.Region
 	}
 
 	// Create the streaming request
@@ -1320,8 +1329,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Sign the request for AWS
-	if provider.meta.GetSecretAccessKey() != nil {
-		if signErr := signAWSRequest(req, key.Value, *provider.meta.GetSecretAccessKey(), provider.meta.GetSessionToken(), region, "bedrock"); signErr != nil {
+	if key.BedrockKeyConfig.SecretKey != "" {
+		if signErr := signAWSRequest(req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, region, "bedrock"); signErr != nil {
 			return nil, signErr
 		}
 	} else {

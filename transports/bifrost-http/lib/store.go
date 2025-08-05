@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/meta"
 	"gorm.io/gorm"
 )
 
@@ -29,7 +28,7 @@ import (
 //   - Thread-safe operations with read-write mutexes
 //   - Real-time configuration updates via HTTP API
 //   - Automatic database persistence for all changes
-//   - Support for provider-specific key configurations (Azure, Vertex) and meta configurations (Bedrock)
+//   - Support for provider-specific key configurations (Azure, Vertex, Bedrock)
 type ConfigStore struct {
 	mu         sync.RWMutex
 	muMCP      sync.RWMutex
@@ -51,9 +50,9 @@ type ConfigStore struct {
 type EnvKeyInfo struct {
 	EnvVar     string // The environment variable name (without env. prefix)
 	Provider   string // The provider this key belongs to (empty for core/mcp configs)
-	KeyType    string // Type of key (e.g., "api_key", "azure_config", "vertex_config", "meta_config", "connection_string")
+	KeyType    string // Type of key (e.g., "api_key", "azure_config", "vertex_config", "bedrock_config", "connection_string")
 	ConfigPath string // Path in config where this env var is used
-	KeyID      string // The key ID this env var belongs to (empty for non-key configs like meta_config, connection_string)
+	KeyID      string // The key ID this env var belongs to (empty for non-key configs like bedrock_config, connection_string)
 }
 
 var DefaultClientConfig = ClientConfig{
@@ -97,8 +96,7 @@ func NewConfigStore(logger schemas.Logger, db *gorm.DB, configPath string) (*Con
 // This method handles:
 //   - JSON config file parsing
 //   - Environment variable substitution for API keys (env.VARIABLE_NAME)
-//   - Key-level config processing for Azure and Vertex (Endpoint, APIVersion, ProjectID, Region, AuthCredentials)
-//   - Provider-specific meta config processing (Bedrock only)
+//   - Key-level config processing for Azure, Vertex, and Bedrock (Endpoint, APIVersion, ProjectID, Region, AuthCredentials)
 //   - Case conversion for provider names (e.g., "OpenAI" -> "openai")
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
@@ -150,43 +148,11 @@ func (s *ConfigStore) LoadFromConfig(configPath string) error {
 			return fmt.Errorf("failed to unmarshal providers: %w", err)
 		}
 
-		// Create a temporary structure to unmarshal the full JSON with proper meta configs
-		var tempConfig struct {
-			Providers map[string]struct {
-				MetaConfig json.RawMessage `json:"meta_config"`
-			} `json:"providers"`
-		}
-
-		if err := json.Unmarshal(data, &tempConfig); err != nil {
-			return fmt.Errorf("failed to unmarshal configuration file: %w", err)
-		}
-
 		// Process each provider configuration
 		for rawProviderName, cfg := range rawProviders {
 			newEnvKeys := make(map[string]struct{})
 
 			provider := schemas.ModelProvider(strings.ToLower(rawProviderName))
-
-			// Process meta config if it exists
-			if tempProvider, exists := tempConfig.Providers[rawProviderName]; exists && len(tempProvider.MetaConfig) > 0 {
-				processedMetaConfig, envKeys, err := s.processMetaConfigEnvVars(tempProvider.MetaConfig, provider)
-
-				if err != nil {
-					s.cleanupEnvKeys(string(provider), "", envKeys)
-					s.logger.Warn(fmt.Sprintf("failed to process env vars in meta config for %s: %v", provider, err))
-					continue
-				}
-
-				// Parse and set the meta config
-				metaConfig, err := s.parseMetaConfig(processedMetaConfig, provider)
-				if err != nil {
-					s.cleanupEnvKeys(string(provider), "", envKeys)
-					s.logger.Warn(fmt.Sprintf("failed to process meta config for %s: %v", provider, err))
-					continue
-				} else {
-					cfg.MetaConfig = metaConfig
-				}
-			}
 
 			// Process environment variables in keys (including key-level configs)
 			for i, key := range cfg.Keys {
@@ -229,6 +195,15 @@ func (s *ConfigStore) LoadFromConfig(configPath string) error {
 					if err := s.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
 						s.cleanupEnvKeys(string(provider), "", newEnvKeys)
 						s.logger.Warn(fmt.Sprintf("failed to process Vertex key config env vars for %s: %v", provider, err))
+						continue
+					}
+				}
+
+				// Process Bedrock key config if present
+				if key.BedrockKeyConfig != nil {
+					if err := s.processBedrockKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
+						s.cleanupEnvKeys(string(provider), "", newEnvKeys)
+						s.logger.Warn(fmt.Sprintf("failed to process Bedrock key config env vars for %s: %v", provider, err))
 						continue
 					}
 				}
@@ -281,8 +256,7 @@ func (s *ConfigStore) autoMigrate() error {
 // This method handles:
 //   - Database configuration loading
 //   - Environment variable substitution for API keys (env.VARIABLE_NAME)
-//   - Key-level config processing for Azure and Vertex (Endpoint, APIVersion, ProjectID, Region, AuthCredentials)
-//   - Provider-specific meta config processing (Bedrock only)
+//   - Key-level config processing for Azure, Vertex, and Bedrock (Endpoint, APIVersion, ProjectID, Region, AuthCredentials)
 //   - In-memory storage for ultra-fast access during request processing
 //   - Auto-detection of providers from environment variables if database is empty
 func (s *ConfigStore) LoadFromDatabase() error {
@@ -366,12 +340,13 @@ func (s *ConfigStore) loadProvidersFromDB() error {
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
 			keys[i] = schemas.Key{
-				ID:              dbKey.KeyID,
-				Value:           dbKey.Value,
-				Models:          dbKey.Models,
-				Weight:          dbKey.Weight,
-				AzureKeyConfig:  dbKey.AzureKeyConfig,
-				VertexKeyConfig: dbKey.VertexKeyConfig,
+				ID:               dbKey.KeyID,
+				Value:            dbKey.Value,
+				Models:           dbKey.Models,
+				Weight:           dbKey.Weight,
+				AzureKeyConfig:   dbKey.AzureKeyConfig,
+				VertexKeyConfig:  dbKey.VertexKeyConfig,
+				BedrockKeyConfig: dbKey.BedrockKeyConfig,
 			}
 		}
 
@@ -379,7 +354,6 @@ func (s *ConfigStore) loadProvidersFromDB() error {
 			Keys:                     keys,
 			NetworkConfig:            dbProvider.NetworkConfig,
 			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
-			MetaConfig:               dbProvider.MetaConfig,
 			ProxyConfig:              dbProvider.ProxyConfig,
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		}
@@ -527,8 +501,7 @@ func (s *ConfigStore) writeConfigToFile(configPath string) error {
 				if key.AzureKeyConfig.APIVersion != nil {
 					path = fmt.Sprintf("providers.%s.keys[%s].azure_key_config.api_version", provider, key.ID)
 					if envVar, ok := envVarsByPath[path]; ok {
-						apiVersion := "env." + envVar
-						azureConfig.APIVersion = &apiVersion
+						azureConfig.APIVersion = bifrost.Ptr("env." + envVar)
 					} else {
 						azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
 					}
@@ -567,6 +540,54 @@ func (s *ConfigStore) writeConfigToFile(configPath string) error {
 
 				redactedKeys[i].VertexKeyConfig = vertexConfig
 			}
+
+			// Restore Bedrock key config if present
+			if key.BedrockKeyConfig != nil {
+				bedrockConfig := &schemas.BedrockKeyConfig{
+					Deployments: key.BedrockKeyConfig.Deployments,
+				}
+
+				// Restore AccessKey
+				path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.access_key", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					bedrockConfig.AccessKey = "env." + envVar
+				} else {
+					bedrockConfig.AccessKey = key.BedrockKeyConfig.AccessKey
+				}
+
+				// Restore SecretKey
+				path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.secret_key", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					bedrockConfig.SecretKey = "env." + envVar
+				} else {
+					bedrockConfig.SecretKey = key.BedrockKeyConfig.SecretKey
+				}
+
+				// Restore SessionToken
+				path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.session_token", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					bedrockConfig.SessionToken = bifrost.Ptr("env." + envVar)
+				} else {
+					bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken
+				}
+
+				// Restore Region
+				path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.region", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					bedrockConfig.Region = bifrost.Ptr("env." + envVar)
+				} else {
+					bedrockConfig.Region = key.BedrockKeyConfig.Region
+				}
+
+				// Restore ARN
+				path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.arn", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					bedrockConfig.ARN = bifrost.Ptr("env." + envVar)
+				} else {
+					bedrockConfig.ARN = key.BedrockKeyConfig.ARN
+				}
+
+			}
 		}
 
 		// Create provider config with restored env references
@@ -580,12 +601,6 @@ func (s *ConfigStore) writeConfigToFile(configPath string) error {
 
 		if config.ConcurrencyAndBufferSize != nil {
 			providerConfig["concurrency_and_buffer_size"] = config.ConcurrencyAndBufferSize
-		}
-
-		// Handle meta config with env variable restoration
-		if config.MetaConfig != nil {
-			restoredMetaConfig := s.restoreMetaConfigEnvVars(provider, *config.MetaConfig, envVarsByPath)
-			providerConfig["meta_config"] = restoredMetaConfig
 		}
 
 		output.Providers[providerName] = providerConfig
@@ -644,56 +659,6 @@ func (s *ConfigStore) getRestoredMCPConfig(envVarsByPath map[string]string) *sch
 	return mcpConfigCopy
 }
 
-// restoreMetaConfigEnvVars creates a copy of meta config with env variable references restored
-func (s *ConfigStore) restoreMetaConfigEnvVars(provider schemas.ModelProvider, metaConfig schemas.MetaConfig, envVarsByPath map[string]string) interface{} {
-	switch m := metaConfig.(type) {
-	case *meta.BedrockMetaConfig:
-		bedrockConfig := *m // Copy the struct
-
-		// Restore secret access key if it came from env var
-		path := fmt.Sprintf("providers.%s.meta_config.secret_access_key", provider)
-		if envVar, ok := envVarsByPath[path]; ok {
-			bedrockConfig.SecretAccessKey = "env." + envVar
-		}
-		// Otherwise keep actual value (no asterisk redaction)
-
-		// Restore region if it came from env var
-		if bedrockConfig.Region != nil {
-			path = fmt.Sprintf("providers.%s.meta_config.region", provider)
-			if envVar, ok := envVarsByPath[path]; ok {
-				region := "env." + envVar
-				bedrockConfig.Region = &region
-			}
-			// Otherwise keep actual value (no asterisk redaction)
-		}
-
-		// Restore session token if it came from env var
-		if bedrockConfig.SessionToken != nil {
-			path = fmt.Sprintf("providers.%s.meta_config.session_token", provider)
-			if envVar, ok := envVarsByPath[path]; ok {
-				sessionToken := "env." + envVar
-				bedrockConfig.SessionToken = &sessionToken
-			}
-			// Otherwise keep actual value (no asterisk redaction)
-		}
-
-		// Restore ARN if it came from env var
-		if bedrockConfig.ARN != nil {
-			path = fmt.Sprintf("providers.%s.meta_config.arn", provider)
-			if envVar, ok := envVarsByPath[path]; ok {
-				arn := "env." + envVar
-				bedrockConfig.ARN = &arn
-			}
-			// Otherwise keep actual value (no asterisk redaction)
-		}
-
-		return bedrockConfig
-
-	default:
-		return metaConfig
-	}
-}
-
 // SaveConfig writes the current configuration back to the database
 func (s *ConfigStore) SaveConfig() error {
 	// Save client config
@@ -750,7 +715,6 @@ func (s *ConfigStore) saveProvidersToDB() error {
 			Name:                     string(providerName),
 			NetworkConfig:            providerConfig.NetworkConfig,
 			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
-			MetaConfig:               providerConfig.MetaConfig,
 			ProxyConfig:              providerConfig.ProxyConfig,
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 		}
@@ -764,13 +728,14 @@ func (s *ConfigStore) saveProvidersToDB() error {
 		dbKeys := make([]DBKey, 0, len(providerConfig.Keys))
 		for _, key := range providerConfig.Keys {
 			dbKey := DBKey{
-				ProviderID:      dbProvider.ID,
-				KeyID:           key.ID,
-				Value:           key.Value,
-				Models:          key.Models,
-				Weight:          key.Weight,
-				AzureKeyConfig:  key.AzureKeyConfig,
-				VertexKeyConfig: key.VertexKeyConfig,
+				ProviderID:       dbProvider.ID,
+				KeyID:            key.ID,
+				Value:            key.Value,
+				Models:           key.Models,
+				Weight:           key.Weight,
+				AzureKeyConfig:   key.AzureKeyConfig,
+				VertexKeyConfig:  key.VertexKeyConfig,
+				BedrockKeyConfig: key.BedrockKeyConfig,
 			}
 
 			// Handle Azure config
@@ -784,6 +749,15 @@ func (s *ConfigStore) saveProvidersToDB() error {
 				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			}
+
+			// Handle Bedrock config
+			if key.BedrockKeyConfig != nil {
+				dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+				dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
 			}
 
 			dbKeys = append(dbKeys, dbKey)
@@ -863,121 +837,6 @@ func (s *ConfigStore) saveEnvKeysToDB() error {
 	}
 
 	return nil
-}
-
-// parseMetaConfig converts raw JSON to the appropriate provider-specific meta config interface
-func (s *ConfigStore) parseMetaConfig(rawMetaConfig json.RawMessage, provider schemas.ModelProvider) (*schemas.MetaConfig, error) {
-	switch provider {
-	case schemas.Bedrock:
-		var bedrockMetaConfig meta.BedrockMetaConfig
-		if err := json.Unmarshal(rawMetaConfig, &bedrockMetaConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal Bedrock meta config: %w", err)
-		}
-		var metaConfig schemas.MetaConfig = &bedrockMetaConfig
-		return &metaConfig, nil
-	}
-
-	return nil, fmt.Errorf("unsupported provider for meta config: %s", provider)
-}
-
-// processMetaConfigEnvVars processes environment variables in provider-specific meta configurations.
-// This method handles the provider-specific meta config structures and processes environment
-// variables in their fields, ensuring type safety and proper field handling.
-//
-// Supported providers and their processed fields:
-//   - Bedrock: SecretAccessKey, Region, SessionToken, ARN
-//
-// For unsupported providers, the meta config is returned unchanged.
-// This approach ensures type safety while supporting environment variable substitution.
-func (s *ConfigStore) processMetaConfigEnvVars(rawMetaConfig json.RawMessage, provider schemas.ModelProvider) (json.RawMessage, map[string]struct{}, error) {
-	// Track new environment variables
-	newEnvKeys := make(map[string]struct{})
-
-	switch provider {
-	case schemas.Bedrock:
-		var bedrockMetaConfig meta.BedrockMetaConfig
-		if err := json.Unmarshal(rawMetaConfig, &bedrockMetaConfig); err != nil {
-			return nil, newEnvKeys, fmt.Errorf("failed to unmarshal Bedrock meta config: %w", err)
-		}
-
-		secretAccessKey, envVar, err := s.processEnvValue(bedrockMetaConfig.SecretAccessKey)
-		if err != nil {
-			return nil, newEnvKeys, err
-		}
-		if envVar != "" {
-			newEnvKeys[envVar] = struct{}{}
-			s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
-				EnvVar:     envVar,
-				Provider:   string(provider),
-				KeyType:    "meta_config",
-				ConfigPath: fmt.Sprintf("providers.%s.meta_config.secret_access_key", provider),
-				KeyID:      "", // Empty for meta config entries
-			})
-		}
-		bedrockMetaConfig.SecretAccessKey = secretAccessKey
-
-		if bedrockMetaConfig.Region != nil {
-			region, envVar, err := s.processEnvValue(*bedrockMetaConfig.Region)
-			if err != nil {
-				return nil, newEnvKeys, err
-			}
-			if envVar != "" {
-				newEnvKeys[envVar] = struct{}{}
-				s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
-					EnvVar:     envVar,
-					Provider:   string(provider),
-					KeyType:    "meta_config",
-					ConfigPath: fmt.Sprintf("providers.%s.meta_config.region", provider),
-					KeyID:      "", // Empty for meta config entries
-				})
-			}
-			bedrockMetaConfig.Region = &region
-		}
-
-		if bedrockMetaConfig.SessionToken != nil {
-			sessionToken, envVar, err := s.processEnvValue(*bedrockMetaConfig.SessionToken)
-			if err != nil {
-				return nil, newEnvKeys, err
-			}
-			if envVar != "" {
-				newEnvKeys[envVar] = struct{}{}
-				s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
-					EnvVar:     envVar,
-					Provider:   string(provider),
-					KeyType:    "meta_config",
-					ConfigPath: fmt.Sprintf("providers.%s.meta_config.session_token", provider),
-					KeyID:      "", // Empty for meta config entries
-				})
-			}
-			bedrockMetaConfig.SessionToken = &sessionToken
-		}
-
-		if bedrockMetaConfig.ARN != nil {
-			arn, envVar, err := s.processEnvValue(*bedrockMetaConfig.ARN)
-			if err != nil {
-				return nil, newEnvKeys, err
-			}
-			if envVar != "" {
-				newEnvKeys[envVar] = struct{}{}
-				s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
-					EnvVar:     envVar,
-					Provider:   string(provider),
-					KeyType:    "meta_config",
-					ConfigPath: fmt.Sprintf("providers.%s.meta_config.arn", provider),
-					KeyID:      "", // Empty for meta config entries
-				})
-			}
-			bedrockMetaConfig.ARN = &arn
-		}
-
-		processedJSON, err := json.Marshal(bedrockMetaConfig)
-		if err != nil {
-			return nil, newEnvKeys, fmt.Errorf("failed to marshal processed Bedrock meta config: %w", err)
-		}
-		return processedJSON, newEnvKeys, nil
-	}
-
-	return rawMetaConfig, newEnvKeys, nil
 }
 
 // GetProviderConfigRaw retrieves the raw, unredacted provider configuration from memory.
@@ -1092,8 +951,7 @@ func (s *ConfigStore) GetProviderConfigRedacted(provider schemas.ModelProvider) 
 			if key.AzureKeyConfig.APIVersion != nil {
 				path = fmt.Sprintf("providers.%s.keys[%s].azure_key_config.api_version", provider, key.ID)
 				if envVar, ok := envVarsByPath[path]; ok {
-					apiVersion := "env." + envVar
-					azureConfig.APIVersion = &apiVersion
+					azureConfig.APIVersion = bifrost.Ptr("env." + envVar)
 				} else {
 					// APIVersion is not sensitive, keep as-is
 					azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
@@ -1133,58 +991,58 @@ func (s *ConfigStore) GetProviderConfigRedacted(provider schemas.ModelProvider) 
 
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
 		}
-	}
 
-	// Handle meta config redaction if present (Bedrock only)
-	if config.MetaConfig != nil {
-		redactedMetaConfig := s.redactMetaConfig(provider, *config.MetaConfig, envVarsByPath)
-		redactedConfig.MetaConfig = &redactedMetaConfig
+		// Redact Bedrock key config if present
+		if key.BedrockKeyConfig != nil {
+			bedrockConfig := &schemas.BedrockKeyConfig{
+				Deployments: key.BedrockKeyConfig.Deployments,
+			}
+
+			// Redact AccessKey
+			path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.access_key", provider, key.ID)
+			if envVar, ok := envVarsByPath[path]; ok {
+				bedrockConfig.AccessKey = "env." + envVar
+			} else {
+				bedrockConfig.AccessKey = RedactKey(key.BedrockKeyConfig.AccessKey)
+			}
+
+			// Redact SecretKey
+			path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.secret_key", provider, key.ID)
+			if envVar, ok := envVarsByPath[path]; ok {
+				bedrockConfig.SecretKey = "env." + envVar
+			} else {
+				bedrockConfig.SecretKey = RedactKey(key.BedrockKeyConfig.SecretKey)
+			}
+
+			// Redact SessionToken
+			path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.session_token", provider, key.ID)
+			if envVar, ok := envVarsByPath[path]; ok {
+				bedrockConfig.SessionToken = bifrost.Ptr("env." + envVar)
+			} else {
+				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken
+			}
+
+			// Redact Region
+			path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.region", provider, key.ID)
+			if envVar, ok := envVarsByPath[path]; ok {
+				bedrockConfig.Region = bifrost.Ptr("env." + envVar)
+			} else {
+				bedrockConfig.Region = key.BedrockKeyConfig.Region
+			}
+
+			// Redact ARN
+			path = fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.arn", provider, key.ID)
+			if envVar, ok := envVarsByPath[path]; ok {
+				bedrockConfig.ARN = bifrost.Ptr("env." + envVar)
+			} else {
+				bedrockConfig.ARN = key.BedrockKeyConfig.ARN
+			}
+
+			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
+		}
 	}
 
 	return &redactedConfig, nil
-}
-
-// redactMetaConfig creates a redacted copy of meta config based on provider type
-// Note: Only Bedrock is supported for meta config now, Azure and Vertex moved to key level
-func (s *ConfigStore) redactMetaConfig(provider schemas.ModelProvider, metaConfig schemas.MetaConfig, envVarsByPath map[string]string) schemas.MetaConfig {
-	switch m := metaConfig.(type) {
-	case *meta.BedrockMetaConfig:
-		bedrockConfig := *m // Copy the struct
-		path := fmt.Sprintf("providers.%s.meta_config.secret_access_key", provider)
-		if envVar, ok := envVarsByPath[path]; ok {
-			bedrockConfig.SecretAccessKey = "env." + envVar
-		} else {
-			bedrockConfig.SecretAccessKey = RedactKey(bedrockConfig.SecretAccessKey)
-		}
-		if bedrockConfig.Region != nil {
-			path = fmt.Sprintf("providers.%s.meta_config.region", provider)
-			if envVar, ok := envVarsByPath[path]; ok {
-				region := "env." + envVar
-				bedrockConfig.Region = &region
-			}
-		}
-		if bedrockConfig.SessionToken != nil {
-			path = fmt.Sprintf("providers.%s.meta_config.session_token", provider)
-			if envVar, ok := envVarsByPath[path]; ok {
-				sessionToken := "env." + envVar
-				bedrockConfig.SessionToken = &sessionToken
-			} else {
-				sessionToken := RedactKey(*bedrockConfig.SessionToken)
-				bedrockConfig.SessionToken = &sessionToken
-			}
-		}
-		if bedrockConfig.ARN != nil {
-			path = fmt.Sprintf("providers.%s.meta_config.arn", provider)
-			if envVar, ok := envVarsByPath[path]; ok {
-				arn := "env." + envVar
-				bedrockConfig.ARN = &arn
-			}
-		}
-		return &bedrockConfig
-
-	default:
-		return metaConfig
-	}
 }
 
 // GetAllProviders returns all configured provider names.
@@ -1205,7 +1063,7 @@ func (s *ConfigStore) GetAllProviders() ([]schemas.ModelProvider, error) {
 //
 // The method:
 //   - Validates that the provider doesn't already exist
-//   - Processes environment variables in API keys, key-level configs, and meta configurations
+//   - Processes environment variables in API keys, and key-level configs
 //   - Stores the processed configuration in memory
 //   - Updates metadata and timestamps
 func (s *ConfigStore) AddProvider(provider schemas.ModelProvider, config ProviderConfig) error {
@@ -1218,29 +1076,6 @@ func (s *ConfigStore) AddProvider(provider schemas.ModelProvider, config Provide
 	}
 
 	newEnvKeys := make(map[string]struct{})
-
-	// Process environment variables in meta config if present
-	if config.MetaConfig != nil {
-		rawMetaData, err := json.Marshal(*config.MetaConfig)
-		if err != nil {
-			return fmt.Errorf("failed to marshal meta config: %w", err)
-		}
-
-		processedMetaData, envKeys, err := s.processMetaConfigEnvVars(rawMetaData, provider)
-
-		newEnvKeys = envKeys
-		if err != nil {
-			s.cleanupEnvKeys(string(provider), "", newEnvKeys)
-			return fmt.Errorf("failed to process env vars in meta config: %w", err)
-		}
-
-		metaConfig, err := s.parseMetaConfig(processedMetaData, provider)
-		if err != nil {
-			s.cleanupEnvKeys(string(provider), "", newEnvKeys)
-			return fmt.Errorf("failed to parse processed meta config: %w", err)
-		}
-		config.MetaConfig = metaConfig
-	}
 
 	// Process environment variables in keys (including key-level configs)
 	for i, key := range config.Keys {
@@ -1283,6 +1118,14 @@ func (s *ConfigStore) AddProvider(provider schemas.ModelProvider, config Provide
 				return fmt.Errorf("failed to process Vertex key config env vars: %w", err)
 			}
 		}
+
+		// Process Bedrock key config if present
+		if key.BedrockKeyConfig != nil {
+			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+				s.cleanupEnvKeys(string(provider), "", newEnvKeys)
+				return fmt.Errorf("failed to process Bedrock key config env vars: %w", err)
+			}
+		}
 	}
 
 	s.Providers[provider] = config
@@ -1296,7 +1139,7 @@ func (s *ConfigStore) AddProvider(provider schemas.ModelProvider, config Provide
 // via the HTTP API and ensures all data processing is done upfront.
 //
 // The method:
-//   - Processes environment variables in API keys, key-level configs, and meta configurations
+//   - Processes environment variables in API keys, and key-level configs
 //   - Stores the processed configuration in memory
 //   - Updates metadata and timestamps
 //   - Thread-safe operation with write locks
@@ -1313,32 +1156,6 @@ func (s *ConfigStore) UpdateProviderConfig(provider schemas.ModelProvider, confi
 
 	// Track new environment variables being added
 	newEnvKeys := make(map[string]struct{})
-
-	// Process environment variables in meta config if present
-	if config.MetaConfig != nil {
-		rawMetaData, err := json.Marshal(*config.MetaConfig)
-		if err != nil {
-			return fmt.Errorf("failed to marshal meta config: %w", err)
-		}
-
-		processedMetaData, envKeys, err := s.processMetaConfigEnvVars(rawMetaData, provider)
-		if err != nil {
-			s.cleanupEnvKeys(string(provider), "", envKeys) // Clean up only new vars on failure
-			return fmt.Errorf("failed to process env vars in meta config: %w", err)
-		}
-
-		metaConfig, err := s.parseMetaConfig(processedMetaData, provider)
-		if err != nil {
-			s.cleanupEnvKeys(string(provider), "", envKeys) // Clean up only new vars on failure
-			return fmt.Errorf("failed to parse processed meta config: %w", err)
-		}
-		config.MetaConfig = metaConfig
-
-		// Add the new env vars to tracking
-		for envVar := range envKeys {
-			newEnvKeys[envVar] = struct{}{}
-		}
-	}
 
 	// Process environment variables in keys (including key-level configs)
 	for i, key := range config.Keys {
@@ -1379,6 +1196,14 @@ func (s *ConfigStore) UpdateProviderConfig(provider schemas.ModelProvider, confi
 			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(string(provider), "", newEnvKeys)
 				return fmt.Errorf("failed to process Vertex key config env vars: %w", err)
+			}
+		}
+
+		// Process Bedrock key config if present
+		if key.BedrockKeyConfig != nil {
+			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+				s.cleanupEnvKeys(string(provider), "", newEnvKeys)
+				return fmt.Errorf("failed to process Bedrock key config env vars: %w", err)
 			}
 		}
 	}
@@ -1731,7 +1556,7 @@ func (s *ConfigStore) CleanupEnvKeysForKeys(provider string, keysToDelete []sche
 		for _, info := range infos {
 			// Keep entries that either:
 			// 1. Don't belong to this provider, OR
-			// 2. Don't have a KeyID (meta config, MCP), OR
+			// 2. Don't have a KeyID (MCP), OR
 			// 3. Have a KeyID that's not being deleted
 			shouldKeep := info.Provider != provider ||
 				info.KeyID == "" ||
@@ -1772,7 +1597,7 @@ func (s *ConfigStore) CleanupEnvKeysForUpdatedKeys(provider string, keysToUpdate
 		for _, info := range infos {
 			// Keep entries that either:
 			// 1. Don't belong to this provider, OR
-			// 2. Don't have a KeyID (meta config, MCP), OR
+			// 2. Don't have a KeyID (MCP), OR
 			// 3. Have a KeyID that's not being updated
 			shouldKeep := info.Provider != provider ||
 				info.KeyID == "" ||
@@ -1955,6 +1780,104 @@ func (s *ConfigStore) processVertexKeyConfigEnvVars(key *schemas.Key, provider s
 		})
 	}
 	vertexConfig.AuthCredentials = processedAuthCredentials
+
+	return nil
+}
+
+// processBedrockKeyConfigEnvVars processes environment variables in Bedrock key configuration
+func (s *ConfigStore) processBedrockKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, keyIndex int, newEnvKeys map[string]struct{}) error {
+	bedrockConfig := key.BedrockKeyConfig
+
+	// Process AccessKey
+	processedAccessKey, envVar, err := s.processEnvValue(bedrockConfig.AccessKey)
+	if err != nil {
+		return err
+	}
+	if envVar != "" {
+		newEnvKeys[envVar] = struct{}{}
+		s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
+			EnvVar:     envVar,
+			Provider:   string(provider),
+			KeyType:    "bedrock_config",
+			ConfigPath: fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.access_key", provider, key.ID),
+			KeyID:      key.ID,
+		})
+	}
+	bedrockConfig.AccessKey = processedAccessKey
+
+	// Process SecretKey
+	processedSecretKey, envVar, err := s.processEnvValue(bedrockConfig.SecretKey)
+	if err != nil {
+		return err
+	}
+	if envVar != "" {
+		newEnvKeys[envVar] = struct{}{}
+		s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
+			EnvVar:     envVar,
+			Provider:   string(provider),
+			KeyType:    "bedrock_config",
+			ConfigPath: fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.secret_key", provider, key.ID),
+			KeyID:      key.ID,
+		})
+	}
+	bedrockConfig.SecretKey = processedSecretKey
+
+	// Process SessionToken if present
+	if bedrockConfig.SessionToken != nil {
+		processedSessionToken, envVar, err := s.processEnvValue(*bedrockConfig.SessionToken)
+		if err != nil {
+			return err
+		}
+		if envVar != "" {
+			newEnvKeys[envVar] = struct{}{}
+			s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
+				EnvVar:     envVar,
+				Provider:   string(provider),
+				KeyType:    "bedrock_config",
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.session_token", provider, key.ID),
+				KeyID:      key.ID,
+			})
+		}
+		bedrockConfig.SessionToken = &processedSessionToken
+	}
+
+	// Process Region if present
+	if bedrockConfig.Region != nil {
+		processedRegion, envVar, err := s.processEnvValue(*bedrockConfig.Region)
+		if err != nil {
+			return err
+		}
+		if envVar != "" {
+			newEnvKeys[envVar] = struct{}{}
+			s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
+				EnvVar:     envVar,
+				Provider:   string(provider),
+				KeyType:    "bedrock_config",
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.region", provider, key.ID),
+				KeyID:      key.ID,
+			})
+		}
+		bedrockConfig.Region = &processedRegion
+	}
+
+	// Process ARN if present
+	if bedrockConfig.ARN != nil {
+		processedARN, envVar, err := s.processEnvValue(*bedrockConfig.ARN)
+		if err != nil {
+			return err
+		}
+		if envVar != "" {
+			newEnvKeys[envVar] = struct{}{}
+			s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
+				EnvVar:     envVar,
+				Provider:   string(provider),
+				KeyType:    "bedrock_config",
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.arn", provider, key.ID),
+				KeyID:      key.ID,
+			})
+		}
+		bedrockConfig.ARN = &processedARN
+	}
 
 	return nil
 }

@@ -15,9 +15,9 @@ import { PROVIDER_LABELS, PROVIDERS as Providers } from '@/lib/constants/logs'
 import {
   AddProviderRequest,
   AzureKeyConfig,
+  BedrockKeyConfig,
   ConcurrencyAndBufferSize,
   Key as KeyType,
-  MetaConfig,
   ModelProvider,
   NetworkConfig,
   ProviderResponse,
@@ -27,14 +27,13 @@ import {
   VertexKeyConfig,
 } from '@/lib/types/config'
 import { cn } from '@/lib/utils'
-import { Validator } from '@/lib/utils/validation'
-import { isRedacted, isValidVertexAuthCredentials, isValidAzureDeployments } from '@/lib/utils/validation'
+import { isValidDeployments, Validator } from '@/lib/utils/validation'
+import { isRedacted, isValidVertexAuthCredentials } from '@/lib/utils/validation'
 import isEqual from 'lodash.isequal'
 import { AlertTriangle, Globe, Info, Plus, Save, X, Zap } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '../ui/alert'
-import MetaConfigRenderer from './meta-config-renderer'
 import { Textarea } from '../ui/textarea'
 
 interface ProviderFormProps {
@@ -67,6 +66,15 @@ const createInitialState = (provider?: ProviderResponse | null, defaultProvider?
         region: '',
         auth_credentials: '',
       }
+    } else if (providerName === 'bedrock') {
+      baseKey.bedrock_key_config = {
+        access_key: '',
+        secret_key: '',
+        session_token: '',
+        region: '',
+        arn: '',
+        deployments: {},
+      }
     }
 
     return baseKey
@@ -77,10 +85,6 @@ const createInitialState = (provider?: ProviderResponse | null, defaultProvider?
     keys: isNewProvider && keysRequired ? [createDefaultKey()] : !isNewProvider && keysRequired && provider?.keys ? provider.keys : [],
     networkConfig: provider?.network_config || DEFAULT_NETWORK_CONFIG,
     performanceConfig: provider?.concurrency_and_buffer_size || DEFAULT_PERFORMANCE_CONFIG,
-    metaConfig: provider?.meta_config || {
-      region: '',
-      secret_access_key: '',
-    },
     proxyConfig: provider?.proxy_config || {
       type: 'none',
       url: '',
@@ -96,7 +100,6 @@ interface ProviderFormData {
   keys: KeyType[]
   networkConfig: NetworkConfig
   performanceConfig: ConcurrencyAndBufferSize
-  metaConfig: MetaConfig
   proxyConfig: ProxyConfig
   sendBackRawResponse: boolean
   isDirty: boolean
@@ -125,11 +128,12 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     })
   }, [provider])
 
-  const { selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, sendBackRawResponse, isDirty } = formData
+  const { selectedProvider, keys, networkConfig, performanceConfig, proxyConfig, sendBackRawResponse, isDirty } = formData
 
   const baseURLRequired = selectedProvider === 'ollama' || selectedProvider === 'sgl'
-  const keysRequired = !['ollama', 'sgl'].includes(selectedProvider) // Vertex needs keys for config
-  const keysValid = !keysRequired || keys.every((k) => selectedProvider === 'vertex' || k.value.trim() !== '') // Vertex can have empty API key
+  const keysRequired = !['ollama', 'sgl'].includes(selectedProvider) // Vertex, Bedrock need keys for config
+  const keysValid =
+    !keysRequired || keys.every((k) => selectedProvider === 'vertex' || selectedProvider === 'bedrock' || k.value.trim() !== '') // Vertex and Bedrock can have empty API key
   const keysPresent = !keysRequired || keys.length > 0
 
   const performanceValid =
@@ -155,7 +159,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
         const endpointValid = !!key.azure_key_config.endpoint && key.azure_key_config.endpoint.trim() !== ''
 
         // Validate deployments using utility function
-        const deploymentsValid = isValidAzureDeployments(key.azure_key_config.deployments)
+        const deploymentsValid = isValidDeployments(key.azure_key_config.deployments)
 
         if (!endpointValid || !deploymentsValid) {
           valid = false
@@ -174,22 +178,23 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
           message = 'Project ID, valid Auth Credentials (JSON object or env.VAR), and Region are required for Vertex AI keys'
           break
         }
-      }
-    }
+      } else if (selectedProvider === 'bedrock' && key.bedrock_key_config) {
+        const accessKeyValid = !!key.bedrock_key_config.access_key && key.bedrock_key_config.access_key.trim() !== ''
+        const secretKeyValid = !!key.bedrock_key_config.secret_key && key.bedrock_key_config.secret_key.trim() !== ''
 
-    return { valid, message }
-  }
+        const deploymentsValid = isValidDeployments(key.bedrock_key_config.deployments)
 
-  /* Meta configuration validation based on provider requirements (Bedrock only) */
-  const getMetaValidation = () => {
-    let valid = true
-    let message = ''
+        if (!accessKeyValid || !secretKeyValid) {
+          valid = false
+          message = 'Access Key and Secret Key are required for Bedrock keys'
+          break
+        }
 
-    if (selectedProvider === 'bedrock') {
-      const regionValid = !!metaConfig.region && (metaConfig.region as string).trim() !== ''
-      valid = regionValid
-      if (!valid) {
-        message = 'Region is required for AWS Bedrock'
+        if (key.bedrock_key_config.deployments && Object.keys(key.bedrock_key_config.deployments).length > 0 && !deploymentsValid) {
+          valid = false
+          message = 'Valid Deployments (JSON object) are required for Bedrock keys'
+          break
+        }
       }
     }
 
@@ -197,7 +202,6 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
   }
 
   const { valid: keyValid, message: keyErrorMessage } = getKeyValidation()
-  const { valid: metaValid, message: metaErrorMessage } = getMetaValidation()
 
   useEffect(() => {
     const currentData = {
@@ -205,7 +209,6 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       keys: keysRequired ? keys : [],
       networkConfig,
       performanceConfig,
-      metaConfig,
       proxyConfig,
       sendBackRawResponse,
     }
@@ -213,7 +216,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       ...prev,
       isDirty: !isEqual(initialState, currentData),
     }))
-  }, [selectedProvider, keys, networkConfig, performanceConfig, metaConfig, proxyConfig, sendBackRawResponse, initialState, keysRequired])
+  }, [selectedProvider, keys, networkConfig, performanceConfig, proxyConfig, sendBackRawResponse, initialState, keysRequired])
 
   const updateField = <K extends keyof ProviderFormData>(field: K, value: ProviderFormData[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -242,14 +245,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       const data: UpdateProviderRequest = {
         keys: keysRequired
           ? keys.filter((k) =>
-              selectedProvider === 'vertex'
-                ? true // Include all Vertex keys (API key can be empty)
+              selectedProvider === 'vertex' || selectedProvider === 'bedrock'
+                ? true // Include all Vertex and Bedrock keys (API key can be empty)
                 : k.value.trim() !== '',
             )
           : [],
         network_config: networkConfig,
         concurrency_and_buffer_size: performanceConfig,
-        meta_config: metaConfig,
         proxy_config: proxyConfig,
         send_back_raw_response: sendBackRawResponse,
       }
@@ -259,14 +261,13 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
         provider: selectedProvider as ModelProvider,
         keys: keysRequired
           ? keys.filter((k) =>
-              selectedProvider === 'vertex'
-                ? true // Include all Vertex keys (API key can be empty)
+              selectedProvider === 'vertex' || selectedProvider === 'bedrock'
+                ? true // Include all Vertex and Bedrock keys (API key can be empty)
                 : k.value.trim() !== '',
             )
           : [],
         network_config: networkConfig,
         concurrency_and_buffer_size: performanceConfig,
-        meta_config: metaConfig,
         proxy_config: proxyConfig,
       }
       ;[, error] = await apiService.createProvider(data)
@@ -299,7 +300,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       ? [
           Validator.minValue(keys.length, 1, 'At least one API key is required'),
           Validator.custom(
-            keys.every((k) => selectedProvider === 'vertex' || k.value.trim() !== ''),
+            keys.every((k) => selectedProvider === 'vertex' || selectedProvider === 'bedrock' || k.value.trim() !== ''),
             'API key value cannot be empty',
           ),
           Validator.custom(
@@ -320,12 +321,6 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
     // Key-level config validation
     Validator.custom(keyValid, keyErrorMessage),
-
-    // Meta config validation (Bedrock only)
-    Validator.custom(metaValid, metaErrorMessage),
-
-    // Meta config validation for Bedrock
-    ...(selectedProvider === 'bedrock' ? [Validator.required(metaConfig.region, 'AWS region is required')] : []),
   ])
 
   const addKey = () => {
@@ -342,6 +337,15 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
         project_id: '',
         region: '',
         auth_credentials: '',
+      }
+    } else if (selectedProvider === 'bedrock') {
+      newKey.bedrock_key_config = {
+        access_key: '',
+        secret_key: '',
+        session_token: '',
+        region: '',
+        arn: '',
+        deployments: {},
       }
     }
 
@@ -424,8 +428,25 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
     updateField('keys', newKeys)
   }
 
-  const handleMetaConfigChange = (field: keyof MetaConfig, value: string | Record<string, string>) => {
-    updateField('metaConfig', { ...metaConfig, [field]: value })
+  const updateKeyBedrockConfig = (index: number, field: keyof BedrockKeyConfig, value: string | Record<string, string>) => {
+    const newKeys = [...keys]
+    const keyToUpdate = { ...newKeys[index] }
+
+    if (!keyToUpdate.bedrock_key_config) {
+      keyToUpdate.bedrock_key_config = {
+        access_key: '',
+        secret_key: '',
+        session_token: '',
+      }
+    }
+
+    keyToUpdate.bedrock_key_config = {
+      ...keyToUpdate.bedrock_key_config,
+      [field]: value,
+    }
+
+    newKeys[index] = keyToUpdate
+    updateField('keys', newKeys)
   }
 
   const tabs = useMemo(() => {
@@ -436,14 +457,6 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
       availableTabs.push({
         id: 'api-keys',
         label: 'API Keys',
-      })
-    }
-
-    // Add Meta Config tab only for Bedrock
-    if (selectedProvider === 'bedrock') {
-      availableTabs.push({
-        id: 'meta-config',
-        label: 'Meta Config',
       })
     }
 
@@ -593,7 +606,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                             style={{ animationDelay: `${index * 50}ms` }}
                           >
                             <div className="flex gap-4">
-                              {selectedProvider !== 'vertex' && (
+                              {selectedProvider !== 'vertex' && selectedProvider !== 'bedrock' && (
                                 <div className="flex-1">
                                   <div className="text-sm font-medium">API Key</div>
                                   <Input
@@ -760,6 +773,73 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                               </div>
                             )}
 
+                            {/* Bedrock Key Configuration */}
+                            {selectedProvider === 'bedrock' && (
+                              <div className="space-y-4 pt-2">
+                                <div>
+                                  <label className="text-sm font-medium">Access Key (Required)</label>
+                                  <Input
+                                    placeholder="your-aws-access-key or env.AWS_ACCESS_KEY"
+                                    value={key.bedrock_key_config?.access_key || ''}
+                                    onChange={(e) => updateKeyBedrockConfig(index, 'access_key', e.target.value)}
+                                    className="transition-all duration-200 ease-in-out"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">Secret Key (Required)</label>
+                                  <Input
+                                    placeholder="your-aws-secret-key or env.AWS_SECRET_KEY"
+                                    value={key.bedrock_key_config?.secret_key || ''}
+                                    onChange={(e) => updateKeyBedrockConfig(index, 'secret_key', e.target.value)}
+                                    className="transition-all duration-200 ease-in-out"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">Session Token (Optional)</label>
+                                  <Input
+                                    placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN"
+                                    value={key.bedrock_key_config?.session_token || ''}
+                                    onChange={(e) => updateKeyBedrockConfig(index, 'session_token', e.target.value)}
+                                    className="transition-all duration-200 ease-in-out"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">Deployments (Optional)</label>
+                                  <div className="text-muted-foreground mb-2 text-xs">
+                                    JSON object mapping model names to inference profile names
+                                  </div>
+                                  <Textarea
+                                    placeholder='{"gpt-4": "my-gpt4-deployment", "gpt-3.5-turbo": "my-gpt35-deployment"}'
+                                    value={
+                                      typeof key.bedrock_key_config?.deployments === 'string'
+                                        ? key.bedrock_key_config.deployments
+                                        : JSON.stringify(key.bedrock_key_config?.deployments || {}, null, 2)
+                                    }
+                                    onChange={(e) => {
+                                      // Store as string during editing to allow intermediate invalid states
+                                      updateKeyBedrockConfig(index, 'deployments', e.target.value)
+                                    }}
+                                    onBlur={(e) => {
+                                      // Try to parse as JSON on blur, but keep as string if invalid
+                                      const value = e.target.value.trim()
+                                      if (value) {
+                                        try {
+                                          const parsed = JSON.parse(value)
+                                          if (typeof parsed === 'object' && parsed !== null) {
+                                            updateKeyBedrockConfig(index, 'deployments', parsed)
+                                          }
+                                        } catch {
+                                          // Keep as string for validation on submit
+                                        }
+                                      }
+                                    }}
+                                    rows={3}
+                                    className="wrap-anywhere max-w-full font-mono text-sm"
+                                  />
+                                </div>
+                              </div>
+                            )}
+
                             {keys.length > 1 && (
                               <Button
                                 type="button"
@@ -778,23 +858,10 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                     </div>
                   )}
 
-                  {/* Meta Config Tab */}
-                  {selectedProvider === 'bedrock' && selectedTab === 'meta-config' && (
-                    <div className="animate-in fade-in-0 slide-in-from-right-2 duration-300">
-                      <MetaConfigRenderer provider={selectedProvider} metaConfig={metaConfig} onMetaConfigChange={handleMetaConfigChange} />
-                    </div>
-                  )}
-
                   {/* Network Tab */}
                   {selectedTab === 'network' && (
                     <div className="animate-in fade-in-0 slide-in-from-right-2 space-y-6 duration-300">
-                      <div
-                        className="overflow-hidden transition-all duration-300 ease-in-out"
-                        style={{
-                          maxHeight: networkChanged ? '200px' : '0px',
-                          opacity: networkChanged ? 1 : 0,
-                        }}
-                      >
+                      <div className={cn('hidden overflow-hidden transition-all duration-300 ease-in-out', networkChanged && 'block')}>
                         <Alert>
                           <AlertTriangle className="h-4 w-4" />
                           <AlertDescription>

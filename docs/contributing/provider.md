@@ -80,22 +80,6 @@ type Provider interface {
 }
 ```
 
-### **Meta Configuration Support**
-
-Some providers require additional configuration beyond API keys. Bifrost supports this through meta configs:
-
-```go
-// In core/schemas/meta/yourprovider.go
-type YourProviderMetaConfig struct {
-    // Add provider-specific fields
-    Endpoint    string  `json:"endpoint"`     // e.g., Custom API endpoint
-    Region      string  `json:"region"`       // e.g., Cloud region
-    ProjectID   string  `json:"project_id"`   // e.g., Cloud project identifier
-
-    // ... other fields (check /core/schemas/provider.go)
-}
-```
-
 ### **Provider Structure Template**
 
 ```go
@@ -506,7 +490,7 @@ func providerRequiresKey(providerKey schemas.ModelProvider) bool {
 
 ## 🌐 **Integration with HTTP Transport**
 
-The HTTP transport layer requires specific changes to handle provider configuration, meta configs, and model patterns.
+The HTTP transport layer requires specific changes to handle provider configuration, and model patterns.
 
 ### **1. Provider Recognition**
 
@@ -535,106 +519,7 @@ func GetProviderFromModel(model string) schemas.ModelProvider {
 }
 ```
 
-### **2. Meta Configuration Support**
-
-If your provider needs additional configuration beyond API keys, you'll need to implement meta config support:
-
-1. **Define Meta Config Structure** (`core/schemas/meta/yourprovider.go`):
-
-```go
-type YourProviderMetaConfig struct {
-    Endpoint    string  `json:"endpoint"`     // Custom API endpoint
-    Region      string  `json:"region"`       // Cloud region
-    ProjectID   string  `json:"project_id"`   // Project identifier
-}
-
-func (c *YourProviderMetaConfig) GetType() string {
-    return "yourprovider"
-}
-```
-
-2. **Update Store Meta Config Processing** (`transports/bifrost-http/lib/store.go`):
-
-Add your provider to these three functions:
-
-```go
-// A. Add to parseMetaConfig
-func (s *ConfigStore) parseMetaConfig(rawMetaConfig json.RawMessage, provider schemas.ModelProvider) (*schemas.MetaConfig, error) {
-    switch provider {
-    // ... existing cases
-    case schemas.YourProvider:
-        var config meta.YourProviderMetaConfig
-        if err := json.Unmarshal(rawMetaConfig, &config); err != nil {
-            return nil, fmt.Errorf("failed to unmarshal meta config: %w", err)
-        }
-        var metaConfig schemas.MetaConfig = &config
-        return &metaConfig, nil
-    }
-    return nil, fmt.Errorf("unsupported provider for meta config: %s", provider)
-}
-
-// B. Add to processMetaConfigEnvVars
-func (s *ConfigStore) processMetaConfigEnvVars(rawMetaConfig json.RawMessage, provider schemas.ModelProvider) (json.RawMessage, error) {
-    switch provider {
-    // ... existing cases
-    case schemas.YourProvider:
-        var config meta.YourProviderMetaConfig
-        if err := json.Unmarshal(rawMetaConfig, &config); err != nil {
-            return nil, fmt.Errorf("failed to unmarshal meta config: %w", err)
-        }
-
-        // Process each field that might contain env vars
-        endpoint, envVar, err := s.processEnvValue(config.Endpoint)
-        if err != nil {
-            return nil, err
-        }
-        if envVar != "" {
-            s.EnvKeys[envVar] = append(s.EnvKeys[envVar], EnvKeyInfo{
-                EnvVar:     envVar,
-                Provider:   string(provider),
-                KeyType:    "meta_config",
-                ConfigPath: fmt.Sprintf("providers.%s.meta_config.endpoint", provider),
-            })
-        }
-        config.Endpoint = endpoint
-
-        // Process other fields similarly...
-
-        return json.Marshal(config)
-    }
-    return rawMetaConfig, nil
-}
-
-// C. Add to GetProviderConfig for redaction
-func (s *ConfigStore) GetProviderConfig(provider schemas.ModelProvider) (*ProviderConfig, error) {
-    // ... existing code ...
-
-    if configCopy.MetaConfig != nil {
-        switch m := (*configCopy.MetaConfig).(type) {
-        // ... existing cases
-        case *meta.YourProviderMetaConfig:
-            config := *m
-
-            // Redact or show env vars for each field
-            path := fmt.Sprintf("providers.%s.meta_config.endpoint", provider)
-            if envVar, ok := envVarsByPath[path]; ok {
-                config.Endpoint = "env." + envVar
-            } else {
-                config.Endpoint = RedactKey(config.Endpoint)
-            }
-
-            // Handle other fields...
-
-            var metaConfig schemas.MetaConfig = &config
-            configCopy.MetaConfig = &metaConfig
-        }
-    }
-
-    return &configCopy, nil
-}
-```
-
-### **3. Testing HTTP Transport Integration**
+### **2. Testing HTTP Transport Integration**
 
 Add integration tests in `tests/transports-integrations/`:
 
@@ -644,9 +529,11 @@ Add integration tests in `tests/transports-integrations/`:
 def test_yourprovider_config():
     config = {
         "provider": "yourprovider",
-        "meta_config": {
-            "endpoint": "env.YOURPROVIDER_ENDPOINT",
-            "region": "us-east-1"
+        "keys": [
+            {
+                "value": "env.YOURPROVIDER_API_KEY",
+                "models": ["*"]
+            }
         }
     }
     # Test config validation
@@ -683,17 +570,12 @@ Document the configuration format for users:
           "models": ["*"]
         }
       ],
-      "meta_config": {
-        "endpoint": "env.YOURPROVIDER_ENDPOINT",
-        "region": "env.YOURPROVIDER_REGION",
-        "project_id": "env.YOURPROVIDER_PROJECT_ID"
-      }
     }
   }
 }
 ```
 
-Note: API key handling is automatic - you only need to implement the meta config processing if your provider requires additional configuration beyond API keys.
+Note: API key handling is automatic - you only need to implement the key config processing if your provider requires additional configuration beyond API keys.
 
 ---
 
