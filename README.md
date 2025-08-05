@@ -1,3 +1,7 @@
+<div align="center">
+<a href="https://www.producthunt.com/products/maxim-ai?embed=true&utm_source=badge-featured&utm_medium=badge&utm_source=badge-bifrost&#0045;2" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1000604&theme=dark&t=1754378611200" alt="Bifrost - The&#0032;fastest&#0032;LLM&#0032;gateway&#0032;in&#0032;the&#0032;market | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" /></a>
+</div>
+
 # Bifrost
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/maximhq/bifrost/core)](https://goreportcard.com/report/github.com/maximhq/bifrost/core)
