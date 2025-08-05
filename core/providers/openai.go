@@ -8,13 +8,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -43,12 +46,14 @@ type OpenAIResponse struct {
 // openAIResponsePool provides a pool for OpenAI response objects.
 var openAIResponsePool = sync.Pool{
 	New: func() interface{} {
+		openAIPoolGets.Add(1)
 		return &schemas.BifrostResponse{}
 	},
 }
 
 // acquireOpenAIResponse gets an OpenAI response from the pool and resets it.
 func acquireOpenAIResponse() *schemas.BifrostResponse {
+	openAIPoolGets.Add(1)
 	resp := openAIResponsePool.Get().(*schemas.BifrostResponse)
 	*resp = schemas.BifrostResponse{} // Reset the struct
 	return resp
@@ -57,6 +62,7 @@ func acquireOpenAIResponse() *schemas.BifrostResponse {
 // releaseOpenAIResponse returns an OpenAI response to the pool.
 func releaseOpenAIResponse(resp *schemas.BifrostResponse) {
 	if resp != nil {
+		openAIPoolPuts.Add(1)
 		openAIResponsePool.Put(resp)
 	}
 }
@@ -67,6 +73,7 @@ type OpenAIProvider struct {
 	client              *fasthttp.Client      // HTTP client for API requests
 	streamClient        *http.Client          // HTTP client for streaming requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	metrics             OpenAIMetrics         // Performance metrics for this provider
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
@@ -106,6 +113,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		client:              client,
 		streamClient:        streamClient,
 		networkConfig:       config.NetworkConfig,
+		metrics:             OpenAIMetrics{}, // Initialize metrics
 		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
@@ -125,6 +133,8 @@ func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model string
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	timings := make(map[string]time.Duration)
+
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -132,10 +142,18 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 		"messages": formattedMessages,
 	}, preparedParams)
 
+	// Track JSON marshaling time
+	marshalStart := time.Now()
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
+		timings["json_marshaling"] = time.Since(marshalStart)
+		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.OpenAI)
 	}
+	timings["json_marshaling"] = time.Since(marshalStart)
+
+	// Track request setup time
+	setupStart := time.Now()
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -153,27 +171,57 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 
 	req.SetBody(jsonBody)
 
+	timings["request_setup"] = time.Since(setupStart)
+
+	// Track HTTP request time
+	httpStart := time.Now()
+
+	mockResponse := mockOpenAIChatCompletionResponse(req, model)
+	// Copy the mock response body to the real response
+	resp.SetBody(mockResponse)
+	// Simulate network delay
+	jitter := time.Duration(float64(1500*time.Millisecond) * (0.6 + 0.8*rand.Float64()))
+	time.Sleep(jitter)
+
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
+	// bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	timings["http_request"] = time.Since(httpStart)
+	// if bifrostErr != nil {
+	// 	provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
+	// 	return nil, bifrostErr
+	// }
+
+	// Track error handling time
+	errorStart := time.Now()
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		timings["error_handling"] = time.Since(errorStart)
+		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		provider.logger.Debug(fmt.Sprintf("error from openai provider: %s", string(resp.Body())))
 		return nil, parseOpenAIError(resp)
 	}
 
+	timings["error_handling"] = time.Since(errorStart)
+
+	// Track response parsing time (more granular)
+	parseStart := time.Now()
+
 	responseBody := resp.Body()
 
-	// Pre-allocate response structs from pools
+	// Track pool acquisition time
+	poolStart := time.Now()
 	response := acquireOpenAIResponse()
+	timings["pool_acquisition"] = time.Since(poolStart)
 	defer releaseOpenAIResponse(response)
 
 	// Use enhanced response handler with pre-allocated response
+	unmarshalStartTime := time.Now()
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	timings["json_unmarshaling"] = time.Since(unmarshalStartTime)
 	if bifrostErr != nil {
+		timings["total_response_parsing"] = time.Since(parseStart)
+		provider.recordOpenAIMetrics(timings, false) // Record metrics for failed request
 		return nil, bifrostErr
 	}
 
@@ -186,6 +234,13 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 		response.ExtraFields.Params = *params
 	}
 
+	timings["total_response_parsing"] = time.Since(parseStart)
+
+	response.ExtraFields.RawResponse = map[string]interface{}{
+		"timings": timings,
+	}
+
+	provider.recordOpenAIMetrics(timings, true) // Record metrics for successful request
 	return response, nil
 }
 
@@ -1148,6 +1203,119 @@ func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
 	return bifrostErr
 }
 
+// PERFORMANCE TRACKING
+
+// OpenAIMetrics stores provider-specific metrics using atomic operations for high-throughput scenarios
+type OpenAIMetrics struct {
+	// Counters
+	RequestCount int64
+	ErrorCount   int64
+
+	// Time accumulators (in nanoseconds for atomic operations)
+	TotalTimeNs                  int64
+	MessagePreparationTimeNs     int64
+	RequestBodyPreparationTimeNs int64
+	JSONMarshalingTimeNs         int64
+	RequestSetupTimeNs           int64
+	HTTPRequestTimeNs            int64
+	ErrorHandlingTimeNs          int64
+	PoolAcquisitionTimeNs        int64
+	JSONUnmarshalingTimeNs       int64
+	ResponseParsingTimeNs        int64
+}
+
+// Counters for pool usage
+var (
+	openAIPoolGets      atomic.Int64
+	openAIPoolPuts      atomic.Int64
+	openAIPoolCreations atomic.Int64
+)
+
+// GetPoolStats returns the current pool usage statistics
+func GetPoolStats() map[string]int64 {
+	return map[string]int64{
+		"openai_pool_gets":      openAIPoolGets.Load(),
+		"openai_pool_puts":      openAIPoolPuts.Load(),
+		"openai_pool_creations": openAIPoolCreations.Load(),
+	}
+}
+
+// recordOpenAIMetrics records provider-specific metrics atomically in a goroutine
+func (provider *OpenAIProvider) recordOpenAIMetrics(timings map[string]time.Duration, success bool) {
+	// Spawn goroutine to avoid blocking the request path
+	go func() {
+		atomic.AddInt64(&provider.metrics.RequestCount, 1)
+		if !success {
+			atomic.AddInt64(&provider.metrics.ErrorCount, 1)
+		}
+
+		// Calculate total time from all timings
+		var totalTime time.Duration
+		for _, duration := range timings {
+			totalTime += duration
+		}
+
+		// Add to accumulators
+		atomic.AddInt64(&provider.metrics.TotalTimeNs, totalTime.Nanoseconds())
+
+		if msgPrepTime, exists := timings["total_message_preparation"]; exists {
+			atomic.AddInt64(&provider.metrics.MessagePreparationTimeNs, msgPrepTime.Nanoseconds())
+		}
+		if bodyPrepTime, exists := timings["request_body_preparation"]; exists {
+			atomic.AddInt64(&provider.metrics.RequestBodyPreparationTimeNs, bodyPrepTime.Nanoseconds())
+		}
+		if marshalTime, exists := timings["json_marshaling"]; exists {
+			atomic.AddInt64(&provider.metrics.JSONMarshalingTimeNs, marshalTime.Nanoseconds())
+		}
+		if setupTime, exists := timings["request_setup"]; exists {
+			atomic.AddInt64(&provider.metrics.RequestSetupTimeNs, setupTime.Nanoseconds())
+		}
+		if httpTime, exists := timings["http_request"]; exists {
+			atomic.AddInt64(&provider.metrics.HTTPRequestTimeNs, httpTime.Nanoseconds())
+		}
+		if errorTime, exists := timings["error_handling"]; exists {
+			atomic.AddInt64(&provider.metrics.ErrorHandlingTimeNs, errorTime.Nanoseconds())
+		}
+		if poolTime, exists := timings["pool_acquisition"]; exists {
+			atomic.AddInt64(&provider.metrics.PoolAcquisitionTimeNs, poolTime.Nanoseconds())
+		}
+		if unmarshalTime, exists := timings["json_unmarshaling"]; exists {
+			atomic.AddInt64(&provider.metrics.JSONUnmarshalingTimeNs, unmarshalTime.Nanoseconds())
+		}
+		if parseTime, exists := timings["total_response_parsing"]; exists {
+			atomic.AddInt64(&provider.metrics.ResponseParsingTimeNs, parseTime.Nanoseconds())
+		}
+	}()
+}
+
+// GetOpenAIMetrics returns averaged provider metrics
+func (provider *OpenAIProvider) GetOpenAIMetrics() map[string]interface{} {
+	// Read atomic values and calculate averages
+	requestCount := atomic.LoadInt64(&provider.metrics.RequestCount)
+	if requestCount == 0 {
+		return map[string]interface{}{
+			"request_count": 0,
+			"error_count":   0,
+		}
+	}
+
+	return map[string]interface{}{
+		"request_count":                requestCount,
+		"error_count":                  atomic.LoadInt64(&provider.metrics.ErrorCount),
+		"error_rate":                   fmt.Sprintf("%.2f%%", float64(atomic.LoadInt64(&provider.metrics.ErrorCount))/float64(requestCount)*100),
+		"avg_total_time":               time.Duration(atomic.LoadInt64(&provider.metrics.TotalTimeNs) / requestCount).String(),
+		"avg_message_preparation_time": time.Duration(atomic.LoadInt64(&provider.metrics.MessagePreparationTimeNs) / requestCount).String(),
+		"avg_request_body_prep_time":   time.Duration(atomic.LoadInt64(&provider.metrics.RequestBodyPreparationTimeNs) / requestCount).String(),
+		"avg_json_marshaling_time":     time.Duration(atomic.LoadInt64(&provider.metrics.JSONMarshalingTimeNs) / requestCount).String(),
+		"avg_request_setup_time":       time.Duration(atomic.LoadInt64(&provider.metrics.RequestSetupTimeNs) / requestCount).String(),
+		"avg_http_request_time":        time.Duration(atomic.LoadInt64(&provider.metrics.HTTPRequestTimeNs) / requestCount).String(),
+		"avg_error_handling_time":      time.Duration(atomic.LoadInt64(&provider.metrics.ErrorHandlingTimeNs) / requestCount).String(),
+		"avg_pool_acquisition_time":    time.Duration(atomic.LoadInt64(&provider.metrics.PoolAcquisitionTimeNs) / requestCount).String(),
+		"avg_json_unmarshaling_time":   time.Duration(atomic.LoadInt64(&provider.metrics.JSONUnmarshalingTimeNs) / requestCount).String(),
+		"avg_response_parsing_time":    time.Duration(atomic.LoadInt64(&provider.metrics.ResponseParsingTimeNs) / requestCount).String(),
+	}
+}
+
 func parseOpenAIErrorForStreamDataLine(jsonData string) (*schemas.BifrostStream, error) {
 	var openAIError schemas.BifrostError
 	if err := sonic.Unmarshal([]byte(jsonData), &openAIError); err != nil {
@@ -1175,4 +1343,148 @@ func parseOpenAIErrorForStreamDataLine(jsonData string) (*schemas.BifrostStream,
 	}
 
 	return errorStream, nil
+}
+
+// mockOpenAIResponse creates a mock response for OpenAI API calls
+func mockOpenAIChatCompletionResponse(req *fasthttp.Request, model string) []byte {
+	// Create a mock response that mimics OpenAI's format
+	mockResp := &OpenAIResponse{
+		ID:      "mock-" + model + "-" + fmt.Sprintf("%d", time.Now().Unix()),
+		Object:  "chat.completion",
+		Model:   model,
+		Created: int(time.Now().Unix()),
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: schemas.ModelChatMessageRoleAssistant,
+						Content: schemas.MessageContent{
+							ContentStr: StrPtr("This is a mock response from the Bifrost API gateway. The actual API was not called. " +
+								"This response has been expanded to demonstrate the system's ability to handle larger payloads. " +
+								"In a real-world scenario, this could be a comprehensive analysis, detailed explanation, or extensive documentation. " +
+								"The Bifrost API gateway serves as a unified interface for multiple AI providers, offering seamless integration " +
+								"and consistent response formats across different language models and services. " +
+								"When operating in mock mode, the system generates realistic responses that mirror the expected output " +
+								"from actual AI providers while maintaining the same structure and formatting conventions. " +
+								"This capability is particularly useful for testing, development, and demonstration purposes " +
+								"where you need predictable responses without consuming actual API credits or making real network calls. " +
+								"The mock responses can be configured to simulate various scenarios including success cases, " +
+								"error conditions, streaming responses, and different content types such as text, code, and structured data. " +
+								"Additionally, the system supports comprehensive logging and monitoring of all interactions, " +
+								"providing detailed insights into request patterns, response times, token usage, and system performance metrics. " +
+								"This mock response continues with additional content to reach the desired payload size of 10KB. " +
+								"Performance optimization is a key consideration in the design of this system, ensuring that " +
+								"large responses can be handled efficiently without compromising system stability or user experience. " +
+								"The architecture supports horizontal scaling, load balancing, and fault tolerance mechanisms " +
+								"to maintain high availability and reliability even under heavy load conditions. " +
+								"Security features include authentication, authorization, rate limiting, and comprehensive audit logging " +
+								"to ensure that all API interactions are properly tracked and controlled. " +
+								"The system also provides extensive configuration options allowing administrators to customize " +
+								"behavior based on specific requirements and use cases. " +
+								"Documentation and examples are provided to help developers integrate with the API quickly and effectively. " +
+								"The mock mode serves as an excellent starting point for understanding the API structure and response formats " +
+								"before moving to production deployments with actual AI provider integrations. " +
+								"This extended mock response demonstrates the system's capability to handle substantial content volumes " +
+								"while maintaining proper JSON formatting and response structure compliance. " +
+								"The implementation includes proper error handling, timeout management, and resource cleanup " +
+								"to ensure robust operation in production environments. " +
+								"Monitoring and alerting capabilities provide real-time visibility into system health and performance, " +
+								"enabling proactive identification and resolution of potential issues. " +
+								"The API supports various content types including plain text, markdown, HTML, JSON, XML, and binary data, " +
+								"making it suitable for diverse application requirements and integration scenarios. " +
+								"Advanced features include request transformation, response filtering, content validation, " +
+								"and custom middleware support for implementing specialized business logic. " +
+								"The system is designed to be provider-agnostic, allowing seamless switching between different AI services " +
+								"without requiring changes to client applications or integration code. " +
+								"This flexibility enables organizations to optimize costs, performance, and capabilities " +
+								"by leveraging the best features of multiple AI providers through a single, unified interface. " +
+								"Comprehensive testing suites ensure reliability and compatibility across all supported providers and features. " +
+								"The mock response system includes sophisticated simulation capabilities that can replicate " +
+								"real-world usage patterns and edge cases to support thorough testing and validation processes. " +
+								"Performance benchmarking tools are integrated to measure and optimize system throughput, latency, " +
+								"and resource utilization under various load conditions and configuration settings. " +
+								"The architecture supports both synchronous and asynchronous processing models, " +
+								"enabling efficient handling of both real-time interactions and batch processing scenarios. " +
+								"Data persistence and caching mechanisms are implemented to improve response times " +
+								"and reduce external API calls when appropriate, while maintaining data freshness and accuracy. " +
+								"The system includes comprehensive logging and analytics capabilities that provide insights " +
+								"into usage patterns, performance trends, and potential optimization opportunities. " +
+								"This mock response continues to provide additional content to demonstrate the system's ability " +
+								"to handle large payloads efficiently and effectively while maintaining proper formatting and structure. " +
+								"The implementation follows industry best practices for API design, security, and performance, " +
+								"ensuring compatibility with existing development workflows and deployment processes. " +
+								"Support for multiple programming languages and frameworks makes integration straightforward " +
+								"regardless of the technology stack used by client applications. " +
+								"The system provides detailed documentation, code examples, and interactive tutorials " +
+								"to help developers get started quickly and implement advanced features effectively. " +
+								"This comprehensive mock response serves as an example of the type of detailed, " +
+								"informative content that can be processed and delivered through the Bifrost API gateway, " +
+								"demonstrating its capability to handle substantial payloads while maintaining high performance " +
+								"The architecture supports both synchronous and asynchronous processing models, " +
+								"enabling efficient handling of both real-time interactions and batch processing scenarios. " +
+								"Data persistence and caching mechanisms are implemented to improve response times " +
+								"and reduce external API calls when appropriate, while maintaining data freshness and accuracy. " +
+								"The system includes comprehensive logging and analytics capabilities that provide insights " +
+								"into usage patterns, performance trends, and potential optimization opportunities. " +
+								"This mock response continues to provide additional content to demonstrate the system's ability " +
+								"to handle large payloads efficiently and effectively while maintaining proper formatting and structure. " +
+								"The implementation follows industry best practices for API design, security, and performance, " +
+								"ensuring compatibility with existing development workflows and deployment processes. " +
+								"Support for multiple programming languages and frameworks makes integration straightforward " +
+								"regardless of the technology stack used by client applications. " +
+								"The system provides detailed documentation, code examples, and interactive tutorials " +
+								"to help developers get started quickly and implement advanced features effectively. " +
+								"This comprehensive mock response serves as an example of the type of detailed, " +
+								"informative content that can be processed and delivered through the Bifrost API gateway, " +
+								"demonstrating its capability to handle substantial payloads while maintaining high performance " +
+								"The architecture supports both synchronous and asynchronous processing models, " +
+								"enabling efficient handling of both real-time interactions and batch processing scenarios. " +
+								"Data persistence and caching mechanisms are implemented to improve response times " +
+								"and reduce external API calls when appropriate, while maintaining data freshness and accuracy. " +
+								"The system includes comprehensive logging and analytics capabilities that provide insights " +
+								"into usage patterns, performance trends, and potential optimization opportunities. " +
+								"This mock response continues to provide additional content to demonstrate the system's ability " +
+								"to handle large payloads efficiently and effectively while maintaining proper formatting and structure. " +
+								"The implementation follows industry best practices for API design, security, and performance, " +
+								"ensuring compatibility with existing development workflows and deployment processes. " +
+								"Support for multiple programming languages and frameworks makes integration straightforward " +
+								"regardless of the technology stack used by client applications. " +
+								"The system provides detailed documentation, code examples, and interactive tutorials " +
+								"to help developers get started quickly and implement advanced features effectively. " +
+								"This comprehensive mock response serves as an example of the type of detailed, " +
+								"informative content that can be processed and delivered through the Bifrost API gateway, " +
+								"demonstrating its capability to handle substantial payloads while maintaining high performance " +
+								"The architecture supports both synchronous and asynchronous processing models, " +
+								"enabling efficient handling of both real-time interactions and batch processing scenarios. " +
+								"Data persistence and caching mechanisms are implemented to improve response times " +
+								"and reduce external API calls when appropriate, while maintaining data freshness and accuracy. " +
+								"The system includes comprehensive logging and analytics capabilities that provide insights " +
+								"into usage patterns, performance trends, and potential optimization opportunities. " +
+								"This mock response continues to provide additional content to demonstrate the system's ability " +
+								"to handle large payloads efficiently and effectively while maintaining proper formatting and structure. " +
+								"The implementation follows industry best practices for API design, security, and performance, " +
+								"ensuring compatibility with existing development workflows and deployment processes. " +
+								"Support for multiple programming languages and frameworks makes integration straightforward " +
+								"and reliability standards expected in production environments."),
+						},
+					},
+				},
+				FinishReason: StrPtr("stop"),
+			},
+		},
+		Usage: schemas.LLMUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+		},
+	}
+
+	// Convert to JSON
+	mockJSON, err := json.Marshal(mockResp)
+	if err != nil {
+		return nil
+	}
+
+	return mockJSON
 }

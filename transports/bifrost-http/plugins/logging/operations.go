@@ -25,9 +25,9 @@ func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Ti
 		Stream:    false,
 		CreatedAt: timestamp,
 		// Set parsed fields for serialization
-		InputHistoryParsed:       data.InputHistory,
-		ParamsParsed:             data.Params,
-		ToolsParsed:              data.Tools,
+		InputHistoryParsed: data.InputHistory,
+		ParamsParsed:       data.Params,
+		// ToolsParsed:              data.Tools,
 		SpeechInputParsed:        data.SpeechInput,
 		TranscriptionInputParsed: data.TranscriptionInput,
 	}
