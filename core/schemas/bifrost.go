@@ -683,6 +683,12 @@ type BifrostError struct {
 	StatusCode     *int          `json:"status_code,omitempty"`
 	Error          ErrorField    `json:"error"`
 	AllowFallbacks *bool         `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
+	StreamControl   *StreamControl `json:"-"` // Optional: Controls stream behavior
+}
+
+type StreamControl struct {
+	LogError   *bool   `json:"log_error,omitempty"` // Optional: Controls logging of error
+	SkipStream *bool   `json:"skip_stream,omitempty"` // Optional: Controls skipping of stream chunk
 }
 
 // ErrorField represents detailed error information.

@@ -828,7 +828,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 
 				case "text-generation":
 					var textEvent CohereStreamTextEvent
@@ -863,7 +863,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, response, responseChan)
+					processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
 
 				case "tool-calls-chunk":
 					var toolEvent CohereStreamToolCallEvent
@@ -907,7 +907,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, response, responseChan)
+					processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
 
 				case "stream-end":
 					var stopEvent CohereStreamStopEvent
@@ -963,7 +963,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, response, responseChan)
+					processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
 
 					return // End of stream
 
@@ -976,7 +976,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading Cohere stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan)
+			processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
 		}
 	}()
 

@@ -737,10 +737,16 @@ Comprehensive error information:
 
 ```go
 type BifrostError struct {
-    IsBifrostError bool        `json:"is_bifrost_error"`      // true for Bifrost errors
-    StatusCode     *int        `json:"status_code,omitempty"` // HTTP status code
-    Error          ErrorField  `json:"error"`                 // Error details
-    AllowFallbacks *bool       `json:"-"` // For plugin developers only
+    IsBifrostError bool           `json:"is_bifrost_error"`      // true for Bifrost errors
+    StatusCode     *int           `json:"status_code,omitempty"` // HTTP status code
+    Error          ErrorField     `json:"error"`                 // Error details
+    AllowFallbacks *bool          `json:"-"` // For plugin developers only
+    StreamControl  *StreamControl `json:"-"` // For plugin developers only
+}
+
+type StreamControl struct {
+	LogError   *bool   `json:"log_error,omitempty"`
+	SkipStream *bool   `json:"skip_stream,omitempty"`
 }
 
 type ErrorField struct {

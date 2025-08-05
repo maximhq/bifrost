@@ -967,7 +967,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 						}
 					default:
 						thought := ""
@@ -1005,7 +1005,7 @@ func handleAnthropicStreaming(
 						}
 
 						// Use utility function to process and send response
-						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 					}
 				}
 
@@ -1046,7 +1046,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 						}
 
 					case "input_json_delta":
@@ -1084,7 +1084,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 						}
 
 					case "thinking_delta":
@@ -1115,7 +1115,7 @@ func handleAnthropicStreaming(
 							}
 
 							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 						}
 
 					case "signature_delta":
@@ -1164,7 +1164,7 @@ func handleAnthropicStreaming(
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 				}
 
 			case "message_stop":
@@ -1203,7 +1203,7 @@ func handleAnthropicStreaming(
 				}
 
 				// Use utility function to process and send response
-				processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+				processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 				return
 
 			case "ping":
@@ -1253,7 +1253,7 @@ func handleAnthropicStreaming(
 
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerType, err))
-			processAndSendError(ctx, postHookRunner, err, responseChan)
+			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
 		}
 	}()
 

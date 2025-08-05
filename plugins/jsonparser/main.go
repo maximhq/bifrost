@@ -2,26 +2,81 @@ package jsonparser
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"sync"
+	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const (
-	PluginName = "streaming-json-parser"
+	PluginName                = "streaming-json-parser"
+	EnableStreamingJSONParser = "enable-streaming-json-parser"
 )
 
+type Usage string
+
+const (
+	AllRequests Usage = "all_requests"
+	PerRequest  Usage = "per_request"
+)
+
+// AccumulatedContent holds both the content and timestamp for a request
+type AccumulatedContent struct {
+	Content   *strings.Builder
+	Timestamp time.Time
+}
+
 // JsonParserPlugin provides JSON parsing capabilities for streaming responses
-// It handles partial JSON chunks by making them valid JSON objects
+// It handles partial JSON chunks by accumulating them and making the accumulated content valid JSON
 type JsonParserPlugin struct {
-	enabled bool
+	usage Usage
+	// State management for accumulating chunks
+	accumulatedContent map[string]*AccumulatedContent // requestID -> accumulated content with timestamp
+	mutex              sync.RWMutex
+	// Cleanup configuration
+	cleanupInterval time.Duration
+	maxAge          time.Duration
+	stopCleanup     chan struct{}
+	stopOnce        sync.Once
+}
+
+// PluginConfig holds configuration options for the JSON parser plugin
+type PluginConfig struct {
+	Usage           Usage
+	CleanupInterval time.Duration
+	MaxAge          time.Duration
 }
 
 // NewJsonParserPlugin creates a new JSON parser plugin instance
-func NewJsonParserPlugin(enabled bool) *JsonParserPlugin {
-	return &JsonParserPlugin{
-		enabled: enabled,
+
+// NewJsonParserPlugin creates a new JSON parser plugin instance with custom configuration
+func NewJsonParserPlugin(config PluginConfig) *JsonParserPlugin {
+	// Set defaults if not provided
+	if config.CleanupInterval <= 0 {
+		config.CleanupInterval = 5 * time.Minute
 	}
+	if config.MaxAge <= 0 {
+		config.MaxAge = 30 * time.Minute
+	}
+	if config.Usage == "" {
+		config.Usage = PerRequest
+	}
+
+	plugin := &JsonParserPlugin{
+		usage:              config.Usage,
+		accumulatedContent: make(map[string]*AccumulatedContent),
+		cleanupInterval:    config.CleanupInterval,
+		maxAge:             config.MaxAge,
+		stopCleanup:        make(chan struct{}),
+	}
+
+	// Start the cleanup goroutine
+	go plugin.startCleanupGoroutine()
+
+	return plugin
 }
 
 // GetName returns the plugin name
@@ -34,10 +89,10 @@ func (p *JsonParserPlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	return req, nil, nil
 }
 
-// PostHook processes streaming responses to make partial JSON chunks valid
+// PostHook processes streaming responses by accumulating chunks and making accumulated content valid JSON
 func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	// Skip processing if plugin is disabled
-	if !p.enabled {
+	// Check if plugin should run based on usage type
+	if !p.shouldRun(result, ctx) {
 		return result, err, nil
 	}
 
@@ -51,7 +106,13 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		return result, err, nil
 	}
 
-	// Process only streaming choices to fix partial JSON
+	// Get request ID for state management, if it's not set, return as is
+	requestID := p.getRequestID(ctx, result)
+	if requestID == "" {
+		return result, err, nil
+	}
+
+	// Process only streaming choices to accumulate and fix partial JSON
 	if len(result.Choices) > 0 {
 		for i := range result.Choices {
 			choice := &result.Choices[i]
@@ -61,23 +122,130 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 				if choice.BifrostStreamResponseChoice.Delta.Content != nil {
 					content := *choice.BifrostStreamResponseChoice.Delta.Content
 					if content != "" {
-						// Try to parse as JSON and fix if needed
-						fixedContent := p.parsePartialJSON(content)
-						if fixedContent != content {
-							choice.BifrostStreamResponseChoice.Delta.Content = &fixedContent
+						// Accumulate the content
+						accumulated := p.accumulateContent(requestID, content)
+
+						// Process the accumulated content to make it valid JSON
+						fixedContent := p.parsePartialJSON(accumulated)
+
+						if !p.isValidJSON(fixedContent) {
+							err = &schemas.BifrostError{
+								Error: schemas.ErrorField{
+									Message: "Invalid JSON in streaming response",
+								},
+								StreamControl: &schemas.StreamControl{
+									SkipStream: bifrost.Ptr(true),
+								},
+							}
+
+							return nil, err, nil
 						}
+
+						// Replace the delta content with the complete valid JSON
+						choice.BifrostStreamResponseChoice.Delta.Content = &fixedContent
 					}
 				}
 			}
 		}
 	}
 
+	// If this is the final chunk, cleanup the accumulated content for this request
+	if p.isFinalChunk(result) {
+		p.ClearRequestState(requestID)
+	}
+
 	return result, err, nil
 }
 
-// Cleanup performs plugin cleanup
+// getRequestID extracts a unique identifier for the request to maintain state
+func (p *JsonParserPlugin) getRequestID(ctx *context.Context, result *schemas.BifrostResponse) string {
+
+	// Try to get from result
+	if result != nil && result.ID != "" {
+		return result.ID
+	}
+
+	// Try to get from context if not available in result
+	if ctx != nil {
+		if requestID, ok := (*ctx).Value("request-id").(string); ok && requestID != "" {
+			return requestID
+		}
+	}
+
+	return ""
+}
+
+// accumulateContent adds new content to the accumulated content for a specific request
+func (p *JsonParserPlugin) accumulateContent(requestID, newContent string) string {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	// Get existing accumulated content
+	existing := p.accumulatedContent[requestID]
+
+	if existing != nil {
+		// Append to existing builder
+		existing.Content.WriteString(newContent)
+		return existing.Content.String()
+	} else {
+		// Create new builder
+		builder := &strings.Builder{}
+		builder.WriteString(newContent)
+		p.accumulatedContent[requestID] = &AccumulatedContent{
+			Content:   builder,
+			Timestamp: time.Now(),
+		}
+		return builder.String()
+	}
+}
+
+// shouldRun determines if the plugin should process the request based on usage type
+func (p *JsonParserPlugin) shouldRun(result *schemas.BifrostResponse, ctx *context.Context) bool {
+	// Don't run on speech or transcription requests
+	if result != nil {
+		if result.Speech != nil {
+			return false
+		}
+		if result.Transcribe != nil {
+			return false
+		}
+	}
+
+	switch p.usage {
+	case AllRequests:
+		return true
+	case PerRequest:
+		// Check if the context contains the plugin-specific key
+		if ctx != nil {
+			if value, ok := (*ctx).Value(EnableStreamingJSONParser).(bool); ok {
+				return value
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// Cleanup performs plugin cleanup and clears accumulated content
 func (p *JsonParserPlugin) Cleanup() error {
+	// Stop the cleanup goroutine
+	p.StopCleanup()
+
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	// Clear accumulated content
+	p.accumulatedContent = make(map[string]*AccumulatedContent)
 	return nil
+}
+
+// ClearRequestState clears the accumulated content for a specific request
+func (p *JsonParserPlugin) ClearRequestState(requestID string) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	delete(p.accumulatedContent, requestID)
 }
 
 // parsePartialJSON parses a JSON string that may be missing closing braces
@@ -89,7 +257,7 @@ func (p *JsonParserPlugin) parsePartialJSON(s string) string {
 	}
 
 	// Quick check: if it starts with { or [, it might be JSON
-	if (s[0] != '{' && s[0] != '[') {
+	if s[0] != '{' && s[0] != '[' {
 		return s
 	}
 
@@ -102,62 +270,17 @@ func (p *JsonParserPlugin) parsePartialJSON(s string) string {
 	return p.completeJSON(s)
 }
 
-// isValidJSON checks if a string is valid JSON without parsing into interface{}
+// isValidJSON checks if a string is valid JSON
 func (p *JsonParserPlugin) isValidJSON(s string) bool {
-	// Empty string is not valid JSON
+	// Trim whitespace
+	s = strings.TrimSpace(s)
+
+	// Empty string after trimming is not valid JSON
 	if s == "" {
 		return false
 	}
 
-	// Quick check: must start with { or [ to be valid JSON
-	s = strings.TrimSpace(s)
-	if len(s) == 0 || (s[0] != '{' && s[0] != '[') {
-		return false
-	}
-
-	// Use a simple state machine instead of json.Unmarshal for better performance
-	var stack []byte
-	inString := false
-	escaped := false
-
-	for i := 0; i < len(s); i++ {
-		char := s[i]
-
-		if escaped {
-			escaped = false
-			continue
-		}
-
-		if char == '\\' {
-			escaped = true
-			continue
-		}
-
-		if char == '"' {
-			inString = !inString
-			continue
-		}
-
-		if inString {
-			continue
-		}
-
-		switch char {
-		case '{', '[':
-			if char == '{' {
-				stack = append(stack, '}')
-			} else {
-				stack = append(stack, ']')
-			}
-		case '}', ']':
-			if len(stack) == 0 || stack[len(stack)-1] != char {
-				return false
-			}
-			stack = stack[:len(stack)-1]
-		}
-	}
-
-	return len(stack) == 0 && !inString && !escaped
+	return json.Valid([]byte(s))
 }
 
 // completeJSON completes partial JSON with O(n) time complexity
@@ -257,4 +380,59 @@ func (p *JsonParserPlugin) progressiveTruncation(original string, completed []by
 
 	// Fallback to original
 	return original
+}
+
+// isFinalChunk checks if this is the final chunk of a streaming response
+func (p *JsonParserPlugin) isFinalChunk(result *schemas.BifrostResponse) bool {
+	if result == nil {
+		return false
+	}
+
+	// Check for finish reason in streaming choices
+	if len(result.Choices) > 0 {
+		for _, choice := range result.Choices {
+			if choice.BifrostStreamResponseChoice != nil && choice.FinishReason != nil {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// startCleanupGoroutine starts a goroutine that periodically cleans up old accumulated content
+func (p *JsonParserPlugin) startCleanupGoroutine() {
+	ticker := time.NewTicker(p.cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			p.cleanupOldEntries()
+		case <-p.stopCleanup:
+			return
+		}
+	}
+}
+
+// cleanupOldEntries removes accumulated content entries that are older than maxAge
+func (p *JsonParserPlugin) cleanupOldEntries() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-p.maxAge)
+
+	for requestID, content := range p.accumulatedContent {
+		if content.Timestamp.Before(cutoff) {
+			delete(p.accumulatedContent, requestID)
+		}
+	}
+}
+
+// StopCleanup stops the cleanup goroutine
+func (p *JsonParserPlugin) StopCleanup() {
+	p.stopOnce.Do(func() {
+		close(p.stopCleanup)
+	})
 }

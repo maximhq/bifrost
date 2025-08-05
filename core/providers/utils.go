@@ -634,10 +634,16 @@ func processAndSendResponse(
 	postHookRunner schemas.PostHookRunner,
 	response *schemas.BifrostResponse,
 	responseChan chan *schemas.BifrostStream,
+	logger schemas.Logger,
 ) {
 	// Run post hooks on the response
 	processedResponse, bifrostErr := postHookRunner(&ctx, response, nil)
 	if bifrostErr != nil {
+		// check if it is a stream error
+		if handleStreamControlSkip(logger, bifrostErr) {
+			return
+		}
+
 		// Send error response and close channel
 		errorResponse := &schemas.BifrostStream{
 			BifrostError: bifrostErr,
@@ -671,6 +677,7 @@ func processAndSendError(
 	postHookRunner schemas.PostHookRunner,
 	err error,
 	responseChan chan *schemas.BifrostStream,
+	logger schemas.Logger,
 ) {
 	// Send scanner error through channel
 	bifrostError :=
@@ -682,6 +689,11 @@ func processAndSendError(
 			},
 		}
 	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostError)
+
+	if handleStreamControlSkip(logger, processedError) {
+		return
+	}
+
 	errorResponse := &schemas.BifrostStream{
 		BifrostResponse: processedResponse,
 		BifrostError:    processedError,
@@ -690,4 +702,17 @@ func processAndSendError(
 	case responseChan <- errorResponse:
 	case <-ctx.Done():
 	}
+}
+
+func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostError) bool {
+	if bifrostErr == nil || bifrostErr.StreamControl == nil {
+		return false
+	}
+	if bifrostErr.StreamControl.SkipStream != nil && *bifrostErr.StreamControl.SkipStream {
+		if bifrostErr.StreamControl.LogError != nil && *bifrostErr.StreamControl.LogError {
+			logger.Warn("Error in stream: " + bifrostErr.Error.Message)
+		}
+		return true
+	}
+	return false
 }

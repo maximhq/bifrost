@@ -456,7 +456,7 @@ func handleOpenAIStreaming(
 				}
 				response.ExtraFields.Provider = providerType
 
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 				continue
 			}
 
@@ -474,7 +474,7 @@ func handleOpenAIStreaming(
 				}
 				response.ExtraFields.Provider = providerType
 
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 
 				// End stream processing after finish reason
 				break
@@ -487,14 +487,14 @@ func handleOpenAIStreaming(
 				}
 				response.ExtraFields.Provider = providerType
 
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 			}
 		}
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan)
+			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
 		}
 	}()
 
@@ -719,13 +719,13 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				response.ExtraFields.Params = *params
 			}
 
-			processAndSendResponse(ctx, postHookRunner, &response, responseChan)
+			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan)
+			processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
 		}
 	}()
 
@@ -935,13 +935,13 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				response.ExtraFields.Params = *params
 			}
 
-			processAndSendResponse(ctx, postHookRunner, &response, responseChan)
+			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan)
+			processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
 		}
 	}()
 

@@ -1456,7 +1456,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						}
 
 						// Use utility function to process and send response
-						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 					}
 
 				case delta["toolUse"] != nil:
@@ -1513,7 +1513,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						}
 
 						// Use utility function to process and send response
-						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 					}
 				}
 
@@ -1547,7 +1547,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 				}
 
 			case event["stopReason"] != nil:
@@ -1577,7 +1577,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, finalResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, finalResponse, responseChan, provider.logger)
 					return
 				}
 
@@ -1626,14 +1626,14 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					}
 
 					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, usageResponse, responseChan)
+					processAndSendResponse(ctx, postHookRunner, usageResponse, responseChan, provider.logger)
 				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading Bedrock stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan)
+			processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
 		}
 	}()
 
