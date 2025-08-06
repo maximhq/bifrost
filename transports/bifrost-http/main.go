@@ -57,6 +57,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/fasthttp/router"
@@ -224,6 +225,46 @@ func uiHandler(ctx *fasthttp.RequestCtx) {
 	ctx.SetBody(data)
 }
 
+// GetDefaultConfigDir returns the OS-specific default configuration directory for Bifrost.
+// This follows standard conventions:
+// - Linux/macOS: ~/.config/bifrost
+// - Windows: %APPDATA%\bifrost
+// - If appDir is provided (non-empty), it returns that instead
+func getDefaultConfigDir(appDir string) string {
+	// If appDir is provided, use it directly
+	if appDir != "" && appDir != "./bifrost-data" {
+		return appDir
+	}
+
+	// Get OS-specific config directory
+	var configDir string
+	switch runtime.GOOS {
+	case "windows":
+		// Windows: %APPDATA%\bifrost
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			configDir = filepath.Join(appData, "bifrost")
+		} else {
+			// Fallback to user home directory
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				configDir = filepath.Join(homeDir, "AppData", "Roaming", "bifrost")
+			}
+		}
+	default:
+		// Linux, macOS and other Unix-like systems: ~/.config/bifrost
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			configDir = filepath.Join(homeDir, ".config", "bifrost")
+		}
+	}
+
+	// If we couldn't determine the config directory, fall back to current directory
+	if configDir == "" {
+		configDir = "./bifrost-data"
+	}
+
+	return configDir
+}
+
+
 // main is the entry point of the application.
 // It:
 // 1. Initializes Prometheus collectors for monitoring
@@ -237,9 +278,11 @@ func uiHandler(ctx *fasthttp.RequestCtx) {
 //   - POST /v1/chat/completions: For chat completion requests
 //   - GET /metrics: For Prometheus metrics
 func main() {
+
+	configDir := getDefaultConfigDir(appDir)
 	// Ensure app directory exists
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		log.Fatalf("failed to create app directory %s: %v", appDir, err)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		log.Fatalf("failed to create app directory %s: %v", configDir, err)
 	}
 
 	// Register Prometheus collectors
@@ -249,9 +292,9 @@ func main() {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 	// Initialize separate database connections for optimal performance at scale
-	configDBPath := filepath.Join(appDir, "config.db")
-	configFilePath := filepath.Join(appDir, "config.json")
-	logsDBPath := filepath.Join(appDir, "logs.db")
+	configDBPath := filepath.Join(configDir, "config.db")
+	configFilePath := filepath.Join(configDir, "config.json")
+	logsDBPath := filepath.Join(configDir, "logs.db")
 
 	// Config database: Optimized for high concurrency governance workload
 	configDB, err := gorm.Open(sqlite.Open(configDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000"), &gorm.Config{
