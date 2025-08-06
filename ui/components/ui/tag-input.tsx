@@ -20,17 +20,25 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(({ cla
 		setInputValue(e.target.value);
 	};
 
+	const addCurrentTag = () => {
+		const newTag = inputValue.trim();
+		if (newTag && !value.includes(newTag)) {
+			onValueChange([...value, newTag]);
+		}
+		setInputValue("");
+	};
+
 	const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
 		if (e.key === "Enter" || e.key === ",") {
 			e.preventDefault();
-			const newTag = inputValue.trim();
-			if (newTag && !value.includes(newTag)) {
-				onValueChange([...value, newTag]);
-			}
-			setInputValue("");
+			addCurrentTag();
 		} else if (e.key === "Backspace" && inputValue === "" && value.length > 0) {
 			onValueChange(value.slice(0, -1));
 		}
+	};
+
+	const handleBlur = () => {
+		addCurrentTag();
 	};
 
 	const removeTag = (tagToRemove: string) => {
@@ -57,6 +65,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(({ cla
 				value={inputValue}
 				onChange={handleInputChange}
 				onKeyDown={handleKeyDown}
+				onBlur={handleBlur}
 				className="flex-1 border-0 shadow-none focus-visible:ring-0"
 				{...props}
 			/>
