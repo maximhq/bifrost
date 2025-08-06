@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import { chmodSync, createWriteStream } from "fs";
 import fetch from "node-fetch";
 import { tmpdir } from "os";
@@ -123,12 +123,9 @@ async function downloadBinary(url, dest) {
     process.exit(1);
   }
 
-  // Get command-line arguments to pass to the binary (excluding --transport-version)
-  const args = remainingArgs.join(" ");
-
   // Execute the binary, forwarding the arguments
   try {
-    execSync(`${binaryPath} ${args}`, { stdio: "inherit" });
+    execFileSync(binaryPath, remainingArgs, { stdio: "inherit" });
   } catch (error) {
     // The child process will have already printed its error message.
     // Exit with the same status code as the child process.
