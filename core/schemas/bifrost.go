@@ -579,6 +579,7 @@ type BifrostSpeech struct {
 
 	*BifrostSpeechStreamResponse
 }
+
 type BifrostSpeechStreamResponse struct {
 	Type string `json:"type"`
 }

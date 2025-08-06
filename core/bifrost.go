@@ -45,20 +45,32 @@ type ChannelMessage struct {
 // Bifrost manages providers and maintains sepcified open channels for concurrent processing.
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
-	account             schemas.Account  // account interface
-	plugins             []schemas.Plugin // list of plugins
-	requestQueues       sync.Map         // provider request queues (thread-safe)
-	waitGroups          sync.Map         // wait groups for each provider (thread-safe)
-	providerMutexes     sync.Map         // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool  sync.Pool        // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool sync.Pool        // Pool for response channels, initial pool size is set in Init
-	errorChannelPool    sync.Pool        // Pool for error channels, initial pool size is set in Init
-	responseStreamPool  sync.Pool        // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool  sync.Pool        // Pool for PluginPipeline objects
-	logger              schemas.Logger   // logger instance, default logger is used if not provided
-	backgroundCtx       context.Context  // Shared background context for nil context handling
-	mcpManager          *MCPManager      // MCP integration manager (nil if MCP not configured)
-	dropExcessRequests  atomic.Bool      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	account schemas.Account  // account interface
+	plugins []schemas.Plugin // list of plugins
+
+	// Provider Request Queues
+	OpenAIRequestQueue    chan ChannelMessage
+	AzureRequestQueue     chan ChannelMessage
+	AnthropicRequestQueue chan ChannelMessage
+	BedrockRequestQueue   chan ChannelMessage
+	CohereRequestQueue    chan ChannelMessage
+	VertexRequestQueue    chan ChannelMessage
+	MistralRequestQueue   chan ChannelMessage
+	OllamaRequestQueue    chan ChannelMessage
+	GroqRequestQueue      chan ChannelMessage
+	SGLRequestQueue       chan ChannelMessage
+
+	waitGroups          sync.Map        // wait groups for each provider (thread-safe)
+	providerMutexes     sync.Map        // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool  sync.Pool       // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool sync.Pool       // Pool for response channels, initial pool size is set in Init
+	errorChannelPool    sync.Pool       // Pool for error channels, initial pool size is set in Init
+	responseStreamPool  sync.Pool       // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool  sync.Pool       // Pool for PluginPipeline objects
+	logger              schemas.Logger  // logger instance, default logger is used if not provided
+	backgroundCtx       context.Context // Shared background context for nil context handling
+	mcpManager          *MCPManager     // MCP integration manager (nil if MCP not configured)
+	dropExcessRequests  atomic.Bool     // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 }
 
 // PluginPipeline encapsulates the execution of plugin PreHooks and PostHooks, tracks how many plugins ran, and manages short-circuiting and error aggregation.
@@ -94,11 +106,11 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 	}
 
 	bifrost := &Bifrost{
-		account:       config.Account,
-		plugins:       config.Plugins,
-		requestQueues: sync.Map{},
-		waitGroups:    sync.Map{},
-		backgroundCtx: context.Background(),
+		account:         config.Account,
+		plugins:         config.Plugins,
+		waitGroups:      sync.Map{},
+		providerMutexes: sync.Map{},
+		backgroundCtx:   context.Background(),
 	}
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
 
@@ -330,14 +342,17 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 	defer providerMutex.Unlock()
 
 	// Check if provider currently exists
-	oldQueueValue, exists := bifrost.requestQueues.Load(providerKey)
+	_, exists := bifrost.waitGroups.Load(providerKey)
 	if !exists {
 		bifrost.logger.Debug(fmt.Sprintf("Provider %s not currently active, initializing with new configuration", providerKey))
 		// If provider doesn't exist, just prepare it with new configuration
 		return bifrost.prepareProvider(providerKey, providerConfig)
 	}
 
-	oldQueue := oldQueueValue.(chan ChannelMessage)
+	oldQueue, err := bifrost.getProviderQueue(providerKey)
+	if err != nil {
+		return fmt.Errorf("failed to get provider queue for %s: %v", providerKey, err)
+	}
 
 	bifrost.logger.Debug(fmt.Sprintf("Gracefully stopping existing workers for provider %s", providerKey))
 
@@ -398,7 +413,7 @@ transferComplete:
 	close(oldQueue)
 
 	// Step 4: Atomically replace the queue
-	bifrost.requestQueues.Store(providerKey, newQueue)
+	bifrost.addQueueToProvider(providerKey, newQueue)
 
 	// Step 5: Wait for all existing workers to finish processing in-flight requests
 	waitGroup, exists := bifrost.waitGroups.Load(providerKey)
@@ -693,9 +708,8 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to get config for provider: %v", err)
 	}
 
-	queue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
-
-	bifrost.requestQueues.Store(providerKey, queue)
+	queue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize)
+	bifrost.addQueueToProvider(providerKey, queue)
 
 	// Start specified number of workers
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
@@ -715,30 +729,70 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	return nil
 }
 
+// getProviderQueueFromProviderKey returns the request queue for a given provider key.
+// If the queue doesn't exist, it returns nil.
+func (bifrost *Bifrost) getProviderQueueFromProviderKey(providerKey schemas.ModelProvider) chan ChannelMessage {
+	switch providerKey {
+	case schemas.OpenAI:
+		return bifrost.OpenAIRequestQueue
+	case schemas.Azure:
+		return bifrost.AzureRequestQueue
+	case schemas.Anthropic:
+		return bifrost.AnthropicRequestQueue
+	case schemas.Bedrock:
+		return bifrost.BedrockRequestQueue
+	case schemas.Cohere:
+		return bifrost.CohereRequestQueue
+	case schemas.Vertex:
+		return bifrost.VertexRequestQueue
+	case schemas.Mistral:
+		return bifrost.MistralRequestQueue
+	case schemas.Ollama:
+		return bifrost.OllamaRequestQueue
+	case schemas.Groq:
+		return bifrost.GroqRequestQueue
+	case schemas.SGL:
+		return bifrost.SGLRequestQueue
+	default:
+		return nil
+	}
+}
+
+// addQueueToProvider adds a queue to a provider.
+// It is used to add a queue to a provider at runtime.
+func (bifrost *Bifrost) addQueueToProvider(providerKey schemas.ModelProvider, queue chan ChannelMessage) {
+	switch providerKey {
+	case schemas.OpenAI:
+		bifrost.OpenAIRequestQueue = queue
+	case schemas.Azure:
+		bifrost.AzureRequestQueue = queue
+	case schemas.Anthropic:
+		bifrost.AnthropicRequestQueue = queue
+	case schemas.Bedrock:
+		bifrost.BedrockRequestQueue = queue
+	case schemas.Cohere:
+		bifrost.CohereRequestQueue = queue
+	case schemas.Vertex:
+		bifrost.VertexRequestQueue = queue
+	case schemas.Mistral:
+		bifrost.MistralRequestQueue = queue
+	case schemas.Ollama:
+		bifrost.OllamaRequestQueue = queue
+	case schemas.Groq:
+		bifrost.GroqRequestQueue = queue
+	case schemas.SGL:
+		bifrost.SGLRequestQueue = queue
+	}
+}
+
 // getProviderQueue returns the request queue for a given provider key.
 // If the queue doesn't exist, it creates one at runtime and initializes the provider,
 // given the provider config is provided in the account interface implementation.
 // This function uses read locks to prevent race conditions during provider updates.
 func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (chan ChannelMessage, error) {
-	// Use read lock to allow concurrent reads but prevent concurrent updates
-	providerMutex := bifrost.getProviderMutex(providerKey)
-	providerMutex.RLock()
+	queue := bifrost.getProviderQueueFromProviderKey(providerKey)
 
-	if queueValue, exists := bifrost.requestQueues.Load(providerKey); exists {
-		queue := queueValue.(chan ChannelMessage)
-		providerMutex.RUnlock()
-		return queue, nil
-	}
-
-	// Provider doesn't exist, need to create it
-	// Upgrade to write lock for creation
-	providerMutex.RUnlock()
-	providerMutex.Lock()
-	defer providerMutex.Unlock()
-
-	// Double-check after acquiring write lock (another goroutine might have created it)
-	if queueValue, exists := bifrost.requestQueues.Load(providerKey); exists {
-		queue := queueValue.(chan ChannelMessage)
+	if queue != nil {
 		return queue, nil
 	}
 
@@ -753,8 +807,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 		return nil, err
 	}
 
-	queueValue, _ := bifrost.requestQueues.Load(providerKey)
-	queue := queueValue.(chan ChannelMessage)
+	queue = bifrost.getProviderQueueFromProviderKey(providerKey)
 
 	return queue, nil
 }
@@ -1470,16 +1523,28 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 
 // CLEANUP
 
+func closeQueue(queue chan ChannelMessage) {
+	if queue != nil {
+		close(queue)
+	}
+}
+
 // Cleanup gracefully stops all workers when triggered.
 // It closes all request channels and waits for workers to exit.
 func (bifrost *Bifrost) Cleanup() {
 	bifrost.logger.Info("Graceful Cleanup Initiated - Closing all request channels...")
 
 	// Close all provider queues to signal workers to stop
-	bifrost.requestQueues.Range(func(key, value interface{}) bool {
-		close(value.(chan ChannelMessage))
-		return true
-	})
+	closeQueue(bifrost.OpenAIRequestQueue)
+	closeQueue(bifrost.AzureRequestQueue)
+	closeQueue(bifrost.AnthropicRequestQueue)
+	closeQueue(bifrost.BedrockRequestQueue)
+	closeQueue(bifrost.CohereRequestQueue)
+	closeQueue(bifrost.VertexRequestQueue)
+	closeQueue(bifrost.MistralRequestQueue)
+	closeQueue(bifrost.OllamaRequestQueue)
+	closeQueue(bifrost.GroqRequestQueue)
+	closeQueue(bifrost.SGLRequestQueue)
 
 	// Wait for all workers to exit
 	bifrost.waitGroups.Range(func(key, value interface{}) bool {
