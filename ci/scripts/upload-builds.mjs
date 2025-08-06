@@ -2,12 +2,22 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import fs from "fs";
 import path from "path";
 
-const cliVersion = process.argv[2];
-if (!cliVersion) {
-  console.error(
-    "CLI version not provided. Usage: node upload-builds.mjs <version>"
-  );
-  process.exit(1);
+// Parse command line arguments
+const args = process.argv.slice(2);
+const isDevBuild = args.includes('--dev');
+let cliVersion;
+
+if (isDevBuild) {
+  cliVersion = 'v0.0.0';
+  console.log('🚧 Development build mode: using version v0.0.0 and skipping latest tag upload');
+} else {
+  cliVersion = args.find(arg => !arg.startsWith('--'));
+  if (!cliVersion) {
+    console.error(
+      "CLI version not provided. Usage: node upload-builds.mjs <version> [--dev]"
+    );
+    process.exit(1);
+  }
 }
 
 function getFiles(dir) {
@@ -82,7 +92,7 @@ requiredEnvVars.forEach(varName => {
   }
 });
 
-// Uploadig new folder
+// Uploading new folder
 console.log("uploading new release...");
 const files = getFiles("./dist");
 // Now creating paths from the file
@@ -95,11 +105,13 @@ for (const file of files) {
   // Small delay between uploads to avoid rate limiting
   await new Promise(resolve => setTimeout(resolve, 500));
   
-  // Upload to latest path
-  await uploadWithRetry(file, `bifrost/latest/${filePath}`);
-  
-  // Small delay between files
-  await new Promise(resolve => setTimeout(resolve, 500));
+  // Upload to latest path (skip for dev builds)
+  if (!isDevBuild) {
+    await uploadWithRetry(file, `bifrost/latest/${filePath}`);
+    
+    // Small delay between files
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
 }
 
 console.log("✅ All binaries uploaded");
