@@ -10,7 +10,7 @@ import (
 
 // Budget defines spending limits with configurable reset periods
 type Budget struct {
-	ID            string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ID            string    `gorm:"primaryKey;type:varchar(50)" json:"id"`
 	MaxLimit      float64   `gorm:"not null" json:"max_limit"`                       // Maximum budget in dollars
 	ResetDuration string    `gorm:"type:varchar(50);not null" json:"reset_duration"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
 	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
@@ -22,7 +22,7 @@ type Budget struct {
 
 // RateLimit defines rate limiting rules for virtual keys using flexible max+reset approach
 type RateLimit struct {
-	ID string `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ID string `gorm:"primaryKey;type:varchar(50)" json:"id"`
 
 	// Token limits with flexible duration
 	TokenMaxLimit      *int64    `gorm:"default:null" json:"token_max_limit,omitempty"`          // Maximum tokens allowed
@@ -42,9 +42,9 @@ type RateLimit struct {
 
 // Customer represents a customer entity with budget
 type Customer struct {
-	ID       string  `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name     string  `gorm:"type:varchar(255);not null" json:"name"`
-	BudgetID *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
+	ID       string  `gorm:"primaryKey;type:varchar(50)" json:"id"`
+	Name     string  `gorm:"type:varchar(50);not null" json:"name"`
+	BudgetID *string `gorm:"type:varchar(50);index" json:"budget_id,omitempty"`
 
 	// Relationships
 	Budget      *Budget      `gorm:"foreignKey:BudgetID" json:"budget,omitempty"`
@@ -57,10 +57,10 @@ type Customer struct {
 
 // Team represents a team entity with budget and customer association
 type Team struct {
-	ID         string  `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name       string  `gorm:"type:varchar(255);not null" json:"name"`
-	CustomerID *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"` // A team can belong to a customer
-	BudgetID   *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
+	ID         string  `gorm:"primaryKey;type:varchar(50)" json:"id"`
+	Name       string  `gorm:"type:varchar(50);not null" json:"name"`
+	CustomerID *string `gorm:"type:varchar(50);index" json:"customer_id,omitempty"` // A team can belong to a customer
+	BudgetID   *string `gorm:"type:varchar(50);index" json:"budget_id,omitempty"`
 
 	// Relationships
 	Customer    *Customer    `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -73,19 +73,19 @@ type Team struct {
 
 // VirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type VirtualKey struct {
-	ID               string   `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name             string   `gorm:"unique;type:varchar(255);not null" json:"name"`
+	ID               string   `gorm:"primaryKey;type:varchar(50)" json:"id"`
+	Name             string   `gorm:"unique;type:varchar(50);not null" json:"name"`
 	Description      string   `gorm:"type:text" json:"description,omitempty"`
-	Value            string   `gorm:"unique;type:varchar(255);not null" json:"value"` // The virtual key value
+	Value            string   `gorm:"unique;type:varchar(50);not null" json:"value"` // The virtual key value
 	IsActive         bool     `gorm:"default:true" json:"is_active"`
 	AllowedModels    []string `gorm:"type:text;serializer:json" json:"allowed_models"`    // Empty means all models allowed
 	AllowedProviders []string `gorm:"type:text;serializer:json" json:"allowed_providers"` // Empty means all providers allowed
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
-	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	BudgetID    *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
-	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	TeamID      *string `gorm:"type:varchar(50);index" json:"team_id,omitempty"`
+	CustomerID  *string `gorm:"type:varchar(50);index" json:"customer_id,omitempty"`
+	BudgetID    *string `gorm:"type:varchar(50);index" json:"budget_id,omitempty"`
+	RateLimitID *string `gorm:"type:varchar(50);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	Team      *Team      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
@@ -99,14 +99,14 @@ type VirtualKey struct {
 
 // Config represents generic configuration key-value pairs
 type Config struct {
-	Key   string `gorm:"primaryKey;type:varchar(255)" json:"key"`
+	Key   string `gorm:"primaryKey;type:varchar(50)" json:"key"`
 	Value string `gorm:"type:text" json:"value"`
 }
 
 // ModelPricing represents pricing information for AI models
 type ModelPricing struct {
 	ID                 uint    `gorm:"primaryKey;autoIncrement" json:"id"`
-	Model              string  `gorm:"type:varchar(255);not null;uniqueIndex:idx_model_provider_mode" json:"model"`
+	Model              string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"model"`
 	Provider           string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"provider"`
 	InputCostPerToken  float64 `gorm:"not null" json:"input_cost_per_token"`
 	OutputCostPerToken float64 `gorm:"not null" json:"output_cost_per_token"`

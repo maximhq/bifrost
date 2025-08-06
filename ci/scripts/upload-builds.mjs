@@ -3,11 +3,20 @@ import fs from "fs";
 import path from "path";
 
 const cliVersion = process.argv[2];
-if (!cliVersion) {
+const devFlag = process.argv.includes('--dev');
+
+if (!cliVersion && !devFlag) {
   console.error(
-    "CLI version not provided. Usage: node upload-builds.mjs <version>"
+    "CLI version not provided. Usage: node upload-builds.mjs <version> [--dev]"
   );
   process.exit(1);
+}
+
+// Use v0.0.0 for dev builds, otherwise use provided version
+const uploadVersion = devFlag ? 'v0.0.0' : cliVersion;
+
+if (devFlag) {
+  console.log('🚧 DEV MODE: Uploading to v0.0.0, skipping latest uploads');
 }
 
 function getFiles(dir) {
@@ -83,23 +92,25 @@ requiredEnvVars.forEach(varName => {
 });
 
 // Uploadig new folder
-console.log("uploading new release...");
+console.log(`uploading new release to ${uploadVersion}...`);
 const files = getFiles("./dist");
 // Now creating paths from the file
 for (const file of files) {
   const filePath = file.split("dist/")[1];
   
   // Upload to versioned path
-  await uploadWithRetry(file, `bifrost/${cliVersion}/${filePath}`);
+  await uploadWithRetry(file, `bifrost/${uploadVersion}/${filePath}`);
   
   // Small delay between uploads to avoid rate limiting
   await new Promise(resolve => setTimeout(resolve, 500));
   
-  // Upload to latest path
-  await uploadWithRetry(file, `bifrost/latest/${filePath}`);
-  
-  // Small delay between files
-  await new Promise(resolve => setTimeout(resolve, 500));
+  // Upload to latest path (skip if dev mode)
+  if (!devFlag) {
+    await uploadWithRetry(file, `bifrost/latest/${filePath}`);
+    
+    // Small delay between files
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
 }
 
 console.log("✅ All binaries uploaded");

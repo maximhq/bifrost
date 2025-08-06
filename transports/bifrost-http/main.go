@@ -61,6 +61,7 @@ import (
 	"strings"
 
 	"github.com/fasthttp/router"
+	"github.com/glebarez/sqlite"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/maxim"
@@ -74,7 +75,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
 )
@@ -263,7 +263,6 @@ func getDefaultConfigDir(appDir string) string {
 
 	return configDir
 }
-
 
 // main is the entry point of the application.
 // It:

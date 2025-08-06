@@ -85,7 +85,7 @@ type DBKey struct {
 // DBMCPClient represents an MCP client configuration in the database
 type DBMCPClient struct {
 	ID                 uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name               string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	Name               string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"`
 	ConnectionType     string    `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
 	ConnectionString   *string   `gorm:"type:text" json:"connection_string,omitempty"`
 	StdioConfigJSON    *string   `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPStdioConfig
@@ -119,11 +119,11 @@ type DBClientConfig struct {
 // DBEnvKey represents environment variable tracking in the database
 type DBEnvKey struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	EnvVar     string    `gorm:"type:varchar(255);index;not null" json:"env_var"`
+	EnvVar     string    `gorm:"type:varchar(100);index;not null" json:"env_var"`
 	Provider   string    `gorm:"type:varchar(50);index" json:"provider"`        // Empty for MCP/client configs
 	KeyType    string    `gorm:"type:varchar(50);not null" json:"key_type"`     // "api_key", "azure_config", "vertex_config", "bedrock_config", "connection_string"
-	ConfigPath string    `gorm:"type:varchar(500);not null" json:"config_path"` // Descriptive path of where this env var is used
-	KeyID      string    `gorm:"type:varchar(255);index" json:"key_id"`         // Key UUID (empty for non-key configs)
+	ConfigPath string    `gorm:"type:varchar(100);not null" json:"config_path"` // Descriptive path of where this env var is used
+	KeyID      string    `gorm:"type:varchar(50);index" json:"key_id"`          // Key UUID (empty for non-key configs)
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 }
 

@@ -2,20 +2,19 @@
 FROM golang:1.24-alpine AS builder
 WORKDIR /app
 
-# Install dependencies including gcc for CGO and sqlite
-RUN apk add --no-cache upx gcc musl-dev sqlite-dev
+# Install upx for binary compression
+RUN apk add --no-cache upx
 
-# Set environment for CGO-enabled build (required for go-sqlite3)
-ENV CGO_ENABLED=1 GOOS=linux
+# Set environment for pure Go build
+ENV CGO_ENABLED=0 GOOS=linux
 
 # Copy source code and dependencies
 COPY . .
 
-# Build the binary with CGO enabled and static SQLite linking
+# Build the binary with pure Go (no CGO)
 RUN go build \
-        -ldflags="-w -s -extldflags '-static'" \
+        -ldflags="-w -s" \
         -a -trimpath \
-        -tags "sqlite_static" \
         -o /app/main \
         ./bifrost-http
 

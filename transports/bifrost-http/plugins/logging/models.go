@@ -13,11 +13,11 @@ import (
 // LogEntry represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type LogEntry struct {
-	ID                  string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ID                  string    `gorm:"primaryKey;type:varchar(50)" json:"id"`
 	Timestamp           time.Time `gorm:"index;not null" json:"timestamp"`
-	Object              string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	Provider            string    `gorm:"type:varchar(255);index;not null" json:"provider"`
-	Model               string    `gorm:"type:varchar(255);index;not null" json:"model"`
+	Object              string    `gorm:"type:varchar(50);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
+	Provider            string    `gorm:"type:varchar(50);index;not null" json:"provider"`
+	Model               string    `gorm:"type:varchar(50);index;not null" json:"model"`
 	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.BifrostMessage
 	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostMessage
 	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *[][]float32
