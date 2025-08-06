@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { execFileSync, execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { chmodSync, createWriteStream } from "fs";
-import fetch from "node-fetch";
 import { tmpdir } from "os";
 import { join } from "path";
+import { Readable } from "stream";
 
 const BASE_URL = "https://downloads.getmaxim.ai";
 
@@ -94,18 +94,53 @@ async function downloadBinary(url, dest) {
   const res = await fetch(url);
 
   if (!res.ok) {
-    console.error(`Download failed: ${res.status} ${res.statusText}`);
+    console.error(`❌ Download failed: ${res.status} ${res.statusText}`);
     process.exit(1);
   }
 
-  const fileStream = createWriteStream(dest);
+  const contentLength = res.headers.get('content-length');
+  const totalSize = contentLength ? parseInt(contentLength, 10) : null;
+  let downloadedSize = 0;
+    
+  const fileStream = createWriteStream(dest, { flags: "w" });
   await new Promise((resolve, reject) => {
-    res.body.pipe(fileStream);
-    res.body.on("error", reject);
-    fileStream.on("finish", resolve);
+    try {
+      // Convert the fetch response body to a Node.js readable stream
+      const nodeStream = Readable.fromWeb(res.body);
+      
+      // Add progress tracking
+      nodeStream.on('data', (chunk) => {
+        downloadedSize += chunk.length;
+        if (totalSize) {
+          const progress = ((downloadedSize / totalSize) * 100).toFixed(1);
+          process.stdout.write(`\r⏱️ Downloading Binary: ${progress}% (${formatBytes(downloadedSize)}/${formatBytes(totalSize)})`);
+        } else {
+          process.stdout.write(`\r⏱️ Downloaded: ${formatBytes(downloadedSize)}`);
+        }
+      });
+      
+      nodeStream.pipe(fileStream);
+      fileStream.on("finish", () => {
+        process.stdout.write('\n');
+        console.log(`✅ Download completed successfully!`);
+        resolve();
+      });
+      fileStream.on("error", reject);
+      nodeStream.on("error", reject);
+    } catch (error) {
+      reject(error);
+    }
   });
 
   chmodSync(dest, 0o755);
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
 (async () => {
