@@ -7,7 +7,7 @@ require (
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.1.13
+	github.com/maximhq/bifrost/core v1.1.14
 	github.com/maximhq/bifrost/plugins/maxim v1.0.6
 	github.com/prometheus/client_golang v1.22.0
 	github.com/valyala/fasthttp v1.62.0
@@ -15,8 +15,6 @@ require (
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.30.0
 )
-
-replace github.com/maximhq/bifrost/core => ../core
 
 require (
 	cloud.google.com/go v0.121.0 // indirect

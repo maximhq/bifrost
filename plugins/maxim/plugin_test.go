@@ -54,7 +54,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 
 // GetKeysForProvider returns a mock API key configuration for testing.
 // Uses the OPENAI_API_KEY environment variable for authentication.
-func (baseAccount *BaseAccount) GetKeysForProvider(providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{
 		{
 			Value:  os.Getenv("OPENAI_API_KEY"),

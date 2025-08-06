@@ -3,11 +3,9 @@ module github.com/maximhq/bifrost/tests/core-providers
 go 1.24.1
 
 require (
-	github.com/maximhq/bifrost/core v1.1.11
+	github.com/maximhq/bifrost/core v1.1.14
 	github.com/stretchr/testify v1.10.0
 )
-
-replace github.com/maximhq/bifrost/core => ../../core
 
 require (
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
