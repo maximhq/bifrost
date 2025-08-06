@@ -5,6 +5,8 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -65,4 +67,24 @@ func SendSSEError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError, lo
 	if _, err := fmt.Fprintf(ctx, "data: %s\n\n", errorJSON); err != nil {
 		logger.Warn(fmt.Sprintf("Failed to write SSE error: %v", err))
 	}
+}
+
+// IsOriginAllowed checks if the given origin is allowed based on localhost rules and configured allowed origins.
+// Localhost origins are always allowed. Additional origins can be configured in allowedOrigins.
+func IsOriginAllowed(origin string, allowedOrigins []string) bool {
+	// Always allow localhost origins
+	if isLocalhostOrigin(origin) {
+		return true
+	}
+
+	// Check configured allowed origins
+	return slices.Contains(allowedOrigins, origin)
+}
+
+// isLocalhostOrigin checks if the given origin is a localhost origin
+func isLocalhostOrigin(origin string) bool {
+	return strings.HasPrefix(origin, "http://localhost:") ||
+		strings.HasPrefix(origin, "https://localhost:") ||
+		strings.HasPrefix(origin, "http://127.0.0.1:") ||
+		strings.HasPrefix(origin, "https://127.0.0.1:")
 }

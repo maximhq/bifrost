@@ -116,14 +116,13 @@ func registerCollectorSafely(collector prometheus.Collector) {
 	}
 }
 
-// corsMiddleware handles CORS headers for localhost requests
-func corsMiddleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+// corsMiddleware handles CORS headers for localhost and configured allowed origins
+func corsMiddleware(store *lib.ConfigStore, next fasthttp.RequestHandler) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
 		origin := string(ctx.Request.Header.Peek("Origin"))
 
-		// Allow requests from localhost on any port
-		if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") ||
-			strings.HasPrefix(origin, "http://127.0.0.1:") || strings.HasPrefix(origin, "https://127.0.0.1:") {
+		// Check if origin is allowed (localhost always allowed + configured origins)
+		if handlers.IsOriginAllowed(origin, store.ClientConfig.AllowedOrigins) {
 			ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 		}
 
@@ -264,7 +263,6 @@ func getDefaultConfigDir(appDir string) string {
 	return configDir
 }
 
-
 // main is the entry point of the application.
 // It:
 // 1. Initializes Prometheus collectors for monitoring
@@ -388,7 +386,7 @@ func main() {
 		loadedPlugins = append(loadedPlugins, loggingPlugin)
 
 		loggingHandler = handlers.NewLoggingHandler(loggingPlugin.GetPluginLogManager(), logger)
-		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), logger)
+		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), store, logger)
 	}
 
 	var governancePlugin *governance.GovernancePlugin
@@ -467,7 +465,7 @@ func main() {
 	}
 
 	// Apply CORS middleware to all routes
-	corsHandler := corsMiddleware(r.Handler)
+	corsHandler := corsMiddleware(store, r.Handler)
 
 	log.Printf("Successfully started bifrost. Serving UI on http://localhost:%s", port)
 	if err := fasthttp.ListenAndServe(":"+port, corsHandler); err != nil {

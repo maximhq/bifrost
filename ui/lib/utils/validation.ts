@@ -261,3 +261,51 @@ export function isValidDeployments(value: Record<string, string> | string | unde
 
   return false
 }
+
+/**
+ * Validates if a string is a valid origin URL
+ * @param origin - The origin URL to validate
+ * @returns true if valid origin (protocol + hostname + optional port)
+ */
+export function isValidOrigin(origin: string): boolean {
+  if (!origin || !origin.trim()) {
+    return false
+  }
+
+  try {
+    const url = new URL(origin)
+
+    // Must have protocol and hostname
+    if (!url.protocol || !url.hostname) {
+      return false
+    }
+
+    // Must be http or https
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return false
+    }
+
+    // Must not have path, query, or fragment (origin should be just protocol + hostname + port)
+    if (url.pathname !== '/' || url.search || url.hash) {
+      return false
+    }
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Validates an array of origin URLs
+ * @param origins - Array of origin URLs to validate
+ * @returns Object with validation result and invalid origins
+ */
+export function validateOrigins(origins: string[]): { isValid: boolean; invalidOrigins: string[] } {
+  const invalidOrigins = origins.filter((origin) => !isValidOrigin(origin))
+
+  return {
+    isValid: invalidOrigins.length === 0,
+    invalidOrigins,
+  }
+}

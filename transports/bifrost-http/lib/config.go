@@ -15,6 +15,7 @@ type ClientConfig struct {
 	EnableLogging           bool     `json:"enable_logging"`            // Enable logging of requests and responses
 	EnableGovernance        bool     `json:"enable_governance"`         // Enable governance on all requests
 	EnforceGovernanceHeader bool     `json:"enforce_governance_header"` // Enforce governance on all requests
+	AllowedOrigins          []string `json:"allowed_origins,omitempty"` // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 }
 
 // ProviderConfig represents the configuration for a specific AI model provider.

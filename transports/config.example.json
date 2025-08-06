@@ -2,7 +2,12 @@
   "client": {
     "drop_excess_requests": false,
     "initial_pool_size": 500,
-    "prometheus_labels": ["model", "provider"]
+    "prometheus_labels": ["model", "provider"],
+    "allowed_origins": [
+      "https://myapp.example.com",
+      "https://staging.myapp.com",
+      "https://app.production.com"
+    ]
   },
   "providers": {
     "openai": {

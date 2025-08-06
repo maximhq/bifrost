@@ -77,6 +77,10 @@ func (h *ConfigHandler) handleUpdateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.PrometheusLabels = req.PrometheusLabels
 	}
 
+	if !slices.Equal(req.AllowedOrigins, currentConfig.AllowedOrigins) {
+		updatedConfig.AllowedOrigins = req.AllowedOrigins
+	}
+
 	updatedConfig.InitialPoolSize = req.InitialPoolSize
 	updatedConfig.EnableLogging = req.EnableLogging
 	updatedConfig.EnableGovernance = req.EnableGovernance

@@ -313,6 +313,7 @@ func (s *ConfigStore) loadClientConfigFromDB() error {
 		EnableLogging:           dbConfig.EnableLogging,
 		EnableGovernance:        dbConfig.EnableGovernance,
 		EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
+		AllowedOrigins:          dbConfig.AllowedOrigins,
 	}
 
 	return nil
@@ -693,6 +694,7 @@ func (s *ConfigStore) saveClientConfigToDB() error {
 		EnableGovernance:        s.ClientConfig.EnableGovernance,
 		EnforceGovernanceHeader: s.ClientConfig.EnforceGovernanceHeader,
 		PrometheusLabels:        s.ClientConfig.PrometheusLabels,
+		AllowedOrigins:          s.ClientConfig.AllowedOrigins,
 	}
 
 	// Delete existing client config and create new one

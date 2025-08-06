@@ -126,6 +126,7 @@ export interface CoreConfig {
   enable_logging: boolean
   enable_governance: boolean
   enforce_governance_header: boolean
+  allowed_origins: string[]
 }
 
 // Utility types for form handling

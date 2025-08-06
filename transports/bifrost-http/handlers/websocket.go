@@ -5,7 +5,6 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
 	"github.com/valyala/fasthttp"
 )
@@ -27,6 +27,7 @@ type WebSocketClient struct {
 type WebSocketHandler struct {
 	logManager logging.LogManager
 	logger     schemas.Logger
+	store      *lib.ConfigStore
 	clients    map[*websocket.Conn]*WebSocketClient
 	mu         sync.RWMutex
 	stopChan   chan struct{} // Channel to signal heartbeat goroutine to stop
@@ -34,10 +35,11 @@ type WebSocketHandler struct {
 }
 
 // NewWebSocketHandler creates a new WebSocket handler instance
-func NewWebSocketHandler(logManager logging.LogManager, logger schemas.Logger) *WebSocketHandler {
+func NewWebSocketHandler(logManager logging.LogManager, store *lib.ConfigStore, logger schemas.Logger) *WebSocketHandler {
 	return &WebSocketHandler{
 		logManager: logManager,
 		logger:     logger,
+		store:      store,
 		clients:    make(map[*websocket.Conn]*WebSocketClient),
 		stopChan:   make(chan struct{}),
 		done:       make(chan struct{}),
@@ -49,27 +51,23 @@ func (h *WebSocketHandler) RegisterRoutes(r *router.Router) {
 	r.GET("/ws/logs", h.HandleLogStream)
 }
 
-// WebSocket upgrader configuration
-var upgrader = websocket.FastHTTPUpgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(ctx *fasthttp.RequestCtx) bool {
-		// Only allow connections from localhost for security
-		origin := string(ctx.Request.Header.Peek("Origin"))
-		if origin == "" {
-			// If no Origin header, check the Host header for direct connections
-			host := string(ctx.Request.Header.Peek("Host"))
-			return isLocalhost(host)
-		}
+// getUpgrader returns a WebSocket upgrader configured with the current allowed origins
+func (h *WebSocketHandler) getUpgrader() websocket.FastHTTPUpgrader {
+	return websocket.FastHTTPUpgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(ctx *fasthttp.RequestCtx) bool {
+			origin := string(ctx.Request.Header.Peek("Origin"))
+			if origin == "" {
+				// If no Origin header, check the Host header for direct connections
+				host := string(ctx.Request.Header.Peek("Host"))
+				return isLocalhost(host)
+			}
 
-		// Parse the origin URL
-		originURL, err := url.Parse(origin)
-		if err != nil {
-			return false
-		}
-
-		return isLocalhost(originURL.Host)
-	},
+			// Check if origin is allowed (localhost always allowed + configured origins)
+			return IsOriginAllowed(origin, h.store.ClientConfig.AllowedOrigins)
+		},
+	}
 }
 
 // isLocalhost checks if the given host is localhost
@@ -88,6 +86,7 @@ func isLocalhost(host string) bool {
 
 // HandleLogStream handles WebSocket connections for real-time log streaming
 func (h *WebSocketHandler) HandleLogStream(ctx *fasthttp.RequestCtx) {
+	upgrader := h.getUpgrader()
 	err := upgrader.Upgrade(ctx, func(ws *websocket.Conn) {
 		// Create a new client with its own mutex
 		client := &WebSocketClient{

@@ -105,6 +105,7 @@ type DBClientConfig struct {
 	ID                      uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	DropExcessRequests      bool      `gorm:"default:false" json:"drop_excess_requests"`
 	PrometheusLabelsJSON    string    `gorm:"type:text" json:"-"` // JSON serialized []string
+	AllowedOriginsJSON      string    `gorm:"type:text" json:"-"` // JSON serialized []string
 	InitialPoolSize         int       `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging           bool      `gorm:"" json:"enable_logging"`
 	EnableGovernance        bool      `gorm:"" json:"enable_governance"`
@@ -114,6 +115,7 @@ type DBClientConfig struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	PrometheusLabels []string `gorm:"-" json:"prometheus_labels"`
+	AllowedOrigins   []string `gorm:"-" json:"allowed_origins,omitempty"`
 }
 
 // DBEnvKey represents environment variable tracking in the database
@@ -236,6 +238,14 @@ func (cc *DBClientConfig) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		cc.PrometheusLabelsJSON = string(data)
+	}
+
+	if cc.AllowedOrigins != nil {
+		data, err := json.Marshal(cc.AllowedOrigins)
+		if err != nil {
+			return err
+		}
+		cc.AllowedOriginsJSON = string(data)
 	}
 
 	return nil
@@ -365,6 +375,12 @@ func (c *DBMCPClient) AfterFind(tx *gorm.DB) error {
 func (cc *DBClientConfig) AfterFind(tx *gorm.DB) error {
 	if cc.PrometheusLabelsJSON != "" {
 		if err := json.Unmarshal([]byte(cc.PrometheusLabelsJSON), &cc.PrometheusLabels); err != nil {
+			return err
+		}
+	}
+
+	if cc.AllowedOriginsJSON != "" {
+		if err := json.Unmarshal([]byte(cc.AllowedOriginsJSON), &cc.AllowedOrigins); err != nil {
 			return err
 		}
 	}

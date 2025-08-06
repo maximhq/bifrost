@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { parseArrayFromText, isArrayEqual } from '@/lib/utils/array'
+import { validateOrigins } from '@/lib/utils/validation'
 import FullPageLoader from '@/components/full-page-loader'
 
 const defaultConfig = {
@@ -20,6 +21,7 @@ const defaultConfig = {
   enable_logging: true,
   enable_governance: true,
   enforce_governance_header: false,
+  allowed_origins: [],
 }
 
 export default function ConfigPage() {
@@ -32,9 +34,11 @@ export default function ConfigPage() {
   const [localValues, setLocalValues] = useState<{
     initial_pool_size: string
     prometheus_labels: string
+    allowed_origins: string
   }>({
     initial_pool_size: '300',
     prometheus_labels: '',
+    allowed_origins: '',
   })
 
   useEffect(() => {
@@ -52,6 +56,7 @@ export default function ConfigPage() {
   // Use refs to store timeout IDs
   const poolSizeTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const prometheusLabelsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
+  const allowedOriginsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
 
   useEffect(() => {
     const fetchConfig = async () => {
@@ -63,6 +68,7 @@ export default function ConfigPage() {
         setLocalValues({
           initial_pool_size: coreConfig.initial_pool_size?.toString() || '300',
           prometheus_labels: coreConfig.prometheus_labels?.join(', ') || '',
+          allowed_origins: coreConfig.allowed_origins?.join(', ') || '',
         })
       }
       setIsLoading(false)
@@ -138,6 +144,30 @@ export default function ConfigPage() {
     [updateConfig],
   )
 
+  const handleAllowedOriginsChange = useCallback(
+    (value: string) => {
+      setLocalValues((prev) => ({ ...prev, allowed_origins: value }))
+
+      // Clear existing timeout
+      if (allowedOriginsTimeoutRef.current) {
+        clearTimeout(allowedOriginsTimeoutRef.current)
+      }
+
+      // Set new timeout
+      allowedOriginsTimeoutRef.current = setTimeout(() => {
+        const origins = parseArrayFromText(value)
+        const validation = validateOrigins(origins)
+
+        if (validation.isValid || origins.length === 0) {
+          updateConfig('allowed_origins', origins)
+        } else {
+          toast.error(`Invalid origins: ${validation.invalidOrigins.join(', ')}. Origins must be valid URLs like https://example.com`)
+        }
+      }, 1000)
+    },
+    [updateConfig],
+  )
+
   // Cleanup timeouts on unmount
   useEffect(() => {
     return () => {
@@ -146,6 +176,9 @@ export default function ConfigPage() {
       }
       if (prometheusLabelsTimeoutRef.current) {
         clearTimeout(prometheusLabelsTimeoutRef.current)
+      }
+      if (allowedOriginsTimeoutRef.current) {
+        clearTimeout(allowedOriginsTimeoutRef.current)
       }
     }
   }, [])
@@ -296,6 +329,28 @@ export default function ConfigPage() {
               />
             </div>
             {!isArrayEqual(configInDB.prometheus_labels, parseArrayFromText(localValues.prometheus_labels)) && <RestartWarning />}
+          </div>
+
+          <div>
+            <div className="space-y-2 rounded-lg border p-4">
+              <div className="space-y-0.5">
+                <label htmlFor="allowed-origins" className="text-sm font-medium">
+                  Allowed Origins
+                </label>
+                <p className="text-muted-foreground text-sm">
+                  Comma-separated list of allowed origins for CORS and WebSocket connections. Localhost origins are always allowed. Each
+                  origin must be a complete URL with protocol (e.g., https://app.example.com).
+                </p>
+              </div>
+              <Textarea
+                id="allowed-origins"
+                className="h-24"
+                placeholder="https://app.example.com, https://staging.example.com"
+                value={localValues.allowed_origins}
+                onChange={(e) => handleAllowedOriginsChange(e.target.value)}
+              />
+            </div>
+            {!isArrayEqual(configInDB.allowed_origins, parseArrayFromText(localValues.allowed_origins)) && <RestartWarning />}
           </div>
         </div>
       </div>
