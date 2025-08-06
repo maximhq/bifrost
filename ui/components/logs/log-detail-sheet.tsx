@@ -198,14 +198,6 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
             />
           </>
         )}
-
-        {/* Show input for chat/text completions */}
-        {log.input_history && log.input_history.length > 0 && (
-          <>
-            <div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-            <LogMessageView message={log.input_history[log.input_history.length - 1]} />
-          </>
-        )}
         
         {/* Show conversation history for chat/text completions */}
         {log.input_history && log.input_history.length > 1 && (
@@ -214,6 +206,14 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
             {log.input_history.slice(0, -1).map((message, index) => (
               <LogMessageView key={index} message={message} />
             ))}
+          </>
+        )}
+
+        {/* Show input for chat/text completions */}
+        {log.input_history && log.input_history.length > 0 && (
+          <>
+            <div className="mt-4 w-full text-left text-sm font-medium">Input</div>
+            <LogMessageView message={log.input_history[log.input_history.length - 1]} />
           </>
         )}
 
@@ -240,7 +240,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
                 <LogMessageView message={log.output_message} />
               </>
             )}
-            {log.embedding_output && (
+            {log.embedding_output && !log.error_details?.error.message && (
               <>
                 <div className="mt-4 w-full text-left text-sm font-medium">Embedding</div>
                 <LogMessageView

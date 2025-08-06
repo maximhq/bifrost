@@ -220,6 +220,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ client, open, onClose, onSaved 
               value={form.name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleChange('name', e.target.value)}
               placeholder="Client name"
+              maxLength={50}
               disabled={!!client} // Disable editing name for existing clients
             />
           </div>

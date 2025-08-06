@@ -1082,7 +1082,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                       <span>
                         <Button
                           type="submit"
-                          disabled={!validator.isValid() || isLoading}
+                          disabled={!validator.isValid() || isLoading || (allProviders.find((p) => p.name === selectedProvider) && !isDirty)}
                           isLoading={isLoading}
                           className="transition-all duration-200 ease-in-out"
                         >
@@ -1095,9 +1095,16 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                         </Button>
                       </span>
                     </TooltipTrigger>
-                    {(!validator.isValid() || isLoading) && (
+                    {(!validator.isValid() || isLoading || (allProviders.find((p) => p.name === selectedProvider) && !isDirty)) && (
                       <TooltipContent>
-                        <p>{isLoading ? 'Saving...' : validator.getFirstError() || 'Please fix validation errors'}</p>
+                        <p>
+                          {isLoading 
+                            ? 'Saving...' 
+                            : allProviders.find((p) => p.name === selectedProvider) && !isDirty
+                              ? 'No changes to save'
+                              : validator.getFirstError() || 'Please fix validation errors'
+                          }
+                        </p>
                       </TooltipContent>
                     )}
                   </Tooltip>

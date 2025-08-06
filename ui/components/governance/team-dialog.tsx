@@ -177,6 +177,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
                   id="name"
                   placeholder="e.g., Engineering Team"
                   value={formData.name}
+                  maxLength={50}
                   onChange={(e) => updateField('name', e.target.value)}
                 />
               </div>

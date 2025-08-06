@@ -115,8 +115,8 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
 
                   return (
                     <TableRow key={customer.id}>
-                      <TableCell>
-                        <div className="font-medium">{customer.name}</div>
+                      <TableCell className="max-w-[200px]">
+                        <div className="font-medium truncate">{customer.name}</div>
                       </TableCell>
                       <TableCell>
                         {teams.length > 0 ? (

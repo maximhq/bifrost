@@ -172,6 +172,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
                   id="name"
                   placeholder="e.g., Acme Corporation"
                   value={formData.name}
+                  maxLength={50}
                   onChange={(e) => updateField('name', e.target.value)}
                 />
                 <p className="text-muted-foreground text-sm">This name will be used to identify the customer account.</p>

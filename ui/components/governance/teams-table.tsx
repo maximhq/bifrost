@@ -119,8 +119,8 @@ export default function TeamsTable({ teams, customers, virtualKeys, onRefresh }:
 
                   return (
                     <TableRow key={team.id}>
-                      <TableCell>
-                        <div className="font-medium">{team.name}</div>
+                      <TableCell className="max-w-[200px]">
+                        <div className="font-medium truncate">{team.name}</div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">

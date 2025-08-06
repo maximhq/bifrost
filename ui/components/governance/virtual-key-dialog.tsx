@@ -291,6 +291,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
                 placeholder="e.g., Production API Key"
                 value={formData.name}
                 onChange={(e) => updateField('name', e.target.value)}
+                maxLength={50}
                 disabled={isEditing} // Can't change name when editing
               />
             </div>
