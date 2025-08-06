@@ -429,7 +429,7 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update in-memory cache for budget and rate limit changes
-	if req.Budget != nil && vk.BudgetID != nil && vk.Budget != nil {
+	if req.Budget != nil && vk.BudgetID != nil {
 		if err := h.pluginStore.UpdateBudgetInMemory(vk.Budget); err != nil {
 			h.logger.Error(fmt.Errorf("failed to update budget cache: %w", err))
 		}
@@ -681,7 +681,7 @@ func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update in-memory cache for budget changes
-	if req.Budget != nil && team.BudgetID != nil && team.Budget != nil {
+	if req.Budget != nil && team.BudgetID != nil {
 		if err := h.pluginStore.UpdateBudgetInMemory(team.Budget); err != nil {
 			h.logger.Error(fmt.Errorf("failed to update budget cache: %w", err))
 		}
@@ -926,7 +926,7 @@ func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update in-memory cache for budget changes
-	if req.Budget != nil && customer.BudgetID != nil && customer.Budget != nil {
+	if req.Budget != nil && customer.BudgetID != nil {
 		if err := h.pluginStore.UpdateBudgetInMemory(customer.Budget); err != nil {
 			h.logger.Error(fmt.Errorf("failed to update budget cache: %w", err))
 		}

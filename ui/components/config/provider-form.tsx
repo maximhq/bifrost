@@ -284,6 +284,9 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
   }
 
   const validator = new Validator([
+    // IsDirty validation - check for existing providers with no changes
+    Validator.custom(!(allProviders.find((p) => p.name === selectedProvider) && !isDirty), 'No changes to save'),
+
     // Provider selection
     Validator.required(selectedProvider, 'Please select a provider'),
 
@@ -1082,7 +1085,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                       <span>
                         <Button
                           type="submit"
-                          disabled={!validator.isValid() || isLoading || (allProviders.find((p) => p.name === selectedProvider) && !isDirty)}
+                          disabled={!validator.isValid() || isLoading}
                           isLoading={isLoading}
                           className="transition-all duration-200 ease-in-out"
                         >
@@ -1095,16 +1098,9 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                         </Button>
                       </span>
                     </TooltipTrigger>
-                    {(!validator.isValid() || isLoading || (allProviders.find((p) => p.name === selectedProvider) && !isDirty)) && (
+                    {(!validator.isValid() || isLoading) && (
                       <TooltipContent>
-                        <p>
-                          {isLoading 
-                            ? 'Saving...' 
-                            : allProviders.find((p) => p.name === selectedProvider) && !isDirty
-                              ? 'No changes to save'
-                              : validator.getFirstError() || 'Please fix validation errors'
-                          }
-                        </p>
+                        <p>{isLoading ? 'Saving...' : validator.getFirstError() || 'Please fix validation errors'}</p>
                       </TooltipContent>
                     )}
                   </Tooltip>
