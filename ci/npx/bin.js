@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "child_process";
-import { chmodSync, createWriteStream } from "fs";
+import { chmodSync, createWriteStream, existsSync, fsyncSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Readable } from "stream";
@@ -57,7 +57,7 @@ function validateTransportVersion(version) {
 
 const { version: VERSION, remainingArgs } = parseTransportVersion();
 
-function getPlatformArchAndBinary() {
+async function getPlatformArchAndBinary() {
   const platform = process.platform;
   const arch = process.arch;
 
@@ -91,6 +91,8 @@ function getPlatformArchAndBinary() {
 }
 
 async function downloadBinary(url, dest) {
+  // console.log(`🔄 Downloading binary from ${url}...`);
+  
   const res = await fetch(url);
 
   if (!res.ok) {
@@ -122,7 +124,14 @@ async function downloadBinary(url, dest) {
       nodeStream.pipe(fileStream);
       fileStream.on("finish", () => {
         process.stdout.write('\n');
-        console.log(`✅ Download completed successfully!`);
+        
+        // Ensure file is fully written to disk
+        try {
+          fsyncSync(fileStream.fd);
+        } catch (syncError) {
+          // fsync might fail on some systems, ignore
+        }
+        
         resolve();
       });
       fileStream.on("error", reject);
@@ -144,26 +153,69 @@ function formatBytes(bytes) {
 }
 
 (async () => {
-  const { platformDir, archDir, binaryName } = getPlatformArchAndBinary();
-  const binaryPath = join(tmpdir(), binaryName);
+  const platformInfo = await getPlatformArchAndBinary();
+  const { platformDir, archDir, binaryName } = platformInfo;
 
-  // The download URL now matches the CI pipeline's S3 structure with arch
-  // Example: https://downloads.getmaxim.ai/bifrost/latest/darwin/arm64/bifrost
-  const downloadUrl = `${BASE_URL}/bifrost/${VERSION}/${platformDir}/${archDir}/${binaryName}`;
+  // For future use when we want to add multiple fallback binaries
+  const downloadUrls = [];
+  
+  downloadUrls.push(`${BASE_URL}/bifrost/${VERSION}/${platformDir}/${archDir}/${binaryName}`);
 
-  try {
-    await downloadBinary(downloadUrl, binaryPath);
-  } catch (error) {
-    console.error(`❌ Failed to download binary from ${downloadUrl}:`, error.message);
-    process.exit(1);
+  let lastError = null;
+  let binaryWorking = false;
+
+  for (let i = 0; i < downloadUrls.length; i++) {
+    const downloadUrl = downloadUrls[i];
+    // Use unique file path for each attempt to avoid ETXTBSY
+    const binaryPath = join(tmpdir(), `${binaryName}-${i}`);
+    
+    try {
+      await downloadBinary(downloadUrl, binaryPath);
+      
+      // Verify the binary is executable before trying to run it
+      if (!existsSync(binaryPath)) {
+        throw new Error(`Binary not found at: ${binaryPath}`);
+      }
+
+      // Add a small delay to ensure file is fully written and not busy
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Test if the binary can execute
+      try {
+        execFileSync(binaryPath, remainingArgs, { stdio: "inherit" });
+        binaryWorking = true;
+        break;
+      } catch (execError) {
+        // If execution fails (ENOENT, ETXTBSY, etc.), try next binary
+        lastError = execError;
+        continue;
+      }
+    } catch (downloadError) {
+      lastError = downloadError;
+      // Continue to next URL silently
+    }
   }
 
-  // Execute the binary, forwarding the arguments
-  try {
-    execFileSync(binaryPath, remainingArgs, { stdio: "inherit" });
-  } catch (error) {
-    // The child process will have already printed its error message.
-    // Exit with the same status code as the child process.
-    process.exit(error.status || 1);
+  if (!binaryWorking) {
+    console.error(`❌ Failed to start Bifrost. Error:`, lastError.message);
+    
+    // Show critical error details for troubleshooting
+    if (lastError.code) {
+      console.error(`Error code: ${lastError.code}`);
+    }
+    if (lastError.errno) {
+      console.error(`System error: ${lastError.errno}`);
+    }
+    if (lastError.signal) {
+      console.error(`Signal: ${lastError.signal}`);
+    }
+    
+    // For specific Linux issues, show diagnostic info
+    if (process.platform === 'linux' && (lastError.code === 'ENOENT' || lastError.code === 'ETXTBSY')) {
+      console.error(`\n💡 This appears to be a Linux compatibility issue.`);
+      console.error(`   The binary may be incompatible with your Linux distribution.`);
+    }
+    
+    process.exit(lastError.status || 1);
   }
 })();

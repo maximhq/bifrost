@@ -1,6 +1,6 @@
 {
   "name": "@maximhq/bifrost",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "High-performance AI gateway CLI - connect to 10+ providers through a single API",
   "keywords": ["ai", "gateway", "openai", "anthropic", "cli", "bifrost"],
   "homepage": "https://github.com/maximhq/bifrost",

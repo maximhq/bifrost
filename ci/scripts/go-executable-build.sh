@@ -1,88 +1,90 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-package=$1
-output_path=$(pwd)/$2
-app_dir=$4
-
-# Validate all required parameters
-if [[ -z "$package" ]]; then
-  echo "usage: $0 <package-name> <output-dir> <build-flags> <app-dir>"
-  echo "error: package name is required"
+usage() {
+  echo "Usage: $0 <package-name> <output-dir> <build-flags> <app-dir>"
   exit 1
+}
+
+# Input validation
+if [[ $# -ne 4 ]]; then
+  usage
 fi
 
-if [[ -z "$2" ]]; then
-  echo "usage: $0 <package-name> <output-dir> <build-flags> <app-dir>"
-  echo "error: output directory is required"
-  exit 1
-fi
+package_name="$1"
+output_path=$(pwd)/"$2"
+build_flags="$3"
+app_dir="$4"
 
-if [[ -z "$3" ]]; then
-  echo "usage: $0 <package-name> <output-dir> <build-flags> <app-dir>"
-  echo "error: build flags are required"
-  exit 1
-fi
-
-if [[ -z "$app_dir" ]]; then
-  echo "usage: $0 <package-name> <output-dir> <build-flags> <app-dir>"
-  echo "error: application directory is required"
-  exit 1
-fi
-
-package_name="$package"
-echo "cleaning dist..."
-# Use -rf to force removal without errors if directory doesn't exist
+echo "Cleaning dist..."
 rm -rf "$output_path"
-# Create directory with -p to create parent directories safely
-mkdir -p "$output_path"
-# Add error checking for directory creation
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to create output directory $output_path"
-    exit 1
-fi
+mkdir -p "$output_path" || { echo "Failed to create output directory"; exit 1; }
 
-platforms=("windows/amd64" "darwin/amd64" "darwin/arm64" "linux/amd64")
+platforms=("darwin/amd64" "darwin/arm64" "linux/amd64" "linux/arm64" "windows/amd64")
+
 cd "$app_dir" || { echo "Error: Failed to change to directory $app_dir"; exit 1; }
-for platform in "${platforms[@]}"
-do
-	# Use IFS and read for safer platform string splitting
-	IFS='/' read -r GOOS GOARCH <<< "$platform"
-	output_name="$package_name"
-	if [ "$GOOS" = "windows" ]; then
-		output_name+='.exe'
-	fi
-	echo "building $package_name for $GOOS/$GOARCH..."
-	mkdir -p "$output_path/$GOOS/$GOARCH"
-	
-	# Set up cross-compilation environment with CGO enabled for all platforms
-	if [ "$GOOS" = "windows" ]; then
-		# Enable CGO for Windows with mingw-w64 cross-compiler
-		if ! env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="x86_64-w64-mingw32-gcc" CXX="x86_64-w64-mingw32-g++" go build -o "$output_path/$GOOS/$GOARCH/$output_name" "$3"; then
-			echo 'An error has occurred! Aborting the script execution...'
-			exit 1
-		fi
-	elif [ "$GOOS" = "linux" ]; then
-		# Enable CGO for Linux with musl cross-compiler
-		if [ "$GOARCH" = "amd64" ]; then
-			CC_COMPILER="x86_64-linux-musl-gcc"
-			CXX_COMPILER="x86_64-linux-musl-g++"
-		elif [ "$GOARCH" = "arm64" ]; then
-			CC_COMPILER="aarch64-linux-musl-gcc"
-			CXX_COMPILER="aarch64-linux-musl-g++"
-		else
-			echo "Unsupported Linux architecture: $GOARCH"
-			exit 1
-		fi
-		
-		if ! env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" go build -o "$output_path/$GOOS/$GOARCH/$output_name" "$3"; then
-			echo 'An error has occurred! Aborting the script execution...'
-			exit 1
-		fi
-	else
-		# Enable CGO for native Darwin builds
-		if ! env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build -o "$output_path/$GOOS/$GOARCH/$output_name" "$3"; then
-			echo 'An error has occurred! Aborting the script execution...'
-			exit 1
-		fi
-	fi
+
+for platform in "${platforms[@]}"; do
+  IFS='/' read -r PLATFORM_DIR GOARCH <<< "$platform"
+
+  case "$PLATFORM_DIR" in
+    "windows") GOOS="windows" ;;
+    "darwin")  GOOS="darwin" ;;
+    "linux")   GOOS="linux" ;;
+    *) echo "Unsupported platform: $PLATFORM_DIR"; exit 1 ;;
+  esac
+
+  output_name="$package_name"
+  [[ "$GOOS" = "windows" ]] && output_name+='.exe'
+
+  echo "Building $package_name for $PLATFORM_DIR/$GOARCH..."
+  mkdir -p "$output_path/$PLATFORM_DIR/$GOARCH"
+
+  if [[ "$GOOS" = "linux" ]]; then
+    if [[ "$GOARCH" = "amd64" ]]; then
+      CC_COMPILER="x86_64-linux-musl-gcc"
+      CXX_COMPILER="x86_64-linux-musl-g++"
+    elif [[ "$GOARCH" = "arm64" ]]; then
+      CC_COMPILER="aarch64-linux-musl-gcc"
+      CXX_COMPILER="aarch64-linux-musl-g++"
+    else
+      echo "Unsupported Linux architecture: $GOARCH"
+      exit 1
+    fi
+
+    if ! command -v "$CC_COMPILER" >/dev/null; then
+      echo "Compiler $CC_COMPILER not found"
+      exit 1
+    fi
+
+    # Fully static linking flags
+    build_args=(
+      -tags "netgo,osusergo,static_build"
+      -ldflags "-linkmode external -extldflags -static"
+    )
+
+    env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+      go build "${build_args[@]}" -o "$output_path/$PLATFORM_DIR/$GOARCH/$output_name" ${build_flags:+"$build_flags"}
+
+  elif [[ "$GOOS" = "windows" ]]; then
+    if [[ "$GOARCH" = "amd64" ]]; then
+      CC_COMPILER="x86_64-w64-mingw32-gcc"
+      CXX_COMPILER="x86_64-w64-mingw32-g++"
+    else
+      echo "Unsupported Windows architecture: $GOARCH"
+      exit 1
+    fi
+
+    if ! command -v "$CC_COMPILER" >/dev/null; then
+      echo "Compiler $CC_COMPILER not found"
+      exit 1
+    fi
+
+    env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+      go build -o "$output_path/$PLATFORM_DIR/$GOARCH/$output_name" ${build_flags:+"$build_flags"}
+
+  else # Darwin (macOS)
+    env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" \
+      go build -o "$output_path/$PLATFORM_DIR/$GOARCH/$output_name" ${build_flags:+"$build_flags"}
+  fi
 done

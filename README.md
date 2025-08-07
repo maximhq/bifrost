@@ -86,6 +86,13 @@ Your AI gateway is now running with a beautiful web interface. You can:
     - [🔑 Key Performance Highlights](#-key-performance-highlights)
   - [📚 Documentation](#-documentation)
   - [💬 Need Help?](#-need-help)
+  - [🛠️ Development \& Build Requirements](#️-development--build-requirements)
+    - [Cross-Platform Compilation with CGO](#cross-platform-compilation-with-cgo)
+      - [Required Homebrew Packages](#required-homebrew-packages)
+      - [Supported Target Platforms](#supported-target-platforms)
+      - [Compiler Details](#compiler-details)
+      - [Building from Source](#building-from-source)
+      - [Prerequisites for Building](#prerequisites-for-building)
   - [🤝 Contributing](#-contributing)
   - [📄 License](#-license)
 
@@ -277,6 +284,63 @@ Choose higher settings (like the t3.xlarge profile above) for raw speed, or lowe
 - 💡 Best practices and configuration tips
 - 🤝 Community discussions and support
 - 🚀 Real-time help with integrations
+
+---
+
+## 🛠️ Development & Build Requirements
+
+### Cross-Platform Compilation with CGO
+
+Bifrost uses CGO for cross-platform compilation to ensure optimal performance across different architectures. To build Bifrost from source for all supported platforms, you'll need to install the following cross-compilation toolchains via Homebrew:
+
+#### Required Homebrew Packages
+
+```bash
+# Install minimal cross-compilation toolchains for all target platforms
+brew install FiloSottile/musl-cross/musl-cross mingw-w64
+```
+
+#### Supported Target Platforms
+
+The build system supports the following platform/architecture combinations:
+
+- **macOS**: `darwin/amd64`, `darwin/arm64` (native compilation)
+- **Linux**: `linux/amd64`, `linux/arm64` (via musl-cross)
+- **Windows**: `windows/amd64` (via mingw-w64)
+
+#### Compiler Details
+
+| Platform | Architecture | C Compiler | C++ Compiler | Package Source |
+|----------|-------------|------------|--------------|----------------|
+| Linux | amd64 | `x86_64-linux-musl-gcc` | `x86_64-linux-musl-g++` | `musl-cross` |
+| Linux | arm64 | `aarch64-linux-musl-gcc` | `aarch64-linux-musl-g++` | `musl-cross` |
+| Windows | amd64 | `x86_64-w64-mingw32-gcc` | `x86_64-w64-mingw32-g++` | `mingw-w64` |
+| macOS | amd64/arm64 | Native system compiler | Native system compiler | Xcode Command Line Tools |
+
+#### Building from Source
+
+Once you have the required toolchains installed, you can build Bifrost using the provided build script:
+
+```bash
+# Build for all platforms
+./ci/scripts/go-executable-build.sh bifrost-http ./dist/apps/bifrost "" ./transports/bifrost-http
+
+# The script will automatically detect and use the appropriate cross-compilers
+# for each target platform
+```
+
+The build script includes:
+- **Static linking** for Linux builds (using musl libc for maximum compatibility)
+- **CGO support** for all platforms to ensure optimal performance
+- **Automatic compiler detection** and validation before building
+
+#### Prerequisites for Building
+
+1. **Go 1.21+** - Required for building the application
+2. **Cross-compilation toolchains** - Install via the Homebrew packages above
+3. **Git** - For cloning and version management
+
+> **Note**: The build process uses fully static linking for Linux builds to ensure maximum compatibility across different distributions. Windows builds use mingw-w64 for cross-compilation from macOS/Linux environments.
 
 ---
 
