@@ -240,11 +240,12 @@ curl http://localhost:8080/metrics
 
 ### For Binary
 
-| Flag       | Default | Description                              |
-| ---------- | ------- | ---------------------------------------- |
-| `-app-dir` | .       | Application data directory (config+logs) |
-| `-port`    | 8080    | HTTP server port                         |
-| `-plugins` | -       | Comma-separated plugin list              |
+| Flag       | Default   | Description                              |
+| ---------- | --------- | ---------------------------------------- |
+| `-app-dir` | .         | Application data directory (config+logs) |
+| `-port`    | 8080      | HTTP server port                         |
+| `-host`    | localhost | Host to bind server to                   |
+| `-plugins` | -         | Comma-separated plugin list              |
 
 ### Understanding App Directory & Docker Volumes
 
@@ -260,10 +261,24 @@ For complete setup instructions, deployment scenarios, and best practices, see t
 
 ### For Docker
 
-| Variable      | Description          |
-| ------------- | -------------------- |
-| `APP_PORT`    | Server port override |
-| `APP_PLUGINS` | Plugin list override |
+| Variable      | Default   | Description                    |
+| ------------- | --------- | ------------------------------ |
+| `APP_PORT`    | 8080      | Server port override           |
+| `APP_HOST`    | 0.0.0.0   | Host to bind server to         |
+| `APP_PLUGINS` | -         | Plugin list override           |
+
+**Network Configuration Examples:**
+
+```bash
+# Listen on all interfaces (for container access)
+docker run -p 8080:8080 -e APP_HOST=0.0.0.0 maximhq/bifrost
+
+# IPv6 support - listen on all IPv6 interfaces
+docker run -p 8080:8080 -e APP_HOST=:: maximhq/bifrost
+
+# Specific interface binding
+docker run -p 8080:8080 -e APP_HOST=192.168.1.100 maximhq/bifrost
+```
 
 ---
 
@@ -297,8 +312,8 @@ For complete setup instructions, deployment scenarios, and best practices, see t
 
 ## 🎉 Ready to Scale?
 
-🚀 **Production Deployment**: [Production Guide](../docs/usage/http-transport/configuration/)  
-📈 **Performance Tuning**: [Benchmarks & Optimization](../docs/benchmarks.md)  
+🚀 **Production Deployment**: [Production Guide](../docs/usage/http-transport/configuration/)
+📈 **Performance Tuning**: [Benchmarks & Optimization](../docs/benchmarks.md)
 🔍 **Troubleshooting**: [Common Issues](../docs/usage/errors.md)
 
 ---

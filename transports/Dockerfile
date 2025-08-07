@@ -40,6 +40,7 @@ USER appuser
 
 # Environment variables with defaults
 ENV APP_PORT=8080 \
+    APP_HOST=0.0.0.0 \
     APP_PLUGINS=""
 
 # Declare volume for data persistence
@@ -51,4 +52,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:${APP_PORT}/metrics || exit 1
 
 # Use entrypoint script that handles volume permissions
-ENTRYPOINT ["/bin/sh", "-c", "/app/docker-entrypoint.sh -app-dir /app/data -port ${APP_PORT} -plugins \"${APP_PLUGINS}\""]
+ENTRYPOINT ["/bin/sh", "-c", "/app/docker-entrypoint.sh -app-dir /app/data -port ${APP_PORT} -host \"${APP_HOST}\" -plugins \"${APP_PLUGINS}\""]

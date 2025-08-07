@@ -29,8 +29,10 @@
 //
 // Example usage:
 //
-//	go run main.go -app-dir ./data -port 8080
+//	go run main.go -app-dir ./data -port 8080 -host 0.0.0.0
 //	after setting provider API keys like OPENAI_API_KEY in the environment.
+//
+//	To bind to all interfaces for container usage, set BIFROST_HOST=0.0.0.0 or use -host 0.0.0.0
 //
 // Integration Support:
 // Bifrost supports multiple AI provider integrations through dedicated HTTP endpoints.
@@ -54,6 +56,7 @@ import (
 	"flag"
 	"log"
 	"mime"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -85,6 +88,7 @@ var uiContent embed.FS
 // Command line flags
 var (
 	port          string   // Port to run the server on
+	host          string   // Host to bind the server to
 	appDir        string   // Application data directory
 	pluginsToLoad []string // Plugins to load
 )
@@ -92,12 +96,20 @@ var (
 // init initializes command line flags and validates required configuration.
 // It sets up the following flags:
 //   - port: Server port (default: 8080)
+//   - host: Host to bind the server to (default: localhost, can be overridden with BIFROST_HOST env var)
 //   - app-dir: Application data directory (default: current directory)
 //   - plugins: Comma-separated list of plugins to load
 func init() {
 	pluginString := ""
 
+	// Set default host from environment variable or use localhost
+	defaultHost := os.Getenv("BIFROST_HOST")
+	if defaultHost == "" {
+		defaultHost = "localhost"
+	}
+
 	flag.StringVar(&port, "port", "8080", "Port to run the server on")
+	flag.StringVar(&host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
 	flag.StringVar(&appDir, "app-dir", "./bifrost-data", "Application data directory (contains config.json and logs)")
 	flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
 	flag.Parse()
@@ -269,7 +281,7 @@ func getDefaultConfigDir(appDir string) string {
 // 2. Reads and parses configuration from the specified config file
 // 3. Initializes the Bifrost client with the configuration
 // 4. Sets up HTTP routes for text and chat completions
-// 5. Starts the HTTP server on the specified port
+// 5. Starts the HTTP server on the specified host and port
 //
 // The server exposes the following endpoints:
 //   - POST /v1/text/completions: For text completion requests
@@ -467,8 +479,8 @@ func main() {
 	// Apply CORS middleware to all routes
 	corsHandler := corsMiddleware(store, r.Handler)
 
-	log.Printf("Successfully started bifrost. Serving UI on http://localhost:%s", port)
-	if err := fasthttp.ListenAndServe(":"+port, corsHandler); err != nil {
+	log.Printf("Successfully started bifrost. Serving UI on http://%s:%s", host, port)
+	if err := fasthttp.ListenAndServe(net.JoinHostPort(host, port), corsHandler); err != nil {
 		log.Fatalf("Error starting server: %v", err)
 	}
 
