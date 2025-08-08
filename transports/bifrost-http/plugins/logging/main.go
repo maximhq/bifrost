@@ -123,19 +123,40 @@ type SearchStats struct {
 // LogCallback is a function that gets called when a new log entry is created
 type LogCallback func(*LogEntry)
 
+// StreamChunk represents a single streaming chunk
+type StreamChunk struct {
+	Timestamp    time.Time                   // When chunk was received
+	Delta        *schemas.BifrostStreamDelta // The actual delta content
+	FinishReason *string                     // If this is the final chunk
+	TokenUsage   *schemas.LLMUsage           // Token usage if available
+	ErrorDetails *schemas.BifrostError       // Error if any
+}
+
+// StreamAccumulator manages accumulation of streaming chunks
+type StreamAccumulator struct {
+	RequestID      string
+	Chunks         []*StreamChunk
+	IsComplete     bool
+	FinalTimestamp time.Time
+	Object         string // Store object type once for the entire stream
+	mu             sync.Mutex
+}
+
 // LoggerPlugin implements the schemas.Plugin interface
 type LoggerPlugin struct {
-	db              *gorm.DB
-	mu              sync.Mutex
-	done            chan struct{}
-	wg              sync.WaitGroup
-	logger          schemas.Logger
-	logCallback     LogCallback
-	droppedRequests atomic.Int64
-	cleanupTicker   *time.Ticker // Ticker for cleaning up old processing logs
-	logMsgPool      sync.Pool    // Pool for reusing LogMessage structs
-	updateDataPool  sync.Pool    // Pool for reusing UpdateLogData structs
-	streamDataPool  sync.Pool    // Pool for reusing StreamUpdateData structs
+	db                 *gorm.DB
+	mu                 sync.Mutex
+	done               chan struct{}
+	wg                 sync.WaitGroup
+	logger             schemas.Logger
+	logCallback        LogCallback
+	droppedRequests    atomic.Int64
+	cleanupTicker      *time.Ticker // Ticker for cleaning up old processing logs
+	logMsgPool         sync.Pool    // Pool for reusing LogMessage structs
+	updateDataPool     sync.Pool    // Pool for reusing UpdateLogData structs
+	streamDataPool     sync.Pool    // Pool for reusing StreamUpdateData structs
+	streamChunkPool    sync.Pool    // Pool for reusing StreamChunk structs
+	streamAccumulators sync.Map     // Track accumulators by request ID (atomic)
 }
 
 // NewLoggerPlugin creates a new logging plugin with GORM database
@@ -163,6 +184,12 @@ func NewLoggerPlugin(db *gorm.DB, logger schemas.Logger) (*LoggerPlugin, error) 
 				return &StreamUpdateData{}
 			},
 		},
+		streamChunkPool: sync.Pool{
+			New: func() interface{} {
+				return &StreamChunk{}
+			},
+		},
+		streamAccumulators: sync.Map{},
 	}
 
 	// Prewarm the pools for better performance at startup
@@ -170,6 +197,7 @@ func NewLoggerPlugin(db *gorm.DB, logger schemas.Logger) (*LoggerPlugin, error) 
 		plugin.logMsgPool.Put(&LogMessage{})
 		plugin.updateDataPool.Put(&UpdateLogData{})
 		plugin.streamDataPool.Put(&StreamUpdateData{})
+		plugin.streamChunkPool.Put(&StreamChunk{})
 	}
 
 	// Auto-migrate tables
@@ -226,67 +254,9 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	if result.RowsAffected > 0 {
 		p.logger.Debug(fmt.Sprintf("Cleaned up %d old processing logs", result.RowsAffected))
 	}
-}
 
-// getLogMessage gets a LogMessage from the pool
-func (p *LoggerPlugin) getLogMessage() *LogMessage {
-	return p.logMsgPool.Get().(*LogMessage)
-}
-
-// putLogMessage returns a LogMessage to the pool after resetting it
-func (p *LoggerPlugin) putLogMessage(msg *LogMessage) {
-	// Reset the message fields to avoid memory leaks
-	msg.Operation = ""
-	msg.RequestID = ""
-	msg.Timestamp = time.Time{}
-	msg.InitialData = nil
-
-	// Don't reset UpdateData and StreamUpdateData here since they're returned
-	// to their own pools in the defer function - just clear the pointers
-	msg.UpdateData = nil
-	msg.StreamUpdateData = nil
-
-	p.logMsgPool.Put(msg)
-}
-
-// getUpdateLogData gets an UpdateLogData from the pool
-func (p *LoggerPlugin) getUpdateLogData() *UpdateLogData {
-	return p.updateDataPool.Get().(*UpdateLogData)
-}
-
-// putUpdateLogData returns an UpdateLogData to the pool after resetting it
-func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
-	// Reset all fields to avoid memory leaks
-	data.Status = ""
-	data.TokenUsage = nil
-	data.OutputMessage = nil
-	data.ToolCalls = nil
-	data.ErrorDetails = nil
-	data.Model = ""
-	data.Object = ""
-	data.SpeechOutput = nil
-	data.TranscriptionOutput = nil
-
-	p.updateDataPool.Put(data)
-}
-
-// getStreamUpdateData gets a StreamUpdateData from the pool
-func (p *LoggerPlugin) getStreamUpdateData() *StreamUpdateData {
-	return p.streamDataPool.Get().(*StreamUpdateData)
-}
-
-// putStreamUpdateData returns a StreamUpdateData to the pool after resetting it
-func (p *LoggerPlugin) putStreamUpdateData(data *StreamUpdateData) {
-	// Reset all fields to avoid memory leaks
-	data.ErrorDetails = nil
-	data.Model = ""
-	data.Object = ""
-	data.TokenUsage = nil
-	data.Delta = nil
-	data.FinishReason = nil
-	data.TranscriptionOutput = nil
-
-	p.streamDataPool.Put(data)
+	// Clean up old stream accumulators
+	p.cleanupOldStreamAccumulators()
 }
 
 // SetLogCallback sets a callback function that will be called for each log entry
@@ -401,14 +371,18 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 
 	// Check if this is a streaming response
 	isStreaming := p.isStreamingResponse(result)
+	isTextStreaming := p.isTextStreamingResponse(result)
 
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
 	logMsg.RequestID = requestID
 	logMsg.Timestamp = time.Now()
 
-	if isStreaming { // NOTE: in case where stream ends with error, isStreaming is false because there is no way to know that the error is from the stream.
-		// Handle streaming response with lightweight async pattern
+	if isTextStreaming {
+		// Handle text-based streaming with ordered accumulation
+		return p.handleStreamingResponse(ctx, result, err)
+	} else if isStreaming {
+		// Handle speech/transcription streaming with original flow
 		logMsg.Operation = LogOperationStreamUpdate
 
 		// Prepare lightweight streaming update data
@@ -431,15 +405,6 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			// Token usage
 			if result.Usage != nil && result.Usage.TotalTokens > 0 {
 				streamUpdateData.TokenUsage = result.Usage
-			}
-
-			// Extract delta and finish reason from streaming response
-			if len(result.Choices) > 0 {
-				choice := result.Choices[0]
-				if choice.BifrostStreamResponseChoice != nil {
-					streamUpdateData.Delta = &choice.BifrostStreamResponseChoice.Delta
-				}
-				streamUpdateData.FinishReason = choice.FinishReason
 			}
 
 			// Extract token usage from speech and transcription streaming (lightweight)
@@ -612,34 +577,6 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	return result, err, nil
 }
 
-// isStreamingResponse checks if the response is a streaming delta
-func (p *LoggerPlugin) isStreamingResponse(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check for streaming choices
-	if len(result.Choices) > 0 {
-		for _, choice := range result.Choices {
-			if choice.BifrostStreamResponseChoice != nil {
-				return true
-			}
-		}
-	}
-
-	// Check for streaming speech output
-	if result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil {
-		return true
-	}
-
-	// Check for streaming transcription output
-	if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil {
-		return true
-	}
-
-	return false
-}
-
 // Cleanup is called when the plugin is being shut down
 func (p *LoggerPlugin) Cleanup() error {
 	// Stop the cleanup ticker
@@ -652,6 +589,16 @@ func (p *LoggerPlugin) Cleanup() error {
 
 	// Wait for the background worker to finish processing remaining items
 	p.wg.Wait()
+
+	// Clean up all stream accumulators
+	p.streamAccumulators.Range(func(key, value interface{}) bool {
+		acc := value.(*StreamAccumulator)
+		for _, c := range acc.Chunks {
+			p.putStreamChunk(c)
+		}
+		p.streamAccumulators.Delete(key)
+		return true
+	})
 
 	// GORM handles connection cleanup automatically
 	return nil
