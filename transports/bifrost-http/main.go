@@ -62,11 +62,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/redis"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/governance"
@@ -416,6 +418,38 @@ func main() {
 		governanceHandler = handlers.NewGovernanceHandler(governancePlugin, configDB, logger)
 	}
 
+	var redisHandler *handlers.RedisHandler
+
+	if store.ClientConfig.EnableCaching {
+		// Get Redis configuration from database
+		redisDBConfig, err := store.GetRedisConfig()
+		if err != nil {
+			log.Fatalf("failed to get Redis config: %v", err)
+		}
+
+		// Convert DBRedisConfig to RedisPluginConfig
+		pluginConfig := redis.RedisPluginConfig{
+			Addr:            redisDBConfig.Addr,
+			Username:        redisDBConfig.Username,
+			Password:        redisDBConfig.Password,
+			DB:              redisDBConfig.DB,
+			CacheKey:        "request-cache-key", // Always use this key as specified
+			TTL:             time.Duration(redisDBConfig.TTLSeconds) * time.Second,
+			Prefix:          redisDBConfig.Prefix,
+			CacheByModel:    &redisDBConfig.CacheByModel,
+			CacheByProvider: &redisDBConfig.CacheByProvider,
+		}
+
+		redisPlugin, err := redis.NewRedisPlugin(pluginConfig, logger)
+		if err != nil {
+			log.Fatalf("failed to initialize Redis plugin: %v", err)
+		}
+
+		loadedPlugins = append(loadedPlugins, redisPlugin)
+
+		redisHandler = handlers.NewRedisHandler(store, logger)
+	}
+
 	loadedPlugins = append(loadedPlugins, promPlugin)
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
@@ -463,6 +497,9 @@ func main() {
 	}
 	if wsHandler != nil {
 		wsHandler.RegisterRoutes(r)
+	}
+	if redisHandler != nil {
+		redisHandler.RegisterRoutes(r)
 	}
 
 	// Add Prometheus /metrics endpoint

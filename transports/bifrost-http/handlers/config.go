@@ -85,6 +85,7 @@ func (h *ConfigHandler) handleUpdateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.EnableLogging = req.EnableLogging
 	updatedConfig.EnableGovernance = req.EnableGovernance
 	updatedConfig.EnforceGovernanceHeader = req.EnforceGovernanceHeader
+	updatedConfig.EnableCaching = req.EnableCaching
 
 	// Update the store with the new config
 	h.store.ClientConfig = updatedConfig

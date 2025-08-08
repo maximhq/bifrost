@@ -110,6 +110,7 @@ type DBClientConfig struct {
 	EnableLogging           bool      `gorm:"" json:"enable_logging"`
 	EnableGovernance        bool      `gorm:"" json:"enable_governance"`
 	EnforceGovernanceHeader bool      `gorm:"" json:"enforce_governance_header"`
+	EnableCaching           bool      `gorm:"" json:"enable_caching"`
 	CreatedAt               time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt               time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -129,6 +130,21 @@ type DBEnvKey struct {
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 }
 
+// DBRedisConfig represents Redis plugin configuration in the database
+type DBRedisConfig struct {
+	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Addr            string    `gorm:"type:varchar(255);not null" json:"addr"`      // Redis server address (host:port)
+	Username        string    `gorm:"type:varchar(255)" json:"username,omitempty"` // Username for Redis AUTH
+	Password        string    `gorm:"type:text" json:"password,omitempty"`         // Password for Redis AUTH
+	DB              int       `gorm:"default:0" json:"db"`                         // Redis database number
+	TTLSeconds      int       `gorm:"default:300" json:"ttl_seconds"`              // TTL in seconds (default: 5 minutes)
+	Prefix          string    `gorm:"type:varchar(100)" json:"prefix,omitempty"`   // Cache key prefix
+	CacheByModel    bool      `gorm:"" json:"cache_by_model"`                      // Include model in cache key
+	CacheByProvider bool      `gorm:"" json:"cache_by_provider"`                   // Include provider in cache key
+	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt       time.Time `gorm:"index;not null" json:"updated_at"`
+}
+
 // TableName sets the table name for each model
 func (DBConfigHash) TableName() string   { return "config_hashes" }
 func (DBProvider) TableName() string     { return "config_providers" }
@@ -136,6 +152,7 @@ func (DBKey) TableName() string          { return "config_keys" }
 func (DBMCPClient) TableName() string    { return "config_mcp_clients" }
 func (DBClientConfig) TableName() string { return "config_client" }
 func (DBEnvKey) TableName() string       { return "config_env_keys" }
+func (DBRedisConfig) TableName() string  { return "config_redis" }
 
 // GORM Hooks for JSON serialization/deserialization
 

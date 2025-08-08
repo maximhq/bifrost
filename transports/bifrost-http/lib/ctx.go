@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/redis"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
 	"github.com/valyala/fasthttp"
@@ -109,6 +110,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx) *context.Context {
 		// Handle virtual key header (x-bf-vk)
 		if keyStr == "x-bf-vk" {
 			bifrostCtx = context.WithValue(bifrostCtx, ContextKey(keyStr), string(value))
+		}
+
+		// Handle cache key header (x-bf-cache-key)
+		if keyStr == "x-bf-cache-key" {
+			bifrostCtx = context.WithValue(bifrostCtx, redis.ContextKey("request-cache-key"), string(value))
 		}
 	})
 

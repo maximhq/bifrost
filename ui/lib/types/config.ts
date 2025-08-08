@@ -126,7 +126,23 @@ export interface CoreConfig {
   enable_logging: boolean
   enable_governance: boolean
   enforce_governance_header: boolean
+  enable_caching: boolean
   allowed_origins: string[]
+}
+
+// Redis configuration types
+export interface RedisConfig {
+  id?: number
+  addr: string
+  username?: string
+  password?: string
+  db: number
+  ttl_seconds: number
+  prefix?: string
+  cache_by_model: boolean
+  cache_by_provider: boolean
+  created_at?: string
+  updated_at?: string
 }
 
 // Utility types for form handling

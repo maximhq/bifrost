@@ -13,6 +13,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { parseArrayFromText, isArrayEqual } from '@/lib/utils/array'
 import { validateOrigins } from '@/lib/utils/validation'
 import FullPageLoader from '@/components/full-page-loader'
+import RedisConfigForm from '@/components/config/redis-config-form'
+import { Separator } from '@/components/ui/separator'
 
 const defaultConfig = {
   drop_excess_requests: false,
@@ -21,6 +23,7 @@ const defaultConfig = {
   enable_logging: true,
   enable_governance: true,
   enforce_governance_header: false,
+  enable_caching: false,
   allowed_origins: [],
 }
 
@@ -310,6 +313,36 @@ export default function ConfigPage() {
               />
             </div>
             {configInDB.enable_governance !== config.enable_governance && <RestartWarning />}
+          </div>
+
+          <div>
+            <div className="rounded-lg border p-4">
+              <div className="flex items-center justify-between space-x-2">
+                <div className="space-y-0.5">
+                  <label htmlFor="enable-caching" className="text-sm font-medium">
+                    Enable Caching
+                  </label>
+                  <p className="text-muted-foreground text-sm">
+                    Enable Redis caching for requests. Send <b>x-bf-cache-key</b> header with requests to use caching.
+                  </p>
+                </div>
+                <Switch
+                  id="enable-caching"
+                  size="md"
+                  checked={config.enable_caching}
+                  onCheckedChange={(checked) => handleConfigChange('enable_caching', checked)}
+                />
+              </div>
+
+              {configInDB.enable_caching && config.enable_caching && (
+                <div className="mt-4 space-y-4">
+                  <Separator />
+                  <RedisConfigForm />
+                </div>
+              )}
+            </div>
+
+            {configInDB.enable_caching !== config.enable_caching && <RestartWarning />}
           </div>
 
           <div>

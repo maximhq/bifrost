@@ -62,6 +62,7 @@ var DefaultClientConfig = ClientConfig{
 	EnableLogging:           true,
 	EnableGovernance:        true,
 	EnforceGovernanceHeader: false,
+	EnableCaching:           false,
 }
 
 // NewConfigStore creates a new in-memory configuration store instance with database connection.
@@ -243,6 +244,7 @@ func (s *ConfigStore) autoMigrate() error {
 		&DBMCPClient{},
 		&DBClientConfig{},
 		&DBEnvKey{},
+		&DBRedisConfig{},
 	)
 }
 
@@ -313,6 +315,7 @@ func (s *ConfigStore) loadClientConfigFromDB() error {
 		EnableLogging:           dbConfig.EnableLogging,
 		EnableGovernance:        dbConfig.EnableGovernance,
 		EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
+		EnableCaching:           dbConfig.EnableCaching,
 		AllowedOrigins:          dbConfig.AllowedOrigins,
 	}
 
@@ -693,6 +696,7 @@ func (s *ConfigStore) saveClientConfigToDB() error {
 		EnableLogging:           s.ClientConfig.EnableLogging,
 		EnableGovernance:        s.ClientConfig.EnableGovernance,
 		EnforceGovernanceHeader: s.ClientConfig.EnforceGovernanceHeader,
+		EnableCaching:           s.ClientConfig.EnableCaching,
 		PrometheusLabels:        s.ClientConfig.PrometheusLabels,
 		AllowedOrigins:          s.ClientConfig.AllowedOrigins,
 	}
@@ -875,6 +879,7 @@ func (s *ConfigStore) GetClientConfigFromDB() (*DBClientConfig, error) {
 				EnableLogging:           s.ClientConfig.EnableLogging,
 				EnableGovernance:        s.ClientConfig.EnableGovernance,
 				EnforceGovernanceHeader: s.ClientConfig.EnforceGovernanceHeader,
+				EnableCaching:           s.ClientConfig.EnableCaching,
 			}, nil
 		}
 		return nil, err
@@ -2075,4 +2080,32 @@ func (s *ConfigStore) storeConfigHash(tx *gorm.DB, hash string) error {
 		}
 	}
 	return nil
+}
+
+// GetRedisConfig retrieves the Redis configuration from the database
+func (s *ConfigStore) GetRedisConfig() (*DBRedisConfig, error) {
+	var redisConfig DBRedisConfig
+	if err := s.db.First(&redisConfig).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Return default Redis configuration
+			return &DBRedisConfig{
+				Addr:            "localhost:6379",
+				DB:              0,
+				TTLSeconds:      300, // 5 minutes
+				CacheByModel:    true,
+				CacheByProvider: true,
+			}, nil
+		}
+		return nil, err
+	}
+	return &redisConfig, nil
+}
+
+// UpdateRedisConfig updates the Redis configuration in the database
+func (s *ConfigStore) UpdateRedisConfig(config *DBRedisConfig) error {
+	// Delete existing Redis config and create new one
+	if err := s.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&DBRedisConfig{}).Error; err != nil {
+		return err
+	}
+	return s.db.Create(config).Error
 }
