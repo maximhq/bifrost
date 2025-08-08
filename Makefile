@@ -5,7 +5,7 @@ CONFIG_FILE ?= transports/config.example.json
 PORT ?= 8080
 POOL_SIZE ?= 300
 PLUGINS ?= maxim
-PROMETHEUS_LABELS ?= 
+PROMETHEUS_LABELS ?=
 
 # Colors for output
 RED=\033[0;31m
@@ -60,7 +60,7 @@ dev: install-ui install-air ## Start complete development environment (UI + API 
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
 
 build-ui: install-ui ## Build ui
-	@echo "$(GREEN)Building ui...$(NC)"	
+	@echo "$(GREEN)Building ui...$(NC)"
 	@rm -rf ui/.next
 	@cd ui && npm run build
 
@@ -108,9 +108,9 @@ quick-start: ## Quick start with example config and maxim plugin
 	@echo "$(GREEN)Quick starting Bifrost with example configuration...$(NC)"
 	@$(MAKE) dev CONFIG_FILE=transports/config.example.json PLUGINS=maxim
 
-docker-build: build-ui
+docker-build:
 	@echo "$(GREEN)Building Docker image...$(NC)"
-	@cd transports && docker build -t bifrost .
+	@docker build -f transports/Dockerfile -t bifrost .
 	@echo "$(GREEN)Docker image built: bifrost$(NC)"
 
 docker-run: ## Run Docker container
@@ -132,4 +132,4 @@ setup-git-hooks: ## Set up Git hooks for development
 	@echo "$(GREEN)Setting up Git hooks...$(NC)"
 	@echo "#!/bin/sh\nmake fmt\nmake lint" > .git/hooks/pre-commit
 	@chmod +x .git/hooks/pre-commit
-	@echo "$(GREEN)Git hooks installed$(NC)" 
+	@echo "$(GREEN)Git hooks installed$(NC)"

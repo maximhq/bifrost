@@ -303,7 +303,7 @@ Each workflow provides detailed logging with emoji indicators:
 #### Docker Build Issues
 
 - **Symptom**: Docker build context errors
-- **Solution**: Ensure UI files are built before Docker build
+- **Solution**: The multi-stage Dockerfile automatically builds UI files during the Docker build process
 
 ### Debug Mode
 

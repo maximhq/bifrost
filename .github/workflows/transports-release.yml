@@ -38,7 +38,7 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           echo "📝 Checking release trigger..."
-          
+
           # If manually triggered, always release
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "🚀 Manual release triggered: ${{ github.event.inputs.reason }}"
@@ -46,10 +46,10 @@ jobs:
             echo "skip_reason=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          
+
           # For push events, check commit message
           echo "📝 Commit message: $COMMIT_MSG"
-          
+
           # Check for --trigger-release flag
           if [[ "$COMMIT_MSG" == *"--trigger-release"* ]]; then
             echo "🚀 Found --trigger-release flag, proceeding with release"
@@ -109,16 +109,16 @@ jobs:
         run: |
           # Get current core version from go.mod and generate new transport version
           node ci/scripts/manage-versions.mjs transport-release >> "$GITHUB_OUTPUT"
-          
+
           # Store the transport version in a shell variable
           TRANSPORT_VERSION=$(grep "transport_version=" "$GITHUB_OUTPUT" | cut -d'=' -f2)
-          
+
           # Echo for logging
           echo "📦 Creating transport tag: ${TRANSPORT_VERSION}"
-          
+
           # Export the variable so it's available after cd
           export TRANSPORT_VERSION
-          
+
           # Create and push transport tag from scripts directory
           cd ci/scripts && node git-operations.mjs create-tag "$TRANSPORT_VERSION"
 
@@ -208,8 +208,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./transports # Build context includes source + UI
-          file: ./transports/Dockerfile # Custom Dockerfile for local builds
+          context: .
+          file: ./transports/Dockerfile
           push: true # Push to Docker Hub
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
@@ -251,4 +251,4 @@ jobs:
           echo "3. Click **\"Confirm merge\"**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Default behavior:" >> $GITHUB_STEP_SUMMARY
-          echo "Changes to \`transports/go.mod\` without \`--trigger-release\` flag will not trigger a release" >> $GITHUB_STEP_SUMMARY 
+          echo "Changes to \`transports/go.mod\` without \`--trigger-release\` flag will not trigger a release" >> $GITHUB_STEP_SUMMARY
