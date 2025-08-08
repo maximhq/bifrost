@@ -43,7 +43,7 @@ install-air: ## Install air for hot reloading (if not already installed)
 	@which air > /dev/null || (echo "$(YELLOW)Installing air for hot reloading...$(NC)" && go install github.com/air-verse/air@latest)
 	@echo "$(GREEN)Air is ready$(NC)"
 
-dev-http: install-ui install-air ## Start complete development environment (UI + API with proxy)
+dev: install-ui install-air ## Start complete development environment (UI + API with proxy)
 	@echo "$(GREEN)Starting Bifrost complete development environment...$(NC)"
 	@echo "$(YELLOW)This will start:$(NC)"
 	@echo "  1. UI development server (localhost:3000)"
@@ -59,7 +59,12 @@ dev-http: install-ui install-air ## Start complete development environment (UI +
 		-plugins "$(PLUGINS)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
 
-build: ## Build bifrost-http binary
+build-ui: install-ui ## Build ui
+	@echo "$(GREEN)Building ui...$(NC)"	
+	@rm -rf ui/.next
+	@cd ui && npm run build
+
+build: build-ui ## Build bifrost-http binary
 	@echo "$(GREEN)Building bifrost-http...$(NC)"
 	@cd transports/bifrost-http && go build -o ../../tmp/bifrost-http .
 	@echo "$(GREEN)Built: tmp/bifrost-http$(NC)"
@@ -72,7 +77,6 @@ run: build ## Build and run bifrost-http (no hot reload)
 		-pool-size $(POOL_SIZE) \
 		-plugins "$(PLUGINS)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
-
 
 clean: ## Clean build artifacts and temporary files
 	@echo "$(YELLOW)Cleaning build artifacts...$(NC)"
@@ -104,18 +108,14 @@ quick-start: ## Quick start with example config and maxim plugin
 	@echo "$(GREEN)Quick starting Bifrost with example configuration...$(NC)"
 	@$(MAKE) dev CONFIG_FILE=transports/config.example.json PLUGINS=maxim
 
-# Docker targets
-docker-build: ## Build Docker image
+docker-build: build-ui
 	@echo "$(GREEN)Building Docker image...$(NC)"
 	@cd transports && docker build -t bifrost .
 	@echo "$(GREEN)Docker image built: bifrost$(NC)"
 
 docker-run: ## Run Docker container
 	@echo "$(GREEN)Running Docker container...$(NC)"
-	@docker run -p $(PORT):$(PORT) \
-		-v $(PWD)/$(CONFIG_FILE):/app/config/config.json \
-		--env-file <(env | grep -E '^(OPENAI|ANTHROPIC|AZURE|AWS|COHERE|VERTEX)_') \
-		bifrost
+	@docker run -p $(PORT):8080 -v $(shell pwd):/app/data bifrost
 
 # Linting and formatting
 lint: ## Run linter for Go code
