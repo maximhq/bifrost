@@ -760,6 +760,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
 
+	chunkIndex := -1
+
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
@@ -792,6 +794,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					continue
 				}
 
+				chunkIndex++
+
 				switch eventType {
 				case "stream-start":
 					var startEvent CohereStreamStartEvent
@@ -819,7 +823,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Cohere,
+							Provider:   schemas.Cohere,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -854,7 +859,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 						},
 						Model: model,
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Cohere,
+							Provider:   schemas.Cohere,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -898,7 +904,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 						},
 						Model: model,
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Cohere,
+							Provider:   schemas.Cohere,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -954,7 +961,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 						},
 						Model: model,
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Cohere,
+							Provider:   schemas.Cohere,
+							ChunkIndex: chunkIndex,
 						},
 					}
 

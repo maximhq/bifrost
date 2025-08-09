@@ -390,6 +390,7 @@ func handleOpenAIStreaming(
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		chunkIndex := -1
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -426,6 +427,8 @@ func handleOpenAIStreaming(
 				continue
 			}
 
+			chunkIndex++
+
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
 				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
@@ -455,6 +458,7 @@ func handleOpenAIStreaming(
 					response.ExtraFields.Params = *params
 				}
 				response.ExtraFields.Provider = providerType
+				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 				continue
@@ -473,6 +477,7 @@ func handleOpenAIStreaming(
 					response.ExtraFields.Params = *params
 				}
 				response.ExtraFields.Provider = providerType
+				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 
@@ -486,6 +491,7 @@ func handleOpenAIStreaming(
 					response.ExtraFields.Params = *params
 				}
 				response.ExtraFields.Provider = providerType
+				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 			}
@@ -648,6 +654,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		chunkIndex := -1
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -684,6 +691,8 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				continue
 			}
 
+			chunkIndex++
+
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
 				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
@@ -718,6 +727,8 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			if params != nil {
 				response.ExtraFields.Params = *params
 			}
+
+			response.ExtraFields.ChunkIndex = chunkIndex
 
 			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}
@@ -866,6 +877,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		chunkIndex := -1
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -901,6 +913,8 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				continue
 			}
 
+			chunkIndex++
+
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
 				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
@@ -934,6 +948,8 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			if params != nil {
 				response.ExtraFields.Params = *params
 			}
+
+			response.ExtraFields.ChunkIndex = chunkIndex
 
 			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}

@@ -655,6 +655,7 @@ type BifrostResponseExtraFields struct {
 	Latency     *float64          `json:"latency,omitempty"`
 	ChatHistory *[]BifrostMessage `json:"chat_history,omitempty"`
 	BilledUsage *BilledLLMUsage   `json:"billed_usage,omitempty"`
+	ChunkIndex  int               `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse interface{}       `json:"raw_response"`
 }
 
@@ -676,19 +677,19 @@ type BifrostStream struct {
 // - AllowFallbacks = &false: Bifrost will return this error immediately, no fallbacks
 // - AllowFallbacks = nil: Treated as true by default (fallbacks allowed for resilience)
 type BifrostError struct {
-	Provider       ModelProvider `json:"-"`
-	EventID        *string       `json:"event_id,omitempty"`
-	Type           *string       `json:"type,omitempty"`
-	IsBifrostError bool          `json:"is_bifrost_error"`
-	StatusCode     *int          `json:"status_code,omitempty"`
-	Error          ErrorField    `json:"error"`
-	AllowFallbacks *bool         `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
-	StreamControl   *StreamControl `json:"-"` // Optional: Controls stream behavior
+	Provider       ModelProvider  `json:"-"`
+	EventID        *string        `json:"event_id,omitempty"`
+	Type           *string        `json:"type,omitempty"`
+	IsBifrostError bool           `json:"is_bifrost_error"`
+	StatusCode     *int           `json:"status_code,omitempty"`
+	Error          ErrorField     `json:"error"`
+	AllowFallbacks *bool          `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
+	StreamControl  *StreamControl `json:"-"` // Optional: Controls stream behavior
 }
 
 type StreamControl struct {
-	LogError   *bool   `json:"log_error,omitempty"` // Optional: Controls logging of error
-	SkipStream *bool   `json:"skip_stream,omitempty"` // Optional: Controls skipping of stream chunk
+	LogError   *bool `json:"log_error,omitempty"`   // Optional: Controls logging of error
+	SkipStream *bool `json:"skip_stream,omitempty"` // Optional: Controls skipping of stream chunk
 }
 
 // ErrorField represents detailed error information.

@@ -123,10 +123,12 @@ type Plugin interface {
 Plugins can short-circuit the request flow:
 
 ```go
+// PluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
+// It can contain either a response (success short-circuit), a stream (streaming short-circuit), or an error (error short-circuit).
 type PluginShortCircuit struct {
-    Response       *BifrostResponse // If set, skip provider and return this response
-    Error          *BifrostError    // If set, skip provider and return this error
-    AllowFallbacks *bool            // Whether to allow fallback providers (default: true)
+    Response *BifrostResponse    // If set, short-circuit with this response (skips provider call)
+    Stream   chan *BifrostStream // If set, short-circuit with this stream (skips provider call)
+    Error    *BifrostError       // If set, short-circuit with this error (can set AllowFallbacks field)
 }
 ```
 

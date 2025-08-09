@@ -876,6 +876,7 @@ func handleAnthropicStreaming(
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		chunkIndex := -1
 
 		// Track minimal state needed for response format
 		var messageID string
@@ -907,6 +908,8 @@ func handleAnthropicStreaming(
 			if eventType == "" || eventData == "" {
 				continue
 			}
+
+			chunkIndex++
 
 			// Handle different event types
 			switch eventType {
@@ -958,7 +961,8 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider: providerType,
+									Provider:   providerType,
+									ChunkIndex: chunkIndex,
 								},
 							}
 
@@ -996,7 +1000,8 @@ func handleAnthropicStreaming(
 								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
-								Provider: providerType,
+								Provider:   providerType,
+								ChunkIndex: chunkIndex,
 							},
 						}
 
@@ -1037,7 +1042,8 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider: providerType,
+									Provider:   providerType,
+									ChunkIndex: chunkIndex,
 								},
 							}
 
@@ -1075,7 +1081,8 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider: providerType,
+									Provider:   providerType,
+									ChunkIndex: chunkIndex,
 								},
 							}
 
@@ -1106,7 +1113,8 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider: providerType,
+									Provider:   providerType,
+									ChunkIndex: chunkIndex,
 								},
 							}
 
@@ -1155,7 +1163,8 @@ func handleAnthropicStreaming(
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: providerType,
+							Provider:   providerType,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -1194,7 +1203,8 @@ func handleAnthropicStreaming(
 						},
 					},
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						Provider: providerType,
+						Provider:   providerType,
+						ChunkIndex: chunkIndex,
 					},
 				}
 
