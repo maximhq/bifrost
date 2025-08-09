@@ -107,6 +107,33 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ---
 
+### Runtime logging
+
+Control verbosity and output format via CLI flags when starting the server:
+
+- `-log-level`: debug | info | warn | error (default: info)
+- `-log-style`: json | pretty (default: json)
+
+Examples:
+
+```bash
+# Human-friendly console logs at debug level
+npx -y @maximhq/bifrost -log-level debug -log-style pretty
+
+# Docker with pretty logs for local debugging
+docker run -p 8080:8080 maximhq/bifrost -log-level debug -log-style pretty
+
+# Production-friendly structured logs
+docker run -p 8080:8080 maximhq/bifrost -log-level info -log-style json
+```
+
+Notes:
+
+- `pretty` is easier to read locally; `json` is best for log aggregation.
+- Log level controls which messages are emitted at runtime; lower levels include higher ones (e.g., debug includes info/warn/error).
+
+---
+
 ## 🔗 Integration Patterns
 
 ### **"I want to..."**

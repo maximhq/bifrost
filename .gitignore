@@ -20,6 +20,10 @@ node_modules
 temp*/
 tmp/
 
+# Go workspaces (local only)
+go.work
+go.work.sum
+
 # Sqlite DBs
 *.db
 *.db-shm

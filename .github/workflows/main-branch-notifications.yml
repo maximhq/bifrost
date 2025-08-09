@@ -1,0 +1,24 @@
+name: Main Branch Notifications
+
+on:
+  push:
+    branches: ["main"]
+    # Exclude paths that are handled by other workflows
+    paths-ignore:
+      - "transports/go.mod"
+
+jobs:
+  notify-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord Notification - Main Branch Commit
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        with:
+          args: |
+            📝 **Commit to Main Branch**
+            **Commit**: `${{ github.event.head_commit.message }}`
+            **SHA**: `${{ github.sha }}`
+            **Author**: ${{ github.actor }}
+            **[View Commit](${{ github.event.head_commit.url }})**

@@ -108,8 +108,8 @@ function coreDependencyUpdatePipeline() {
   runCommand(`git checkout -b "${branchName}"`);
   
   console.log(`🔧 Updating core dependency to ${coreVersion}`);
-  runCommand(`cd ../../transports && go get github.com/maximhq/bifrost/core@${coreVersion}`);
-  runCommand("cd ../../transports && go mod tidy");
+  runCommand(`cd ../../transports && GOWORK=off go get github.com/maximhq/bifrost/core@${coreVersion}`);
+  runCommand("cd ../../transports && GOWORK=off go mod tidy");
   runCommand("git add transports/go.mod transports/go.sum");
 
   // 2. Build validation
@@ -120,7 +120,7 @@ function coreDependencyUpdatePipeline() {
   try {
     // Validate Go build
     console.log("🏗️ Testing Go build...");
-    runCommand("cd ../../transports && go build ./...", { stdio: "pipe" });
+    runCommand("cd ../../transports && GOWORK=off go build ./...", { stdio: "pipe" });
     console.log("✅ Go build successful");
 
     // Validate UI build

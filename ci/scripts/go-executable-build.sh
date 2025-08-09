@@ -63,7 +63,7 @@ for platform in "${platforms[@]}"; do
       -ldflags "-linkmode external -extldflags -static"
     )
 
-    env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build "${build_args[@]}" -o "$output_path/$PLATFORM_DIR/$GOARCH/$output_name" ${build_flags:+"$build_flags"}
 
   elif [[ "$GOOS" = "windows" ]]; then
@@ -80,11 +80,11 @@ for platform in "${platforms[@]}"; do
       exit 1
     fi
 
-    env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -o "$output_path/$PLATFORM_DIR/$GOARCH/$output_name" ${build_flags:+"$build_flags"}
 
   else # Darwin (macOS)
-    env CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" \
+    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" \
       go build -o "$output_path/$PLATFORM_DIR/$GOARCH/$output_name" ${build_flags:+"$build_flags"}
   fi
 done

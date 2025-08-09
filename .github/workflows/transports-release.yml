@@ -231,6 +231,24 @@ jobs:
           echo "🔧 Core Version: ${{ needs.build-transports.outputs.core_version }}"
           echo "🐳 Docker Tags: ${{ steps.meta.outputs.tags }}"
 
+      - name: Discord Notification
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            TITLE="🚀 **Transport Release Complete**"
+            STATUS="✅ Success"
+            TRANSPORT_VERSION_LINE="**Transport Version**: \`${{ needs.build-transports.outputs.transport_version }}\`"
+            CORE_VERSION_LINE="**Core Version**: \`${{ needs.build-transports.outputs.core_version }}\`"
+            MESSAGE="$TITLE\n**Status**: $STATUS\n$TRANSPORT_VERSION_LINE\n$CORE_VERSION_LINE\n**Branch**: \`main\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${{ github.actor }}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+          else
+            TITLE="🚀 **Transport Release Failed**"
+            STATUS="❌ Failed"
+            MESSAGE="$TITLE\n**Status**: $STATUS\n**Branch**: \`main\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${{ github.actor }}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+          fi
+          payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
+          curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
   # Notification job for skipped releases
   notify-skipped:
     needs: check-release-flags
@@ -252,3 +270,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Default behavior:" >> $GITHUB_STEP_SUMMARY
           echo "Changes to \`transports/go.mod\` without \`--trigger-release\` flag will not trigger a release" >> $GITHUB_STEP_SUMMARY
+
+      - name: Discord Notification - Skipped Release
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          MESSAGE="⏸️ **Transport Release Skipped**\n**Reason**: ${{ needs.check-release-flags.outputs.skip_reason }}\n**Branch**: \`main\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${{ github.actor }}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+          payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
+          curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"

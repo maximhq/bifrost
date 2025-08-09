@@ -2,7 +2,7 @@
 package schemas
 
 // LogLevel represents the severity level of a log message.
-// It is used to categorize and filter log messages based on their importance.
+// Alias to zerolog.Level to ensure seamless interoperability.
 type LogLevel string
 
 const (
@@ -32,4 +32,8 @@ type Logger interface {
 	// Error logs an error-level message.
 	// This is used for serious problems that need attention and may prevent normal operation.
 	Error(err error)
+
+	// Fatal logs a fatal-level message.
+	// This is used for critical situations that require immediate attention and will terminate the program.
+	Fatal(msg string, err error)
 }

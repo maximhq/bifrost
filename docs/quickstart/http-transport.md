@@ -15,6 +15,18 @@ docker run -p 8080:8080 maximhq/bifrost
 npx @maximhq/bifrost  # use -port flag to specify the port
 ```
 
+### Optional: Logging for local debugging
+
+Control verbosity and output format while developing:
+
+```bash
+# Human-friendly console formatting
+npx @maximhq/bifrost -log-level debug -log-style pretty
+
+# Structured logs (recommended for prod)
+npx @maximhq/bifrost -log-level info -log-style json
+```
+
 ### 2. Open the Web Interface
 
 ```bash

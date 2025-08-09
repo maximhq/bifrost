@@ -33,6 +33,7 @@ COPY transports/ ./
 COPY --from=ui-builder /app/out ./bifrost-http/ui
 
 # Build the binary with CGO enabled and static SQLite linking
+ENV GOWORK=off
 RUN go build \
         -ldflags="-w -s -extldflags '-static'" \
         -a -trimpath \
