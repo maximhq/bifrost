@@ -1366,6 +1366,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
 
+		chunkIndex := -1
+
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -1402,6 +1404,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 			if jsonEnd == -1 {
 				continue
 			}
+
+			chunkIndex++
 
 			// Extract the complete JSON object
 			jsonStr := jsonData[:jsonEnd]
@@ -1447,7 +1451,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
-								Provider: schemas.Bedrock,
+								Provider:   schemas.Bedrock,
+								ChunkIndex: chunkIndex,
 							},
 						}
 
@@ -1504,7 +1509,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
-								Provider: schemas.Bedrock,
+								Provider:   schemas.Bedrock,
+								ChunkIndex: chunkIndex,
 							},
 						}
 
@@ -1538,7 +1544,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Bedrock,
+							Provider:   schemas.Bedrock,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -1568,7 +1575,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Bedrock,
+							Provider:   schemas.Bedrock,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -1617,7 +1625,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Bedrock,
+							Provider:   schemas.Bedrock,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
