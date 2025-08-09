@@ -477,7 +477,7 @@ func handleOpenAIStreaming(
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 
 				// End stream processing after finish reason
-				break
+				continue
 			}
 
 			// Handle regular content chunks
