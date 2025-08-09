@@ -309,3 +309,35 @@ export function validateOrigins(origins: string[]): { isValid: boolean; invalidO
     invalidOrigins,
   }
 }
+
+/**
+ * Validates if a string is a valid Redis address (host:port format)
+ * @param addr - The Redis address to validate
+ * @returns true if valid Redis address
+ */
+export function isValidRedisAddress(addr: string): boolean {
+  if (!addr || !addr.trim()) {
+    return false
+  }
+
+  // Check for host:port format
+  const parts = addr.split(':')
+  if (parts.length !== 2) {
+    return false
+  }
+
+  const [host, port] = parts
+
+  // Host should not be empty
+  if (!host.trim()) {
+    return false
+  }
+
+  // Port should be a number between 1 and 65535
+  const portNum = parseInt(port, 10)
+  if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+    return false
+  }
+
+  return true
+}

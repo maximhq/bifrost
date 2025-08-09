@@ -3,6 +3,7 @@ import {
   ListProvidersResponse,
   ProviderResponse,
   CoreConfig,
+  RedisConfig,
   AddProviderRequest,
   UpdateProviderRequest,
   BifrostErrorResponse,
@@ -225,6 +226,24 @@ class ApiService {
     try {
       await this.client.put('/config', data)
       return [null, null]
+    } catch (error) {
+      return [null, this.getErrorMessage(error)]
+    }
+  }
+
+  async getRedisConfig(): ServiceResponse<RedisConfig> {
+    try {
+      const response = await this.client.get('/config/redis')
+      return [response.data, null]
+    } catch (error) {
+      return [null, this.getErrorMessage(error)]
+    }
+  }
+
+  async updateRedisConfig(data: RedisConfig): ServiceResponse<{ config: RedisConfig }> {
+    try {
+      const response = await this.client.put('/config/redis', data)
+      return [response.data, null]
     } catch (error) {
       return [null, this.getErrorMessage(error)]
     }
