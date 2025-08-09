@@ -69,4 +69,3 @@ func (p *LoggerPlugin) accumulateToolCallsInMessage(message *schemas.BifrostMess
 
 	message.AssistantMessage.ToolCalls = &existingToolCalls
 }
-
