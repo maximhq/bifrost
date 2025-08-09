@@ -1,0 +1,45 @@
+name: Documentation issue
+description: Report missing, unclear, or incorrect documentation
+title: "[Docs]: <short summary>"
+labels: [documentation]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve the docs! Please provide links and suggestions.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues and docs to avoid duplicates
+          required: true
+
+  - type: input
+    id: page
+    attributes:
+      label: Affected page(s)
+      description: Provide the path or URL to the affected doc(s)
+      placeholder: docs/usage/providers.md or https://...
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: What’s wrong or missing?
+      description: Be as specific as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested change
+      description: Propose wording or structure improvements.
+    validations:
+      required: false
+
+

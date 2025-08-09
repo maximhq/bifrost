@@ -62,8 +62,7 @@ func (h *WebSocketHandler) getUpgrader() websocket.FastHTTPUpgrader {
 				// If no Origin header, check the Host header for direct connections
 				host := string(ctx.Request.Header.Peek("Host"))
 				return isLocalhost(host)
-			}
-
+			}	
 			// Check if origin is allowed (localhost always allowed + configured origins)
 			return IsOriginAllowed(origin, h.store.ClientConfig.AllowedOrigins)
 		},

@@ -19,3 +19,8 @@ node_modules
 **/tmp/
 temp*/
 tmp/
+
+# Sqlite DBs
+*.db
+*.db-shm
+*.db-wal
