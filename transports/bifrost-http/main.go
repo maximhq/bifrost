@@ -87,13 +87,13 @@ var uiContent embed.FS
 
 // Command line flags
 var (
-    port          string   // Port to run the server on
-    host          string   // Host to bind the server to
-    appDir        string   // Application data directory
-    pluginsToLoad []string // Plugins to load
+	port          string   // Port to run the server on
+	host          string   // Host to bind the server to
+	appDir        string   // Application data directory
+	pluginsToLoad []string // Plugins to load
 
-    logLevel       string // Logger level: debug, info, warn, error
-    logOutputStyle string // Logger output style: json, pretty
+	logLevel       string // Logger level: debug, info, warn, error
+	logOutputStyle string // Logger output style: json, pretty
 )
 
 // init initializes command line flags and validates required configuration.
@@ -111,18 +111,18 @@ func init() {
 		defaultHost = "localhost"
 	}
 
-    flag.StringVar(&port, "port", "8080", "Port to run the server on")
-    flag.StringVar(&host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
-    flag.StringVar(&appDir, "app-dir", "./bifrost-data", "Application data directory (contains config.json and logs)")
-    flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
-    flag.StringVar(&logLevel, "log-level", string(schemas.LogLevelInfo), "Logger level (debug, info, warn, error). Default is info.")
-    flag.StringVar(&logOutputStyle, "log-style", string(bifrost.LoggerOutputTypeJSON), "Logger output type (json or pretty). Default is JSON.")
+	flag.StringVar(&port, "port", "8080", "Port to run the server on")
+	flag.StringVar(&host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
+	flag.StringVar(&appDir, "app-dir", "./bifrost-data", "Application data directory (contains config.json and logs)")
+	flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
+	flag.StringVar(&logLevel, "log-level", string(schemas.LogLevelInfo), "Logger level (debug, info, warn, error). Default is info.")
+	flag.StringVar(&logOutputStyle, "log-style", string(bifrost.LoggerOutputTypeJSON), "Logger output type (json or pretty). Default is JSON.")
 	flag.Parse()
 
 	pluginsToLoad = strings.Split(pluginString, ",")
-    // Configure logger from flags
-    logger.SetOutputType(bifrost.LoggerOutputType(logOutputStyle))
-    logger.SetLevel(schemas.LogLevel(logLevel))
+	// Configure logger from flags
+	logger.SetOutputType(bifrost.LoggerOutputType(logOutputStyle))
+	logger.SetLevel(schemas.LogLevel(logLevel))
 }
 
 // registerCollectorSafely attempts to register a Prometheus collector,
@@ -282,6 +282,9 @@ func getDefaultConfigDir(appDir string) string {
 
 	return configDir
 }
+
+// logger is the default logger for the application.
+var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 // main is the entry point of the application.
 // It:
