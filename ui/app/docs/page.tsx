@@ -1,10 +1,9 @@
-import Header from '@/components/header'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { BookOpen, ExternalLink, Zap, Settings, Code, Users, FileText, Play, GitBranch, Shield, Icon } from 'lucide-react'
-import Link from 'next/link'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import GradientHeader from '@/components/ui/gradient-header'
+import { BookOpen, Code, ExternalLink, FileText, GitBranch, Play, Shield, Users, Zap } from 'lucide-react'
+import Link from 'next/link'
 
 const docSections = [
   {
@@ -80,7 +79,7 @@ const featuredDocs = [
 
 export default function DocsPage() {
   return (
-    <div className="bg-background">
+    <div className="bg-white dark:bg-card">
       <div className="mx-auto max-w-7xl">
         <div className="space-y-8">
           {/* Header */}
