@@ -71,6 +71,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.SGL,
 		schemas.Parasail,
 		schemas.Cerebras,
+		"openai-custom",
 	}, nil
 }
 
@@ -81,6 +82,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("OPENAI_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
+	case "openai-custom":
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("GROQ_API_KEY"), // Use same API key as OpenAI
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -196,6 +205,24 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
 				BufferSize:  10,
+			},
+		}, nil
+	case "openai-custom":
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        "https://api.groq.com/openai",
+				DefaultRequestTimeoutInSeconds: 30,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				CustomProviderKey: bifrost.Ptr("openai-custom"),
+				BaseProviderType:  schemas.OpenAI,
 			},
 		}, nil
 	case schemas.Anthropic:
@@ -533,6 +560,33 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  "openai-custom",
+		ChatModel: "llama-3.3-70b-versatile",
+		TextModel: "", // Custom OpenAI instance doesn't support text completion
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not supported
+			SimpleChat:            true,  // Enable simple chat for testing
+			ChatCompletionStream:  true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			ProviderSpecific:      true,
+			SpeechSynthesis:       true,  // OpenAI supports TTS
+			SpeechSynthesisStream: true,  // OpenAI supports streaming TTS
+			Transcription:         false, // OpenAI supports STT with Whisper
+			TranscriptionStream:   false, // OpenAI supports streaming STT
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

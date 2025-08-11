@@ -41,11 +41,12 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
-	streamClient        *http.Client          // HTTP client for streaming requests
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger               schemas.Logger                // Logger for provider operations
+	client               *fasthttp.Client              // HTTP client for API requests
+	streamClient         *http.Client                  // HTTP client for streaming requests
+	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig // Custom provider key
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -80,16 +81,20 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &OpenAIProvider{
-		logger:              logger,
-		client:              client,
-		streamClient:        streamClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamClient:         streamClient,
+		networkConfig:        config.NetworkConfig,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}
 }
 
 // GetProviderKey returns the provider identifier for OpenAI.
 func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
+	if provider.customProviderConfig != nil && provider.customProviderConfig.CustomProviderKey != nil {
+		return schemas.ModelProvider(*provider.customProviderConfig.CustomProviderKey)
+	}
 	return schemas.OpenAI
 }
 
@@ -103,6 +108,16 @@ func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model string
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Check if chat completion is allowed for this provider
+	allowed := true
+	if provider.customProviderConfig != nil && provider.customProviderConfig.AllowedRequests != nil {
+		allowed = isOperationAllowed(provider.customProviderConfig, provider.customProviderConfig.AllowedRequests.ChatCompletion)
+	}
+
+	if err := checkOperationAllowed(provider.customProviderConfig, "chat completion", allowed); err != nil {
+		return nil, err
+	}
+
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
@@ -222,6 +237,11 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Check if embedding is allowed for this provider
+	if err := checkOperationAllowed(provider.customProviderConfig, "embedding", isOperationAllowed(provider.customProviderConfig, provider.customProviderConfig.AllowedRequests.Embedding)); err != nil {
+		return nil, err
+	}
+
 	// Prepare request body with base parameters
 	requestBody := map[string]interface{}{
 		"model": model,
@@ -308,6 +328,16 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 // It formats messages, prepares request body, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
 func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	// Check if chat completion stream is allowed for this provider
+	allowed := true
+	if provider.customProviderConfig != nil && provider.customProviderConfig.AllowedRequests != nil {
+		allowed = isOperationAllowed(provider.customProviderConfig, provider.customProviderConfig.AllowedRequests.ChatCompletionStream)
+	}
+
+	if err := checkOperationAllowed(provider.customProviderConfig, "chat completion stream", allowed); err != nil {
+		return nil, err
+	}
+
 	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{

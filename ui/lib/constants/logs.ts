@@ -42,6 +42,15 @@ export const PROVIDER_LABELS = {
 	cerebras: "Cerebras",
 } as const;
 
+// Helper function to get provider label, supporting custom providers
+export const getProviderLabel = (provider: string): string => {
+	if (provider in PROVIDER_LABELS) {
+		return PROVIDER_LABELS[provider as keyof typeof PROVIDER_LABELS];
+	}
+	// For custom providers, return the provider name as is
+	return provider;
+};
+
 export const STATUS_COLORS = {
 	success: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",

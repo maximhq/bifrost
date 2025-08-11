@@ -20,14 +20,15 @@ type TableConfigHash struct {
 
 // TableProvider represents a provider configuration in the database
 type TableProvider struct {
-	ID                    uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name                  string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
-	NetworkConfigJSON     string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
-	ConcurrencyBufferJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
-	ProxyConfigJSON       string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
-	SendBackRawResponse   bool      `json:"send_back_raw_response"`
-	CreatedAt             time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt             time.Time `gorm:"index;not null" json:"updated_at"`
+	ID                       uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name                     string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
+	NetworkConfigJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
+	ConcurrencyBufferJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
+	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
+	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
+	SendBackRawResponse      bool      `json:"send_back_raw_response"`
+	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Relationships
 	Keys []TableKey `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"keys"`
@@ -36,6 +37,10 @@ type TableProvider struct {
 	NetworkConfig            *schemas.NetworkConfig            `gorm:"-" json:"network_config,omitempty"`
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `gorm:"-" json:"concurrency_and_buffer_size,omitempty"`
 	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
+
+	// Custom provider fields
+	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
+
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
 }
@@ -194,6 +199,14 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		p.ProxyConfigJSON = string(data)
+	}
+
+	if p.CustomProviderConfig != nil {
+		data, err := json.Marshal(p.CustomProviderConfig)
+		if err != nil {
+			return err
+		}
+		p.CustomProviderConfigJSON = string(data)
 	}
 
 	return nil
@@ -358,6 +371,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.ProxyConfig = &proxyConfig
+	}
+
+	if p.CustomProviderConfigJSON != "" {
+		var customConfig schemas.CustomProviderConfig
+		if err := json.Unmarshal([]byte(p.CustomProviderConfigJSON), &customConfig); err != nil {
+			return err
+		}
+		p.CustomProviderConfig = &customConfig
 	}
 
 	return nil

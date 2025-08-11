@@ -664,6 +664,17 @@ func (bifrost *Bifrost) ReconnectMCPClient(name string) error {
 // createProviderFromProviderKey creates a new provider instance based on the provider key.
 // It returns an error if the provider is not supported.
 func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+	// Check if this is a custom provider
+	if config.CustomProviderConfig != nil {
+		return bifrost.createBaseProvider(config.CustomProviderConfig.BaseProviderType, config)
+	}
+
+	// For standard providers, use the base provider creation
+	return bifrost.createBaseProvider(providerKey, config)
+}
+
+// createBaseProvider creates a provider based on the base provider type
+func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
 	switch providerKey {
 	case schemas.OpenAI:
 		return providers.NewOpenAIProvider(config, bifrost.logger), nil
@@ -711,6 +722,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
 
 	provider, err := bifrost.createProviderFromProviderKey(providerKey, config)
+	bifrost.logger.Info(fmt.Sprintf("provider: %+v", provider))
 	if err != nil {
 		return fmt.Errorf("failed to create provider for the given key: %v", err)
 	}

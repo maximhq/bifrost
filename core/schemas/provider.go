@@ -81,6 +81,23 @@ type ProxyConfig struct {
 	Password string    `json:"password"` // Password for proxy authentication
 }
 
+type AllowedRequests struct {
+	TextCompletion bool `json:"text_completion"`
+	ChatCompletion bool `json:"chat_completion"`
+	ChatCompletionStream bool `json:"chat_completion_stream"`
+	Embedding      bool `json:"embedding"`
+	Speech         bool `json:"speech"`
+	SpeechStream   bool `json:"speech_stream"`
+	Transcription  bool `json:"transcription"`
+	TranscriptionStream bool `json:"transcription_stream"`
+}
+
+type CustomProviderConfig struct {
+	CustomProviderKey *string `json:"custom_provider_key"`
+	BaseProviderType  ModelProvider `json:"base_provider_type"` // Base provider type
+	AllowedRequests   *AllowedRequests `json:"allowed_requests"`
+}
+
 // ProviderConfig represents the complete configuration for a provider.
 // An array of ProviderConfig needs to provided in GetConfigForProvider
 // in your account interface implementation.
@@ -91,6 +108,7 @@ type ProviderConfig struct {
 	Logger              Logger       `json:"logger"`
 	ProxyConfig         *ProxyConfig `json:"proxy_config,omitempty"` // Proxy configuration
 	SendBackRawResponse bool         `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
+	CustomProviderConfig *CustomProviderConfig `json:"custom_provider_config"`
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

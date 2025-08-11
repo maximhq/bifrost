@@ -560,6 +560,27 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 	}
 }
 
+// checkOperationAllowed checks if a specific operation is allowed based on the custom provider configuration.
+// If the operation is not allowed and a custom provider key exists, it returns an error.
+// This helper reduces code duplication across providers when checking operation permissions.
+func checkOperationAllowed(config *schemas.CustomProviderConfig, operation string, isAllowed bool) *schemas.BifrostError {
+	if config == nil || config.AllowedRequests == nil || isAllowed {
+		return nil
+	}
+
+	if config.CustomProviderKey != nil {
+		return newUnsupportedOperationError(operation, *config.CustomProviderKey)
+	}
+
+	return nil
+}
+
+// isOperationAllowed checks if a specific operation is allowed based on the custom provider configuration.
+// This helper makes the calling code more readable by encapsulating the permission check logic.
+func isOperationAllowed(config *schemas.CustomProviderConfig, operationAllowed bool) bool {
+	return config != nil && config.AllowedRequests != nil && operationAllowed
+}
+
 // newConfigurationError creates a standardized error for configuration errors.
 // This helper reduces code duplication across providers that have configuration errors.
 func newConfigurationError(message string, providerType schemas.ModelProvider) *schemas.BifrostError {

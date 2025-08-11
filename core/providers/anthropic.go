@@ -151,6 +151,7 @@ type AnthropicProvider struct {
 	apiVersion          string                // API version for the provider
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
 
 // anthropicChatResponsePool provides a pool for Anthropic chat response objects.
@@ -240,11 +241,15 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		apiVersion:          "2023-06-01",
 		networkConfig:       config.NetworkConfig,
 		sendBackRawResponse: config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}
 }
 
 // GetProviderKey returns the provider identifier for Anthropic.
 func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
+	if provider.customProviderConfig != nil && provider.customProviderConfig.CustomProviderKey != nil {
+		return schemas.ModelProvider(*provider.customProviderConfig.CustomProviderKey)
+	}
 	return schemas.Anthropic
 }
 
@@ -323,6 +328,10 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(provider.customProviderConfig, "text completion", isOperationAllowed(provider.customProviderConfig, provider.customProviderConfig.AllowedRequests.TextCompletion)); err != nil {
+		return nil, err
+	}
+
 	preparedParams := provider.prepareTextCompletionParams(prepareParams(params))
 
 	// Merge additional parameters
@@ -388,6 +397,10 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(provider.customProviderConfig, "chat completion", isOperationAllowed(provider.customProviderConfig, provider.customProviderConfig.AllowedRequests.ChatCompletion)); err != nil {
+		return nil, err
+	}
+
 	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
 
 	// Merge additional parameters
@@ -800,6 +813,10 @@ func (provider *AnthropicProvider) Embedding(ctx context.Context, model string, 
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := checkOperationAllowed(provider.customProviderConfig, "chat completion stream", isOperationAllowed(provider.customProviderConfig, provider.customProviderConfig.AllowedRequests.ChatCompletionStream)); err != nil {
+		return nil, err
+	}
+
 	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
 
 	// Merge additional parameters and set stream to true

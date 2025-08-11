@@ -260,6 +260,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
 						ProxyConfig:              dbProvider.ProxyConfig,
 						SendBackRawResponse:      dbProvider.SendBackRawResponse,
+						CustomProviderConfig:     dbProvider.CustomProviderConfig,
 					}
 					processedProviders[provider] = providerConfig
 				}
@@ -630,6 +631,7 @@ func (s *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 		ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
 		ProxyConfig:              config.ProxyConfig,
 		SendBackRawResponse:      config.SendBackRawResponse,
+		CustomProviderConfig:     config.CustomProviderConfig,
 	}
 
 	// Create redacted keys

@@ -13,7 +13,8 @@ export type ModelProvider =
 	| "groq"
 	| "parasail"
 	| "sgl"
-	| "cerebras";
+	| "cerebras"
+	| string; // Allow custom provider names
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
@@ -77,6 +78,24 @@ export interface ProxyConfig {
 	password?: string;
 }
 
+// CustomProviderConfig matching Go's schemas.CustomProviderConfig
+export interface CustomProviderConfig {
+	base_provider_type: ModelProvider;
+	custom_provider_key?: string;
+	allowed_requests?: AllowedRequests;
+}
+
+// AllowedRequests matching Go's schemas.AllowedRequests
+export interface AllowedRequests {
+	chat_completion: boolean;
+	chat_completion_stream: boolean;
+	embedding: boolean;
+	speech: boolean;
+	speech_stream: boolean;
+	transcription: boolean;
+	transcription_stream: boolean;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ProviderConfig {
 	keys: Key[];
@@ -84,6 +103,7 @@ export interface ProviderConfig {
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
 	send_back_raw_response?: boolean;
+	custom_provider_config?: CustomProviderConfig;
 }
 
 // ProviderResponse matching Go's ProviderResponse
@@ -105,6 +125,7 @@ export interface AddProviderRequest {
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
 	send_back_raw_response?: boolean;
+	custom_provider_config?: CustomProviderConfig;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -114,6 +135,7 @@ export interface UpdateProviderRequest {
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
 	proxy_config: ProxyConfig;
 	send_back_raw_response?: boolean;
+	custom_provider_config?: CustomProviderConfig;
 }
 
 // BifrostErrorResponse matching Go's schemas.BifrostError
@@ -179,6 +201,7 @@ export interface ProviderFormData {
 		concurrency: number;
 		bufferSize: number;
 	};
+	custom_provider_config?: CustomProviderConfig;
 }
 
 // Status types

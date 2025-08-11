@@ -52,12 +52,23 @@ interface ProviderFormProps {
 
 interface ProviderFormData {
 	selectedProvider: string;
+	customProviderName: string;
+	baseProviderType: string;
 	keys: KeyType[];
 	networkConfig: NetworkConfig;
 	performanceConfig: ConcurrencyAndBufferSize;
 	proxyConfig: ProxyConfig;
 	sendBackRawResponse: boolean;
 	isDirty: boolean;
+	allowedRequests: {
+		chat_completion: boolean;
+		chat_completion_stream: boolean;
+		embedding: boolean;
+		speech: boolean;
+		speech_stream: boolean;
+		transcription: boolean;
+		transcription_stream: boolean;
+	};
 }
 
 // A helper function to create a clean initial state
@@ -96,8 +107,13 @@ const createInitialState = (provider?: ProviderResponse | null, defaultProvider?
 		return baseKey;
 	};
 
+	// Check if this is a custom provider
+	const isCustomProvider = provider && !Providers.includes(provider.name as any);
+
 	return {
 		selectedProvider: providerName,
+		customProviderName: isCustomProvider ? provider?.custom_provider_config?.custom_provider_key || provider.name : "",
+		baseProviderType: provider?.custom_provider_config?.base_provider_type || "",
 		keys: isNewProvider && keysRequired ? [createDefaultKey()] : !isNewProvider && keysRequired && provider?.keys ? provider.keys : [],
 		networkConfig: provider?.network_config || DEFAULT_NETWORK_CONFIG,
 		performanceConfig: provider?.concurrency_and_buffer_size || DEFAULT_PERFORMANCE_CONFIG,
@@ -108,6 +124,15 @@ const createInitialState = (provider?: ProviderResponse | null, defaultProvider?
 			password: "",
 		},
 		sendBackRawResponse: provider?.send_back_raw_response || false,
+		allowedRequests: provider?.custom_provider_config?.allowed_requests || {
+			chat_completion: true,
+			chat_completion_stream: true,
+			embedding: true,
+			speech: true,
+			speech_stream: true,
+			transcription: true,
+			transcription_stream: true,
+		},
 	};
 };
 
@@ -131,6 +156,16 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 	// Update form when provider prop changes
 	useEffect(() => {
 		const newInitialState = createInitialState(provider, getDefaultProvider());
+
+		// Debug logging for custom provider initialization
+		if (provider && !Providers.includes(provider.name as any)) {
+			console.log("Loading custom provider initial state:", {
+				provider: provider.name,
+				customProviderConfig: provider.custom_provider_config,
+				initialState: newInitialState,
+			});
+		}
+
 		setInitialState(newInitialState);
 		setFormData({
 			...newInitialState,
@@ -138,13 +173,26 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 		});
 	}, [provider]);
 
-	const { selectedProvider, keys, networkConfig, performanceConfig, proxyConfig, sendBackRawResponse, isDirty } = formData;
+	const {
+		selectedProvider,
+		customProviderName,
+		baseProviderType,
+		keys,
+		networkConfig,
+		performanceConfig,
+		proxyConfig,
+		sendBackRawResponse,
+		isDirty,
+		allowedRequests,
+	} = formData;
 
 	const baseURLRequired = selectedProvider === "ollama" || selectedProvider === "sgl";
-	const keysRequired = !["ollama", "sgl"].includes(selectedProvider); // Vertex, Bedrock need keys for config
+	const keysRequired = selectedProvider === "custom" || !["ollama", "sgl"].includes(selectedProvider); // Custom providers and most others need keys
 	const keysValid =
 		!keysRequired || keys.every((k) => selectedProvider === "vertex" || selectedProvider === "bedrock" || k.value.trim() !== ""); // Vertex and Bedrock can have empty API key
 	const keysPresent = !keysRequired || keys.length > 0;
+	const isCustomProvider =
+		selectedProvider === "custom" || customProviderName || baseProviderType || !Providers.includes(selectedProvider as any);
 
 	const performanceValid =
 		performanceConfig.concurrency > 0 && performanceConfig.buffer_size > 0 && performanceConfig.concurrency < performanceConfig.buffer_size;
@@ -164,8 +212,11 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 		let valid = true;
 		let message = "";
 
+		// For custom providers, use the base provider type to determine validation
+		const providerType = selectedProvider === "custom" ? baseProviderType : selectedProvider;
+
 		for (const key of keys) {
-			if (selectedProvider === "azure" && key.azure_key_config) {
+			if (providerType === "azure" && key.azure_key_config) {
 				const endpointValid = !!key.azure_key_config.endpoint && key.azure_key_config.endpoint.trim() !== "";
 
 				// Validate deployments using utility function
@@ -176,7 +227,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 					message = "Endpoint and valid Deployments (JSON object) are required for Azure keys";
 					break;
 				}
-			} else if (selectedProvider === "vertex" && key.vertex_key_config) {
+			} else if (providerType === "vertex" && key.vertex_key_config) {
 				const projectValid = !!key.vertex_key_config.project_id && key.vertex_key_config.project_id.trim() !== "";
 				const regionValid = !!key.vertex_key_config.region && key.vertex_key_config.region.trim() !== "";
 
@@ -188,7 +239,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 					message = "Project ID, valid Auth Credentials (JSON object or env.VAR), and Region are required for Vertex AI keys";
 					break;
 				}
-			} else if (selectedProvider === "bedrock" && key.bedrock_key_config) {
+			} else if (providerType === "bedrock" && key.bedrock_key_config) {
 				const accessKey = key.bedrock_key_config.access_key?.trim() || "";
 				const secretKey = key.bedrock_key_config.secret_key?.trim() || "";
 
@@ -237,17 +288,35 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 	useEffect(() => {
 		const currentData = {
 			selectedProvider,
+			customProviderName,
+			baseProviderType,
 			keys: keysRequired ? keys : [],
 			networkConfig,
 			performanceConfig,
 			proxyConfig,
 			sendBackRawResponse,
+			allowedRequests,
 		};
+
+		const isDirtyValue = !isEqual(initialState, currentData);
+
 		setFormData((prev) => ({
 			...prev,
-			isDirty: !isEqual(initialState, currentData),
+			isDirty: isDirtyValue,
 		}));
-	}, [selectedProvider, keys, networkConfig, performanceConfig, proxyConfig, sendBackRawResponse, initialState, keysRequired]);
+	}, [
+		selectedProvider,
+		customProviderName,
+		baseProviderType,
+		keys,
+		networkConfig,
+		performanceConfig,
+		proxyConfig,
+		sendBackRawResponse,
+		allowedRequests,
+		initialState,
+		keysRequired,
+	]);
 
 	const updateField = <K extends keyof ProviderFormData>(field: K, value: ProviderFormData[K]) => {
 		setFormData((prev) => ({ ...prev, [field]: value }));
@@ -258,6 +327,12 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 	};
 
 	const handleSubmit = async (e: React.FormEvent) => {
+		// Prevent form submission during custom provider setup
+		if (selectedProvider === "custom" && (!customProviderName.trim() || !baseProviderType)) {
+			e.preventDefault();
+			return;
+		}
+
 		if (!validator.isValid()) {
 			toast.error(validator.getFirstError());
 			return;
@@ -266,38 +341,70 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 		e.preventDefault();
 
 		try {
-			// Check if the selected provider already exists
-			const existingProvider = allProviders.find((p) => p.name === selectedProvider);
-			const isUpdating = !!existingProvider;
+			// Determine the actual provider name to use
+			const actualProviderName = customProviderName.trim() || selectedProvider;
+
+			// Check if we're updating an existing provider
+			// For custom providers, we need to check if the original provider exists
+			const originalProviderName = provider?.name;
+			const isUpdating = !!originalProviderName;
 
 			if (isUpdating) {
 				const data: UpdateProviderRequest = {
 					keys: keysRequired
-						? keys.filter((k) =>
-								selectedProvider === "vertex" || selectedProvider === "bedrock"
+						? keys.filter((k) => {
+								const providerType = selectedProvider === "custom" ? baseProviderType : selectedProvider;
+								return providerType === "vertex" || providerType === "bedrock"
 									? true // Include all Vertex and Bedrock keys (API key can be empty)
-									: k.value.trim() !== "",
-							)
+									: k.value.trim() !== "";
+							})
 						: [],
 					network_config: networkConfig,
 					concurrency_and_buffer_size: performanceConfig,
 					proxy_config: proxyConfig,
 					send_back_raw_response: sendBackRawResponse,
+					custom_provider_config: isCustomProvider
+						? {
+								base_provider_type: baseProviderType as ModelProvider,
+								custom_provider_key: customProviderName.trim(),
+								allowed_requests: allowedRequests,
+							}
+						: undefined,
 				};
-				await updateProvider({ provider: selectedProvider, data }).unwrap();
+
+				// Debug logging for custom provider updates
+				if (isCustomProvider) {
+					console.log("Updating custom provider with data:", {
+						provider: actualProviderName,
+						data,
+						isCustomProvider,
+						baseProviderType,
+						customProviderKey: customProviderName.trim(),
+						allowedRequests,
+					});
+				}
+
+				await updateProvider({ provider: originalProviderName, data }).unwrap();
 			} else {
 				const data: AddProviderRequest = {
-					provider: selectedProvider as ModelProvider,
+					provider: actualProviderName as ModelProvider,
 					keys: keysRequired
-						? keys.filter((k) =>
-								selectedProvider === "vertex" || selectedProvider === "bedrock"
+						? keys.filter((k) => {
+								const providerType = selectedProvider === "custom" ? baseProviderType : selectedProvider;
+								return providerType === "vertex" || providerType === "bedrock"
 									? true // Include all Vertex and Bedrock keys (API key can be empty)
-									: k.value.trim() !== "",
-							)
+									: k.value.trim() !== "";
+							})
 						: [],
 					network_config: networkConfig,
 					concurrency_and_buffer_size: performanceConfig,
 					proxy_config: proxyConfig,
+					custom_provider_config: isCustomProvider
+						? {
+								base_provider_type: baseProviderType as ModelProvider,
+								allowed_requests: allowedRequests,
+							}
+						: undefined,
 				};
 				await createProvider(data).unwrap();
 			}
@@ -311,10 +418,21 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
 	const validator = new Validator([
 		// IsDirty validation - check for existing providers with no changes
-		Validator.custom(!(allProviders.find((p) => p.name === selectedProvider) && !isDirty), "No changes to save"),
+		Validator.custom(
+			!(allProviders.find((p) => p.name === (provider?.name || selectedProvider)) && !isDirty),
+			"No changes to save",
+		),
 
 		// Provider selection
 		Validator.required(selectedProvider, "Please select a provider"),
+
+		// Custom provider validation
+		...(isCustomProvider
+			? [
+					Validator.required(customProviderName.trim(), "Custom provider name is required"),
+					Validator.required(baseProviderType, "Base provider type is required for custom providers"),
+				]
+			: []),
 
 		// Base URL validation
 		...(baseURLRequired
@@ -329,7 +447,10 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 			? [
 					Validator.minValue(keys.length, 1, "At least one API key is required"),
 					Validator.custom(
-						keys.every((k) => selectedProvider === "vertex" || selectedProvider === "bedrock" || k.value.trim() !== ""),
+						keys.every((k) => {
+							const providerType = selectedProvider === "custom" ? baseProviderType : selectedProvider;
+							return providerType === "vertex" || providerType === "bedrock" || k.value.trim() !== "";
+						}),
 						"API key value cannot be empty",
 					),
 					Validator.custom(
@@ -355,19 +476,22 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 	const addKey = () => {
 		const newKey: KeyType = { id: "", value: "", models: [], weight: 1.0 };
 
-		if (selectedProvider === "azure") {
+		// For custom providers, use the base provider type to determine key configuration
+		const providerType = selectedProvider === "custom" ? baseProviderType : selectedProvider;
+
+		if (providerType === "azure") {
 			newKey.azure_key_config = {
 				endpoint: "",
 				deployments: {},
 				api_version: "2024-02-01",
 			};
-		} else if (selectedProvider === "vertex") {
+		} else if (providerType === "vertex") {
 			newKey.vertex_key_config = {
 				project_id: "",
 				region: "",
 				auth_credentials: "",
 			};
-		} else if (selectedProvider === "bedrock") {
+		} else if (providerType === "bedrock") {
 			newKey.bedrock_key_config = {
 				access_key: "",
 				secret_key: "",
@@ -480,10 +604,25 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 		updateField("keys", newKeys);
 	};
 
+	const updateAllowedRequest = (requestType: keyof typeof allowedRequests, value: boolean) => {
+		updateField("allowedRequests", {
+			...allowedRequests,
+			[requestType]: value,
+		});
+	};
+
 	const tabs = useMemo(() => {
 		const availableTabs = [];
 
-		// Only add API Keys tab if required for this provider
+		// Custom Settings tab is available for custom providers
+		if (isCustomProvider) {
+			availableTabs.push({
+				id: "custom-settings",
+				label: "Custom Settings",
+			});
+		}
+
+		// API Keys tab is available for providers that require keys
 		if (keysRequired) {
 			availableTabs.push({
 				id: "api-keys",
@@ -504,7 +643,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 		});
 
 		return availableTabs;
-	}, [keysRequired, selectedProvider]);
+	}, [keysRequired, selectedProvider, isCustomProvider]);
 
 	const [selectedTab, setSelectedTab] = useState(tabs[0]?.id || "api-keys");
 
@@ -527,46 +666,129 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 					</BreadcrumbItem>
 				</BreadcrumbList>
 			</Breadcrumb>
-			<form onSubmit={handleSubmit} className="dark:bg-card flex gap-4 bg-white">
+			<form
+				onSubmit={handleSubmit}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" && e.target !== e.currentTarget) {
+						e.preventDefault();
+					}
+				}}
+				className="dark:bg-card flex gap-4 bg-white"
+			>
 				{/* Provider Selection Sidebar */}
 				<TooltipProvider>
 					<div className="flex w-[250px] flex-col gap-1 pb-10">
 						<div className="rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
-							{Providers.map((p) => {
-								const existingProvider = allProviders.find((provider) => provider.name === p);
-								return (
-									<Tooltip key={p}>
-										<TooltipTrigger
-											className={cn(
-												"mb-1 flex w-full items-center gap-2 rounded-lg border px-3 py-1 text-sm",
-												selectedProvider === p
-													? "bg-secondary opacity-100 hover:opacity-100"
-													: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
-											)}
-											onClick={(e) => {
-												e.preventDefault();
-												if (existingProvider) {
-													// Load existing provider data
-													const initialState = createInitialState(existingProvider);
-													setFormData({ ...initialState, isDirty: false });
-													setInitialState(initialState);
-												} else {
-													// Reset form for new provider
-													const initialState = createInitialState(null, p);
-													setFormData({ ...initialState, isDirty: false });
-													setInitialState(initialState);
-												}
-											}}
-											asChild
-										>
-											<span>
-												<RenderProviderIcon provider={p as ProviderIconType} size="sm" className="h-4 w-4" />
-												<div className="text-sm">{PROVIDER_LABELS[p as keyof typeof PROVIDER_LABELS]}</div>
-											</span>
-										</TooltipTrigger>
-									</Tooltip>
-								);
-							})}
+							{/* Standard Providers */}
+							<div className="mb-4">
+								<div className="text-muted-foreground mb-2 text-xs font-medium">Standard Providers</div>
+								{Providers.map((p) => {
+									const existingProvider = allProviders.find((provider) => provider.name === p);
+									return (
+										<Tooltip key={p}>
+											<TooltipTrigger
+												className={cn(
+													"mb-1 flex w-full items-center gap-2 rounded-lg border px-3 py-1 text-sm",
+													selectedProvider === p
+														? "bg-secondary opacity-100 hover:opacity-100"
+														: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
+												)}
+												onClick={(e) => {
+													e.preventDefault();
+													if (existingProvider) {
+														// Load existing provider data
+														const initialState = createInitialState(existingProvider);
+														setFormData({ ...initialState, isDirty: false });
+														setInitialState(initialState);
+													} else {
+														// Reset form for new provider
+														const initialState = createInitialState(null, p);
+														setFormData({ ...initialState, isDirty: false });
+														setInitialState(initialState);
+													}
+												}}
+												asChild
+											>
+												<span>
+													<RenderProviderIcon provider={p as ProviderIconType} size="sm" className="h-4 w-4" />
+													<div className="text-sm">{PROVIDER_LABELS[p as keyof typeof PROVIDER_LABELS]}</div>
+												</span>
+											</TooltipTrigger>
+										</Tooltip>
+									);
+								})}
+							</div>
+
+							{/* Custom Providers */}
+							<div className="mb-4">
+								<Button
+									variant="outline"
+									size="sm"
+									className="w-full justify-start"
+									onClick={(e) => {
+										e.preventDefault();
+										e.stopPropagation();
+
+										// Create a new custom provider state without resetting the entire form
+										const newFormData = {
+											...formData,
+											selectedProvider: "custom", // Use a placeholder that won't conflict
+											customProviderName: `new-provider-${Date.now()}`,
+											baseProviderType: "openai",
+											keys: [],
+											isDirty: true,
+										};
+
+										setFormData(newFormData);
+
+										// Update initial state to match
+										const newInitialState = {
+											...initialState,
+											selectedProvider: "custom",
+											customProviderName: `new-provider-${Date.now()}`,
+											baseProviderType: "openai",
+											keys: [],
+										};
+
+										setInitialState(newInitialState);
+									}}
+								>
+									<Plus className="mr-2 h-4 w-4" />
+									Add Custom Provider
+								</Button>
+							</div>
+							{allProviders.filter((p) => !Providers.includes(p.name as any)).length > 0 && (
+								<div>
+									<div className="text-muted-foreground mb-2 text-xs font-medium">Custom Providers</div>
+									{allProviders
+										.filter((p) => !Providers.includes(p.name as any))
+										.map((provider) => (
+											<Tooltip key={provider.name}>
+												<TooltipTrigger
+													className={cn(
+														"mb-1 flex w-full items-center gap-2 rounded-lg border px-3 py-1 text-sm",
+														selectedProvider === provider.name
+															? "bg-secondary opacity-100 hover:opacity-100"
+															: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
+													)}
+													onClick={(e) => {
+														e.preventDefault();
+														// Load existing custom provider data
+														const initialState = createInitialState(provider);
+														setFormData({ ...initialState, isDirty: false });
+														setInitialState(initialState);
+													}}
+													asChild
+												>
+													<span>
+														<RenderProviderIcon provider="openai" size="sm" className="h-4 w-4" />
+														<div className="text-sm">{provider.name}</div>
+													</span>
+												</TooltipTrigger>
+											</Tooltip>
+										))}
+								</div>
+							)}
 						</div>
 					</div>
 				</TooltipProvider>
@@ -584,6 +806,109 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 						{/* Container for Tab Content */}
 						<div className="relative">
 							<div>
+								{/* Custom Settings Tab */}
+								{isCustomProvider && selectedTab === "custom-settings" && (
+									<div className="space-y-6">
+										<div className="space-y-4">
+											<div>
+												<label className="mb-2 block text-sm font-medium">Provider Name</label>
+												<Input
+													placeholder="Enter custom provider name"
+													value={customProviderName}
+													onChange={(e) => updateField("customProviderName", e.target.value)}
+													className=""
+												/>
+												<p className="text-muted-foreground mt-1 text-xs">A unique name for your custom provider</p>
+											</div>
+											<div>
+												<label className="mb-2 block text-sm font-medium">Base Provider Type</label>
+												<Select value={baseProviderType} onValueChange={(value) => updateField("baseProviderType", value)}>
+													<SelectTrigger className="w-full">
+														<SelectValue placeholder="Select base provider type" />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="openai">OpenAI</SelectItem>
+														<SelectItem value="anthropic">Anthropic</SelectItem>
+														<SelectItem value="azure">Azure OpenAI</SelectItem>
+														<SelectItem value="bedrock">AWS Bedrock</SelectItem>
+														<SelectItem value="cohere">Cohere</SelectItem>
+													</SelectContent>
+												</Select>
+												<p className="text-muted-foreground mt-1 text-xs">The underlying provider type this custom provider will use</p>
+											</div>
+										</div>
+
+										{/* Allowed Requests Configuration */}
+										<div className="space-y-4">
+											<div className="text-sm font-medium">Allowed Request Types</div>
+											<p className="text-muted-foreground text-xs">Select which request types this custom provider can handle</p>
+
+											<div className="grid grid-cols-2 gap-4">
+												<div className="space-y-3">
+													<div className="flex items-center justify-between">
+														<label className="text-sm">Chat Completion</label>
+														<Switch
+															size="md"
+															checked={allowedRequests.chat_completion}
+															onCheckedChange={(checked) => updateAllowedRequest("chat_completion", checked)}
+														/>
+													</div>
+													<div className="flex items-center justify-between">
+														<label className="text-sm">Chat Completion Stream</label>
+														<Switch
+															size="md"
+															checked={allowedRequests.chat_completion_stream}
+															onCheckedChange={(checked) => updateAllowedRequest("chat_completion_stream", checked)}
+														/>
+													</div>
+													<div className="flex items-center justify-between">
+														<label className="text-sm">Embedding</label>
+														<Switch
+															size="md"
+															checked={allowedRequests.embedding}
+															onCheckedChange={(checked) => updateAllowedRequest("embedding", checked)}
+														/>
+													</div>
+													<div className="flex items-center justify-between">
+														<label className="text-sm">Speech</label>
+														<Switch
+															size="md"
+															checked={allowedRequests.speech}
+															onCheckedChange={(checked) => updateAllowedRequest("speech", checked)}
+														/>
+													</div>
+												</div>
+												<div className="space-y-3">
+													<div className="flex items-center justify-between">
+														<label className="text-sm">Speech Stream</label>
+														<Switch
+															size="md"
+															checked={allowedRequests.speech_stream}
+															onCheckedChange={(checked) => updateAllowedRequest("speech_stream", checked)}
+														/>
+													</div>
+													<div className="flex items-center justify-between">
+														<label className="text-sm">Transcription</label>
+														<Switch
+															size="md"
+															checked={allowedRequests.transcription}
+															onCheckedChange={(checked) => updateAllowedRequest("transcription", checked)}
+														/>
+													</div>
+													<div className="flex items-center justify-between">
+														<label className="text-sm">Transcription Stream</label>
+														<Switch
+															size="md"
+															checked={allowedRequests.transcription_stream}
+															onCheckedChange={(checked) => updateAllowedRequest("transcription_stream", checked)}
+														/>
+													</div>
+												</div>
+											</div>
+										</div>
+									</div>
+								)}
+
 								{/* API Keys Tab */}
 								{keysRequired && selectedTab === "api-keys" && (
 									<div data-tab="api-keys" className="max-h-[60vh] space-y-4 overflow-x-hidden overflow-y-auto">
@@ -593,7 +918,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 												Add Key
 											</Button>
 										</div>
-										{selectedProvider === "bedrock" && (
+										{(selectedProvider === "bedrock" || (selectedProvider === "custom" && baseProviderType === "bedrock")) && (
 											<Alert variant="default">
 												<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
 												<AlertTitle>IAM Role Authentication</AlertTitle>
@@ -607,18 +932,20 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 											{keys.map((key, index) => (
 												<div key={index} className="space-y-4 rounded-sm border p-4">
 													<div className="flex gap-4">
-														{selectedProvider !== "vertex" && selectedProvider !== "bedrock" && (
-															<div className="flex-1">
-																<div className="mb-2 text-sm font-medium">API Key</div>
-																<Input
-																	placeholder="API Key or env.MY_KEY"
-																	value={key.value}
-																	onChange={(e) => updateKey(index, "value", e.target.value)}
-																	type="text"
-																	className="flex-1"
-																/>
-															</div>
-														)}
+														{selectedProvider !== "vertex" &&
+															selectedProvider !== "bedrock" &&
+															!(selectedProvider === "custom" && (baseProviderType === "vertex" || baseProviderType === "bedrock")) && (
+																<div className="flex-1">
+																	<div className="mb-2 text-sm font-medium">API Key</div>
+																	<Input
+																		placeholder="API Key or env.MY_KEY"
+																		value={key.value}
+																		onChange={(e) => updateKey(index, "value", e.target.value)}
+																		type="text"
+																		className="flex-1"
+																	/>
+																</div>
+															)}
 
 														<div>
 															<div className="mb-2 flex items-center gap-4">
@@ -671,7 +998,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 													</div>
 
 													{/* Azure Key Configuration */}
-													{selectedProvider === "azure" && (
+													{(selectedProvider === "azure" || (selectedProvider === "custom" && baseProviderType === "azure")) && (
 														<div className="space-y-4">
 															<div>
 																<label className="mb-2 block text-sm font-medium">Endpoint (Required)</label>
@@ -728,7 +1055,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 													)}
 
 													{/* Vertex Key Configuration */}
-													{selectedProvider === "vertex" && (
+													{(selectedProvider === "vertex" || (selectedProvider === "custom" && baseProviderType === "vertex")) && (
 														<div className="space-y-4 pt-2">
 															<div>
 																<label className="mb-2 block text-sm font-medium">Project ID (Required)</label>
@@ -772,7 +1099,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 													)}
 
 													{/* Bedrock Key Configuration */}
-													{selectedProvider === "bedrock" && (
+													{(selectedProvider === "bedrock" || (selectedProvider === "custom" && baseProviderType === "bedrock")) && (
 														<div className="space-y-4 pt-2">
 															<div>
 																<label className="mb-2 block text-sm font-medium">Access Key</label>

@@ -41,6 +41,7 @@ type AddProviderRequest struct {
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
+	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 }
 
 // UpdateProviderRequest represents the request body for updating a provider
@@ -50,6 +51,7 @@ type UpdateProviderRequest struct {
 	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
 	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
+	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 }
 
 // ProviderResponse represents the response for provider operations
@@ -60,6 +62,7 @@ type ProviderResponse struct {
 	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                // Proxy configuration
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`      // Include raw response in BifrostResponse
+	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -184,6 +187,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig:            req.NetworkConfig,
 		ConcurrencyAndBufferSize: req.ConcurrencyAndBufferSize,
 		SendBackRawResponse:      req.SendBackRawResponse != nil && *req.SendBackRawResponse,
+		CustomProviderConfig:     req.CustomProviderConfig,
 	}
 
 	// Add provider to store (env vars will be processed by store)
@@ -236,6 +240,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig:            oldConfigRaw.NetworkConfig,
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
+		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 	}
 
 	// Environment variable cleanup is now handled automatically by mergeKeys function
@@ -286,6 +291,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	config.ConcurrencyAndBufferSize = &req.ConcurrencyAndBufferSize
 	config.NetworkConfig = &req.NetworkConfig
 	config.ProxyConfig = req.ProxyConfig
+	config.CustomProviderConfig = req.CustomProviderConfig
 	if req.SendBackRawResponse != nil {
 		config.SendBackRawResponse = *req.SendBackRawResponse
 	}
@@ -456,6 +462,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
 		ProxyConfig:              config.ProxyConfig,
 		SendBackRawResponse:      config.SendBackRawResponse,
+		CustomProviderConfig:     config.CustomProviderConfig,
 	}
 }
 

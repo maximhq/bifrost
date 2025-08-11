@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { PROVIDER_LABELS } from "@/lib/constants/logs";
+import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage, openConfigureDialog, useAppDispatch, useDeleteProviderMutation } from "@/lib/store";
 import { ProviderResponse } from "@/lib/types/config";
 import { Key, Loader2, Settings, Trash2 } from "lucide-react";
@@ -101,7 +101,7 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
 								<TableCell>
 									<div className="flex items-center space-x-2">
 										<RenderProviderIcon provider={provider.name as ProviderIconType} size={16} />
-										<p className="font-medium">{PROVIDER_LABELS[provider.name] || provider.name}</p>
+										<p className="font-medium">{getProviderLabel(provider.name)}</p>
 									</div>
 								</TableCell>
 								<TableCell>

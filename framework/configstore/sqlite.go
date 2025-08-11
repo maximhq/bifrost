@@ -86,6 +86,7 @@ func (s *SQLiteConfigStore) UpdateProvidersConfig(providers map[schemas.ModelPro
 				ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
 				ProxyConfig:              providerConfig.ProxyConfig,
 				SendBackRawResponse:      providerConfig.SendBackRawResponse,
+				CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			}
 
 			// Create provider first
@@ -195,6 +196,7 @@ func (s *SQLiteConfigStore) GetProvidersConfig() (map[schemas.ModelProvider]Prov
 			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
 			ProxyConfig:              dbProvider.ProxyConfig,
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
+			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		}
 		processedProviders[provider] = providerConfig
 	}
