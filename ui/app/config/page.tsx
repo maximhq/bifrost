@@ -1,20 +1,20 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Switch } from '@/components/ui/switch'
-import { AlertTriangle } from 'lucide-react'
-import { CoreConfig } from '@/lib/types/config'
-import { apiService } from '@/lib/api'
-import { toast } from 'sonner'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { parseArrayFromText, isArrayEqual } from '@/lib/utils/array'
-import { validateOrigins } from '@/lib/utils/validation'
+import CacheConfigForm from '@/app/config/views/cache-config-form'
 import FullPageLoader from '@/components/full-page-loader'
-import CacheConfigForm from '@/components/config/cache-config-form'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
+import { apiService } from '@/lib/api'
+import { CoreConfig } from '@/lib/types/config'
+import { isArrayEqual, parseArrayFromText } from '@/lib/utils/array'
+import { validateOrigins } from '@/lib/utils/validation'
+import { AlertTriangle } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 
 const defaultConfig = {
   drop_excess_requests: false,
@@ -190,7 +190,7 @@ export default function ConfigPage() {
   return isLoading ? (
     <FullPageLoader />
   ) : (
-    <div className="bg-background space-y-6">
+    <div className="space-y-6 bg-white dark:bg-card">
       {/* Page Header */}
       <div>
         <h1 className="text-3xl font-bold">Configuration</h1>

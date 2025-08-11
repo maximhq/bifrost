@@ -27,14 +27,13 @@ import {
   VertexKeyConfig,
 } from '@/lib/types/config'
 import { cn } from '@/lib/utils'
-import { isValidDeployments, Validator } from '@/lib/utils/validation'
-import { isRedacted, isValidVertexAuthCredentials } from '@/lib/utils/validation'
+import { isRedacted, isValidDeployments, isValidVertexAuthCredentials, Validator } from '@/lib/utils/validation'
 import isEqual from 'lodash.isequal'
 import { AlertTriangle, Globe, Info, Plus, Save, X, Zap } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Alert, AlertDescription, AlertTitle } from '../ui/alert'
-import { Textarea } from '../ui/textarea'
+import { Alert, AlertDescription, AlertTitle } from '../../../components/ui/alert'
+import { Textarea } from '../../../components/ui/textarea'
 
 interface ProviderFormProps {
   provider?: ProviderResponse | null
@@ -512,8 +511,11 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
   return (
     <Dialog open={true} onOpenChange={onCancel}>
-      <DialogContent className="custom-scrollbar max-h-[90vh] overflow-y-auto p-0 sm:max-w-4xl" showCloseButton={false}>
-        <DialogHeader className="z-10 px-6 pt-6">
+      <DialogContent
+        className="custom-scrollbar dark:bg-card max-h-[90vh] overflow-y-auto bg-white p-0 sm:max-w-4xl"
+        showCloseButton={false}
+      >
+        <DialogHeader className="dark:bg-card z-10 bg-white px-6 pt-6">
           <DialogTitle>
             <div className="flex items-center gap-2">
               {selectedProvider && (
@@ -531,7 +533,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
           <DialogDescription>Configure AI provider settings, API keys, and network options.</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="flex gap-2 px-6 pt-6">
+        <form onSubmit={handleSubmit} className="dark:bg-card flex gap-2 bg-white px-6 pt-6">
           {/* Provider Selection Sidebar */}
           <TooltipProvider>
             <div className="flex w-[250px] flex-col gap-1 pb-10">
@@ -576,7 +578,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
             </div>
           </TooltipProvider>
 
-          <div className="flex h-full w-full flex-col justify-between px-2">
+          <div className="dark:bg-card flex h-full w-full flex-col justify-between bg-white px-2">
             <Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
               <TabsList style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }} className={`mb-4 grid h-10 w-full`}>
                 {tabs.map((tab) => (
@@ -639,7 +641,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
                         {keys.map((key, index) => (
                           <div
                             key={index}
-                            className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 rounded-md border p-4 duration-300"
+                            className="animate-in fade-in-0 slide-in-from-right-2 space-y-4 rounded-sm border p-4 duration-300"
                             style={{ animationDelay: `${index * 50}ms` }}
                           >
                             <div className="flex gap-4">
@@ -1117,7 +1119,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
             </Tabs>
 
             {/* Form Actions */}
-            <div className="bg-background sticky bottom-0 py-3">
+            <div className="dark:bg-card sticky bottom-0 bg-white py-3">
               <div className="flex justify-end space-x-3">
                 <Button type="button" variant="outline" onClick={onCancel} className="transition-all duration-200 ease-in-out">
                   Cancel

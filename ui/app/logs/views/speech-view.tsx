@@ -1,6 +1,6 @@
-import React, { useMemo, Component } from 'react'
 import { BifrostSpeech, SpeechInput } from '@/lib/types/logs'
-import { Play, Volume2, AlertCircle } from 'lucide-react'
+import { AlertCircle, Play, Volume2 } from 'lucide-react'
+import React, { Component, useMemo } from 'react'
 import AudioPlayer from './audio-player'
 
 interface SpeechViewProps {
@@ -27,7 +27,7 @@ class AudioErrorBoundary extends Component<{ children: React.ReactNode }, { hasE
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+        <div className="flex items-center gap-2 rounded-sm border border-red-200 bg-red-50 p-4 text-sm text-red-800">
           <AlertCircle className="h-4 w-4" />
           <span>Failed to load audio player: {this.state.error?.message || 'Unknown error'}</span>
         </div>

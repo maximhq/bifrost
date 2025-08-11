@@ -1,12 +1,12 @@
 'use client'
 
-import { ColumnDef, flexRender, getCoreRowModel, useReactTable, SortingState } from '@tanstack/react-table'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { LogEntry, LogFilters, Pagination } from '@/lib/types/logs'
-import { RefreshCw, ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
-import { LogFilters as LogFiltersComponent } from './filters'
+import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from '@tanstack/react-table'
+import { ChevronLeft, ChevronRight, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
+import { LogFilters as LogFiltersComponent } from './filters'
 interface DataTableProps {
   columns: ColumnDef<LogEntry>[]
   data: LogEntry[]
@@ -86,7 +86,7 @@ export function LogsDataTable({
   return (
     <div className="space-y-2">
       <LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} />
-      <div className="rounded-md border">
+      <div className="rounded-sm border">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (

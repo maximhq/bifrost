@@ -1,27 +1,27 @@
 'use client'
 
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { apiService } from '@/lib/api'
 import { Customer, Team, VirtualKey } from '@/lib/types/governance'
-import { Edit, Plus, Trash2, DollarSign, Key, Users } from 'lucide-react'
+import { formatCurrency } from '@/lib/utils/governance'
+import { DollarSign, Edit, Key, Plus, Trash2, Users } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import CustomerDialog from './customer-dialog'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { formatCurrency } from '@/lib/utils/governance'
 
 interface CustomersTableProps {
   customers: Customer[]
@@ -90,7 +90,7 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
           </Button>
         </div>
 
-        <div className="rounded-md border">
+        <div className="rounded-sm border">
           <Table>
             <TableHeader>
               <TableRow>

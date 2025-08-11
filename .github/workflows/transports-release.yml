@@ -25,42 +25,6 @@ env:
   IMAGE_NAME: bifrost
 
 jobs:
-  # Check commit message flags to determine if release should run
-  check-release-flags:
-    runs-on: ubuntu-latest
-    outputs:
-      should_release: ${{ steps.check_flags.outputs.should_release }}
-      skip_reason: ${{ steps.check_flags.outputs.skip_reason }}
-    steps:
-      - name: Check release flags in commit message
-        id: check_flags
-        env:
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          echo "📝 Checking release trigger..."
-
-          # If manually triggered, always release
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "🚀 Manual release triggered: ${{ github.event.inputs.reason }}"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # For push events, check commit message
-          echo "📝 Commit message: $COMMIT_MSG"
-
-          # Check for --trigger-release flag
-          if [[ "$COMMIT_MSG" == *"--trigger-release"* ]]; then
-            echo "🚀 Found --trigger-release flag, proceeding with release"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=" >> "$GITHUB_OUTPUT"
-          else
-            echo "⏸️ No --trigger-release flag found, skipping release"
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=no trigger-release flag found" >> "$GITHUB_OUTPUT"
-          fi
-
   # Main job: Create transport tag, build Go binaries, upload to S3
   build-transports:
     needs: check-release-flags
@@ -247,34 +211,5 @@ jobs:
             STATUS="❌ Failed"
             MESSAGE="$TITLE\n**Status**: $STATUS\n**Branch**: \`main\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${{ github.actor }}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           fi
-          payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
-          curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
-  # Notification job for skipped releases
-  notify-skipped:
-    needs: check-release-flags
-    if: needs.check-release-flags.outputs.should_release == 'false'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Notify release skipped
-        run: |
-          echo "## 🚫 Transport Release Skipped" >> $GITHUB_STEP_SUMMARY
-          echo "**Reason:** ${{ needs.check-release-flags.outputs.skip_reason }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### To trigger a release:" >> $GITHUB_STEP_SUMMARY
-          echo "When merging a PR that changes \`transports/go.mod\`, edit the merge commit message to include \`--trigger-release\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### How to do this:" >> $GITHUB_STEP_SUMMARY
-          echo "1. Click **\"Merge pull request\"** in GitHub UI" >> $GITHUB_STEP_SUMMARY
-          echo "2. Edit the commit message to include \`--trigger-release\`" >> $GITHUB_STEP_SUMMARY
-          echo "3. Click **\"Confirm merge\"**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Default behavior:" >> $GITHUB_STEP_SUMMARY
-          echo "Changes to \`transports/go.mod\` without \`--trigger-release\` flag will not trigger a release" >> $GITHUB_STEP_SUMMARY
-
-      - name: Discord Notification - Skipped Release
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          MESSAGE="⏸️ **Transport Release Skipped**\n**Reason**: ${{ needs.check-release-flags.outputs.skip_reason }}\n**Branch**: \`main\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${{ github.actor }}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
           curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"

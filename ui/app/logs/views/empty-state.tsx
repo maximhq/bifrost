@@ -7,8 +7,8 @@ import { getExampleBaseUrl } from '@/lib/utils/port'
 import { AlertTriangle, Copy } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Alert, AlertDescription } from '../ui/alert'
-import { CodeEditor } from './ui/code-editor'
+import { Alert, AlertDescription } from '../../../components/ui/alert'
+import { CodeEditor } from './code-editor'
 
 type Provider = 'openai' | 'anthropic' | 'genai' | 'litellm' | 'langchain'
 type Language = 'python' | 'typescript'
@@ -244,7 +244,7 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
   }, [])
 
   return (
-    <div className="flex w-full flex-col items-center justify-center space-y-8">
+    <div className="flex w-full flex-col items-center justify-center space-y-8 bg-white dark:bg-card">
       {error && (
         <Alert>
           <AlertTriangle className="h-4 w-4" />

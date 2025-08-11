@@ -1,6 +1,6 @@
 'use client'
 
-import { BoxIcon, BugIcon, ExternalLink, Puzzle, Settings2Icon, Telescope, Shield } from 'lucide-react'
+import { BoxIcon, BugIcon, ExternalLink, Puzzle, Settings2Icon, Shield, Telescope } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import {
@@ -15,7 +15,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from '@/components/ui/sidebar'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useWebSocket } from '@/hooks/useWebSocket'
+import { apiService } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from '@phosphor-icons/react'
 import { useTheme } from 'next-themes'
@@ -23,10 +25,8 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { ThemeToggle } from './theme-toggle'
-import { apiService } from '@/lib/api'
 import { toast } from 'sonner'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { ThemeToggle } from './theme-toggle'
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
@@ -51,7 +51,7 @@ const MCPIcon = ({ className }: { className?: string }) => (
 const navigationItems = [
   {
     title: 'Logs',
-    url: '/',
+    url: '/logs',
     icon: Telescope,
     description: 'Request logs & monitoring',
   },
@@ -153,8 +153,8 @@ export default function AppSidebar() {
   const { isConnected: isWebSocketConnected } = useWebSocket()
 
   return (
-    <Sidebar className="border-border border-r">
-      <SidebarHeader className="flex h-12 justify-between border-b px-0">
+    <Sidebar className="border-none bg-transparent custom-scrollbar">
+      <SidebarHeader className="flex h-12 justify-between px-0">
         <div className="flex h-full items-center justify-between gap-2 px-1.5">
           <Link href="/" className="group flex items-center gap-2">
             <Image className="h-10 w-auto" src={logoSrc} alt="Bifrost" width={100} height={100} />
@@ -179,9 +179,9 @@ export default function AppSidebar() {
                             asChild
                             className={`relative h-16 rounded-lg border px-3 transition-all duration-200 ${
                               isActive
-                                ? 'bg-accent text-primary border-primary/10'
+                                ? 'bg-sidebar-accent text-primary border-primary/20'
                                 : isAllowed
-                                  ? 'hover:bg-accent hover:text-accent-foreground border-transparent'
+                                  ? 'hover:bg-sidebar-accent hover:text-accent-foreground border-transparent'
                                   : 'hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-default border-transparent'
                             } `}
                           >
@@ -246,7 +246,7 @@ export default function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="border-border border-t px-6 py-4">
+      <SidebarFooter className="px-6 py-4">
         <div className="text-muted-foreground mx-auto flex w-fit items-center space-x-1 text-xs">
           <span>Made with ♥️ by</span>
           <a href="https://getmaxim.ai" target="_blank" rel="noopener noreferrer" className="text-primary">

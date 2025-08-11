@@ -1,6 +1,6 @@
 'use client'
 
-import MCPClientsList from '@/components/config/mcp-clients-lists'
+import MCPClientsList from '@/app/config/views/mcp-clients-lists'
 import FullPageLoader from '@/components/full-page-loader'
 import { useToast } from '@/hooks/use-toast'
 import { apiService } from '@/lib/api'
