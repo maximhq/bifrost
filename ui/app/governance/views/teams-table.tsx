@@ -1,28 +1,28 @@
 'use client'
 
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { apiService } from '@/lib/api'
-import { Team, Customer, VirtualKey } from '@/lib/types/governance'
-import { Edit, Users, Plus, Trash2, DollarSign, Key, User } from 'lucide-react'
+import { Customer, Team, VirtualKey } from '@/lib/types/governance'
+import { cn } from '@/lib/utils'
+import { formatCurrency, parseResetPeriod } from '@/lib/utils/governance'
+import { Edit, Key, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import TeamDialog from './team-dialog'
-import { formatCurrency, parseResetPeriod } from '@/lib/utils/governance'
-import { cn } from '@/lib/utils'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 interface TeamsTableProps {
   teams: Team[]
@@ -93,7 +93,7 @@ export default function TeamsTable({ teams, customers, virtualKeys, onRefresh }:
           </Button>
         </div>
 
-        <div className="rounded-md border">
+        <div className="rounded-sm border">
           <Table>
             <TableHeader>
               <TableRow>

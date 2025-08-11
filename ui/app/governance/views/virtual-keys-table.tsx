@@ -15,14 +15,14 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { apiService } from '@/lib/api'
-import { VirtualKey, Team, Customer } from '@/lib/types/governance'
-import { Edit, Key, Plus, Trash2, Eye, EyeOff, Copy } from 'lucide-react'
-import { useState } from 'react'
-import { toast } from 'sonner'
-import VirtualKeyDialog from './virtual-key-dialog'
-import VirtualKeyDetailDialog from './virtual-key-detail-dialog'
+import { Customer, Team, VirtualKey } from '@/lib/types/governance'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/utils/governance'
+import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { toast } from 'sonner'
+import VirtualKeyDetailDialog from './virtual-key-detail-dialog'
+import VirtualKeyDialog from './virtual-key-dialog'
 
 interface VirtualKeysTableProps {
   virtualKeys: VirtualKey[]
@@ -125,7 +125,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
           </Button>
         </div>
 
-        <div className="rounded-md border">
+        <div className="rounded-sm border">
           <Table>
             <TableHeader>
               <TableRow>

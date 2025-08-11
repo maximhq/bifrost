@@ -1,19 +1,19 @@
 'use client'
 
 import { Badge } from '@/components/ui/badge'
+import { DottedSeparator } from '@/components/ui/separator'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { ProviderIconType, renderProviderIcon } from '@/lib/constants/icons'
+import { REQUEST_TYPE_COLORS, REQUEST_TYPE_LABELS, Status, STATUS_COLORS } from '@/lib/constants/logs'
 import { LogEntry } from '@/lib/types/logs'
 import { DollarSign, FileText, Info, Timer } from 'lucide-react'
-import LogEntryDetailsView from './ui/log-entry-details-view'
 import moment from 'moment'
-import { DottedSeparator } from '@/components/ui/separator'
-import { PROVIDER_LABELS, Provider, Status, STATUS_COLORS, REQUEST_TYPE_LABELS, REQUEST_TYPE_COLORS } from '@/lib/constants/logs'
-import { CodeEditor } from './ui/code-editor'
-import LogMessageView from './ui/log-message-view'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import SpeechView from './ui/speech-view'
-import TranscriptionView from './ui/transcription-view'
-import { renderProviderIcon, ProviderIconType } from '@/lib/constants/icons'
+import { CodeEditor } from './code-editor'
+import LogEntryDetailsView from './log-entry-details-view'
+import LogMessageView from './log-message-view'
+import SpeechView from './speech-view'
+import TranscriptionView from './transcription-view'
 
 interface LogDetailSheetProps {
   log: LogEntry | null
@@ -113,7 +113,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
                 className="w-full"
                 label="Type"
                 value={
-                  <div className={`${REQUEST_TYPE_COLORS[log.object as keyof typeof REQUEST_TYPE_COLORS]} rounded-md px-3 py-1`}>
+                  <div className={`${REQUEST_TYPE_COLORS[log.object as keyof typeof REQUEST_TYPE_COLORS]} rounded-sm px-3 py-1`}>
                     {REQUEST_TYPE_LABELS[log.object as keyof typeof REQUEST_TYPE_LABELS]}
                   </div>
                 }

@@ -70,7 +70,7 @@ func (h *WebSocketHandler) getUpgrader() websocket.FastHTTPUpgrader {
 }
 
 // isLocalhost checks if the given host is localhost
-func isLocalhost(host string) bool {
+func isLocalhost(host string) bool {	
 	// Remove port if present
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]

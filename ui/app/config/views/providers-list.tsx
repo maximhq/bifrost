@@ -18,10 +18,10 @@ import { apiService } from '@/lib/api'
 import { ProviderIconType, renderProviderIcon } from '@/lib/constants/icons'
 import { PROVIDER_LABELS } from '@/lib/constants/logs'
 import { ProviderResponse } from '@/lib/types/config'
-import { Settings, Key, Loader2, Trash2 } from 'lucide-react'
+import { Key, Loader2, Settings, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { CardDescription, CardHeader, CardTitle } from '../ui/card'
+import { CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import ProviderForm from './provider-form'
 
 interface ProvidersListProps {
@@ -91,7 +91,7 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
         </CardTitle>
         <CardDescription>Manage AI model providers, their API keys, and configuration settings.</CardDescription>
       </CardHeader>
-      <div className="rounded-md border">
+      <div className="rounded-sm border">
         <Table>
           <TableHeader>
             <TableRow>

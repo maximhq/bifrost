@@ -1,6 +1,6 @@
 'use client'
 
-import ClientForm from '@/components/config/mcp-client-form'
+import ClientForm from '@/app/config/views/mcp-client-form'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -21,7 +21,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from '../ui/alert-dialog'
+} from '../../../components/ui/alert-dialog'
 
 interface MCPClientsListProps {
   mcpClients: MCPClient[]
@@ -112,7 +112,7 @@ export default function MCPClientsList({ mcpClients }: MCPClientsListProps) {
         </CardTitle>
         <CardDescription>Manage clients that can connect to the MCP Tools endpoint.</CardDescription>
       </CardHeader>
-      <div className="rounded-md border">
+      <div className="rounded-sm border">
         <Table>
           <TableHeader>
             <TableRow>

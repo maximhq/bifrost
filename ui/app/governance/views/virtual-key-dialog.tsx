@@ -1,26 +1,24 @@
 'use client'
 
-import { Button } from '@/components/ui/button'
+import FormFooter from '@/components/form-footer'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
+import NumberAndSelect from '@/components/ui/number-and-select'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { DottedSeparator } from '@/components/ui/separator'
 import { TagInput } from '@/components/ui/tag-input'
-import { apiService } from '@/lib/api'
-import { VirtualKey, Team, Customer, CreateVirtualKeyRequest, UpdateVirtualKeyRequest } from '@/lib/types/governance'
-import { Users, User } from 'lucide-react'
-import { useState, useEffect, useMemo } from 'react'
-import { toast } from 'sonner'
+import { Textarea } from '@/components/ui/textarea'
+import Toggle from '@/components/ui/toggle'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Info } from 'lucide-react'
+import { apiService } from '@/lib/api'
+import { resetDurationOptions } from '@/lib/constants/governance'
+import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from '@/lib/types/governance'
 import { Validator } from '@/lib/utils/validation'
 import isEqual from 'lodash.isequal'
-import { DottedSeparator } from '@/components/ui/separator'
-import Toggle from '@/components/ui/toggle'
-import NumberAndSelect from '@/components/ui/number-and-select'
-import { resetDurationOptions } from '@/lib/constants/governance'
-import FormFooter from '../form-footer'
+import { Info, User, Users } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
 
 interface VirtualKeyDialogProps {
   virtualKey?: VirtualKey | null
@@ -272,7 +270,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
 
   return (
     <Dialog open onOpenChange={onCancel}>
-      <DialogContent className="custom-scrollbar max-h-[90vh] max-w-4xl overflow-y-auto p-0">
+      <DialogContent className="custom-scrollbar max-h-[90vh] !max-w-3xl overflow-y-auto p-0">
         <DialogHeader className="z-10 border-b px-6 pt-6">
           <DialogTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : 'Create Virtual Key'}</DialogTitle>
           <DialogDescription>
@@ -458,7 +456,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
               )}
             </div>
           </div>
-          <div className="bg-background sticky bottom-0 py-3">
+          <div className="bg-white dark:bg-card sticky bottom-0 py-3 border-t border-border">
             <FormFooter validator={validator} label="Virtual Key" onCancel={onCancel} isLoading={isLoading} isEditing={isEditing} />
           </div>
         </form>

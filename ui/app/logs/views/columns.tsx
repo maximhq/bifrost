@@ -1,12 +1,12 @@
 'use client'
 
-import { ColumnDef } from '@tanstack/react-table'
-import { LogEntry } from '@/lib/types/logs'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ProviderIconType, renderProviderIcon } from '@/lib/constants/icons'
+import { Provider, REQUEST_TYPE_COLORS, REQUEST_TYPE_LABELS, Status, STATUS_COLORS } from '@/lib/constants/logs'
+import { LogEntry } from '@/lib/types/logs'
+import { ColumnDef } from '@tanstack/react-table'
 import { ArrowUpDown } from 'lucide-react'
-import { STATUS_COLORS, Provider, Status, REQUEST_TYPE_LABELS, REQUEST_TYPE_COLORS } from '@/lib/constants/logs'
-import { renderProviderIcon, ProviderIconType } from '@/lib/constants/icons'
 
 export const createColumns = (): ColumnDef<LogEntry>[] => [
   {
@@ -19,7 +19,18 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
     ),
     cell: ({ row }) => {
       const timestamp = row.original.timestamp
-      return <div className="font-mono text-sm">{new Date(timestamp).toLocaleString()}</div>
+      return <div className="font-mono text-xs">{new Date(timestamp).toLocaleString()}</div>
+    },
+  },
+  {
+    id: 'request_type',
+    header: 'Type',
+    cell: ({ row }) => {
+      return (
+        <Badge variant="outline" className={`${REQUEST_TYPE_COLORS[row.original.object as keyof typeof REQUEST_TYPE_COLORS]} text-xs`}>
+          {REQUEST_TYPE_LABELS[row.original.object as keyof typeof REQUEST_TYPE_LABELS]}
+        </Badge>
+      )
     },
   },
   {
@@ -28,7 +39,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
     cell: ({ row }) => {
       const provider = row.original.provider as Provider
       return (
-        <Badge variant="secondary" className={`uppercase`}>
+        <Badge variant="secondary" className={`uppercase font-mono`}>
           {renderProviderIcon(provider as ProviderIconType, { size: 'sm' })}
           {provider}
         </Badge>
@@ -38,20 +49,8 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
   {
     accessorKey: 'model',
     header: 'Model',
-    cell: ({ row }) => <div className="max-w-[240px] truncate text-sm font-medium">{row.original.model}</div>,
-  },
-  {
-    accessorKey: 'status',
-    header: 'Status',
-    cell: ({ row }) => {
-      const status = row.original.status as Status
-      return (
-        <Badge variant="secondary" className={STATUS_COLORS[status]}>
-          {status}
-        </Badge>
-      )
-    },
-  },
+    cell: ({ row }) => <div className="max-w-[240px] truncate text-xs font-normal font-mono">{row.original.model}</div>,
+  },  
   {
     accessorKey: 'latency',
     header: ({ column }) => (
@@ -62,7 +61,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
     ),
     cell: ({ row }) => {
       const latency = row.original.latency
-      return <div className="font-mono text-sm">{latency ? `${latency.toLocaleString()}ms` : 'N/A'}</div>
+      return <div className="font-mono text-xs pl-4">{latency ? `${latency.toLocaleString()}ms` : 'N/A'}</div>
     },
   },
   {
@@ -76,11 +75,11 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
     cell: ({ row }) => {
       const tokenUsage = row.original.token_usage
       if (!tokenUsage) {
-        return <div className="font-mono text-sm">N/A</div>
+        return <div className="font-mono text-xs pl-4">N/A</div>
       }
 
       return (
-        <div className="text-sm">
+        <div className="text-sm pl-4">
           <div className="font-mono">{tokenUsage.total_tokens.toLocaleString()}</div>
           <div className="text-muted-foreground text-xs">
             {tokenUsage.prompt_tokens}+{tokenUsage.completion_tokens}
@@ -89,13 +88,15 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
       )
     },
   },
+  
   {
-    id: 'request_type',
-    header: 'Type',
+    accessorKey: 'status',
+    header: 'Status',
     cell: ({ row }) => {
+      const status = row.original.status as Status
       return (
-        <Badge variant="outline" className={`${REQUEST_TYPE_COLORS[row.original.object as keyof typeof REQUEST_TYPE_COLORS]} text-xs`}>
-          {REQUEST_TYPE_LABELS[row.original.object as keyof typeof REQUEST_TYPE_LABELS]}
+        <Badge variant="secondary" className={`${STATUS_COLORS[status]} font-mono`}>
+          {status}
         </Badge>
       )
     },

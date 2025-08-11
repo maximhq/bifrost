@@ -1,14 +1,14 @@
 'use client'
 
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { useState, useEffect } from 'react'
-import { toast } from 'sonner'
-import { apiService } from '@/lib/api'
-import { VirtualKey, Team, Customer } from '@/lib/types/governance'
-import VirtualKeysTable from '@/components/governance/virtual-keys-table'
-import TeamsTable from '@/components/governance/teams-table'
-import CustomersTable from '@/components/governance/customers-table'
 import FullPageLoader from '@/components/full-page-loader'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { apiService } from '@/lib/api'
+import { Customer, Team, VirtualKey } from '@/lib/types/governance'
+import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import CustomersTable from './views/customers-table'
+import TeamsTable from './views/teams-table'
+import VirtualKeysTable from './views/virtual-keys-table'
 export default function GovernancePage() {
   const [activeTab, setActiveTab] = useState('virtual-keys')
   const [virtualKeys, setVirtualKeys] = useState<VirtualKey[]>([])

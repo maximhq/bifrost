@@ -1,6 +1,7 @@
 # Makefile for Bifrost
 
 # Variables
+HOST ?= localhost
 PORT ?= 8080
 PLUGINS ?= maxim
 PROMETHEUS_LABELS ?=
@@ -24,6 +25,7 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-15s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(YELLOW)Environment Variables:$(NC)"
+	@echo "  HOST              Server host (default: localhost)"
 	@echo "  PORT              Server port (default: 8080)"
 	@echo "  PLUGINS           Comma-separated plugins to load (default: maxim)"
 	@echo "  PROMETHEUS_LABELS Labels for Prometheus metrics"
@@ -55,6 +57,7 @@ dev: install-ui install-air ## Start complete development environment (UI + API 
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
 	@$(MAKE) work-init >/dev/null
 	@cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
+		-host "$(HOST)" \
 		-port "$(PORT)" \
 		-plugins "$(PLUGINS)" \
 		-log-style "$(LOGGING_STYLE)" \
@@ -74,6 +77,7 @@ build: build-ui ## Build bifrost-http binary
 run: build ## Build and run bifrost-http (no hot reload)
 	@echo "$(GREEN)Running bifrost-http...$(NC)"
 	@./tmp/bifrost-http \
+		-host "$(HOST)" \
 		-port "$(PORT)" \
 		-plugins "$(PLUGINS)" \
 		-log-style "$(LOGGING_STYLE)" \

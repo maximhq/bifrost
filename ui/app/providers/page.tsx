@@ -1,6 +1,6 @@
 'use client'
 
-import ProvidersList from '@/components/config/providers-list'
+import ProvidersList from '@/app/config/views/providers-list'
 import FullPageLoader from '@/components/full-page-loader'
 import { useToast } from '@/hooks/use-toast'
 import { apiService } from '@/lib/api'

@@ -93,7 +93,7 @@ const upcomingPlugins = [
 export default function PluginsPage() {
   const { resolvedTheme } = useTheme()
   return (
-    <div className="bg-background min-h-screen">
+    <div className="bg-white dark:bg-card min-h-screen">
       <div className="mx-auto max-w-7xl">
         <div className="space-y-12">
           {/* Hero Section */}
@@ -209,7 +209,7 @@ export default function PluginsPage() {
                             </TabsList>
 
                             <TabsContent value="http" className="mt-3">
-                              <div className="bg-muted rounded-md p-3">
+                              <div className="bg-muted rounded-sm p-3">
                                 <div className="mb-2 flex items-center gap-2">
                                   <Terminal className="h-3 w-3" />
                                   <span className="text-xs font-semibold">Command Line</span>
@@ -219,7 +219,7 @@ export default function PluginsPage() {
                             </TabsContent>
 
                             <TabsContent value="docker" className="mt-3">
-                              <div className="bg-muted rounded-md p-3">
+                              <div className="bg-muted rounded-sm p-3">
                                 <div className="mb-2 flex items-center gap-2">
                                   <Container className="h-3 w-3" />
                                   <span className="text-xs font-semibold">Docker Environment</span>
@@ -229,7 +229,7 @@ export default function PluginsPage() {
                             </TabsContent>
                           </Tabs>
                         ) : (
-                          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
+                          <div className="mt-3 rounded-sm border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
                             <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300">
                               <Info className="h-3 w-3" />
                               <span className="text-xs font-semibold">HTTP transport support coming soon</span>
@@ -278,7 +278,7 @@ export default function PluginsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="rounded-md bg-blue-100 p-3 dark:bg-blue-900">
+                  <div className="rounded-sm bg-blue-100 p-3 dark:bg-blue-900">
                     <code className="font-mono text-sm text-blue-800 dark:text-blue-200">bifrost-http --plugins maxim</code>
                   </div>
                   <p className="text-sm text-blue-700 dark:text-blue-300">Additional plugins coming soon</p>
@@ -296,7 +296,7 @@ export default function PluginsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="rounded-md bg-purple-100 p-3 dark:bg-purple-900">
+                  <div className="rounded-sm bg-purple-100 p-3 dark:bg-purple-900">
                     <code className="font-mono text-sm text-purple-800 dark:text-purple-200">docker run -e APP_PLUGINS=maxim</code>
                   </div>
                   <p className="text-sm text-purple-700 dark:text-purple-300">Additional plugins coming soon</p>
@@ -314,7 +314,7 @@ export default function PluginsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="rounded-md bg-green-100 p-3 dark:bg-green-900">
+                  <div className="rounded-sm bg-green-100 p-3 dark:bg-green-900">
                     <code className="font-mono text-sm text-green-800 dark:text-green-200">Plugins: []schemas.Plugin{`{...}`}</code>
                   </div>
                   <p className="text-sm text-green-700 dark:text-green-300">All plugins available</p>

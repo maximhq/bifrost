@@ -46,8 +46,8 @@
 }
 
 :root {
-	--radius: 0.625rem;
-	--background: oklch(1 0 0);
+	--radius: 0.5rem;
+	--background: oklch(0.953 0 0);
 	--foreground: oklch(0.141 0.005 285.823);
 	--card: oklch(1 0 0);
 	--card-foreground: oklch(0.141 0.005 285.823);
@@ -70,7 +70,7 @@
 	--chart-3: oklch(0.398 0.07 227.392);
 	--chart-4: oklch(0.828 0.189 84.429);
 	--chart-5: oklch(0.769 0.188 70.08);
-	--sidebar: oklch(0.985 0 0);
+	--sidebar: oklch(0.953 0 0);
 	--sidebar-foreground: oklch(0.141 0.005 285.823);
 	--sidebar-primary: oklch(0.21 0.006 285.885);
 	--sidebar-primary-foreground: oklch(0.985 0 0);
@@ -104,7 +104,7 @@
 	--chart-3: oklch(0.769 0.188 70.08);
 	--chart-4: oklch(0.627 0.265 303.9);
 	--chart-5: oklch(0.645 0.246 16.439);
-	--sidebar: oklch(0.21 0.006 285.885);
+	--sidebar: oklch(0.141 0.005 285.823);
 	--sidebar-foreground: oklch(0.985 0 0);
 	--sidebar-primary: oklch(0.488 0.243 264.376);
 	--sidebar-primary-foreground: oklch(0.985 0 0);
@@ -124,7 +124,7 @@
 }
 
 @utility custom-scrollbar {
-	overflow: auto !important;
+	overflow: auto !important;	
 	scrollbar-width: thin; /* Firefox */
 	scrollbar-color: rgba(228, 228, 231, 1) transparent; /* Firefox */
 
@@ -174,4 +174,8 @@
 	&:hover::-webkit-scrollbar-thumb:vertical {
 		background-color: rgba(82, 82, 91, var(--tw-bg-opacity)) !important;
 	}
+}
+
+body {
+    overscroll-behavior: none;
 }
