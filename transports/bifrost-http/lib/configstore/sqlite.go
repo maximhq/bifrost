@@ -3,6 +3,7 @@ package configstore
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib/logstore"
@@ -377,7 +378,13 @@ func (s *SQLiteConfigStore) GetVirtualKeys() ([]TableVirtualKey, error) {
 	var virtualKeys []TableVirtualKey
 
 	// Preload all relationships for complete information
-	if err := s.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").Find(&virtualKeys).Error; err != nil {
+	if err := s.db.Preload("Team").
+		Preload("Customer").
+		Preload("Budget").
+		Preload("RateLimit").
+		Preload("Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, key_id, models_json")
+		}).Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
 
@@ -387,7 +394,13 @@ func (s *SQLiteConfigStore) GetVirtualKeys() ([]TableVirtualKey, error) {
 // GetVirtualKey retrieves a virtual key from the database.
 func (s *SQLiteConfigStore) GetVirtualKey(id string) (*TableVirtualKey, error) {
 	var virtualKey TableVirtualKey
-	if err := s.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").First(&virtualKey, "id = ?", id).Error; err != nil {
+	if err := s.db.Preload("Team").
+		Preload("Customer").
+		Preload("Budget").
+		Preload("RateLimit").
+		Preload("Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, key_id, models_json")
+		}).First(&virtualKey, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &virtualKey, nil
@@ -395,16 +408,63 @@ func (s *SQLiteConfigStore) GetVirtualKey(id string) (*TableVirtualKey, error) {
 
 func (s *SQLiteConfigStore) CreateVirtualKey(tx *gorm.DB, virtualKey *TableVirtualKey) error {
 	if tx == nil {
-		tx = s.db
+		return fmt.Errorf("transaction is required for CreateVirtualKey")
 	}
-	return tx.Create(virtualKey).Error
+
+	// Create virtual key first
+	if err := tx.Create(virtualKey).Error; err != nil {
+		return err
+	}
+
+	// Create key associations after the virtual key has an ID
+	if len(virtualKey.Keys) > 0 {
+		if err := tx.Model(virtualKey).Association("Keys").Append(virtualKey.Keys); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *SQLiteConfigStore) UpdateVirtualKey(tx *gorm.DB, virtualKey *TableVirtualKey) error {
 	if tx == nil {
-		tx = s.db
+		return fmt.Errorf("transaction is required for UpdateVirtualKey")
 	}
-	return tx.Save(virtualKey).Error
+
+	// Store the keys before Save() clears them
+	keysToAssociate := virtualKey.Keys
+
+	// Update virtual key first (this will clear the Keys field)
+	if err := tx.Save(virtualKey).Error; err != nil {
+		return err
+	}
+
+	// Clear existing key associations
+	if err := tx.Model(virtualKey).Association("Keys").Clear(); err != nil {
+		return err
+	}
+
+	// Create new key associations using the stored keys
+	if len(keysToAssociate) > 0 {
+		if err := tx.Model(virtualKey).Association("Keys").Append(keysToAssociate); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// GetKeysByIDs retrieves multiple keys by their IDs
+func (s *SQLiteConfigStore) GetKeysByIDs(ids []string) ([]TableKey, error) {
+	if len(ids) == 0 {
+		return []TableKey{}, nil
+	}
+
+	var keys []TableKey
+	if err := s.db.Where("key_id IN ?", ids).Find(&keys).Error; err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // DeleteVirtualKey deletes a virtual key from the database.

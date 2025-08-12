@@ -82,6 +82,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router) {
 	r.POST("/api/providers", h.AddProvider)
 	r.PUT("/api/providers/{provider}", h.UpdateProvider)
 	r.DELETE("/api/providers/{provider}", h.DeleteProvider)
+	r.GET("/api/keys", h.ListKeys)
 }
 
 // ListProviders handles GET /api/providers - List all providers
@@ -338,6 +339,17 @@ func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, response, h.logger)
+}
+
+// ListKeys handles GET /api/keys - List all keys
+func (h *ProviderHandler) ListKeys(ctx *fasthttp.RequestCtx) {
+	keys, err := h.store.GetAllKeys()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err), h.logger)
+		return
+	}
+
+	SendJSON(ctx, keys, h.logger)
 }
 
 // mergeKeys merges new keys with old, preserving values that are redacted in the new config

@@ -24,6 +24,7 @@ const (
 	governanceRequestTypeContextKey contextKey = "bf-governance-request-type"
 	governanceIsCacheReadContextKey contextKey = "bf-governance-is-cache-read"
 	governanceIsBatchContextKey     contextKey = "bf-governance-is-batch"
+	// governanceIncludeOnlyKeysContextKey contextKey = "bf-governance-include-only-keys"
 )
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -133,7 +134,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	*ctx = context.WithValue(*ctx, governanceIsBatchContextKey, isBatch)
 
 	// Create request context for evaluation
-	requestContext := &RequestContext{
+	evaluationRequest := &EvaluationRequest{
 		VirtualKey: virtualKey,
 		Provider:   provider,
 		Model:      model,
@@ -142,7 +143,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	}
 
 	// Use resolver to make governance decision (pure decision engine)
-	result := p.resolver.EvaluateRequest(requestContext)
+	result := p.resolver.EvaluateRequest(ctx, evaluationRequest)
 
 	if result.Decision != DecisionAllow {
 		if ctx != nil {

@@ -99,7 +99,7 @@ export default function TeamsTable({ teams, customers, virtualKeys, onRefresh }:
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Customer</TableHead>
-                <TableHead>Max Budget</TableHead>
+                <TableHead>Budget</TableHead>
                 <TableHead>Reset Period</TableHead>
                 <TableHead>Virtual Keys</TableHead>
                 <TableHead className="text-right">Actions</TableHead>

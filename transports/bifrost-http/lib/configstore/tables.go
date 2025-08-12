@@ -53,7 +53,8 @@ type TableModel struct {
 type TableKey struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	ProviderID uint      `gorm:"index;not null" json:"provider_id"`
-	KeyID      string    `gorm:"type:varchar(255);index;not null" json:"key_id"` // UUID from schemas.Key
+	Provider   string    `gorm:"type:varchar(50);index;not null" json:"provider"` // ModelProvider as string
+	KeyID      string    `gorm:"type:varchar(255);index;not null" json:"key_id"`  // UUID from schemas.Key
 	Value      string    `gorm:"type:text;not null" json:"value"`
 	ModelsJSON string    `gorm:"type:text" json:"-"` // JSON serialized []string
 	Weight     float64   `gorm:"default:1.0" json:"weight"`
@@ -489,10 +490,11 @@ type TableVirtualKey struct {
 	AllowedProviders []string `gorm:"type:text;serializer:json" json:"allowed_providers"` // Empty means all providers allowed
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
-	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	BudgetID    *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
-	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	TeamID      *string    `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID  *string    `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	BudgetID    *string    `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
+	RateLimitID *string    `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	Keys        []TableKey `gorm:"many2many:governance_virtual_key_keys;constraint:OnDelete:CASCADE" json:"keys"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
