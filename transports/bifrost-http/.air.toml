@@ -1,68 +1,51 @@
-root = "."
+root = "../.."
 testdata_dir = "testdata"
-tmp_dir = "./tmp"
+tmp_dir = "transports/bifrost-http/tmp"
 
 [build]
-  args_bin = []
-  bin = "./tmp/main"
-  cmd = "go build -o ./tmp/main ."
-  delay = 1000
-  exclude_dir = ["assets", "tmp", "vendor", "testdata", "ui", "node_modules"]
-  exclude_file = []
-  exclude_regex = ["_test.go"]
-  exclude_unchanged = false
-  follow_symlink = false
-  full_bin = ""
-  include_dir = []
-  include_ext = ["go", "tpl", "tmpl", "html"]
-  include_file = []
-  kill_delay = "0s"
-  log = "build-errors.log"
-  poll = false
-  poll_interval = 0
-  rerun = false
-  rerun_delay = 500
-  send_interrupt = false
-  stop_on_root = false
+args_bin = []
+bin = "tmp/main"
+cmd = "go build -o ./tmp/main ."
+delay = 1000
+exclude_dir = ["assets", "tmp", "vendor", "testdata", "ui", "node_modules", "transports/bifrost-http/ui", "core/tests", "tests", "docs", "npx"]
+exclude_file = []
+exclude_regex = ["_test.go"]
+exclude_unchanged = false
+follow_symlink = false
+full_bin = ""
+watch_dirs = ["."]
+include_dir = []
+include_ext = ["go", "tpl", "tmpl", "html"]
+include_file = []
+kill_delay = "0s"
+log = "build-errors.log"
+poll = false
+stop_on_error = true
+poll_interval = 0
+rerun = false
+rerun_delay = 500
+send_interrupt = false
+stop_on_root = false
 
 [color]
-  app = ""
-  build = "yellow"
-  main = "magenta"
-  runner = "green"
-  watcher = "cyan"
+app = ""
+build = "yellow"
+main = "magenta"
+runner = "green"
+watcher = "cyan"
 
 [log]
-  main_only = false
-  time = false
+main_only = false
+time = false
 
 [misc]
-  clean_on_exit = false
+clean_on_exit = false
 
 [proxy]
-  enabled = false
-  proxy_port = 8090
-  app_port = 8080
+enabled = false
+proxy_port = 8090
+app_port = 8080
 
 [screen]
-  clear_on_rebuild = false
-  keep_scroll = true
-
-# Watch directories
-[[build.watch_dirs]]
-  dir = "."
-  
-[[build.watch_dirs]]
-  dir = "../../core"
-  
-[[build.watch_dirs]]
-  dir = "./handlers"
-  
-[[build.watch_dirs]]
-  dir = "./integrations"
-  
-[[build.watch_dirs]]
-  dir = "./lib"
-  
-[[build.watch_dirs]]
-  dir = "./plugins"
+clear_on_rebuild = false
+keep_scroll = true

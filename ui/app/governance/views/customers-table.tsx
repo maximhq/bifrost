@@ -1,15 +1,15 @@
 'use client'
 
 import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-    AlertDialogTrigger,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -102,24 +102,24 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
               </TableRow>
             </TableHeader>
             <TableBody>
-              {customers.length === 0 ? (
+              {customers?.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
                     No customers found. Create your first customer to get started.
                   </TableCell>
                 </TableRow>
               ) : (
-                customers.map((customer) => {
+                customers?.map((customer) => {
                   const teams = getTeamsForCustomer(customer.id)
                   const vks = getVirtualKeysForCustomer(customer.id)
 
                   return (
                     <TableRow key={customer.id}>
                       <TableCell className="max-w-[200px]">
-                        <div className="font-medium truncate">{customer.name}</div>
+                        <div className="truncate font-medium">{customer.name}</div>
                       </TableCell>
                       <TableCell>
-                        {teams.length > 0 ? (
+                        {teams?.length > 0 ? (
                           <div className="flex items-center gap-2">
                             <Users className="h-4 w-4" />
                             <TooltipProvider>
@@ -156,7 +156,7 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
                         )}
                       </TableCell>
                       <TableCell>
-                        {vks.length > 0 ? (
+                        {vks?.length > 0 ? (
                           <div className="flex items-center gap-2">
                             <Key className="h-4 w-4" />
                             <TooltipProvider>

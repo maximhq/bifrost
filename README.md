@@ -36,7 +36,7 @@ Bifrost is a high-performance AI gateway that connects you to 12+ providers (Ope
 
 ```bash
 # 🔧 Run Bifrost binary
-npx @maximhq/bifrost
+npx @maximhq/bifrost@latest
 ```
 
 **Step 2:** Open the built-in web interface and configure bifrost
@@ -65,7 +65,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 Your AI gateway is now running with a beautiful web interface. You can:
 
-- **🖥️ Configure everything visually** - No more JSON files!
+- **🖥️ Configure everything visually**
 - **📊 Monitor requests in real-time** - See logs, analytics, and metrics
 - **🔄 Add providers and MCP clients on-the-fly** - Scale and failover without restarts
 - **🚀 Drop into existing code** - Zero changes to your OpenAI/Anthropic apps
@@ -105,6 +105,7 @@ Your AI gateway is now running with a beautiful web interface. You can:
 
 - **🖥️ Built-in Web UI**: Visual configuration, real-time monitoring, and analytics dashboard - no config files needed
 - **🚀 Zero-Config Startup & Easy Integration**: Start immediately with dynamic provider configuration, or integrate existing SDKs by simply updating the `base_url` - one line of code to get running
+- **🎮 Config file driven setup for nerds**: Don't like UI, no worries, you can setup Bifrost using `config.json`.
 - **🔄 Multi-Provider Support**: Integrate with OpenAI, Anthropic, Amazon Bedrock, Mistral, Ollama, and more through a single API
 - **🛡️ Fallback Mechanisms**: Automatically retry failed requests with alternative models or providers
 - **🔑 Dynamic Key Management**: Rotate and manage API keys efficiently with weighted distribution
@@ -125,7 +126,9 @@ Bifrost is built with a modular architecture:
 
 ```text
 bifrost/
-├── ci/                   # CI/CD pipeline scripts and npx configuration
+│
+├── npx/                 # NPX script
+│
 │
 ├── core/                 # Core functionality and shared components
 │   ├── providers/        # Provider-specific implementations

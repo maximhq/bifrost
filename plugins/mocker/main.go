@@ -150,9 +150,9 @@ type MockStats struct {
 	ResponsesGenerated int64            `json:"responses_generated"` // Number of success responses generated
 }
 
-// NewMockerPlugin creates a new mocker plugin instance with sensible defaults
+// Init creates a new mocker plugin instance with sensible defaults
 // Returns an error if required configuration is invalid or missing
-func NewMockerPlugin(config MockerConfig) (*MockerPlugin, error) {
+func Init(config MockerConfig) (*MockerPlugin, error) {
 	// Validate configuration
 	if err := validateConfig(config); err != nil {
 		return nil, fmt.Errorf("invalid mocker plugin configuration: %w", err)

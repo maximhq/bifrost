@@ -1,0 +1,359 @@
+// Package logging provides database operations for the GORM-based logging plugin
+package logging
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
+)
+
+// insertInitialLogEntry creates a new log entry in the database using GORM
+func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Time, data *InitialLogData) error {
+	entry := &logstore.Log{
+		ID:        requestID,
+		Timestamp: timestamp,
+		Object:    data.Object,
+		Provider:  data.Provider,
+		Model:     data.Model,
+		Status:    "processing",
+		Stream:    false,
+		CreatedAt: timestamp,
+		// Set parsed fields for serialization
+		InputHistoryParsed:       data.InputHistory,
+		ParamsParsed:             data.Params,
+		ToolsParsed:              data.Tools,
+		SpeechInputParsed:        data.SpeechInput,
+		TranscriptionInputParsed: data.TranscriptionInput,
+	}
+
+	return p.store.Create(entry)
+}
+
+// updateLogEntry updates an existing log entry using GORM
+func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, data *UpdateLogData, ctx context.Context) error {
+	updates := make(map[string]interface{})
+	// Try to get original timestamp from context first for latency calculation
+	latency, err := p.calculateLatency(requestID, timestamp, ctx)
+	if err != nil {
+		return err
+	}
+	updates["latency"] = latency
+	updates["status"] = data.Status
+	if data.Model != "" {
+		updates["model"] = data.Model
+	}
+	if data.Object != "" {
+		updates["object_type"] = data.Object // Note: using object_type for database column
+	}
+	// Handle JSON fields by setting them on a temporary entry and serializing
+	tempEntry := &logstore.Log{}
+	if data.OutputMessage != nil {
+		tempEntry.OutputMessageParsed = data.OutputMessage
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["output_message"] = tempEntry.OutputMessage
+			updates["content_summary"] = tempEntry.ContentSummary // Update content summary
+		}
+	}
+
+	if data.EmbeddingOutput != nil {
+		tempEntry.EmbeddingOutputParsed = data.EmbeddingOutput
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["embedding_output"] = tempEntry.EmbeddingOutput
+		}
+	}
+
+	if data.ToolCalls != nil {
+		tempEntry.ToolCallsParsed = data.ToolCalls
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["tool_calls"] = tempEntry.ToolCalls
+		}
+	}
+
+	if data.SpeechOutput != nil {
+		tempEntry.SpeechOutputParsed = data.SpeechOutput
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["speech_output"] = tempEntry.SpeechOutput
+		}
+	}
+
+	if data.TranscriptionOutput != nil {
+		tempEntry.TranscriptionOutputParsed = data.TranscriptionOutput
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["transcription_output"] = tempEntry.TranscriptionOutput
+		}
+	}
+
+	if data.TokenUsage != nil {
+		tempEntry.TokenUsageParsed = data.TokenUsage
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["token_usage"] = tempEntry.TokenUsage
+			updates["prompt_tokens"] = data.TokenUsage.PromptTokens
+			updates["completion_tokens"] = data.TokenUsage.CompletionTokens
+			updates["total_tokens"] = data.TokenUsage.TotalTokens
+		}
+	}
+
+	if data.ErrorDetails != nil {
+		tempEntry.ErrorDetailsParsed = data.ErrorDetails
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["error_details"] = tempEntry.ErrorDetails
+		}
+	}
+
+	return p.store.Update(requestID, updates)
+}
+
+// processStreamUpdate handles streaming updates using GORM
+func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time, data *StreamUpdateData, isFinalChunk bool, ctx context.Context) error {
+	updates := make(map[string]interface{})
+
+	// Handle error case first
+	if data.ErrorDetails != nil {
+		latency, err := p.calculateLatency(requestID, timestamp, ctx)
+		if err != nil {
+			// If we can't get created_at, just update status and error
+			tempEntry := &logstore.Log{}
+			tempEntry.ErrorDetailsParsed = data.ErrorDetails
+			if err := tempEntry.SerializeFields(); err == nil {
+				tempEntry.Status = "error"
+				return p.store.Update(requestID, tempEntry)
+			}
+			return err
+		}
+
+		tempEntry := &logstore.Log{}
+		tempEntry.ErrorDetailsParsed = data.ErrorDetails
+		if err := tempEntry.SerializeFields(); err != nil {
+			return fmt.Errorf("failed to serialize error details: %w", err)
+		}
+		tempEntry.Status = "error"
+		tempEntry.Latency = &latency
+		tempEntry.Timestamp = timestamp
+		return p.store.Update(requestID, tempEntry)
+	}
+
+	// Always mark as streaming and update timestamp
+	updates["stream"] = true
+	updates["timestamp"] = timestamp
+
+	// Calculate latency when stream finishes
+	var needsLatency bool
+	var latency float64
+
+	if isFinalChunk {
+		// Stream is finishing, calculate latency
+		var err error
+		latency, err = p.calculateLatency(requestID, timestamp, ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get created_at for latency calculation: %w", err)
+		}
+		needsLatency = true
+	}
+
+	// Add latency if this is the final chunk
+	if needsLatency {
+		updates["latency"] = latency
+	}
+
+	// Update model if provided
+	if data.Model != "" {
+		updates["model"] = data.Model
+	}
+
+	// Update object type if provided
+	if data.Object != "" {
+		updates["object_type"] = data.Object // Note: using object_type for database column
+	}
+
+	// Update token usage if provided
+	if data.TokenUsage != nil {
+		tempEntry := &logstore.Log{}
+		tempEntry.TokenUsageParsed = data.TokenUsage
+		if err := tempEntry.SerializeFields(); err == nil {
+			updates["token_usage"] = tempEntry.TokenUsage
+			updates["prompt_tokens"] = data.TokenUsage.PromptTokens
+			updates["completion_tokens"] = data.TokenUsage.CompletionTokens
+			updates["total_tokens"] = data.TokenUsage.TotalTokens
+		}
+	}
+
+	// Handle finish reason - if present, mark as complete
+	if isFinalChunk {
+		updates["status"] = "success"
+	}
+
+	// Process delta content and tool calls if present
+	if data.Delta != nil {
+		deltaUpdates, err := p.prepareDeltaUpdates(requestID, data.Delta)
+		if err != nil {
+			return fmt.Errorf("failed to prepare delta updates: %w", err)
+		}
+		// Merge delta updates into main updates
+		for key, value := range deltaUpdates {
+			updates[key] = value
+		}
+	}
+
+	// Handle transcription output from stream updates
+	if data.TranscriptionOutput != nil {
+		tempEntry := &logstore.Log{}
+		tempEntry.TranscriptionOutputParsed = data.TranscriptionOutput
+		if err := tempEntry.SerializeFields(); err != nil {
+			return fmt.Errorf("failed to serialize transcription output: %w", err)
+		}
+		updates["transcription_output"] = tempEntry.TranscriptionOutput
+	}
+
+	// Only perform update if there's something to update
+	if len(updates) > 0 {
+		return p.store.Update(requestID, updates)
+	}
+
+	return nil
+}
+
+// calculateLatency computes latency in milliseconds from creation time
+func (p *LoggerPlugin) calculateLatency(requestID string, currentTime time.Time, ctx context.Context) (float64, error) {
+	// Try to get original timestamp from context first
+	if ctxTimestamp, ok := ctx.Value(CreatedTimestampKey).(time.Time); ok {
+		return float64(currentTime.Sub(ctxTimestamp).Nanoseconds()) / 1e6, nil
+	}
+
+	// Fallback to database query if not found in context
+	originalEntry, err := p.store.FindFirst(map[string]interface{}{"id": requestID}, "created_at")
+	if err != nil {
+		return 0, err
+	}
+	return float64(currentTime.Sub(originalEntry.CreatedAt).Nanoseconds()) / 1e6, nil
+}
+
+// prepareDeltaUpdates prepares updates for streaming delta content without executing them
+func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.BifrostStreamDelta) (map[string]interface{}, error) {
+	// Only fetch existing content if we have content or tool calls to append
+	if (delta.Content == nil || *delta.Content == "") && len(delta.ToolCalls) == 0 && delta.Refusal == nil {
+		return map[string]interface{}{}, nil
+	}
+
+	// Get current entry
+	var currentEntry *logstore.Log
+	currentEntry, err := p.store.FindFirst(map[string]interface{}{"id": requestID}, "output_message")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get existing entry: %w", err)
+	}
+
+	// Parse existing message or create new one
+	var outputMessage *schemas.BifrostMessage
+	if currentEntry.OutputMessage != "" {
+		outputMessage = &schemas.BifrostMessage{}
+		// Attempt to deserialize; use parsed message only if successful
+		if err := currentEntry.DeserializeFields(); err == nil && currentEntry.OutputMessageParsed != nil {
+			outputMessage = currentEntry.OutputMessageParsed
+		} else {
+			// Create new message if parsing fails
+			outputMessage = &schemas.BifrostMessage{
+				Role:    schemas.ModelChatMessageRoleAssistant,
+				Content: schemas.MessageContent{},
+			}
+		}
+	} else {
+		// Create new message
+		outputMessage = &schemas.BifrostMessage{
+			Role:    schemas.ModelChatMessageRoleAssistant,
+			Content: schemas.MessageContent{},
+		}
+	}
+
+	// Handle role (usually in first chunk)
+	if delta.Role != nil {
+		outputMessage.Role = schemas.ModelChatMessageRole(*delta.Role)
+	}
+
+	// Append content
+	if delta.Content != nil && *delta.Content != "" {
+		p.appendContentToMessage(outputMessage, *delta.Content)
+	}
+
+	// Handle refusal
+	if delta.Refusal != nil && *delta.Refusal != "" {
+		if outputMessage.AssistantMessage == nil {
+			outputMessage.AssistantMessage = &schemas.AssistantMessage{}
+		}
+		if outputMessage.AssistantMessage.Refusal == nil {
+			outputMessage.AssistantMessage.Refusal = delta.Refusal
+		} else {
+			*outputMessage.AssistantMessage.Refusal += *delta.Refusal
+		}
+	}
+
+	// Accumulate tool calls
+	if len(delta.ToolCalls) > 0 {
+		p.accumulateToolCallsInMessage(outputMessage, delta.ToolCalls)
+	}
+
+	// Update the database with new content
+	tempEntry := &logstore.Log{
+		OutputMessageParsed: outputMessage,
+	}
+	if outputMessage.AssistantMessage != nil && outputMessage.AssistantMessage.ToolCalls != nil {
+		tempEntry.ToolCallsParsed = outputMessage.AssistantMessage.ToolCalls
+	}
+
+	if err := tempEntry.SerializeFields(); err != nil {
+		return nil, fmt.Errorf("failed to serialize fields: %w", err)
+	}
+
+	updates := map[string]interface{}{
+		"output_message":  tempEntry.OutputMessage,
+		"content_summary": tempEntry.ContentSummary,
+	}
+
+	// Also update tool_calls field for backward compatibility
+	if tempEntry.ToolCalls != "" {
+		updates["tool_calls"] = tempEntry.ToolCalls
+	}
+
+	return updates, nil
+}
+
+// getLogEntry retrieves a log entry by ID using GORM
+func (p *LoggerPlugin) getLogEntry(requestID string) (*logstore.Log, error) {
+	entry, err := p.store.FindFirst(map[string]interface{}{"id": requestID})
+	if err != nil {
+		return nil, err
+	}
+	return entry, nil
+}
+
+// SearchLogs searches logs with filters and pagination using GORM
+func (p *LoggerPlugin) SearchLogs(filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	// Set default pagination if not provided
+	if pagination.Limit == 0 {
+		pagination.Limit = 50
+	}
+	if pagination.SortBy == "" {
+		pagination.SortBy = "timestamp"
+	}
+	if pagination.Order == "" {
+		pagination.Order = "desc"
+	}
+	// Build base query with all filters applied
+	return p.store.SearchLogs(filters, pagination)
+}
+
+// GetAvailableModels returns all unique models from logs
+func (p *LoggerPlugin) GetAvailableModels() []string {
+	var models []string
+	// Query distinct models from logs
+	result, err := p.store.FindAll("model IS NOT NULL AND model != ''", "model")
+	if err != nil {
+		p.logger.Error(fmt.Errorf("failed to get available models: %w", err))
+		return []string{}
+	}
+	for _, model := range result {
+		models = append(models, model.Model)
+	}
+	return models
+}

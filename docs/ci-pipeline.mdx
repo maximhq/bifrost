@@ -1,0 +1,546 @@
+---
+title: "Bifrost CI/CD Pipeline"
+description: "Comprehensive documentation for the modular, script-driven CI/CD system that automates builds, deployments, and releases across the Bifrost ecosystem."
+---
+
+# Bifrost CI/CD Pipeline
+
+This document provides comprehensive documentation for the Bifrost CI/CD pipeline, a modular, script-driven system that automates builds, deployments, and releases across the entire Bifrost ecosystem.
+
+## Overview
+
+The Bifrost CI/CD pipeline consists of three specialized workflows that handle different aspects of the release process:
+
+- **Core Dependency Update** (`core-dependency-update.yml`) - Creates PRs when core is tagged, validates builds
+- **Transports Release** (`transports-release.yml`) - Builds and releases when dependency updates are merged  
+- **Direct Transport Release** (`transports-ci.yml`) - Handles direct transport tag releases
+
+## Architecture
+
+### Script-Driven Design
+
+The pipeline is built around modular Node.js scripts and a bash build script that handle specific responsibilities. This approach provides:
+
+- **Testability**: Each script can be run and tested locally
+- **Maintainability**: Logic is centralized and easy to update
+- **Flexibility**: Scripts can be reused across different workflows
+- **Debugging**: Easy to troubleshoot issues by running scripts locally
+
+### Core Components
+
+```
+ci/
+├── scripts/
+│   ├── extract-version.mjs      # Extract version from tags
+│   ├── git-operations.mjs       # Git operations (branching, PRs)
+│   ├── manage-versions.mjs      # Version management utilities
+│   ├── run-pipeline.mjs         # Main pipeline orchestrator
+│   └── upload-builds.mjs        # Build artifact upload
+└── go-executable-build.sh       # Go binary compilation script
+```
+
+---
+
+## 🔄 Workflow Details
+
+### 1. Core Dependency Update Workflow
+
+**Trigger**: When a new tag is pushed to the core repository
+
+**Process**:
+1. Extracts version from the new tag
+2. Creates branch for dependency updates
+3. Updates `go.mod` files across transports
+4. Validates builds with new dependencies
+5. Creates pull request with changes
+
+**Script Flow**:
+```bash
+# Extract version from tag
+extract-version.mjs --tag v1.2.3
+
+# Create update branch
+git-operations.mjs --create-branch core-update-v1.2.3
+
+# Update dependencies
+manage-versions.mjs --update-core v1.2.3
+
+# Create PR
+git-operations.mjs --create-pr "Update core to v1.2.3"
+```
+
+### 2. Transports Release Workflow
+
+**Trigger**: When dependency update PR is merged
+
+**Process**:
+1. Detects core version from merged changes
+2. Builds all transport binaries for multiple platforms
+3. Creates GitHub releases with artifacts
+4. Updates version tags
+
+**Script Flow**:
+```bash
+# Detect version from merge
+extract-version.mjs --from-merge
+
+# Build all platforms
+go-executable-build.sh --all-platforms
+
+# Upload artifacts
+upload-builds.mjs --version v1.2.3
+
+# Create release
+git-operations.mjs --create-release v1.2.3
+```
+
+### 3. Direct Transport Release Workflow
+
+**Trigger**: Direct tag push to transport repositories
+
+**Process**:
+1. Validates tag format
+2. Builds transport for tagged version
+3. Creates release with artifacts
+
+---
+
+## 🛠️ Scripts Reference
+
+### extract-version.mjs
+
+Extracts and validates version information from Git tags and commits.
+
+**Usage**:
+```bash
+# Extract from tag
+node extract-version.mjs --tag v1.2.3
+
+# Extract from commit message
+node extract-version.mjs --commit "Update to v1.2.3"
+
+# Extract latest tag
+node extract-version.mjs --latest
+```
+
+**Output**:
+```json
+{
+  "version": "1.2.3",
+  "tag": "v1.2.3",
+  "major": 1,
+  "minor": 2,
+  "patch": 3
+}
+```
+
+### git-operations.mjs
+
+Handles Git operations including branching, PR creation, and releases.
+
+**Usage**:
+```bash
+# Create branch
+node git-operations.mjs --create-branch feature-branch
+
+# Create PR
+node git-operations.mjs --create-pr "Title" --body "Description"
+
+# Create release
+node git-operations.mjs --create-release v1.2.3 --artifacts path/to/artifacts
+```
+
+### manage-versions.mjs
+
+Manages version updates across the codebase.
+
+**Usage**:
+```bash
+# Update core dependency
+node manage-versions.mjs --update-core v1.2.3
+
+# Update transport version
+node manage-versions.mjs --update-transport v1.2.3
+
+# Validate versions
+node manage-versions.mjs --validate
+```
+
+### run-pipeline.mjs
+
+Main orchestrator that coordinates the entire pipeline process.
+
+**Usage**:
+```bash
+# Run full pipeline
+node run-pipeline.mjs --type core-update --version v1.2.3
+
+# Run transport release
+node run-pipeline.mjs --type transport-release --version v1.2.3
+
+# Dry run (no actual changes)
+node run-pipeline.mjs --dry-run --type core-update --version v1.2.3
+```
+
+### upload-builds.mjs
+
+Handles uploading build artifacts to GitHub releases.
+
+**Usage**:
+```bash
+# Upload all artifacts
+node upload-builds.mjs --version v1.2.3 --path builds/
+
+# Upload specific platform
+node upload-builds.mjs --version v1.2.3 --platform linux-amd64 --file binary
+```
+
+### go-executable-build.sh
+
+Compiles Go binaries for multiple platforms and architectures.
+
+**Usage**:
+```bash
+# Build for all platforms
+./go-executable-build.sh --all
+
+# Build for specific platform
+./go-executable-build.sh --platform linux --arch amd64
+
+# Build with custom flags
+./go-executable-build.sh --ldflags "-X main.version=1.2.3"
+```
+
+**Supported Platforms**:
+- Linux: amd64, arm64
+- macOS: amd64, arm64  
+- Windows: amd64
+- FreeBSD: amd64
+
+---
+
+## 🏗️ Build Process
+
+### Multi-Platform Compilation
+
+The build process creates optimized binaries for each supported platform:
+
+```bash
+# Linux AMD64
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bifrost-linux-amd64
+
+# Linux ARM64
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o bifrost-linux-arm64
+
+# macOS AMD64
+GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o bifrost-darwin-amd64
+
+# macOS ARM64 (Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o bifrost-darwin-arm64
+
+# Windows AMD64
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o bifrost-windows-amd64.exe
+```
+
+### Build Optimizations
+
+- **Size Optimization**: `-ldflags="-s -w"` removes debug info and symbol tables
+- **Static Linking**: `CGO_ENABLED=0` for fully static binaries
+- **Compression**: Binaries are compressed with UPX when available
+- **Checksums**: SHA256 checksums generated for all artifacts
+
+### Artifact Structure
+
+```
+builds/
+├── bifrost-linux-amd64
+├── bifrost-linux-amd64.sha256
+├── bifrost-linux-arm64
+├── bifrost-linux-arm64.sha256
+├── bifrost-darwin-amd64
+├── bifrost-darwin-amd64.sha256
+├── bifrost-darwin-arm64
+├── bifrost-darwin-arm64.sha256
+├── bifrost-windows-amd64.exe
+└── bifrost-windows-amd64.exe.sha256
+```
+
+---
+
+## 🔧 Configuration
+
+### Environment Variables
+
+The pipeline uses these environment variables:
+
+```bash
+# GitHub Configuration
+GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+GITHUB_REPOSITORY=owner/repo
+
+# Build Configuration
+BUILD_PLATFORMS="linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64"
+BUILD_FLAGS="-ldflags=-s -w"
+CGO_ENABLED=0
+
+# Release Configuration
+DRAFT_RELEASE=false
+PRERELEASE=false
+GENERATE_RELEASE_NOTES=true
+```
+
+### Script Configuration
+
+Each script can be configured via command-line arguments or configuration files:
+
+```json
+{
+  "github": {
+    "owner": "maximhq",
+    "repo": "bifrost",
+    "token": "${GITHUB_TOKEN}"
+  },
+  "build": {
+    "platforms": ["linux/amd64", "darwin/amd64", "windows/amd64"],
+    "flags": "-ldflags='-s -w'",
+    "output_dir": "builds/"
+  },
+  "release": {
+    "draft": false,
+    "prerelease": false,
+    "generate_notes": true
+  }
+}
+```
+
+---
+
+## 🧪 Testing and Validation
+
+### Local Testing
+
+All scripts can be tested locally before running in CI:
+
+```bash
+# Test version extraction
+npm test -- extract-version.test.js
+
+# Test git operations (dry run)
+node git-operations.mjs --dry-run --create-pr "Test PR"
+
+# Test build process
+./go-executable-build.sh --test
+
+# Validate pipeline configuration
+node run-pipeline.mjs --validate-config
+```
+
+### CI Testing
+
+The pipeline includes comprehensive testing:
+
+1. **Script Tests**: Unit tests for all Node.js scripts
+2. **Integration Tests**: End-to-end testing of workflow components
+3. **Build Tests**: Validation that binaries compile and run
+4. **Release Tests**: Verification of release artifact creation
+
+### Quality Gates
+
+Before any release, the pipeline validates:
+
+- ✅ All tests pass
+- ✅ Code compiles without warnings
+- ✅ Binaries execute successfully
+- ✅ Version numbers are consistent
+- ✅ Dependencies are up to date
+- ✅ Security vulnerabilities are addressed
+
+---
+
+## 🔍 Monitoring and Debugging
+
+### Pipeline Monitoring
+
+The CI system provides comprehensive monitoring:
+
+- **Build Status**: Real-time status of all builds
+- **Performance Metrics**: Build times and artifact sizes
+- **Error Tracking**: Detailed error logs and stack traces
+- **Dependency Monitoring**: Alerts for outdated dependencies
+
+### Debugging Failed Builds
+
+When builds fail, follow this debugging process:
+
+1. **Check Build Logs**: Review detailed logs in GitHub Actions
+2. **Run Locally**: Execute the same commands locally
+3. **Validate Dependencies**: Ensure all dependencies are available
+4. **Check Permissions**: Verify GitHub token permissions
+5. **Test Scripts**: Run individual scripts with debug flags
+
+### Common Issues and Solutions
+
+#### Build Failures
+
+```bash
+# Issue: Go module download fails
+# Solution: Clear module cache
+go clean -modcache
+
+# Issue: Platform build fails
+# Solution: Check GOOS/GOARCH combination
+go tool dist list
+```
+
+#### Release Failures
+
+```bash
+# Issue: GitHub release creation fails
+# Solution: Check token permissions
+# Required: repo, write:packages
+
+# Issue: Artifact upload fails  
+# Solution: Verify file paths and sizes
+ls -la builds/
+```
+
+#### Version Conflicts
+
+```bash
+# Issue: Version mismatch between components
+# Solution: Run version validation
+node manage-versions.mjs --validate --fix
+```
+
+---
+
+## 🚀 Deployment Strategies
+
+### Staging Deployment
+
+Before production release, changes are deployed to staging:
+
+1. **Automatic Staging**: Every PR triggers staging deployment
+2. **Staging Tests**: Comprehensive test suite runs against staging
+3. **Manual Validation**: Team manually validates staging environment
+4. **Performance Testing**: Load tests run against staging
+
+### Production Deployment
+
+Production deployments follow this process:
+
+1. **Tag Creation**: Create release tag with semantic versioning
+2. **Automated Build**: CI builds and tests all components
+3. **Release Creation**: GitHub release created with artifacts
+4. **Rollout**: Gradual rollout with monitoring
+5. **Verification**: Post-deployment verification tests
+
+### Rollback Procedures
+
+If issues are detected post-deployment:
+
+1. **Immediate Rollback**: Revert to previous stable version
+2. **Issue Investigation**: Analyze logs and metrics
+3. **Fix Development**: Develop fix in separate branch
+4. **Patch Release**: Create patch release with fix
+5. **Re-deployment**: Deploy fixed version
+
+---
+
+## 📊 Metrics and Analytics
+
+### Build Metrics
+
+The pipeline tracks these key metrics:
+
+- **Build Duration**: Time to complete full build
+- **Artifact Size**: Size of generated binaries
+- **Success Rate**: Percentage of successful builds
+- **Test Coverage**: Code coverage from test runs
+
+### Release Metrics
+
+- **Release Frequency**: How often releases are created
+- **Time to Release**: Time from code merge to release
+- **Rollback Rate**: Percentage of releases requiring rollback
+- **Download Stats**: Usage statistics for releases
+
+### Performance Monitoring
+
+- **Pipeline Performance**: Time for each pipeline stage
+- **Resource Usage**: CPU and memory usage during builds
+- **Dependency Updates**: Frequency of dependency updates
+- **Security Scan Results**: Vulnerability scan results
+
+---
+
+## 🎯 Best Practices
+
+### Version Management
+
+1. **Semantic Versioning**: Follow semver for all releases
+2. **Tag Consistency**: Ensure tags match across repositories
+3. **Changelog**: Maintain detailed changelog for releases
+4. **Breaking Changes**: Clearly document breaking changes
+
+### Code Quality
+
+1. **Automated Testing**: Comprehensive test coverage
+2. **Code Reviews**: All changes require review
+3. **Static Analysis**: Use tools like golangci-lint
+4. **Security Scanning**: Regular security vulnerability scans
+
+### Release Management
+
+1. **Feature Flags**: Use feature flags for risky changes
+2. **Gradual Rollout**: Deploy changes gradually
+3. **Monitoring**: Comprehensive monitoring and alerting
+4. **Documentation**: Keep documentation up to date
+
+---
+
+## 🛠️ Maintenance
+
+### Regular Maintenance Tasks
+
+1. **Dependency Updates**: Weekly dependency updates
+2. **Security Patches**: Immediate security patch deployment
+3. **Performance Review**: Monthly performance analysis
+4. **Cleanup**: Remove old artifacts and unused resources
+
+### Pipeline Updates
+
+1. **Script Updates**: Keep scripts up to date with best practices
+2. **Workflow Optimization**: Regular review and optimization
+3. **Tool Updates**: Update CI/CD tools and dependencies
+4. **Documentation**: Keep documentation current
+
+---
+
+## 🎉 Getting Started
+
+### For Developers
+
+1. **Clone Repository**: Clone the Bifrost repository
+2. **Install Dependencies**: Install Node.js and Go
+3. **Run Tests**: Execute local test suite
+4. **Make Changes**: Develop features in feature branches
+5. **Create PR**: Submit pull request for review
+
+### For DevOps
+
+1. **Review Pipeline**: Understand workflow configurations
+2. **Set Permissions**: Configure GitHub token permissions
+3. **Monitor Builds**: Set up monitoring and alerts
+4. **Backup Configuration**: Backup pipeline configurations
+
+### For Contributors
+
+1. **Read Guidelines**: Review contribution guidelines
+2. **Test Locally**: Test changes locally before submitting
+3. **Follow Standards**: Adhere to coding and documentation standards
+4. **Participate in Reviews**: Engage in code review process
+
+---
+
+> **💡 Need Help?** Check our [Contributing Guide](contributing/) for detailed information on working with the Bifrost codebase and CI/CD pipeline.

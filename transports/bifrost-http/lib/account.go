@@ -5,6 +5,7 @@ package lib
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -13,11 +14,11 @@ import (
 // It manages provider configurations using a in-memory store for persistent storage.
 // All data processing (environment variables, key configs) is done upfront in the store.
 type BaseAccount struct {
-	store *ConfigStore // store for in-memory configuration
+	store *Config // store for in-memory configuration
 }
 
 // NewBaseAccount creates a new BaseAccount with the given store
-func NewBaseAccount(store *ConfigStore) *BaseAccount {
+func NewBaseAccount(store *Config) *BaseAccount {
 	return &BaseAccount{
 		store: store,
 	}
@@ -46,7 +47,25 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, provide
 		return nil, err
 	}
 
-	return config.Keys, nil
+	keys := config.Keys
+
+	if baseAccount.store.ClientConfig.EnableGovernance {
+		includeOnlyKeysValue := (*ctx).Value("bf-governance-include-only-keys")
+		if includeOnlyKeysValue != nil {
+			includeOnlyKeys, ok := includeOnlyKeysValue.([]string)
+			if ok {
+				var filteredKeys []schemas.Key
+				for _, key := range keys {
+					if slices.Contains(includeOnlyKeys, key.ID) {
+						filteredKeys = append(filteredKeys, key)
+					}
+				}
+				keys = filteredKeys
+			}
+		}
+	}
+
+	return keys, nil
 }
 
 // GetConfigForProvider returns the complete configuration for a specific provider.

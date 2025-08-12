@@ -41,7 +41,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 
 // TestMockerPlugin_GetName tests the plugin name
 func TestMockerPlugin_GetName(t *testing.T) {
-	plugin, err := NewMockerPlugin(MockerConfig{})
+	plugin, err := Init(MockerConfig{})
 	if err != nil {
 		t.Fatalf("Expected no error creating plugin, got: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMockerPlugin_Disabled(t *testing.T) {
 	config := MockerConfig{
 		Enabled: false,
 	}
-	plugin, err := NewMockerPlugin(config)
+	plugin, err := Init(config)
 	if err != nil {
 		t.Fatalf("Expected no error creating plugin, got: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMockerPlugin_DefaultMockRule(t *testing.T) {
 	config := MockerConfig{
 		Enabled: true, // No rules provided, should create default rule
 	}
-	plugin, err := NewMockerPlugin(config)
+	plugin, err := Init(config)
 	if err != nil {
 		t.Fatalf("Expected no error creating plugin, got: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 			},
 		},
 	}
-	plugin, err := NewMockerPlugin(config)
+	plugin, err := Init(config)
 	if err != nil {
 		t.Fatalf("Expected no error creating plugin, got: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestMockerPlugin_ErrorResponse(t *testing.T) {
 			},
 		},
 	}
-	plugin, err := NewMockerPlugin(config)
+	plugin, err := Init(config)
 	if err != nil {
 		t.Fatalf("Expected no error creating plugin, got: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestMockerPlugin_MessageTemplate(t *testing.T) {
 			},
 		},
 	}
-	plugin, err := NewMockerPlugin(config)
+	plugin, err := Init(config)
 	if err != nil {
 		t.Fatalf("Expected no error creating plugin, got: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestMockerPlugin_Statistics(t *testing.T) {
 			},
 		},
 	}
-	plugin, err := NewMockerPlugin(config)
+	plugin, err := Init(config)
 	if err != nil {
 		t.Fatalf("Expected no error creating plugin, got: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestMockerPlugin_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewMockerPlugin(tt.config)
+			_, err := Init(tt.config)
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got none")
 			}

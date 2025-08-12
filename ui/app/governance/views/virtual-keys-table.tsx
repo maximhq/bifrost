@@ -131,20 +131,21 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Key</TableHead>
-                <TableHead>Max Budget</TableHead>
+                <TableHead>DB Keys</TableHead>
+                <TableHead>Budget</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {virtualKeys.length === 0 ? (
+              {virtualKeys?.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
+                  <TableCell colSpan={6} className="text-muted-foreground py-8 text-center">
                     No virtual keys found. Create your first virtual key to get started.
                   </TableCell>
                 </TableRow>
               ) : (
-                virtualKeys.map((vk) => {
+                virtualKeys?.map((vk) => {
                   const isRevealed = revealedKeys.has(vk.id)
                   const isExhausted =
                     (vk.budget?.current_usage && vk.budget?.max_limit && vk.budget.current_usage >= vk.budget.max_limit) ||
@@ -157,12 +158,12 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
 
                   return (
                     <TableRow key={vk.id} className="hover:bg-muted/50 cursor-pointer transition-colors" onClick={() => handleRowClick(vk)}>
-                        <TableCell className="max-w-[200px]">
-                         <div className="truncate">
-                           <div className="font-medium truncate">{vk.name}</div>
-                           {vk.description && <div className="text-muted-foreground text-sm truncate">{vk.description}</div>}
-                         </div>
-                       </TableCell>
+                      <TableCell className="max-w-[200px]">
+                        <div className="truncate">
+                          <div className="truncate font-medium">{vk.name}</div>
+                          {vk.description && <div className="text-muted-foreground truncate text-sm">{vk.description}</div>}
+                        </div>
+                      </TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-2">
                           <code className="cursor-default px-2 py-1 font-mono text-sm">{maskKey(vk.value, isRevealed)}</code>
@@ -172,6 +173,33 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
                           <Button variant="ghost" size="sm" onClick={() => copyToClipboard(vk.value)}>
                             <Copy className="h-4 w-4" />
                           </Button>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {vk.keys && vk.keys.length > 0 ? (
+                            vk.keys.slice(0, 2).map((dbKey, index) => (
+                              <Badge
+                                key={dbKey.key_id}
+                                variant="outline"
+                                className="text-xs"
+                                title={`${dbKey.key_id} — ${dbKey.provider_id}`}
+                              >
+                                {dbKey.key_id.substring(0, 8)}...
+                              </Badge>
+                            ))
+                          ) : (
+                            <span className="text-muted-foreground text-sm">All keys</span>
+                          )}
+                          {vk.keys && vk.keys.length > 2 && (
+                            <Badge
+                              variant="outline"
+                              className="text-xs"
+                              title={`${vk.keys.length} total keys — Providers: ${[...new Set(vk.keys.map((k) => k.provider_id))].join(', ')}`}
+                            >
+                              +{vk.keys.length - 2} more
+                            </Badge>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -203,7 +231,8 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
                               <AlertDialogHeader>
                                 <AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Are you sure you want to delete "{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}"? This action cannot be undone.
+                                  Are you sure you want to delete "{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}"? This
+                                  action cannot be undone.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>

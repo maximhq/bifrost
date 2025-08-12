@@ -58,7 +58,7 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 	}
 
 	// Initialize the JSON parser plugin for all requests
-	plugin := NewJsonParserPlugin(PluginConfig{
+	plugin := Init(PluginConfig{
 		Usage:           AllRequests,
 		CleanupInterval: 5 * time.Minute,
 		MaxAge:          30 * time.Minute,
@@ -159,7 +159,7 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 	}
 
 	// Initialize the JSON parser plugin for per-request usage
-	plugin := NewJsonParserPlugin(PluginConfig{
+	plugin := Init(PluginConfig{
 		Usage:           PerRequest,
 		CleanupInterval: 5 * time.Minute,
 		MaxAge:          30 * time.Minute,
@@ -247,7 +247,7 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 }
 
 func TestParsePartialJSON(t *testing.T) {
-	plugin := NewJsonParserPlugin(PluginConfig{
+	plugin := Init(PluginConfig{
 		Usage:           AllRequests,
 		CleanupInterval: 5 * time.Minute,
 		MaxAge:          30 * time.Minute,

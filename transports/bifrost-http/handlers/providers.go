@@ -12,19 +12,20 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // ProviderHandler manages HTTP requests for provider operations
 type ProviderHandler struct {
-	store  *lib.ConfigStore
+	store  *lib.Config
 	client *bifrost.Bifrost
 	logger schemas.Logger
 }
 
 // NewProviderHandler creates a new provider handler instance
-func NewProviderHandler(store *lib.ConfigStore, client *bifrost.Bifrost, logger schemas.Logger) *ProviderHandler {
+func NewProviderHandler(store *lib.Config, client *bifrost.Bifrost, logger schemas.Logger) *ProviderHandler {
 	return &ProviderHandler{
 		store:  store,
 		client: client,
@@ -81,6 +82,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router) {
 	r.POST("/api/providers", h.AddProvider)
 	r.PUT("/api/providers/{provider}", h.UpdateProvider)
 	r.DELETE("/api/providers/{provider}", h.DeleteProvider)
+	r.GET("/api/keys", h.ListKeys)
 }
 
 // ListProviders handles GET /api/providers - List all providers
@@ -177,7 +179,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Construct ProviderConfig from individual fields
-	config := lib.ProviderConfig{
+	config := configstore.ProviderConfig{
 		Keys:                     req.Keys,
 		NetworkConfig:            req.NetworkConfig,
 		ConcurrencyAndBufferSize: req.ConcurrencyAndBufferSize,
@@ -188,12 +190,6 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	if err := h.store.AddProvider(req.Provider, config); err != nil {
 		h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", req.Provider, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err), h.logger)
-		return
-	}
-
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
 		return
 	}
 
@@ -235,7 +231,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Construct ProviderConfig from individual fields
-	config := lib.ProviderConfig{
+	config := configstore.ProviderConfig{
 		Keys:                     oldConfigRaw.Keys,
 		NetworkConfig:            oldConfigRaw.NetworkConfig,
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
@@ -301,12 +297,6 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
-		return
-	}
-
 	if config.ConcurrencyAndBufferSize.Concurrency != oldConfigRaw.ConcurrencyAndBufferSize.Concurrency ||
 		config.ConcurrencyAndBufferSize.BufferSize != oldConfigRaw.ConcurrencyAndBufferSize.BufferSize {
 		// Update concurrency and queue configuration in Bifrost
@@ -342,12 +332,6 @@ func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
-		return
-	}
-
 	h.logger.Info(fmt.Sprintf("Provider %s removed successfully", provider))
 
 	response := ProviderResponse{
@@ -355,6 +339,17 @@ func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, response, h.logger)
+}
+
+// ListKeys handles GET /api/keys - List all keys
+func (h *ProviderHandler) ListKeys(ctx *fasthttp.RequestCtx) {
+	keys, err := h.store.GetAllKeys()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err), h.logger)
+		return
+	}
+
+	SendJSON(ctx, keys, h.logger)
 }
 
 // mergeKeys merges new keys with old, preserving values that are redacted in the new config
@@ -446,7 +441,7 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 	return resultKeys, nil
 }
 
-func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config lib.ProviderConfig) ProviderResponse {
+func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config configstore.ProviderConfig) ProviderResponse {
 	if config.NetworkConfig == nil {
 		config.NetworkConfig = &schemas.DefaultNetworkConfig
 	}

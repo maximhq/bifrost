@@ -62,7 +62,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl">
+      <SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl bg-white dark:bg-card">
         <SheetHeader className="px-0">
           <SheetTitle className="flex w-fit items-center gap-2 font-medium">
             {log.status === 'success' && <p className="text-md max-w-full truncate">Request ID: {log.id}</p>}

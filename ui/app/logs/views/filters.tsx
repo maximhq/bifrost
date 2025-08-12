@@ -1,13 +1,13 @@
-import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { Search, Check } from 'lucide-react'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { cn } from '@/lib/utils'
-import { useState, useCallback, useRef, useEffect } from 'react'
-import { PROVIDERS, REQUEST_TYPE_LABELS, REQUEST_TYPES, STATUSES } from '@/lib/constants/logs'
-import type { LogFilters, Pagination } from '@/lib/types/logs'
 import { apiService } from '@/lib/api'
+import { PROVIDERS, REQUEST_TYPE_LABELS, REQUEST_TYPES, STATUSES } from '@/lib/constants/logs'
+import type { LogFilters } from '@/lib/types/logs'
+import { cn } from '@/lib/utils'
+import { Check, Search } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 interface LogFiltersProps {
   filters: LogFilters
@@ -124,7 +124,7 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
         <Search className="size-5" />
         <Input
           type="text"
-          className="border-none shadow-none outline-none focus-visible:ring-0"
+          className="border-none shadow-none outline-none focus-visible:ring-0 bg-slate-50 "
           placeholder="Search logs"
           value={localSearch}
           onChange={(e) => handleSearchChange(e.target.value)}

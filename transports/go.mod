@@ -1,6 +1,22 @@
 module github.com/maximhq/bifrost/transports
 
-go 1.24.1
+go 1.24.3
+
+replace github.com/maximhq/bifrost/framework => ../framework
+
+replace github.com/maximhq/bifrost/core => ../core
+
+replace github.com/maximhq/bifrost/plugins/semanticcache => ../plugins/semanticcache
+
+replace github.com/maximhq/bifrost/plugins/maxim => ../plugins/maxim
+
+replace github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
+
+replace github.com/maximhq/bifrost/plugins/governance => ../plugins/governance
+
+replace github.com/maximhq/bifrost/plugins/jsonparser => ../plugins/jsonparser
+
+replace github.com/maximhq/bifrost/plugins/logging => ../plugins/logging
 
 require (
 	github.com/bytedance/sonic v1.14.0
@@ -8,13 +24,17 @@ require (
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.1.19
+	github.com/maximhq/bifrost/framework v0.0.0
+	github.com/maximhq/bifrost/plugins/governance v0.0.0-00010101000000-000000000000
+	github.com/maximhq/bifrost/plugins/logging v0.0.0-00010101000000-000000000000
 	github.com/maximhq/bifrost/plugins/maxim v1.0.6
 	github.com/maximhq/bifrost/plugins/redis v1.0.0
-	github.com/prometheus/client_golang v1.22.0
+	github.com/maximhq/bifrost/plugins/semanticcache v0.0.0
+	github.com/maximhq/bifrost/plugins/telemetry v0.0.0-00010101000000-000000000000
+	github.com/prometheus/client_golang v1.23.0
 	github.com/valyala/fasthttp v1.62.0
 	google.golang.org/genai v1.4.0
-	gorm.io/driver/sqlite v1.6.0
-	gorm.io/gorm v1.30.0
+	gorm.io/gorm v1.30.1
 )
 
 require (
@@ -58,10 +78,10 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.28 // indirect
 	github.com/maximhq/maxim-go v0.1.3 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/prometheus/client_model v0.6.1 // indirect
-	github.com/prometheus/common v0.62.0 // indirect
-	github.com/prometheus/procfs v0.15.1 // indirect
-	github.com/redis/go-redis/v9 v9.10.0 // indirect
+	github.com/prometheus/client_model v0.6.2 // indirect
+	github.com/prometheus/common v0.65.0 // indirect
+	github.com/prometheus/procfs v0.16.1 // indirect
+	github.com/redis/go-redis/v9 v9.12.1 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/savsgio/gotils v0.0.0-20240704082632-aef3928b8a38 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
@@ -82,4 +102,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250425173222-7b384671a197 // indirect
 	google.golang.org/grpc v1.72.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
+	gorm.io/driver/sqlite v1.6.0 // indirect
 )

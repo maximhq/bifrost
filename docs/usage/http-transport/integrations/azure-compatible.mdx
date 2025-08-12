@@ -1,0 +1,140 @@
+---
+title: "🔵 Azure OpenAI Compatible API"
+description: "Complete guide to using Bifrost as a drop-in replacement for Azure OpenAI API with deployment endpoint support and enhanced features."
+---
+
+# 🔵 Azure OpenAI Compatible API
+
+Complete guide to using Bifrost as a drop-in replacement for Azure OpenAI API with deployment endpoint support and enhanced features.
+
+> **💡 Quick Start:** Change your Azure OpenAI endpoint to point to Bifrost and add the required headers - that's it!
+> **🤖 OpenAI Compatibility:** This integration provides **Azure OpenAI API compatibility** and falls under the [OpenAI Compatible API](openai-compatible) family. It uses the same request/response formats but with Azure-specific deployment endpoints and authentication.
+
+---
+
+## 📋 Overview
+
+Bifrost provides **100% Azure OpenAI API compatibility** with enhanced features:
+
+- **Zero code changes** - Works with existing Azure OpenAI SDK applications
+- **Deployment endpoint support** - Full compatibility with Azure's deployment-based URLs
+- **Automatic model handling** - Smart model name resolution with "azure/" prefix
+- **Enhanced capabilities** - Multi-provider fallbacks, MCP tools, monitoring
+- **All endpoints supported** - Chat completions, speech synthesis, transcription, embeddings
+
+**Base Endpoint Pattern:** `POST /openai/deployments/{deployment-id}/chat/completions`
+
+> **🔄 Provider Flexibility:** While using Azure OpenAI deployment format, you can leverage Bifrost's multi-provider capabilities and enhanced features.
+
+---
+
+## 🔄 Quick Migration
+
+### **Python (Azure OpenAI SDK)**
+
+```python
+from openai import AzureOpenAI
+
+# Before - Direct Azure OpenAI
+client = AzureOpenAI(
+    api_key="your-azure-api-key",
+    api_version="2024-02-01",
+    azure_endpoint="https://your-resource.openai.azure.com"
+)
+
+# After - Via Bifrost
+client = AzureOpenAI(
+    api_key="your-azure-api-key",
+    api_version="2024-02-01",
+    azure_endpoint="http://localhost:8080/openai"  # Point to Bifrost, based on the integration you are using, e.g. /langchain for langchain azure integration
+)
+
+# Everything else stays the same
+response = client.chat.completions.create(
+    model="gpt-4-deployment",  # Your deployment name
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+
+### **Required Headers for HTTP Requests**
+
+When using direct HTTP requests, you need these specific headers:
+
+```bash
+curl http://localhost:8080/openai/openai/deployments/gpt-4-deployment/chat/completions?api-version=2024-02-01 \
+  -H "Authorization: Bearer your-azure-api-key" \
+  -H "x-bf-azure-endpoint: https://your-resource.openai.azure.com" \
+  -H "Content-Type: application/json" \
+  -d '{...}'
+```
+
+## 🎯 Azure-Specific Features
+
+### **Deployment Endpoints**
+
+| Azure Endpoint | Bifrost Support | Purpose |
+|----------------|----------------|---------|
+| `/openai/deployments/{deployment-id}/chat/completions` | ✅ | Chat completions |
+| `/openai/deployments/{deployment-id}/audio/speech` | ✅ | Text-to-speech |
+| `/openai/deployments/{deployment-id}/audio/transcriptions` | ✅ | Speech-to-text |
+| `/openai/deployments/{deployment-id}/embeddings` | ✅ | Text embeddings |
+
+### **Model Name Handling**
+
+Bifrost automatically handles model names for Azure with **deployment ID taking precedence**:
+
+| Input Model | Deployment ID | Final Model | Description |
+|-------------|---------------|-------------|-------------|
+| `"gpt-4"` | `"gpt-4-deployment"` | `"azure/gpt-4-deployment"` | **Deployment ID takes precedence** |
+| `""` | `"gpt-4-deployment"` | `"azure/gpt-4-deployment"` | Uses deployment ID as model |
+| `"any-model"` | `""` | `"azure/any-model"` | Uses request model with prefix when no deployment ID |
+| `"azure/gpt-4"` | `""` | `"azure/gpt-4"` | No change if prefix exists and no deployment ID |
+
+> **🎯 Priority Logic:** When a deployment ID is present in the URL path, it **always** takes precedence over the model specified in the request body. This ensures deployment/model consistency and prevents mismatches.
+
+---
+
+## 📝 Complete Examples
+
+### **Chat Completions**
+
+```bash
+curl -X POST http://localhost:8080/openai/openai/deployments/gpt-4-deployment/chat/completions?api-version=2024-02-01 \
+  -H "Authorization: Bearer your-azure-api-key" \
+  -H "x-bf-azure-endpoint: https://your-resource.openai.azure.com" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is the capital of France?"
+      }
+    ],
+    "max_tokens": 150,
+    "temperature": 0.7
+  }'
+```
+
+### **Enhanced Bifrost Features**
+
+Even with Azure endpoints, you get Bifrost's enhanced capabilities:
+
+```json
+{
+  "model": "azure/gpt-4",
+  "messages": [{"role": "user", "content": "Hello!"}],
+  "fallbacks": ["openai/gpt-4o-mini", "anthropic/claude-3-sonnet-20240229"]
+}
+```
+
+---
+
+## 📚 Related Documentation
+
+- **[🤖 OpenAI Compatible API](openai-compatible)** - Base OpenAI compatibility guide
+- **[🔄 Migration Guide](migration-guide)** - Step-by-step migration from providers
+- **[🎯 Endpoints](../endpoints)** - Complete API endpoint reference
+- **[🔧 Configuration](../configuration/providers)** - Provider configuration guide
+
+> **🏛️ Architecture:** For Azure integration implementation details, see [HTTP Integration Development](../../contributing/http-integration).

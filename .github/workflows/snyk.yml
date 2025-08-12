@@ -67,8 +67,8 @@ jobs:
 
       - name: Install Python dependencies (tests tooling)
         run: |
-          pip install -r tests/transports-integrations/requirements.txt
-          pip install -r tests/transports-governance/requirements.txt
+          pip install -r tests/integrations/requirements.txt
+          pip install -r tests/governance/requirements.txt
 
 
       - name: Setup Go
@@ -92,5 +92,3 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-code.sarif
-
-

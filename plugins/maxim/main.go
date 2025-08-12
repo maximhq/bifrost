@@ -17,7 +17,7 @@ import (
 // PluginName is the canonical name for the bifrost-maxim plugin.
 const PluginName = "bifrost-maxim"
 
-// NewMaximLogger initializes and returns a Plugin instance for Maxim's logger.
+// NewMaximLoggerPlugin initializes and returns a Plugin instance for Maxim's logger.
 //
 // Parameters:
 //   - apiKey: API key for Maxim SDK authentication

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Bifrost",
+  "logo": {
+    "dark": "/media/bifrost-logo-dark.png",
+    "light": "/media/bifrost-logo.png"
+  },  
+  "theme": "mint",
+  "favicon": "/media/bifrost-logo.png",
+  "colors": {
+    "primary": "#0D9488",
+    "light": "#10B981",
+    "dark": "#059669"
+  },
+  "topbarLinks": [
+    {
+      "name": "Support",
+      "url": "mailto:support@maxim.dev"
+    }
+  ],
+  "topbarCtaButton": {
+    "name": "Dashboard",
+    "url": "https://dashboard.maxim.dev"
+  },
+  "tabs": [
+    {
+      "name": "API Reference",
+      "url": "api-reference"
+    }
+  ],
+  "anchors": [
+    {
+      "name": "Documentation",
+      "icon": "book-open-cover",
+      "url": "https://docs.bifrost.dev"
+    },
+    {
+      "name": "Community",
+      "icon": "slack",
+      "url": "https://join.slack.com/bifrost"
+    },
+    {
+      "name": "Blog",
+      "icon": "newspaper",
+      "url": "https://blog.bifrost.dev"
+    }
+  ],
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "quickstart/README",
+              "quickstart/go-package",
+              "quickstart/http-transport"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "mcp",
+              "plugins",
+              "governance",
+              "usage/providers",
+              "usage/key-management",
+              "usage/memory-management",
+              "usage/networking",
+              "usage/errors"
+            ]
+          },
+          {
+            "group": "Go Package Usage",
+            "pages": [
+              "usage/go-package/README",
+              "usage/go-package/bifrost-client",
+              "usage/go-package/account",
+              "usage/go-package/logging",
+              "usage/go-package/mcp",
+              "usage/go-package/plugins",
+              "usage/go-package/schemas"
+            ]
+          },
+          {
+            "group": "HTTP Transport",
+            "pages": [
+              "usage/http-transport/README",
+              "usage/http-transport/endpoints"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "usage/http-transport/configuration/providers",
+              "usage/http-transport/configuration/mcp",
+              "usage/http-transport/configuration/plugins"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "usage/http-transport/integrations/README",
+              "usage/http-transport/integrations/openai-compatible",
+              "usage/http-transport/integrations/anthropic-compatible",
+              "usage/http-transport/integrations/azure-compatible",
+              "usage/http-transport/integrations/genai-compatible",
+              "usage/http-transport/integrations/migration-guide"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/README",
+              "architecture/system-overview",
+              "architecture/request-flow",
+              "architecture/concurrency",
+              "architecture/design-decisions",
+              "architecture/mcp",
+              "architecture/plugins"
+            ]
+          },
+          {
+            "group": "Performance & Monitoring",
+            "pages": [
+              "benchmarks",
+              "usage/audio",
+              "ci-pipeline"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "contributing/README",
+              "contributing/code-conventions",
+              "contributing/provider",
+              "contributing/plugin",
+              "contributing/http-integration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footerSocials": {
+    "twitter": "https://twitter.com/maximdev",
+    "github": "https://github.com/maxim-dev/bifrost",
+    "linkedin": "https://www.linkedin.com/company/maxim-dev"
+  },
+  "api": {
+    "baseUrl": "http://localhost:8080",
+    "auth": {
+      "method": "bearer"
+    }
+  },
+  "openapi": "/usage/http-transport/openapi.json"
+}

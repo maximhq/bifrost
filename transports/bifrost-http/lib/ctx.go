@@ -14,10 +14,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/redis"
-	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
+	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/valyala/fasthttp"
 )
 

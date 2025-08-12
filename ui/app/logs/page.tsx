@@ -350,12 +350,7 @@ export default function LogsPage() {
       ) : showEmptyState ? (
         <EmptyState isSocketConnected={isSocketConnected} error={error} />
       ) : (
-        <div className="space-y-6">
-          <div>
-            <h1 className="mb-2 text-3xl font-bold">Request Logs</h1>
-            <p className="text-muted-foreground">Monitor and analyze all API requests and responses</p>
-          </div>
-
+        <div className="space-y-6">          
           <div className="space-y-6">
             {/* Quick Stats */}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -364,7 +359,7 @@ export default function LogsPage() {
                   <CardContent className="flex items-center justify-between px-4">
                     <div>
                       <div className="text-muted-foreground text-xs">{card.title}</div>
-                      <div className="text-2xl font-bold font-mono">{card.value}</div>
+                      <div className="text-2xl font-medium font-mono">{card.value}</div>
                     </div>
                   </CardContent>
                 </Card>

@@ -31,7 +31,7 @@ export default function GovernancePage() {
         return
       } else if (coreConfigResult[0]) {
         const config = coreConfigResult[0]
-        if (!config.enable_governance) {
+        if (!config.client_config.enable_governance) {
           toast.error('Governance is not enabled. Please enable it in the core settings.')
           return
         }
@@ -76,11 +76,6 @@ export default function GovernancePage() {
     <FullPageLoader />
   ) : (
     <div className="">
-      <div>
-        <h1 className="mb-2 text-3xl font-bold">Governance</h1>
-        <p className="text-muted-foreground">Manage virtual keys, teams, customers, budgets, and rate limits</p>
-      </div>
-
       <div className="mt-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 grid h-12 w-full grid-cols-3">

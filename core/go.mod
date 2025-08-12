@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/core
 
-go 1.24.1
+go 1.24.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3

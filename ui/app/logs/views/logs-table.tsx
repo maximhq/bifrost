@@ -88,7 +88,7 @@ export function LogsDataTable({
       <LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} />
       <div className="rounded-sm border">
         <Table>
-          <TableHeader>
+          <TableHeader className="px-2">
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
