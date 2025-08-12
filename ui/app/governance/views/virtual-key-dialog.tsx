@@ -13,12 +13,13 @@ import Toggle from '@/components/ui/toggle'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { apiService } from '@/lib/api'
 import { resetDurationOptions } from '@/lib/constants/governance'
-import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from '@/lib/types/governance'
+import { CreateVirtualKeyRequest, Customer, DBKey, Team, UpdateVirtualKeyRequest, VirtualKey } from '@/lib/types/governance'
 import { Validator } from '@/lib/utils/validation'
 import isEqual from 'lodash.isequal'
 import { Info, User, Users } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
+import { MultiSelect } from '@/components/ui/multi-select'
 
 interface VirtualKeyDialogProps {
   virtualKey?: VirtualKey | null
@@ -37,6 +38,7 @@ interface VirtualKeyFormData {
   teamId: string
   customerId: string
   isActive: boolean
+  selectedDBKeys: string[] // Array of selected DBKey IDs
   // Budget
   budgetMaxLimit: number | undefined
   budgetResetDuration: string
@@ -60,6 +62,7 @@ const createInitialState = (virtualKey?: VirtualKey | null): Omit<VirtualKeyForm
     teamId: virtualKey?.team_id || '',
     customerId: virtualKey?.customer_id || '',
     isActive: virtualKey?.is_active ?? true,
+    selectedDBKeys: virtualKey?.keys?.map((key) => key.key_id) || [], // Extract key IDs
     // Budget
     budgetMaxLimit: virtualKey?.budget ? virtualKey.budget.max_limit : undefined, // Already in dollars
     budgetResetDuration: virtualKey?.budget?.reset_duration || '1M',
@@ -80,6 +83,29 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
     ...initialState,
     isDirty: false,
   })
+  const [availableKeys, setAvailableKeys] = useState<DBKey[]>([])
+  const [keysLoading, setKeysLoading] = useState(false)
+
+  // Fetch available keys on component mount
+  useEffect(() => {
+    const fetchKeys = async () => {
+      setKeysLoading(true)
+      try {
+        const [keys, error] = await apiService.getAllKeys()
+        if (error) {
+          toast.error(`Failed to load available keys: ${error}`)
+          return
+        }
+        setAvailableKeys(keys || [])
+      } catch (error) {
+        toast.error('Failed to load available keys')
+      } finally {
+        setKeysLoading(false)
+      }
+    }
+
+    fetchKeys()
+  }, [])
 
   // Track isDirty state
   useEffect(() => {
@@ -92,6 +118,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
       teamId: formData.teamId,
       customerId: formData.customerId,
       isActive: formData.isActive,
+      selectedDBKeys: formData.selectedDBKeys,
       budgetMaxLimit: formData.budgetMaxLimit,
       budgetResetDuration: formData.budgetResetDuration,
       tokenMaxLimit: formData.tokenMaxLimit,
@@ -112,6 +139,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
     formData.teamId,
     formData.customerId,
     formData.isActive,
+    formData.selectedDBKeys,
     formData.budgetMaxLimit,
     formData.budgetResetDuration,
     formData.tokenMaxLimit,
@@ -195,6 +223,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
           allowed_providers: formData.allowedProviders,
           team_id: formData.entityType === 'team' ? formData.teamId : undefined,
           customer_id: formData.entityType === 'customer' ? formData.customerId : undefined,
+          key_ids: !isEqual(formData.selectedDBKeys, initialState.selectedDBKeys) ? formData.selectedDBKeys : undefined, // Only send if changed
           is_active: formData.isActive,
         }
 
@@ -231,6 +260,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
           allowed_providers: formData.allowedProviders.length > 0 ? formData.allowedProviders : undefined,
           team_id: formData.entityType === 'team' ? formData.teamId : undefined,
           customer_id: formData.entityType === 'customer' ? formData.customerId : undefined,
+          key_ids: formData.selectedDBKeys.length > 0 ? formData.selectedDBKeys : undefined, // Empty means all keys
           is_active: formData.isActive,
         }
 
@@ -308,6 +338,37 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
             <Toggle label="Is this key active?" val={formData.isActive} setVal={(val: boolean) => updateField('isActive', val)} />
 
             <DottedSeparator className="mb-5 mt-6" />
+
+            {/* DBKey Selection */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium">Allowed Keys</label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span>
+                        <Info className="text-muted-foreground h-3 w-3" />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Select specific database keys to associate with this virtual key. Leave empty to allow all keys.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <MultiSelect
+                options={availableKeys.map((key) => ({
+                  label: key.key_id,
+                  value: key.key_id,
+                  description: key.models.join(', '),
+                }))}
+                defaultValue={formData.selectedDBKeys}
+                onValueChange={(value) => updateField('selectedDBKeys', value)}
+                placeholder="Select keys..."
+                variant="inverted"
+                className="bg-accent hover:bg-accent"
+              />
+            </div>
 
             <div className="space-y-2">
               <div className="flex items-center gap-2">
@@ -406,13 +467,13 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
                   </SelectTrigger>
                   <SelectContent className="w-full">
                     <SelectItem value="none">No Assignment</SelectItem>
-                    {teams.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
-                    {customers.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}
+                    {teams?.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
+                    {customers?.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}
                   </SelectContent>
                 </Select>
               </div>
 
-              {formData.entityType === 'team' && teams.length > 0 && (
+              {formData.entityType === 'team' && teams?.length > 0 && (
                 <div className="space-y-2">
                   <Label>Select Team</Label>
                   <Select value={formData.teamId} onValueChange={(value) => updateField('teamId', value)}>
@@ -434,7 +495,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
                 </div>
               )}
 
-              {formData.entityType === 'customer' && customers.length > 0 && (
+              {formData.entityType === 'customer' && customers?.length > 0 && (
                 <div className="space-y-2">
                   <Label>Select Customer</Label>
                   <Select value={formData.customerId} onValueChange={(value) => updateField('customerId', value)}>
@@ -456,7 +517,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
               )}
             </div>
           </div>
-          <div className="bg-white dark:bg-card sticky bottom-0 py-3 border-t border-border">
+          <div className="dark:bg-card border-border sticky bottom-0 border-t bg-white py-3">
             <FormFooter validator={validator} label="Virtual Key" onCancel={onCancel} isLoading={isLoading} isEditing={isEditing} />
           </div>
         </form>

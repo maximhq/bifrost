@@ -1,12 +1,6 @@
-module github.com/maximhq/bifrost/plugins/redis
+module github.com/maximhq/bifrost/framework
 
-go 1.24.1
-
-require (
-	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/maximhq/bifrost/core v1.1.17
-	github.com/redis/go-redis/v9 v9.10.0
-)
+go 1.24.3
 
 require (
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
@@ -26,6 +20,7 @@ require (
 	github.com/aws/smithy-go v1.22.3 // indirect
 	github.com/bytedance/sonic v1.14.0 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -34,6 +29,8 @@ require (
 	github.com/mark3labs/mcp-go v0.32.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/maximhq/bifrost/core v1.1.18 // indirect
+	github.com/redis/go-redis/v9 v9.12.1 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

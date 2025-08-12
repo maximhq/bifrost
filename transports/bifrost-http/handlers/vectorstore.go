@@ -1,10 +1,8 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
-	"strings"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -16,13 +14,13 @@ import (
 // CacheHandler manages Cache plugin configuration for Bifrost.
 // It provides endpoints to update and retrieve Cache caching settings.
 type CacheHandler struct {
-	store  *lib.ConfigStore
+	store  *lib.Config
 	plugin *redis.Plugin
 	logger schemas.Logger
 }
 
 // NewCacheHandler creates a new handler for Cache configuration management.
-func NewCacheHandler(store *lib.ConfigStore, plugin *redis.Plugin, logger schemas.Logger) *CacheHandler {
+func NewCacheHandler(store *lib.Config, plugin *redis.Plugin, logger schemas.Logger) *CacheHandler {
 	return &CacheHandler{
 		store:  store,
 		plugin: plugin,
@@ -50,63 +48,63 @@ func (h *CacheHandler) GetCacheConfig(ctx *fasthttp.RequestCtx) {
 
 // UpdateCacheConfig handles PUT /api/config/cache - Update Cache configuration
 func (h *CacheHandler) UpdateCacheConfig(ctx *fasthttp.RequestCtx) {
-	var req lib.DBCacheConfig
+	// var req lib.TableVectorStoreConfig
 
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err), h.logger)
-		return
-	}
+	// if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+	// 	SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err), h.logger)
+	// 	return
+	// }
 
-	// Validate required fields
-	if req.Addr == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "cache address is required", h.logger)
-		return
-	}
+	// // Validate required fields
+	// if req.Addr == "" {
+	// 	SendError(ctx, fasthttp.StatusBadRequest, "cache address is required", h.logger)
+	// 	return
+	// }
 
-	// Validate address format (host:port)
-	if !strings.Contains(req.Addr, ":") {
-		SendError(ctx, fasthttp.StatusBadRequest, "cache address must be in format 'host:port'", h.logger)
-		return
-	}
+	// // Validate address format (host:port)
+	// if !strings.Contains(req.Addr, ":") {
+	// 	SendError(ctx, fasthttp.StatusBadRequest, "cache address must be in format 'host:port'", h.logger)
+	// 	return
+	// }
 
-	hostPort := strings.SplitN(req.Addr, ":", 2)
-	if len(hostPort) != 2 || hostPort[0] == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "cache address must have a non-empty host part before the colon", h.logger)
-		return
-	}
+	// hostPort := strings.SplitN(req.Addr, ":", 2)
+	// if len(hostPort) != 2 || hostPort[0] == "" {
+	// 	SendError(ctx, fasthttp.StatusBadRequest, "cache address must have a non-empty host part before the colon", h.logger)
+	// 	return
+	// }
 
-	// Validate TTL
-	if req.TTLSeconds <= 0 {
-		req.TTLSeconds = 300 // Default to 5 minutes
-	}
+	// // Validate TTL
+	// if req.TTLSeconds <= 0 {
+	// 	req.TTLSeconds = 300 // Default to 5 minutes
+	// }
 
-	// Handle password redaction - if password is redacted, preserve existing password
-	if req.Password != "" && lib.IsRedacted(req.Password) {
-		// Get current config to preserve the existing password
-		currentConfig, err := h.store.GetCacheConfig()
-		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get current Cache config: %v", err), h.logger)
-			return
-		}
-		// Preserve the existing password
-		req.Password = currentConfig.Password
-	}
+	// // Handle password redaction - if password is redacted, preserve existing password
+	// if req.Password != "" && lib.IsRedacted(req.Password) {
+	// 	// Get current config to preserve the existing password
+	// 	currentConfig, err := h.store.GetCacheConfig()
+	// 	if err != nil {
+	// 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get current Cache config: %v", err), h.logger)
+	// 		return
+	// 	}
+	// 	// Preserve the existing password
+	// 	req.Password = currentConfig.Password
+	// }
 
-	// Update Cache configuration in database
-	if err := h.store.UpdateCacheConfig(&req); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update Cache config: %v", err), h.logger)
-		return
-	}
+	// // Update Cache configuration in database
+	// if err := h.store.UpdateCacheConfig(&req); err != nil {
+	// 	SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update Cache config: %v", err), h.logger)
+	// 	return
+	// }
 
-	// Redact the password
-	req.Password = lib.RedactKey(req.Password)
+	// // Redact the password
+	// req.Password = lib.RedactKey(req.Password)
 
-	h.logger.Info("Cache configuration updated successfully")
+	// h.logger.Info("Cache configuration updated successfully")
 
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "Cache configuration updated successfully",
-		"config":  req,
+		// "config":  req,
 	}, h.logger)
 }
 

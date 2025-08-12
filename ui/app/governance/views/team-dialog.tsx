@@ -182,7 +182,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
               </div>
 
               {/* Customer Assignment */}
-              {customers.length > 0 && (
+              {customers?.length > 0 && (
                 <div className="w-full space-y-2">
                   <Label>Customer Assignment (optional)</Label>
                   <Select value={formData.customerId} onValueChange={(value) => updateField('customerId', value)}>

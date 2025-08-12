@@ -1,8 +1,13 @@
 {
-  "client": {
+  "$schema": "https://www.getbifrost.ai/schema",   
+  "client": {    
     "drop_excess_requests": false,
+
     "initial_pool_size": 500,
-    "prometheus_labels": ["model", "provider"],
+    "prometheus_labels": [
+      "model",
+      "provider"
+    ],
     "allowed_origins": [
       "https://myapp.example.com",
       "https://staging.myapp.com",
@@ -11,7 +16,7 @@
     "enable_logging": true,
     "enable_caching": true,
     "enable_governance": false
-  },
+  },  
   "providers": {
     "openai": {
       "keys": [
@@ -104,7 +109,9 @@
       "keys": [
         {
           "value": "env.COHERE_API_KEY",
-          "models": ["command-a-03-2025"],
+          "models": [
+            "command-a-03-2025"
+          ],
           "weight": 1.0
         }
       ],
@@ -123,7 +130,9 @@
       "keys": [
         {
           "value": "env.AZURE_API_KEY",
-          "models": ["gpt-4o"],
+          "models": [
+            "gpt-4o"
+          ],
           "weight": 1.0,
           "azure_key_config": {
             "endpoint": "env.AZURE_ENDPOINT",
@@ -148,7 +157,9 @@
     "vertex": {
       "keys": [
         {
-          "models": ["gemini-2.0-flash-001"],
+          "models": [
+            "gemini-2.0-flash-001"
+          ],
           "weight": 1.0,
           "vertex_key_config": {
             "project_id": "env.VERTEX_PROJECT_ID",
@@ -170,20 +181,43 @@
         "connection_type": "stdio",
         "stdio_config": {
           "command": "npx",
-          "args": ["-y", "your-mcp-server-name"],
-          "envs": ["YOUR_MCP_SERVER_ENV_VAR"]
+          "args": [
+            "-y",
+            "your-mcp-server-name"
+          ],
+          "envs": [
+            "YOUR_MCP_SERVER_ENV_VAR"
+          ]
         }
       }
     ]
   },
-  "cache": {
-    "addr": "localhost:6379",
-    "username": "",
-    "password": "env.REDIS_PASSWORD",
-    "db": 0,
+  "vector_store": {
+    "enabled": true,
+    "type": "redis-cluster",
+    "config": {
+      "addr": "localhost:7000,localhost:7001,localhost:7002",
+      "username": "",
+      "password": "env.REDIS_PASSWORD",
+      "db": 1,
+      "prefix": "bifrost:"
+    },
     "ttl_seconds": 300,
-    "prefix": "bifrost:",
     "cache_by_model": true,
     "cache_by_provider": true
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config":{
+      "path": "config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config":{
+      "path": "logs.db"
+    }
   }
 }

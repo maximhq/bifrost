@@ -62,13 +62,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/plugins/redis"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/governance"
@@ -79,13 +77,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	gormLogger "gorm.io/gorm/logger"
 )
 
 //go:embed all:ui
 var uiContent embed.FS
+var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 // Command line flags
 var (
@@ -100,10 +96,13 @@ var (
 
 // init initializes command line flags and validates required configuration.
 // It sets up the following flags:
-//   - port: Server port (default: 8080)
 //   - host: Host to bind the server to (default: localhost, can be overridden with BIFROST_HOST env var)
+//   - port: Server port (default: 8080)
 //   - app-dir: Application data directory (default: current directory)
 //   - plugins: Comma-separated list of plugins to load
+//   - log-level: Logger level (debug, info, warn, error). Default is info.
+//   - log-style: Logger output type (json or pretty). Default is JSON.
+
 func init() {
 	pluginString := ""
 
@@ -118,12 +117,12 @@ func init() {
 	flag.StringVar(&appDir, "app-dir", "./bifrost-data", "Application data directory (contains config.json and logs)")
 	flag.StringVar(&pluginString, "plugins", "", "Comma separated list of plugins to load")
 	flag.StringVar(&logLevel, "log-level", string(schemas.LogLevelInfo), "Logger level (debug, info, warn, error). Default is info.")
-	flag.StringVar(&logOutputStyle, "log-style", string(bifrost.LoggerOutputTypeJSON), "Logger output type (json or pretty). Default is JSON.")
+	flag.StringVar(&logOutputStyle, "log-style", string(schemas.LoggerOutputTypeJSON), "Logger output type (json or pretty). Default is JSON.")
 	flag.Parse()
 
 	pluginsToLoad = strings.Split(pluginString, ",")
 	// Configure logger from flags
-	logger.SetOutputType(bifrost.LoggerOutputType(logOutputStyle))
+	logger.SetOutputType(schemas.LoggerOutputType(logOutputStyle))
 	logger.SetLevel(schemas.LogLevel(logLevel))
 }
 
@@ -139,7 +138,7 @@ func registerCollectorSafely(collector prometheus.Collector) {
 }
 
 // corsMiddleware handles CORS headers for localhost and configured allowed origins
-func corsMiddleware(store *lib.ConfigStore, logger schemas.Logger, next fasthttp.RequestHandler) fasthttp.RequestHandler {
+func corsMiddleware(store *lib.Config, logger schemas.Logger, next fasthttp.RequestHandler) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
 		origin := string(ctx.Request.Header.Peek("Origin"))
 
@@ -285,9 +284,6 @@ func getDefaultConfigDir(appDir string) string {
 	return configDir
 }
 
-// logger is the default logger for the application.
-var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-
 // main is the entry point of the application.
 // It:
 // 1. Initializes Prometheus collectors for monitoring
@@ -311,59 +307,15 @@ func main() {
 	registerCollectorSafely(collectors.NewGoCollector())
 	registerCollectorSafely(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
-	// Initialize separate database connections for optimal performance at scale
-	configDBPath := filepath.Join(configDir, "config.db")
-	configFilePath := filepath.Join(configDir, "config.json")
-	logsDBPath := filepath.Join(configDir, "logs.db")
-
-	// Config database: Optimized for high concurrency governance workload
-	configDB, err := gorm.Open(sqlite.Open(configDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000"), &gorm.Config{
-		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
-	})
-	if err != nil {
-		logger.Fatal("failed to initialize config database", err)
-	}
-
-	// Configure config database for read-heavy workload
-	configSQLDb, err := configDB.DB()
-	if err != nil {
-		logger.Fatal("failed to get config database", err)
-	}
-	configSQLDb.SetMaxIdleConns(20) // More idle connections for high load
-
 	// Initialize high-performance configuration store with dedicated database
-	store, err := lib.NewConfigStore(logger, configDB, configFilePath)
+	config, err := lib.LoadConfig(configDir)
 	if err != nil {
-		logger.Fatal("failed to initialize config store", err)
-	}
-
-	// Load configuration using hybrid file-database approach
-	// This checks for config.json file, compares hash with database, and loads accordingly
-	if err := store.LoadConfiguration(); err != nil {
 		logger.Fatal("failed to load config", err)
-	}
-
-	// Logs database: Optimized for high-volume writes
-	var logsDB *gorm.DB
-	if store.ClientConfig.EnableLogging {
-		logsDB, err = gorm.Open(sqlite.Open(logsDBPath+"?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=2000&_busy_timeout=30000"), &gorm.Config{
-			Logger: gormLogger.Default.LogMode(gormLogger.Silent),
-		})
-		if err != nil {
-			logger.Fatal("failed to initialize logs database", err)
-		}
-
-		// Configure logs database for write-heavy workload at scale
-		logsSQLDb, err := logsDB.DB()
-		if err != nil {
-			logger.Fatal("failed to get logs database", err)
-		}
-		logsSQLDb.SetMaxIdleConns(20) // Higher for concurrent writes
 	}
 
 	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
 	// The account interface now benefits from ultra-fast config access times via in-memory storage
-	account := lib.NewBaseAccount(store)
+	account := lib.NewBaseAccount(config)
 
 	loadedPlugins := []schemas.Plugin{}
 
@@ -389,7 +341,7 @@ func main() {
 		}
 	}
 
-	telemetry.InitPrometheusMetrics(store.ClientConfig.PrometheusLabels)
+	telemetry.InitPrometheusMetrics(config.ClientConfig.PrometheusLabels)
 	logger.Debug("Prometheus Go/Process collectors registered.")
 
 	promPlugin := telemetry.NewPrometheusPlugin()
@@ -398,9 +350,9 @@ func main() {
 	var loggingHandler *handlers.LoggingHandler
 	var wsHandler *handlers.WebSocketHandler
 
-	if store.ClientConfig.EnableLogging && logsDB != nil {
+	if config.ClientConfig.EnableLogging && config.LogsStore != nil {
 		// Use dedicated logs database with high-scale optimizations
-		loggingPlugin, err = logging.NewLoggerPlugin(logsDB, logger)
+		loggingPlugin, err = logging.NewLoggerPlugin(config.LogsStore, logger)
 		if err != nil {
 			logger.Fatal("failed to initialize logging plugin", err)
 		}
@@ -408,79 +360,82 @@ func main() {
 		loadedPlugins = append(loadedPlugins, loggingPlugin)
 
 		loggingHandler = handlers.NewLoggingHandler(loggingPlugin.GetPluginLogManager(), logger)
-		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), store, logger)
+		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), config, logger)
 	}
 
 	var governancePlugin *governance.GovernancePlugin
 	var governanceHandler *handlers.GovernanceHandler
 
-	if store.ClientConfig.EnableGovernance {
+	if config.ClientConfig.EnableGovernance {
 		// Initialize governance plugin
-		governancePlugin, err = governance.NewGovernancePlugin(configDB, logger, &store.ClientConfig.EnforceGovernanceHeader)
+		governancePlugin, err = governance.NewGovernancePlugin(config, logger, &config.ClientConfig.EnforceGovernanceHeader)
 		if err != nil {
 			logger.Fatal("failed to initialize governance plugin", err)
 		}
 
 		loadedPlugins = append(loadedPlugins, governancePlugin)
 
-		governanceHandler = handlers.NewGovernanceHandler(governancePlugin, configDB, logger)
+		governanceHandler, err = handlers.NewGovernanceHandler(governancePlugin, config.ConfigStore, logger)
+		if err != nil {
+			logger.Error(fmt.Errorf("failed to initialize governance handler: %w", err))
+		}
 	}
 
 	var cacheHandler *handlers.CacheHandler
 
-	if store.ClientConfig.EnableCaching {
+	if config.ClientConfig.EnableCaching {
 		// Get Redis configuration from database
-		cacheDBConfig, err := store.GetCacheConfig()
-		if err != nil {
-			logger.Fatal("failed to get cache config", err)
-		}
+		// cacheDBConfig, err := store.GetCacheConfig()
+		// if err != nil {
+		// 	logger.Fatal("failed to get cache config", err)
+		// }
 
 		// Convert DBCacheConfig to RedisPluginConfig
-		pluginConfig := redis.RedisPluginConfig{
-			Addr:            cacheDBConfig.Addr,
-			Username:        cacheDBConfig.Username,
-			Password:        cacheDBConfig.Password,
-			DB:              cacheDBConfig.DB,
-			CacheKey:        "request-cache-key", // Always use this key as specified
-			CacheTTLKey:     "request-cache-ttl", // Always use this key as specified
-			TTL:             time.Duration(cacheDBConfig.TTLSeconds) * time.Second,
-			Prefix:          cacheDBConfig.Prefix,
-			CacheByModel:    &cacheDBConfig.CacheByModel,
-			CacheByProvider: &cacheDBConfig.CacheByProvider,
-		}
+		// pluginConfig := redis.RedisPluginConfig{
+		// 	Addr:            cacheDBConfig.Addr,
+		// 	Username:        cacheDBConfig.Username,
+		// 	Password:        cacheDBConfig.Password,
+		// 	DB:              cacheDBConfig.DB,
+		// 	CacheKey:        "request-cache-key", // Always use this key as specified
+		// 	CacheTTLKey:     "request-cache-ttl", // Always use this key as specified
+		// 	TTL:             time.Duration(cacheDBConfig.TTLSeconds) * time.Second,
+		// 	Prefix:          cacheDBConfig.Prefix,
+		// 	CacheByModel:    &cacheDBConfig.CacheByModel,
+		// 	CacheByProvider: &cacheDBConfig.CacheByProvider,
+		// }
 
-		redisPlugin, err := redis.NewRedisPlugin(pluginConfig, logger)
-		if err != nil {
-			logger.Warn(fmt.Sprintf("failed to initialize Redis plugin: %v", err))
-		} else {
-			loadedPlugins = append(loadedPlugins, redisPlugin)
+		// redisPlugin, err := redis.NewRedisPlugin(pluginConfig, logger)
+		// if err != nil {
+		// 	logger.Warn(fmt.Sprintf("failed to initialize Redis plugin: %v", err))
+		// } else {
+		// 	loadedPlugins = append(loadedPlugins, redisPlugin)
 
-			cacheHandler = handlers.NewCacheHandler(store, redisPlugin.(*redis.Plugin), logger)
-		}
+		// 	cacheHandler = handlers.NewCacheHandler(store, redisPlugin.(*redis.Plugin), logger)
+		// }
 	}
 
 	loadedPlugins = append(loadedPlugins, promPlugin)
 
 	client, err := bifrost.Init(schemas.BifrostConfig{
 		Account:            account,
-		InitialPoolSize:    store.ClientConfig.InitialPoolSize,
-		DropExcessRequests: store.ClientConfig.DropExcessRequests,
+		InitialPoolSize:    config.ClientConfig.InitialPoolSize,
+		DropExcessRequests: config.ClientConfig.DropExcessRequests,
 		Plugins:            loadedPlugins,
-		MCPConfig:          store.MCPConfig,
+		MCPConfig:          config.MCPConfig,
 		Logger:             logger,
 	})
 	if err != nil {
 		logger.Fatal("failed to initialize bifrost", err)
 	}
 
-	store.SetBifrostClient(client)
+	config.SetBifrostClient(client)
 
 	// Initialize handlers
-	providerHandler := handlers.NewProviderHandler(store, client, logger)
-	completionHandler := handlers.NewCompletionHandler(client, store, logger)
-	mcpHandler := handlers.NewMCPHandler(client, logger, store)
-	integrationHandler := handlers.NewIntegrationHandler(client, store)
-	configHandler := handlers.NewConfigHandler(client, logger, store)
+	providerHandler := handlers.NewProviderHandler(config, client, logger)
+	completionHandler := handlers.NewCompletionHandler(client, config, logger)
+	mcpHandler := handlers.NewMCPHandler(client, logger, config)
+	integrationHandler := handlers.NewIntegrationHandler(client, config)
+	configHandler := handlers.NewConfigHandler(client, logger, config)
 
 	// Set up WebSocket callback for real-time log updates
 	if wsHandler != nil && loggingPlugin != nil {
@@ -523,7 +478,7 @@ func main() {
 	}
 
 	// Apply CORS middleware to all routes
-	corsHandler := corsMiddleware(store, logger, r.Handler)
+	corsHandler := corsMiddleware(config, logger, r.Handler)
 
 	logger.Info(fmt.Sprintf("Successfully started bifrost. Serving UI on http://%s:%s", host, port))
 	if err := fasthttp.ListenAndServe(net.JoinHostPort(host, port), corsHandler); err != nil {

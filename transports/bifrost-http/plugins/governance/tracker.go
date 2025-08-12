@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"gorm.io/gorm"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 )
 
 // UsageUpdate contains data for VK-level usage tracking
@@ -30,10 +30,10 @@ type UsageUpdate struct {
 
 // UsageTracker manages VK-level usage tracking and budget management
 type UsageTracker struct {
-	store    *GovernanceStore
-	resolver *BudgetResolver
-	db       *gorm.DB
-	logger   schemas.Logger
+	store       *GovernanceStore
+	resolver    *BudgetResolver
+	configStore configstore.ConfigStore
+	logger      schemas.Logger
 
 	// Background workers
 	resetTicker *time.Ticker
@@ -42,13 +42,13 @@ type UsageTracker struct {
 }
 
 // NewUsageTracker creates a new usage tracker for the hierarchical budget system
-func NewUsageTracker(store *GovernanceStore, resolver *BudgetResolver, db *gorm.DB, logger schemas.Logger) *UsageTracker {
+func NewUsageTracker(store *GovernanceStore, resolver *BudgetResolver, configStore configstore.ConfigStore, logger schemas.Logger) *UsageTracker {
 	tracker := &UsageTracker{
-		store:    store,
-		resolver: resolver,
-		db:       db,
-		logger:   logger,
-		done:     make(chan struct{}),
+		store:       store,
+		resolver:    resolver,
+		configStore: configStore,
+		logger:      logger,
+		done:        make(chan struct{}),
 	}
 
 	// Start background workers for business logic
@@ -92,7 +92,7 @@ func (t *UsageTracker) UpdateUsage(update *UsageUpdate) {
 }
 
 // updateBudgetHierarchy updates budget usage atomically in the VK → Team → Customer hierarchy
-func (t *UsageTracker) updateBudgetHierarchy(vk *VirtualKey, update *UsageUpdate) {
+func (t *UsageTracker) updateBudgetHierarchy(vk *configstore.TableVirtualKey, update *UsageUpdate) {
 	// Use atomic budget update to prevent race conditions and ensure consistency
 	if err := t.store.UpdateBudget(vk, update.Cost); err != nil {
 		t.logger.Error(fmt.Errorf("failed to update budget hierarchy atomically for VK %s: %w", vk.ID, err))
@@ -139,19 +139,22 @@ func (t *UsageTracker) resetExpiredCounters() {
 
 // PerformStartupResets checks and resets any expired rate limits and budgets on startup
 func (t *UsageTracker) PerformStartupResets() error {
+	if t.configStore == nil {
+		return nil
+	}
+
 	t.logger.Info("Performing startup reset check for expired rate limits and budgets")
 	now := time.Now()
 
-	var resetRateLimits []*RateLimit
-	var resetBudgets []*Budget
+	var resetRateLimits []*configstore.TableRateLimit
 	var errors []string
 	var vksWithRateLimits int
 	var vksWithoutRateLimits int
 
 	// ==== RESET EXPIRED RATE LIMITS ====
 	// Check ALL virtual keys (both active and inactive) for expired rate limits
-	var allVKs []VirtualKey
-	if err := t.db.Preload("Budget").Preload("RateLimit").Find(&allVKs).Error; err != nil {
+	allVKs, err := t.configStore.GetVirtualKeys()
+	if err != nil {
 		errors = append(errors, fmt.Sprintf("failed to load virtual keys for reset: %s", err.Error()))
 	} else {
 		t.logger.Debug(fmt.Sprintf("Startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
@@ -171,7 +174,7 @@ func (t *UsageTracker) PerformStartupResets() error {
 
 		// Check token limits
 		if rateLimit.TokenResetDuration != nil {
-			if duration, err := ParseDuration(*rateLimit.TokenResetDuration); err == nil {
+			if duration, err := configstore.ParseDuration(*rateLimit.TokenResetDuration); err == nil {
 				timeSinceReset := now.Sub(rateLimit.TokenLastReset)
 				if timeSinceReset >= duration {
 					rateLimit.TokenCurrentUsage = 0
@@ -185,7 +188,7 @@ func (t *UsageTracker) PerformStartupResets() error {
 
 		// Check request limits
 		if rateLimit.RequestResetDuration != nil {
-			if duration, err := ParseDuration(*rateLimit.RequestResetDuration); err == nil {
+			if duration, err := configstore.ParseDuration(*rateLimit.RequestResetDuration); err == nil {
 				timeSinceReset := now.Sub(rateLimit.RequestLastReset)
 				if timeSinceReset >= duration {
 					rateLimit.RequestCurrentUsage = 0
@@ -203,20 +206,17 @@ func (t *UsageTracker) PerformStartupResets() error {
 	}
 
 	// ==== RESET EXPIRED BUDGETS ====
+	// DB reset is also handled by this function
 	if err := t.store.ResetExpiredBudgets(); err != nil {
 		errors = append(errors, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))
 	}
 
 	// ==== PERSIST RESETS TO DATABASE ====
-	if len(resetRateLimits) > 0 {
-		if err := t.db.Save(&resetRateLimits).Error; err != nil {
-			errors = append(errors, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
-		}
-	}
-
-	if len(resetBudgets) > 0 {
-		if err := t.db.Save(&resetBudgets).Error; err != nil {
-			errors = append(errors, fmt.Sprintf("failed to persist budget resets: %s", err.Error()))
+	if t.configStore != nil {
+		if len(resetRateLimits) > 0 {
+			if err := t.configStore.UpdateRateLimits(nil, resetRateLimits); err != nil {
+				errors = append(errors, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
+			}
 		}
 	}
 

@@ -7,7 +7,8 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"gorm.io/gorm"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 )
 
 // PluginName is the name of the governance plugin
@@ -23,6 +24,7 @@ const (
 	governanceRequestTypeContextKey contextKey = "bf-governance-request-type"
 	governanceIsCacheReadContextKey contextKey = "bf-governance-is-cache-read"
 	governanceIsBatchContextKey     contextKey = "bf-governance-is-batch"
+	// governanceIncludeOnlyKeysContextKey contextKey = "bf-governance-include-only-keys"
 )
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -34,27 +36,22 @@ type GovernancePlugin struct {
 	pricingManager *PricingManager  // Pricing data management and cost calculations
 
 	// Dependencies
-	db     *gorm.DB
-	logger schemas.Logger
+	configStore configstore.ConfigStore
+	logger      schemas.Logger
 
 	isVkMandatory *bool
 }
 
 // NewGovernancePlugin creates a new governance plugin with cleanly segregated components
 // All governance features are enabled by default with optimized settings
-func NewGovernancePlugin(db *gorm.DB, logger schemas.Logger, isVkMandatory *bool) (*GovernancePlugin, error) {
-	if db == nil {
-		return nil, fmt.Errorf("database connection cannot be nil")
-	}
-
-	// Auto-migrate governance tables
-	if err := autoMigrateGovernanceTables(db); err != nil {
-		return nil, fmt.Errorf("failed to migrate governance tables: %w", err)
+func NewGovernancePlugin(config *lib.Config, logger schemas.Logger, isVkMandatory *bool) (*GovernancePlugin, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config cannot be nil")
 	}
 
 	// Initialize components in dependency order with fixed, optimal settings
 	// 1. Store (pure data access)
-	store, err := NewGovernanceStore(db, logger)
+	store, err := NewGovernanceStore(config, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
@@ -63,18 +60,20 @@ func NewGovernancePlugin(db *gorm.DB, logger schemas.Logger, isVkMandatory *bool
 	resolver := NewBudgetResolver(store, logger)
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
-	tracker := NewUsageTracker(store, resolver, db, logger)
+	tracker := NewUsageTracker(store, resolver, config.ConfigStore, logger)
 
 	// 4. Pricing Manager (manages model pricing data and cost calculations)
-	pricingManager, err := NewPricingManager(db, logger)
+	pricingManager, err := NewPricingManager(config.ConfigStore, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize pricing manager: %w", err)
 	}
 
 	// 5. Perform startup reset check for any expired limits from downtime
-	if err := tracker.PerformStartupResets(); err != nil {
-		logger.Error(fmt.Errorf("startup reset failed: %w", err))
-		// Continue initialization even if startup reset fails (non-critical)
+	if config.ConfigStore != nil {
+		if err := tracker.PerformStartupResets(); err != nil {
+			logger.Error(fmt.Errorf("startup reset failed: %w", err))
+			// Continue initialization even if startup reset fails (non-critical)
+		}
 	}
 
 	plugin := &GovernancePlugin{
@@ -82,7 +81,7 @@ func NewGovernancePlugin(db *gorm.DB, logger schemas.Logger, isVkMandatory *bool
 		resolver:       resolver,
 		tracker:        tracker,
 		pricingManager: pricingManager,
-		db:             db,
+		configStore:    config.ConfigStore,
 		logger:         logger,
 		isVkMandatory:  isVkMandatory,
 	}
@@ -135,7 +134,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	*ctx = context.WithValue(*ctx, governanceIsBatchContextKey, isBatch)
 
 	// Create request context for evaluation
-	requestContext := &RequestContext{
+	evaluationRequest := &EvaluationRequest{
 		VirtualKey: virtualKey,
 		Provider:   provider,
 		Model:      model,
@@ -144,7 +143,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	}
 
 	// Use resolver to make governance decision (pure decision engine)
-	result := p.resolver.EvaluateRequest(requestContext)
+	result := p.resolver.EvaluateRequest(ctx, evaluationRequest)
 
 	if result.Decision != DecisionAllow {
 		if ctx != nil {

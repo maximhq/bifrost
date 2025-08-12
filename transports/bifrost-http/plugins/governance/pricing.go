@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 	"gorm.io/gorm"
 )
 
@@ -58,11 +59,11 @@ type PricingEntry struct {
 
 // PricingManager handles model pricing data synchronization and access
 type PricingManager struct {
-	db     *gorm.DB
-	logger schemas.Logger
+	configStore configstore.ConfigStore
+	logger      schemas.Logger
 
 	// In-memory cache for fast access
-	pricingCache []ModelPricing
+	pricingCache []configstore.TableModelPricing
 	mu           sync.RWMutex
 
 	// Background sync worker
@@ -72,27 +73,30 @@ type PricingManager struct {
 }
 
 // NewPricingManager creates a new pricing manager
-func NewPricingManager(db *gorm.DB, logger schemas.Logger) (*PricingManager, error) {
-	if db == nil {
-		return nil, fmt.Errorf("database connection cannot be nil")
-	}
-
+func NewPricingManager(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingManager, error) {
 	pm := &PricingManager{
-		db:           db,
+		configStore:  configStore,
 		logger:       logger,
-		pricingCache: make([]ModelPricing, 0),
+		pricingCache: make([]configstore.TableModelPricing, 0),
 		done:         make(chan struct{}),
 	}
 
-	// Load initial pricing data
-	if err := pm.loadPricingFromDatabase(); err != nil {
-		return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
-	}
+	if configStore != nil {
+		// Load initial pricing data
+		if err := pm.loadPricingFromDatabase(); err != nil {
+			return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
+		}
 
-	// Sync pricing data from file to database
-	if pm.shouldSync() {
-		if err := pm.syncPricing(); err != nil {
-			return nil, fmt.Errorf("failed to sync pricing data: %w", err)
+		// Sync pricing data from file to database
+		if pm.shouldSync() {
+			if err := pm.syncPricing(); err != nil {
+				return nil, fmt.Errorf("failed to sync pricing data: %w", err)
+			}
+		}
+	} else {
+		// Load pricing data from config memory
+		if err := pm.loadPricingIntoMemory(); err != nil {
+			return nil, fmt.Errorf("failed to load pricing data from config memory: %w", err)
 		}
 	}
 
@@ -219,7 +223,7 @@ func (pm *PricingManager) getSafeFloat64(ptr *float64, fallback float64) float64
 }
 
 // getPricing returns pricing information for a model (thread-safe)
-func (pm *PricingManager) getPricing(model, provider, requestType string) (*ModelPricing, bool) {
+func (pm *PricingManager) getPricing(model, provider, requestType string) (*configstore.TableModelPricing, bool) {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
@@ -233,8 +237,11 @@ func (pm *PricingManager) getPricing(model, provider, requestType string) (*Mode
 
 // shouldSync checks if pricing data should be synced based on last sync time
 func (pm *PricingManager) shouldSync() bool {
-	var config Config
-	err := pm.db.First(&config, "key = ?", LastPricingSyncKey).Error
+	if pm.configStore == nil {
+		return false
+	}
+
+	config, err := pm.configStore.GetConfig(LastPricingSyncKey)
 	if err != nil {
 		// No sync record found, should sync
 		return true
@@ -257,9 +264,11 @@ func (pm *PricingManager) syncPricing() error {
 	pricingData, err := pm.loadPricingFromURL()
 	if err != nil {
 		// Check if we have existing data in database
-		var count int64
-		pm.db.Model(&ModelPricing{}).Count(&count)
-		if count > 0 {
+		pricingRecords, err := pm.configStore.GetModelPricings()
+		if err != nil {
+			return fmt.Errorf("failed to get pricing records: %w", err)
+		}
+		if len(pricingRecords) > 0 {
 			pm.logger.Error(fmt.Errorf("failed to load pricing data from URL, but existing data found in database: %w", err))
 			return nil
 		} else {
@@ -268,74 +277,27 @@ func (pm *PricingManager) syncPricing() error {
 	}
 
 	// Update database in transaction
-	err = pm.db.Transaction(func(tx *gorm.DB) error {
+	err = pm.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
 		// Clear existing pricing data
-		if err := tx.Delete(&ModelPricing{}, "1=1").Error; err != nil {
+		if err := pm.configStore.DeleteModelPricings(tx); err != nil {
 			return fmt.Errorf("failed to clear existing pricing data: %w", err)
 		}
 
 		// Insert new pricing data
 		for modelKey, entry := range pricingData {
-			provider := entry.Provider
-
-			if provider == "vertex_ai-language-models" {
-				provider = "vertex"
-			}
-
-			// Handle provider/model format - extract just the model name
-			modelName := modelKey
-			if strings.Contains(modelKey, "/") {
-				parts := strings.Split(modelKey, "/")
-				if len(parts) > 1 {
-					if parts[0] != provider {
-						continue
-					}
-					modelName = parts[1]
-				}
-			}
+			pricing := convertPricingDataToTableModelPricing(modelKey, entry)
 
 			// Check if entry already exists
 			var existingCount int64
-			tx.Model(&ModelPricing{}).Where("model = ? AND provider = ? AND mode = ?",
-				modelName, provider, entry.Mode).Count(&existingCount)
+			tx.Model(&configstore.TableModelPricing{}).Where("model = ? AND provider = ? AND mode = ?",
+				pricing.Model, pricing.Provider, pricing.Mode).Count(&existingCount)
 
 			if existingCount > 0 {
 				continue
 			}
 
-			pricing := &ModelPricing{
-				Model:              modelName,
-				Provider:           provider,
-				InputCostPerToken:  entry.InputCostPerToken,
-				OutputCostPerToken: entry.OutputCostPerToken,
-				Mode:               entry.Mode,
-
-				// Additional pricing for media
-				InputCostPerImage:          entry.InputCostPerImage,
-				InputCostPerVideoPerSecond: entry.InputCostPerVideoPerSecond,
-				InputCostPerAudioPerSecond: entry.InputCostPerAudioPerSecond,
-
-				// Character-based pricing
-				InputCostPerCharacter:  entry.InputCostPerCharacter,
-				OutputCostPerCharacter: entry.OutputCostPerCharacter,
-
-				// Pricing above 128k tokens
-				InputCostPerTokenAbove128kTokens:          entry.InputCostPerTokenAbove128kTokens,
-				InputCostPerCharacterAbove128kTokens:      entry.InputCostPerCharacterAbove128kTokens,
-				InputCostPerImageAbove128kTokens:          entry.InputCostPerImageAbove128kTokens,
-				InputCostPerVideoPerSecondAbove128kTokens: entry.InputCostPerVideoPerSecondAbove128kTokens,
-				InputCostPerAudioPerSecondAbove128kTokens: entry.InputCostPerAudioPerSecondAbove128kTokens,
-				OutputCostPerTokenAbove128kTokens:         entry.OutputCostPerTokenAbove128kTokens,
-				OutputCostPerCharacterAbove128kTokens:     entry.OutputCostPerCharacterAbove128kTokens,
-
-				// Cache and batch pricing
-				CacheReadInputTokenCost:   entry.CacheReadInputTokenCost,
-				InputCostPerTokenBatches:  entry.InputCostPerTokenBatches,
-				OutputCostPerTokenBatches: entry.OutputCostPerTokenBatches,
-			}
-
-			if err := tx.Create(pricing).Error; err != nil {
-				return fmt.Errorf("failed to create pricing record for model %s: %w", modelName, err)
+			if err := pm.configStore.CreateModelPricing(tx, &pricing); err != nil {
+				return fmt.Errorf("failed to create pricing record for model %s: %w", pricing.Model, err)
 			}
 		}
 
@@ -346,13 +308,13 @@ func (pm *PricingManager) syncPricing() error {
 		return fmt.Errorf("failed to sync pricing data to database: %w", err)
 	}
 
-	config := &Config{
+	config := &configstore.TableConfig{
 		Key:   LastPricingSyncKey,
 		Value: time.Now().Format(time.RFC3339),
 	}
 
 	// Update last sync time
-	if err := pm.db.Save(config).Error; err != nil {
+	if err := pm.configStore.UpdateConfig(nil, config); err != nil {
 		pm.logger.Warn(fmt.Sprintf("Failed to update last sync time: %v", err))
 	}
 
@@ -400,10 +362,33 @@ func (pm *PricingManager) loadPricingFromURL() (PricingData, error) {
 	return pricingData, nil
 }
 
+// loadPricingIntoMemory loads pricing data from URL into memory cache
+func (pm *PricingManager) loadPricingIntoMemory() error {
+	pricingData, err := pm.loadPricingFromURL()
+	if err != nil {
+		return fmt.Errorf("failed to load pricing data from URL: %w", err)
+	}
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pm.pricingCache = make([]configstore.TableModelPricing, 0, len(pricingData))
+	for modelKey, entry := range pricingData {
+		pricing := convertPricingDataToTableModelPricing(modelKey, entry)
+		pm.pricingCache = append(pm.pricingCache, pricing)
+	}
+
+	return nil
+}
+
 // loadPricingFromDatabase loads pricing data from database into memory cache
 func (pm *PricingManager) loadPricingFromDatabase() error {
-	var pricingRecords []ModelPricing
-	if err := pm.db.Find(&pricingRecords).Error; err != nil {
+	if pm.configStore == nil {
+		return nil
+	}
+
+	pricingRecords, err := pm.configStore.GetModelPricings()
+	if err != nil {
 		return fmt.Errorf("failed to load pricing from database: %w", err)
 	}
 

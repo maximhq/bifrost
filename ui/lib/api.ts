@@ -7,6 +7,7 @@ import {
   UpdateProviderRequest,
   BifrostErrorResponse,
   CacheConfig,
+  BifrostConfig,
 } from '@/lib/types/config'
 import { MCPClient, CreateMCPClientRequest, UpdateMCPClientRequest } from '@/lib/types/mcp'
 import { LogEntry, LogFilters, LogStats, Pagination } from './types/logs'
@@ -33,6 +34,7 @@ import {
   GetUsageStatsResponse,
   DebugStatsResponse,
   HealthCheckResponse,
+  DBKey,
 } from '@/lib/types/governance'
 import { getApiBaseUrl } from '@/lib/utils/port'
 
@@ -165,6 +167,16 @@ class ApiService {
     }
   }
 
+  // Get all available keys from all providers for governance selection
+  async getAllKeys(): ServiceResponse<DBKey[]> {
+    try {
+      const response = await this.client.get(`/keys`)
+      return [response.data, null]
+    } catch (error) {
+      return [null, this.getErrorMessage(error)]
+    }
+  }
+
   // MCP endpoints
   async getMCPClients(): ServiceResponse<MCPClient[]> {
     try {
@@ -213,7 +225,7 @@ class ApiService {
 
   // Config endpoints
 
-  async getCoreConfig(fromDB: boolean = false): ServiceResponse<CoreConfig> {
+  async getCoreConfig(fromDB: boolean = false): ServiceResponse<BifrostConfig> {
     try {
       const response = await this.client.get(`/config?from_db=${fromDB}`)
       return [response.data, null]

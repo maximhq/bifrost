@@ -1,6 +1,6 @@
 'use client'
 
-import { BoxIcon, BugIcon, ExternalLink, Puzzle, Settings2Icon, Shield, Telescope } from 'lucide-react'
+import { BoxIcon, BugIcon, Puzzle, Settings2Icon, Shield, Telescope } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import {
@@ -9,7 +9,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -113,7 +112,7 @@ const externalLinks = [
   },
   {
     title: 'Full Documentation',
-    url: 'https://github.com/maximhq/bifrost/tree/main/docs',
+    url: 'https://getmaxim.ai/bifrost/docs',
     icon: BooksIcon,
   },
 ]
@@ -135,7 +134,7 @@ export default function AppSidebar() {
       if (error) {
         toast.error(error)
       } else if (coreConfig) {
-        setIsGovernanceEnabled(coreConfig.enable_governance)
+        setIsGovernanceEnabled(coreConfig.client_config.enable_governance)
       }
     }
     fetchConfig()
@@ -153,13 +152,12 @@ export default function AppSidebar() {
   const { isConnected: isWebSocketConnected } = useWebSocket()
 
   return (
-    <Sidebar className="border-none bg-transparent custom-scrollbar">
-      <SidebarHeader className="flex h-12 justify-between px-0">
+    <Sidebar className="custom-scrollbar border-none bg-transparent">
+      <SidebarHeader className="ml-2 mt-1 flex h-12 justify-between px-0">
         <div className="flex h-full items-center justify-between gap-2 px-1.5">
           <Link href="/" className="group flex items-center gap-2">
             <Image className="h-10 w-auto" src={logoSrc} alt="Bifrost" width={100} height={100} />
           </Link>
-          <ThemeToggle />
         </div>
       </SidebarHeader>
 
@@ -219,31 +217,24 @@ export default function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel className="text-muted-foreground px-3 py-2 text-xs font-semibold uppercase tracking-wider">
-            Resources
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu className="space-y-1">
-              {externalLinks.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    asChild
-                    className="hover:bg-accent hover:text-accent-foreground h-9 rounded-lg px-3 transition-all duration-200"
-                  >
-                    <a href={item.url} target="_blank" rel="noopener noreferrer" className="group flex w-full items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <item.icon className="text-muted-foreground h-4 w-4" size={16} weight="bold" />
-                        <span className="text-sm">{item.title}</span>
-                      </div>
-                      <ExternalLink className="text-muted-foreground h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
-                    </a>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        <div className="mx-auto mt-auto flex flex-row">
+          <div className="mx-auto flex flex-row gap-4">
+            {externalLinks.map((item, index) => (
+              <a
+                key={index}
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex w-full items-center justify-between"
+              >
+                <div className="flex items-center space-x-3">
+                  <item.icon className="hover:text-primary text-muted-foreground h-5 w-5" size={22} weight="regular" />
+                </div>
+              </a>
+            ))}
+            <ThemeToggle />
+          </div>
+        </div>
       </SidebarContent>
 
       <SidebarFooter className="px-6 py-4">

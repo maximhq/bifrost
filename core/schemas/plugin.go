@@ -61,3 +61,12 @@ type Plugin interface {
 	// Returns any error that occurred during cleanup, which will be logged as a warning by the Bifrost instance.
 	Cleanup() error
 }
+
+// PluginConfig is the configuration for a plugin.
+// It contains the name of the plugin, whether it is enabled, and the configuration for the plugin.
+type PluginConfig struct {
+	Enabled   bool     `json:"enabled"`
+	Name      string   `json:"name"`	
+	Config    any      `json:"config"`
+	DependsOn []string `json:"depends_on"`
+}

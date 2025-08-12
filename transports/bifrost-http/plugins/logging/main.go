@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"gorm.io/gorm"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/logstore"
 )
 
 const (
@@ -83,49 +83,12 @@ type InitialLogData struct {
 	Tools              *[]schemas.Tool
 }
 
-// SearchFilters represents the available filters for log searches
-type SearchFilters struct {
-	Providers     []string   `json:"providers,omitempty"`
-	Models        []string   `json:"models,omitempty"`
-	Status        []string   `json:"status,omitempty"`
-	Objects       []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
-	StartTime     *time.Time `json:"start_time,omitempty"`
-	EndTime       *time.Time `json:"end_time,omitempty"`
-	MinLatency    *float64   `json:"min_latency,omitempty"`
-	MaxLatency    *float64   `json:"max_latency,omitempty"`
-	MinTokens     *int       `json:"min_tokens,omitempty"`
-	MaxTokens     *int       `json:"max_tokens,omitempty"`
-	ContentSearch string     `json:"content_search,omitempty"`
-}
-
-// PaginationOptions represents pagination parameters
-type PaginationOptions struct {
-	Limit  int    `json:"limit"`
-	Offset int    `json:"offset"`
-	SortBy string `json:"sort_by"` // "timestamp", "latency", "tokens"
-	Order  string `json:"order"`   // "asc", "desc"
-}
-
-// SearchResult represents the result of a log search
-type SearchResult struct {
-	Logs       []LogEntry        `json:"logs"`
-	Pagination PaginationOptions `json:"pagination"`
-	Stats      SearchStats       `json:"stats"`
-}
-
-type SearchStats struct {
-	TotalRequests  int64   `json:"total_requests"`
-	SuccessRate    float64 `json:"success_rate"`    // Percentage of successful requests
-	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
-	TotalTokens    int64   `json:"total_tokens"`    // Total tokens used
-}
-
 // LogCallback is a function that gets called when a new log entry is created
-type LogCallback func(*LogEntry)
+type LogCallback func(*logstore.Log)
 
 // LoggerPlugin implements the schemas.Plugin interface
 type LoggerPlugin struct {
-	db              *gorm.DB
+	store           logstore.LogStore
 	mu              sync.Mutex
 	done            chan struct{}
 	wg              sync.WaitGroup
@@ -139,13 +102,13 @@ type LoggerPlugin struct {
 }
 
 // NewLoggerPlugin creates a new logging plugin with GORM database
-func NewLoggerPlugin(db *gorm.DB, logger schemas.Logger) (*LoggerPlugin, error) {
-	if db == nil {
-		return nil, fmt.Errorf("GORM database connection cannot be nil")
+func NewLoggerPlugin(logsStore logstore.LogStore, logger schemas.Logger) (*LoggerPlugin, error) {
+	if logsStore == nil {
+		return nil, fmt.Errorf("logs store cannot be nil")
 	}
 
 	plugin := &LoggerPlugin{
-		db:     db,
+		store:  logsStore,
 		done:   make(chan struct{}),
 		logger: logger,
 		logMsgPool: sync.Pool{
@@ -172,27 +135,12 @@ func NewLoggerPlugin(db *gorm.DB, logger schemas.Logger) (*LoggerPlugin, error) 
 		plugin.streamDataPool.Put(&StreamUpdateData{})
 	}
 
-	// Auto-migrate tables
-	if err := plugin.autoMigrate(); err != nil {
-		return nil, fmt.Errorf("failed to auto-migrate tables: %w", err)
-	}
-
 	// Start cleanup ticker (runs every 30 seconds)
 	plugin.cleanupTicker = time.NewTicker(30 * time.Second)
 	plugin.wg.Add(1)
 	go plugin.cleanupWorker()
 
 	return plugin, nil
-}
-
-// autoMigrate creates/updates the database tables using GORM
-func (p *LoggerPlugin) autoMigrate() error {
-	// First migrate the main table
-	if err := p.db.AutoMigrate(&LogEntry{}); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // cleanupWorker periodically removes old processing logs
@@ -214,17 +162,9 @@ func (p *LoggerPlugin) cleanupWorker() {
 func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	// Calculate timestamp for 5 minutes ago
 	fiveMinutesAgo := time.Now().Add(-1 * 5 * time.Minute)
-
-	// Delete processing logs older than 5 minutes using GORM
-	result := p.db.Where("status = ? AND created_at < ?", "processing", fiveMinutesAgo).Delete(&LogEntry{})
-	if result.Error != nil {
-		p.logger.Error(fmt.Errorf("failed to cleanup old processing logs: %w", result.Error))
-		return
-	}
-
-	// Log the cleanup activity
-	if result.RowsAffected > 0 {
-		p.logger.Debug(fmt.Sprintf("Cleaned up %d old processing logs", result.RowsAffected))
+	// Delete processing logs older than 5 minutes using the store
+	if err := p.store.CleanupLogs(fiveMinutesAgo); err != nil {
+		p.logger.Error(fmt.Errorf("failed to cleanup old processing logs: %w", err))
 	}
 }
 
@@ -355,7 +295,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 			// Construct LogEntry directly from data we have to avoid database query
 			p.mu.Lock()
 			if p.logCallback != nil {
-				initialEntry := &LogEntry{
+				initialEntry := &logstore.Log{
 					ID:                 logMsg.RequestID,
 					Timestamp:          logMsg.Timestamp,
 					Object:             logMsg.InitialData.Object,

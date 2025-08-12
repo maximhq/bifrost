@@ -41,7 +41,7 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 		if deploymentID != nil {
 			deploymentIDStr, ok := deploymentID.(string)
 			if !ok {
-				return errors.New("deployment_id must be a string")
+				return errors.New("deployment-id is required in path")
 			}
 
 			switch r := req.(type) {
@@ -84,7 +84,7 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 			return nil
 		}
 
-		return errors.New("deployment-id is required in path")
+		return nil
 	}
 }
 

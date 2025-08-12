@@ -6,16 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	"database/sql"
-
-	"gorm.io/gorm"
-
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/logstore"
 )
 
 // insertInitialLogEntry creates a new log entry in the database using GORM
 func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Time, data *InitialLogData) error {
-	entry := &LogEntry{
+	entry := &logstore.Log{
 		ID:        requestID,
 		Timestamp: timestamp,
 		Object:    data.Object,
@@ -32,35 +29,30 @@ func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Ti
 		TranscriptionInputParsed: data.TranscriptionInput,
 	}
 
-	return p.db.Create(entry).Error
+	return p.store.Insert(entry)
 }
 
 // updateLogEntry updates an existing log entry using GORM
 func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, data *UpdateLogData, ctx context.Context) error {
 	updates := make(map[string]interface{})
-
 	// Try to get original timestamp from context first for latency calculation
 	latency, err := p.calculateLatency(requestID, timestamp, ctx)
 	if err != nil {
 		return err
 	}
 	updates["latency"] = latency
-
 	updates["status"] = data.Status
-
 	if data.Model != "" {
 		updates["model"] = data.Model
 	}
-
 	if data.Object != "" {
 		updates["object_type"] = data.Object // Note: using object_type for database column
 	}
-
 	// Handle JSON fields by setting them on a temporary entry and serializing
-	tempEntry := &LogEntry{}
+	tempEntry := &logstore.Log{}
 	if data.OutputMessage != nil {
 		tempEntry.OutputMessageParsed = data.OutputMessage
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["output_message"] = tempEntry.OutputMessage
 			updates["content_summary"] = tempEntry.ContentSummary // Update content summary
 		}
@@ -68,35 +60,35 @@ func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, dat
 
 	if data.EmbeddingOutput != nil {
 		tempEntry.EmbeddingOutputParsed = data.EmbeddingOutput
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["embedding_output"] = tempEntry.EmbeddingOutput
 		}
 	}
 
 	if data.ToolCalls != nil {
 		tempEntry.ToolCallsParsed = data.ToolCalls
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["tool_calls"] = tempEntry.ToolCalls
 		}
 	}
 
 	if data.SpeechOutput != nil {
 		tempEntry.SpeechOutputParsed = data.SpeechOutput
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["speech_output"] = tempEntry.SpeechOutput
 		}
 	}
 
 	if data.TranscriptionOutput != nil {
 		tempEntry.TranscriptionOutputParsed = data.TranscriptionOutput
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["transcription_output"] = tempEntry.TranscriptionOutput
 		}
 	}
 
 	if data.TokenUsage != nil {
 		tempEntry.TokenUsageParsed = data.TokenUsage
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["token_usage"] = tempEntry.TokenUsage
 			updates["prompt_tokens"] = data.TokenUsage.PromptTokens
 			updates["completion_tokens"] = data.TokenUsage.CompletionTokens
@@ -106,12 +98,12 @@ func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, dat
 
 	if data.ErrorDetails != nil {
 		tempEntry.ErrorDetailsParsed = data.ErrorDetails
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["error_details"] = tempEntry.ErrorDetails
 		}
 	}
 
-	return p.db.Model(&LogEntry{}).Where("id = ?", requestID).Updates(updates).Error
+	return p.store.Update(requestID, updates)
 }
 
 // processStreamUpdate handles streaming updates using GORM
@@ -123,28 +115,24 @@ func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time
 		latency, err := p.calculateLatency(requestID, timestamp, ctx)
 		if err != nil {
 			// If we can't get created_at, just update status and error
-			tempEntry := &LogEntry{}
+			tempEntry := &logstore.Log{}
 			tempEntry.ErrorDetailsParsed = data.ErrorDetails
-			if err := tempEntry.serializeFields(); err == nil {
-				return p.db.Model(&LogEntry{}).Where("id = ?", requestID).Updates(map[string]interface{}{
-					"status":        "error",
-					"error_details": tempEntry.ErrorDetails,
-				}).Error
+			if err := tempEntry.SerializeFields(); err == nil {
+				tempEntry.Status = "error"
+				return p.store.Update(requestID, tempEntry)
 			}
 			return err
 		}
 
-		tempEntry := &LogEntry{}
+		tempEntry := &logstore.Log{}
 		tempEntry.ErrorDetailsParsed = data.ErrorDetails
-		if err := tempEntry.serializeFields(); err != nil {
+		if err := tempEntry.SerializeFields(); err != nil {
 			return fmt.Errorf("failed to serialize error details: %w", err)
 		}
-		return p.db.Model(&LogEntry{}).Where("id = ?", requestID).Updates(map[string]interface{}{
-			"status":        "error",
-			"error_details": tempEntry.ErrorDetails,
-			"latency":       latency,
-			"timestamp":     timestamp,
-		}).Error
+		tempEntry.Status = "error"
+		tempEntry.Latency = &latency
+		tempEntry.Timestamp = timestamp
+		return p.store.Update(requestID, tempEntry)
 	}
 
 	// Always mark as streaming and update timestamp
@@ -182,9 +170,9 @@ func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time
 
 	// Update token usage if provided
 	if data.TokenUsage != nil {
-		tempEntry := &LogEntry{}
+		tempEntry := &logstore.Log{}
 		tempEntry.TokenUsageParsed = data.TokenUsage
-		if err := tempEntry.serializeFields(); err == nil {
+		if err := tempEntry.SerializeFields(); err == nil {
 			updates["token_usage"] = tempEntry.TokenUsage
 			updates["prompt_tokens"] = data.TokenUsage.PromptTokens
 			updates["completion_tokens"] = data.TokenUsage.CompletionTokens
@@ -211,9 +199,9 @@ func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time
 
 	// Handle transcription output from stream updates
 	if data.TranscriptionOutput != nil {
-		tempEntry := &LogEntry{}
+		tempEntry := &logstore.Log{}
 		tempEntry.TranscriptionOutputParsed = data.TranscriptionOutput
-		if err := tempEntry.serializeFields(); err != nil {
+		if err := tempEntry.SerializeFields(); err != nil {
 			return fmt.Errorf("failed to serialize transcription output: %w", err)
 		}
 		updates["transcription_output"] = tempEntry.TranscriptionOutput
@@ -221,7 +209,7 @@ func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time
 
 	// Only perform update if there's something to update
 	if len(updates) > 0 {
-		return p.db.Model(&LogEntry{}).Where("id = ?", requestID).Updates(updates).Error
+		return p.store.Update(requestID, updates)
 	}
 
 	return nil
@@ -235,8 +223,8 @@ func (p *LoggerPlugin) calculateLatency(requestID string, currentTime time.Time,
 	}
 
 	// Fallback to database query if not found in context
-	var originalEntry LogEntry
-	if err := p.db.Select("created_at").Where("id = ?", requestID).First(&originalEntry).Error; err != nil {
+	originalEntry, err := p.store.Get(map[string]interface{}{"id": requestID}, "created_at")
+	if err != nil {
 		return 0, err
 	}
 	return float64(currentTime.Sub(originalEntry.CreatedAt).Nanoseconds()) / 1e6, nil
@@ -250,8 +238,9 @@ func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.Bifr
 	}
 
 	// Get current entry
-	var currentEntry LogEntry
-	if err := p.db.Where("id = ?", requestID).First(&currentEntry).Error; err != nil {
+	var currentEntry *logstore.Log
+	currentEntry, err := p.store.Get(map[string]interface{}{"id": requestID}, "output_message")
+	if err != nil {
 		return nil, fmt.Errorf("failed to get existing entry: %w", err)
 	}
 
@@ -260,7 +249,7 @@ func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.Bifr
 	if currentEntry.OutputMessage != "" {
 		outputMessage = &schemas.BifrostMessage{}
 		// Attempt to deserialize; use parsed message only if successful
-		if err := currentEntry.deserializeFields(); err == nil && currentEntry.OutputMessageParsed != nil {
+		if err := currentEntry.DeserializeFields(); err == nil && currentEntry.OutputMessageParsed != nil {
 			outputMessage = currentEntry.OutputMessageParsed
 		} else {
 			// Create new message if parsing fails
@@ -305,14 +294,14 @@ func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.Bifr
 	}
 
 	// Update the database with new content
-	tempEntry := &LogEntry{
+	tempEntry := &logstore.Log{
 		OutputMessageParsed: outputMessage,
 	}
 	if outputMessage.AssistantMessage != nil && outputMessage.AssistantMessage.ToolCalls != nil {
 		tempEntry.ToolCallsParsed = outputMessage.AssistantMessage.ToolCalls
 	}
 
-	if err := tempEntry.serializeFields(); err != nil {
+	if err := tempEntry.SerializeFields(); err != nil {
 		return nil, fmt.Errorf("failed to serialize fields: %w", err)
 	}
 
@@ -330,17 +319,16 @@ func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.Bifr
 }
 
 // getLogEntry retrieves a log entry by ID using GORM
-func (p *LoggerPlugin) getLogEntry(requestID string) (*LogEntry, error) {
-	var entry LogEntry
-	err := p.db.Where("id = ?", requestID).First(&entry).Error
+func (p *LoggerPlugin) getLogEntry(requestID string) (*logstore.Log, error) {
+	entry, err := p.store.Get(map[string]interface{}{"id": requestID})
 	if err != nil {
 		return nil, err
 	}
-	return &entry, nil
+	return entry, nil
 }
 
 // SearchLogs searches logs with filters and pagination using GORM
-func (p *LoggerPlugin) SearchLogs(filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
+func (p *LoggerPlugin) SearchLogs(filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	// Set default pagination if not provided
 	if pagination.Limit == 0 {
 		pagination.Limit = 50
@@ -351,131 +339,6 @@ func (p *LoggerPlugin) SearchLogs(filters SearchFilters, pagination PaginationOp
 	if pagination.Order == "" {
 		pagination.Order = "desc"
 	}
-
 	// Build base query with all filters applied
-	baseQuery := p.db.Model(&LogEntry{})
-
-	// Apply filters efficiently
-	if len(filters.Providers) > 0 {
-		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
-	}
-	if len(filters.Models) > 0 {
-		baseQuery = baseQuery.Where("model IN ?", filters.Models)
-	}
-	if len(filters.Status) > 0 {
-		baseQuery = baseQuery.Where("status IN ?", filters.Status)
-	}
-	if len(filters.Objects) > 0 {
-		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
-	}
-	if filters.StartTime != nil {
-		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
-	}
-	if filters.EndTime != nil {
-		baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
-	}
-	if filters.MinLatency != nil {
-		baseQuery = baseQuery.Where("latency >= ?", *filters.MinLatency)
-	}
-	if filters.MaxLatency != nil {
-		baseQuery = baseQuery.Where("latency <= ?", *filters.MaxLatency)
-	}
-	if filters.MinTokens != nil {
-		baseQuery = baseQuery.Where("total_tokens >= ?", *filters.MinTokens)
-	}
-	if filters.MaxTokens != nil {
-		baseQuery = baseQuery.Where("total_tokens <= ?", *filters.MaxTokens)
-	}
-	if filters.ContentSearch != "" {
-		baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
-	}
-
-	// Get total count
-	var totalCount int64
-	if err := baseQuery.Count(&totalCount).Error; err != nil {
-		return nil, err
-	}
-
-	// Initialize stats
-	stats := SearchStats{}
-
-	// Calculate statistics efficiently if we have data
-	if totalCount > 0 {
-		// Total requests should include all requests (processing, success, error)
-		stats.TotalRequests = totalCount
-
-		// Get completed requests count (success + error, excluding processing) for success rate calculation
-		var completedCount int64
-		completedQuery := baseQuery.Session(&gorm.Session{})
-		if err := completedQuery.Where("status IN ?", []string{"success", "error"}).Count(&completedCount).Error; err != nil {
-			return nil, err
-		}
-
-		if completedCount > 0 {
-			// Calculate success rate based on completed requests only
-			var successCount int64
-			successQuery := baseQuery.Session(&gorm.Session{})
-			if err := successQuery.Where("status = ?", "success").Count(&successCount).Error; err != nil {
-				return nil, err
-			}
-			stats.SuccessRate = float64(successCount) / float64(completedCount) * 100
-
-			// Calculate average latency and total tokens in a single query for better performance
-			var result struct {
-				AvgLatency  sql.NullFloat64 `json:"avg_latency"`
-				TotalTokens sql.NullInt64   `json:"total_tokens"`
-			}
-
-			statsQuery := baseQuery.Session(&gorm.Session{})
-			if err := statsQuery.Select("AVG(latency) as avg_latency, SUM(total_tokens) as total_tokens").Scan(&result).Error; err != nil {
-				return nil, err
-			}
-
-			if result.AvgLatency.Valid {
-				stats.AverageLatency = result.AvgLatency.Float64
-			}
-			if result.TotalTokens.Valid {
-				stats.TotalTokens = result.TotalTokens.Int64
-			}
-		}
-	}
-
-	// Build order clause
-	direction := "DESC"
-	if pagination.Order == "asc" {
-		direction = "ASC"
-	}
-
-	var orderClause string
-	switch pagination.SortBy {
-	case "timestamp":
-		orderClause = "timestamp " + direction
-	case "latency":
-		orderClause = "latency " + direction
-	case "tokens":
-		orderClause = "total_tokens " + direction
-	default:
-		orderClause = "timestamp " + direction
-	}
-
-	// Execute main query with sorting and pagination
-	var logs []LogEntry
-	mainQuery := baseQuery.Order(orderClause)
-
-	if pagination.Limit > 0 {
-		mainQuery = mainQuery.Limit(pagination.Limit)
-	}
-	if pagination.Offset > 0 {
-		mainQuery = mainQuery.Offset(pagination.Offset)
-	}
-
-	if err := mainQuery.Find(&logs).Error; err != nil {
-		return nil, err
-	}
-
-	return &SearchResult{
-		Logs:       logs,
-		Pagination: pagination,
-		Stats:      stats,
-	}, nil
+	return p.store.SearchLogs(filters, pagination)
 }

@@ -41,6 +41,12 @@ export interface Customer {
   budget?: Budget
 }
 
+export interface DBKey {
+  key_id: string // UUID identifier for the key
+  provider_id: string // identifier for the provider
+  models: string[] // List of models this key can access
+}
+
 export interface VirtualKey {
   id: string
   name: string
@@ -60,6 +66,7 @@ export interface VirtualKey {
   customer?: Customer
   budget?: Budget
   rate_limit?: RateLimit
+  keys?: DBKey[] // Associated database keys
 }
 
 export interface UsageStats {
@@ -82,6 +89,7 @@ export interface CreateVirtualKeyRequest {
   customer_id?: string
   budget?: CreateBudgetRequest
   rate_limit?: CreateRateLimitRequest
+  key_ids?: string[] // List of DBKey UUIDs to associate
   is_active?: boolean
 }
 
@@ -93,6 +101,7 @@ export interface UpdateVirtualKeyRequest {
   customer_id?: string
   budget?: UpdateBudgetRequest
   rate_limit?: UpdateRateLimitRequest
+  key_ids?: string[] // List of DBKey UUIDs to associate
   is_active?: boolean
 }
 

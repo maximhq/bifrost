@@ -2,11 +2,13 @@
 package governance
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 )
 
 // Decision represents the result of governance evaluation
@@ -24,8 +26,8 @@ const (
 	DecisionProviderBlocked    Decision = "provider_blocked"
 )
 
-// RequestContext contains the context for evaluating a request
-type RequestContext struct {
+// EvaluationRequest contains the context for evaluating a request
+type EvaluationRequest struct {
 	VirtualKey string                `json:"virtual_key"`
 	Provider   schemas.ModelProvider `json:"provider"`
 	Model      string                `json:"model"`
@@ -35,12 +37,12 @@ type RequestContext struct {
 
 // EvaluationResult contains the complete result of governance evaluation
 type EvaluationResult struct {
-	Decision      Decision    `json:"decision"`
-	Reason        string      `json:"reason"`
-	VirtualKey    *VirtualKey `json:"virtual_key,omitempty"`
-	RateLimitInfo *RateLimit  `json:"rate_limit_info,omitempty"`
-	BudgetInfo    []*Budget   `json:"budget_info,omitempty"` // All budgets in hierarchy
-	UsageInfo     *UsageInfo  `json:"usage_info,omitempty"`
+	Decision      Decision                     `json:"decision"`
+	Reason        string                       `json:"reason"`
+	VirtualKey    *configstore.TableVirtualKey `json:"virtual_key,omitempty"`
+	RateLimitInfo *configstore.TableRateLimit  `json:"rate_limit_info,omitempty"`
+	BudgetInfo    []*configstore.TableBudget   `json:"budget_info,omitempty"` // All budgets in hierarchy
+	UsageInfo     *UsageInfo                   `json:"usage_info,omitempty"`
 }
 
 // UsageInfo represents current usage levels for rate limits and budgets
@@ -74,9 +76,9 @@ func NewBudgetResolver(store *GovernanceStore, logger schemas.Logger) *BudgetRes
 }
 
 // EvaluateRequest evaluates a request against the new hierarchical governance system
-func (r *BudgetResolver) EvaluateRequest(ctx *RequestContext) *EvaluationResult {
+func (r *BudgetResolver) EvaluateRequest(ctx *context.Context, evaluationRequest *EvaluationRequest) *EvaluationResult {
 	// 1. Validate virtual key exists and is active
-	vk, exists := r.store.GetVirtualKey(ctx.VirtualKey)
+	vk, exists := r.store.GetVirtualKey(evaluationRequest.VirtualKey)
 	if !exists {
 		return &EvaluationResult{
 			Decision: DecisionVirtualKeyNotFound,
@@ -92,31 +94,42 @@ func (r *BudgetResolver) EvaluateRequest(ctx *RequestContext) *EvaluationResult 
 	}
 
 	// 2. Check model filtering
-	if !r.isModelAllowed(vk, ctx.Model) {
+	if !r.isModelAllowed(vk, evaluationRequest.Model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
-			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", ctx.Model),
+			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", evaluationRequest.Model),
 			VirtualKey: vk,
 		}
 	}
 
 	// 3. Check provider filtering
-	if !r.isProviderAllowed(vk, ctx.Provider) {
+	if !r.isProviderAllowed(vk, evaluationRequest.Provider) {
 		return &EvaluationResult{
 			Decision:   DecisionProviderBlocked,
-			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", ctx.Provider),
+			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", evaluationRequest.Provider),
 			VirtualKey: vk,
 		}
 	}
 
 	// 4. Check rate limits (VK level only)
-	if rateLimitResult := r.checkRateLimits(vk, ctx); rateLimitResult != nil {
+	if rateLimitResult := r.checkRateLimits(vk, evaluationRequest); rateLimitResult != nil {
 		return rateLimitResult
 	}
 
 	// 5. Check budget hierarchy (VK → Team → Customer)
-	if budgetResult := r.checkBudgetHierarchy(vk, ctx); budgetResult != nil {
+	if budgetResult := r.checkBudgetHierarchy(vk, evaluationRequest); budgetResult != nil {
 		return budgetResult
+	}
+
+	if vk.Keys != nil {
+		var includeOnlyKeys []string
+		for _, dbKey := range vk.Keys {
+			includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+		}
+
+		if len(includeOnlyKeys) > 0 {
+			*ctx = context.WithValue(*ctx, "bf-governance-include-only-keys", includeOnlyKeys)
+		}
 	}
 
 	// All checks passed
@@ -128,7 +141,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *RequestContext) *EvaluationResult 
 }
 
 // isModelAllowed checks if the requested model is allowed for this VK
-func (r *BudgetResolver) isModelAllowed(vk *VirtualKey, model string) bool {
+func (r *BudgetResolver) isModelAllowed(vk *configstore.TableVirtualKey, model string) bool {
 	// Empty AllowedModels means all models are allowed
 	if len(vk.AllowedModels) == 0 {
 		return true
@@ -138,7 +151,7 @@ func (r *BudgetResolver) isModelAllowed(vk *VirtualKey, model string) bool {
 }
 
 // isProviderAllowed checks if the requested provider is allowed for this VK
-func (r *BudgetResolver) isProviderAllowed(vk *VirtualKey, provider schemas.ModelProvider) bool {
+func (r *BudgetResolver) isProviderAllowed(vk *configstore.TableVirtualKey, provider schemas.ModelProvider) bool {
 	// Empty AllowedProviders means all providers are allowed
 	if len(vk.AllowedProviders) == 0 {
 		return true
@@ -148,7 +161,7 @@ func (r *BudgetResolver) isProviderAllowed(vk *VirtualKey, provider schemas.Mode
 }
 
 // checkRateLimits checks the VK's rate limits using flexible approach
-func (r *BudgetResolver) checkRateLimits(vk *VirtualKey, ctx *RequestContext) *EvaluationResult {
+func (r *BudgetResolver) checkRateLimits(vk *configstore.TableVirtualKey, evaluationRequest *EvaluationRequest) *EvaluationResult {
 	// No rate limits defined
 	if vk.RateLimit == nil {
 		return nil
@@ -202,7 +215,7 @@ func (r *BudgetResolver) checkRateLimits(vk *VirtualKey, ctx *RequestContext) *E
 }
 
 // checkBudgetHierarchy checks the budget hierarchy atomically (VK → Team → Customer)
-func (r *BudgetResolver) checkBudgetHierarchy(vk *VirtualKey, ctx *RequestContext) *EvaluationResult {
+func (r *BudgetResolver) checkBudgetHierarchy(vk *configstore.TableVirtualKey, evaluationRequest *EvaluationRequest) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
 	if err := r.store.CheckBudget(vk); err != nil {
 		r.logger.Debug(fmt.Sprintf("Atomic budget check failed for VK %s: %s", vk.ID, err.Error()))

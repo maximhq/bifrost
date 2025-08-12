@@ -3,6 +3,7 @@
 # Variables
 HOST ?= localhost
 PORT ?= 8080
+APP_DIR ?=
 PLUGINS ?= maxim
 PROMETHEUS_LABELS ?=
 LOGGING_STYLE ?= json
@@ -62,7 +63,8 @@ dev: install-ui install-air ## Start complete development environment (UI + API 
 		-plugins "$(PLUGINS)" \
 		-log-style "$(LOGGING_STYLE)" \
 		-log-level "$(LOGGING_LEVEL)" \
-		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
+		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+		$(if $(APP_DIR),-app-dir "$(APP_DIR)")
 
 build-ui: install-ui ## Build ui
 	@echo "$(GREEN)Building ui...$(NC)"

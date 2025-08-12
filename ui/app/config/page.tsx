@@ -64,15 +64,15 @@ export default function ConfigPage() {
 
   useEffect(() => {
     const fetchConfig = async () => {
-      const [coreConfig, error] = await apiService.getCoreConfig()
+      const [bifrostConfig, error] = await apiService.getCoreConfig()
       if (error) {
         toast.error(error)
-      } else if (coreConfig) {
-        setConfig(coreConfig)
+      } else if (bifrostConfig) {
+        setConfig(bifrostConfig.client_config)
         setLocalValues({
-          initial_pool_size: coreConfig.initial_pool_size?.toString() || '300',
-          prometheus_labels: coreConfig.prometheus_labels?.join(', ') || '',
-          allowed_origins: coreConfig.allowed_origins?.join(', ') || '',
+          initial_pool_size: bifrostConfig.client_config.initial_pool_size?.toString() || '300',
+          prometheus_labels: bifrostConfig.client_config.prometheus_labels?.join(', ') || '',
+          allowed_origins: bifrostConfig.client_config.allowed_origins?.join(', ') || '',
         })
       }
       setIsLoading(false)
@@ -86,7 +86,7 @@ export default function ConfigPage() {
       if (error) {
         toast.error(error)
       } else if (response) {
-        setConfigInDB(response)
+        setConfigInDB(response.client_config)
       }
     }
     fetchConfigInDB()
@@ -190,13 +190,8 @@ export default function ConfigPage() {
   return isLoading ? (
     <FullPageLoader />
   ) : (
-    <div className="space-y-6 bg-white dark:bg-card">
+    <div className="dark:bg-card space-y-6 bg-white">
       {/* Page Header */}
-      <div>
-        <h1 className="text-3xl font-bold">Configuration</h1>
-        <p className="text-muted-foreground mt-2">Configure AI providers, API keys, and system settings for your Bifrost instance.</p>
-      </div>
-
       <div>
         <CardHeader className="mb-4 px-0">
           <CardTitle className="flex items-center gap-2">Core System Settings</CardTitle>
@@ -339,10 +334,10 @@ export default function ConfigPage() {
               <div className="flex items-center justify-between space-x-2">
                 <div className="space-y-0.5">
                   <label htmlFor="enable-caching" className="text-sm font-medium">
-                    Enable Caching
+                    Enable Semantic Caching
                   </label>
                   <p className="text-muted-foreground text-sm">
-                    Enable Redis caching for requests. Send <b>x-bf-cache-key</b> header with requests to use caching.
+                    Enable semantic caching for requests. Send <b>x-bf-cache-key</b> header with requests to use semantic caching.
                   </p>
                 </div>
                 <Switch

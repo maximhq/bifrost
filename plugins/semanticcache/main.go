@@ -1,7 +1,7 @@
-// Package redis provides Redis caching integration for Bifrost plugin.
+// Package semanticcache provides semantic caching integration for Bifrost plugin.
 // This plugin caches request body hashes using xxhash and returns cached responses for identical requests.
 // It supports configurable caching behavior including success-only caching and custom cache key generation.
-package redis
+package semanticcache
 
 import (
 	"context"
@@ -13,31 +13,18 @@ import (
 	"github.com/cespare/xxhash/v2"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisPluginConfig contains configuration for the Redis plugin.
+// Config contains configuration for the Redis plugin.
 // All Redis client options are passed directly to the Redis client, which handles its own defaults.
 // Only specify values you want to override from Redis client defaults.
-type RedisPluginConfig struct {
-	// Connection settings
-	Addr        string `json:"addr"`               // Redis server address (host:port) - REQUIRED
-	Username    string `json:"username,omitempty"` // Username for Redis AUTH (optional)
-	Password    string `json:"password,omitempty"` // Password for Redis AUTH (optional)
-	DB          int    `json:"db,omitempty"`       // Redis database number (default: 0)
-	CacheKey    string `json:"cache_key"`          // Cache key for context lookup - REQUIRED
-	CacheTTLKey string `json:"cache_ttl_key"`      // Cache TTL key for context lookup (optional)
+type Config struct {
+	Enabled bool `json:"enabled"` // Whether the plugin is enabled
 
-	// Connection pool and timeout settings (passed directly to Redis client)
-	PoolSize        int           `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
-	MinIdleConns    int           `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
-	MaxIdleConns    int           `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
-	ConnMaxLifetime time.Duration `json:"conn_max_lifetime,omitempty"`  // Connection maximum lifetime (optional)
-	ConnMaxIdleTime time.Duration `json:"conn_max_idle_time,omitempty"` // Connection maximum idle time (optional)
-	DialTimeout     time.Duration `json:"dial_timeout,omitempty"`       // Timeout for socket connection (optional)
-	ReadTimeout     time.Duration `json:"read_timeout,omitempty"`       // Timeout for socket reads (optional)
-	WriteTimeout    time.Duration `json:"write_timeout,omitempty"`      // Timeout for socket writes (optional)
-	ContextTimeout  time.Duration `json:"context_timeout,omitempty"`    // Timeout for Redis operations (optional)
+	CacheKey    string `json:"cache_key"`     // Cache key for context lookup - REQUIRED
+	CacheTTLKey string `json:"cache_ttl_key"` // Cache TTL key for context lookup (optional)
 
 	// Plugin behavior settings
 	TTL    time.Duration `json:"ttl,omitempty"`    // Time-to-live for cached responses (default: 5min)
@@ -58,19 +45,19 @@ type RedisPluginConfig struct {
 //   - config: Plugin configuration including Redis and caching settings
 //   - logger: Logger instance for plugin operations
 type Plugin struct {
-	client *redis.Client
-	config RedisPluginConfig
+	store  vectorstore.VectorStore
+	config Config
 	logger schemas.Logger
 }
 
 const (
-	PluginName             string        = "bifrost-redis"
-	PluginLoggerPrefix     string        = "[Bifrost Redis Plugin]"
+	PluginName             string        = "semantic-cache"
+	PluginLoggerPrefix     string        = "[Semantic Cache]"
 	RedisConnectionTimeout time.Duration = 5 * time.Second
 	RedisCacheSetTimeout   time.Duration = 30 * time.Second
 )
 
-// NewRedisPlugin creates a new Redis plugin instance with the provided configuration.
+// Init creates a new Redis plugin instance with the provided configuration.
 // It establishes a connection to Redis, tests connectivity, and returns a configured plugin.
 //
 // All Redis client options are passed directly to the Redis client, which handles its own defaults.
@@ -83,12 +70,10 @@ const (
 // Returns:
 //   - schemas.Plugin: A configured Redis plugin instance
 //   - error: Any error that occurred during plugin initialization or Redis connection
-func NewRedisPlugin(config RedisPluginConfig, logger schemas.Logger) (schemas.Plugin, error) {
-	// Validate required fields
-	if config.Addr == "" {
-		return nil, fmt.Errorf("redis address is required")
+func Init(ctx context.Context, config Config, store vectorstore.VectorStore, logger schemas.Logger) (schemas.Plugin, error) {
+	if !config.Enabled {
+		return nil, nil
 	}
-
 	if config.CacheKey == "" {
 		return nil, fmt.Errorf("cache key is required")
 	}
@@ -97,9 +82,7 @@ func NewRedisPlugin(config RedisPluginConfig, logger schemas.Logger) (schemas.Pl
 	if config.TTL == 0 {
 		logger.Debug(PluginLoggerPrefix + " TTL is not set, using default of 5 minutes")
 		config.TTL = 5 * time.Minute
-	}
-	if config.ContextTimeout == 0 {
-		config.ContextTimeout = 10 * time.Second // Only for our ping test
+
 	}
 
 	// Set cache behavior defaults
@@ -110,39 +93,8 @@ func NewRedisPlugin(config RedisPluginConfig, logger schemas.Logger) (schemas.Pl
 		config.CacheByProvider = bifrost.Ptr(true)
 	}
 
-	// Create Redis client with all provided options
-	opts := &redis.Options{
-		Addr:            config.Addr,
-		Username:        config.Username,
-		Password:        config.Password,
-		DB:              config.DB,
-		PoolSize:        config.PoolSize,
-		MinIdleConns:    config.MinIdleConns,
-		MaxIdleConns:    config.MaxIdleConns,
-		ConnMaxLifetime: config.ConnMaxLifetime,
-		ConnMaxIdleTime: config.ConnMaxIdleTime,
-		DialTimeout:     config.DialTimeout,
-		ReadTimeout:     config.ReadTimeout,
-		WriteTimeout:    config.WriteTimeout,
-	}
-
-	// Create Redis client
-	client := redis.NewClient(opts)
-
-	// Test connection with configured timeout
-	ctx, cancel := context.WithTimeout(context.Background(), RedisConnectionTimeout)
-	defer cancel()
-
-	_, err := client.Ping(ctx).Result()
-	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("failed to ping Redis at %s: %w", config.Addr, err)
-	}
-
-	logger.Info(fmt.Sprintf("%s Successfully connected to Redis at %s", PluginLoggerPrefix, config.Addr))
-
 	return &Plugin{
-		client: client,
+		store:  store,
 		config: config,
 		logger: logger,
 	}, nil
@@ -210,7 +162,7 @@ const (
 //
 // Returns:
 //   - string: The plugin name "bifrost-redis"
-func (p *Plugin) GetName() string {
+func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
@@ -269,16 +221,16 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 
 		// Get all chunk keys matching the pattern using SCAN
 		var chunkKeys []string
-		var cursor uint64
+		var cursor *string
 		for {
-			batch, c, err := plugin.client.Scan(*ctx, cursor, chunkPattern, 1000).Result()
+			batch, c, err := plugin.store.GetAll(*ctx, chunkPattern, cursor, 1000)
 			if err != nil {
 				plugin.logger.Warn(PluginLoggerPrefix + " Failed to scan cached chunks, continuing with request")
 				return req, nil, nil
 			}
 			chunkKeys = append(chunkKeys, batch...)
 			cursor = c
-			if cursor == 0 {
+			if cursor == nil {
 				break
 			}
 		}
@@ -297,7 +249,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 			defer close(streamChan)
 
 			// Get all chunk data
-			chunkData, err := plugin.client.MGet(*ctx, chunkKeys...).Result()
+			chunkData, err := plugin.store.GetChunks(*ctx, chunkKeys)
 			if err != nil {
 				plugin.logger.Warn(PluginLoggerPrefix + " Failed to retrieve cached chunks")
 				return
@@ -351,7 +303,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 
 	} else {
 		// Check if cached response exists
-		cachedData, err := plugin.client.Get(*ctx, cacheKey).Result()
+		cachedData, err := plugin.store.GetChunk(*ctx, cacheKey)
 		if err != nil {
 			if err == redis.Nil {
 				plugin.logger.Debug(PluginLoggerPrefix + " No cached response found, continuing with request")
@@ -493,7 +445,7 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 		}
 
 		// Perform the Redis SET operation
-		err = plugin.client.Set(cacheCtx, cacheKey, responseData, cacheTTL).Err()
+		err = plugin.store.Add(cacheCtx, cacheKey, string(responseData), cacheTTL)
 		if err != nil {
 			plugin.logger.Warn(PluginLoggerPrefix + " Failed to cache response asynchronously: " + err.Error())
 		} else {
@@ -520,28 +472,28 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 func (plugin *Plugin) Cleanup() error {
 	// Get all keys matching the prefix using SCAN
 	var keys []string
-	var cursor uint64
+	var cursor *string
 	pattern := plugin.config.Prefix + "*"
 	for {
-		batch, c, err := plugin.client.Scan(context.Background(), cursor, pattern, 1000).Result()
+		batch, c, err := plugin.store.GetAll(context.Background(), pattern, cursor, 1000)
 		if err != nil {
 			return fmt.Errorf("failed to scan keys for cleanup: %w", err)
 		}
 		keys = append(keys, batch...)
 		cursor = c
-		if cursor == 0 {
+		if cursor == nil {
 			break
 		}
 	}
 
 	if len(keys) > 0 {
-		if err := plugin.client.Del(context.Background(), keys...).Err(); err != nil {
+		if err := plugin.store.Delete(context.Background(), keys); err != nil {
 			return fmt.Errorf("failed to delete cache keys: %w", err)
 		}
 		plugin.logger.Debug(fmt.Sprintf("%s Cleaned up %d cache entries", PluginLoggerPrefix, len(keys)))
 	}
 
-	if err := plugin.client.Close(); err != nil {
+	if err := plugin.store.Close(context.Background()); err != nil {
 		return fmt.Errorf("failed to close Redis client: %w", err)
 	}
 
@@ -566,23 +518,23 @@ func (plugin *Plugin) ClearCacheForKey(key string) error {
 
 	// Get all chunk keys matching the pattern using SCAN
 	var chunkKeys []string
-	var cursor uint64
+	var cursor *string
 	for {
-		batch, c, err := plugin.client.Scan(context.Background(), cursor, chunkPattern, 1000).Result()
+		batch, c, err := plugin.store.GetAll(context.Background(), chunkPattern, cursor, 1000)
 		if err != nil {
 			plugin.logger.Warn(PluginLoggerPrefix + " Failed to scan cached chunks, continuing with request")
 			return err
 		}
 		chunkKeys = append(chunkKeys, batch...)
 		cursor = c
-		if cursor == 0 {
+		if cursor == nil {
 			break
 		}
 	}
 
 	keys = append(keys, chunkKeys...)
 
-	if err := plugin.client.Del(context.Background(), keys...).Err(); err != nil {
+	if err := plugin.store.Delete(context.Background(), keys); err != nil {
 		plugin.logger.Warn(PluginLoggerPrefix + " Failed to get cached chunks, continuing with request")
 		return err
 	}
