@@ -153,7 +153,7 @@ export default function AppSidebar() {
 
   return (
     <Sidebar className="custom-scrollbar border-none bg-transparent">
-      <SidebarHeader className="flex h-12 justify-between px-0 mt-1 ml-2">
+      <SidebarHeader className="ml-2 mt-1 flex h-12 justify-between px-0">
         <div className="flex h-full items-center justify-between gap-2 px-1.5">
           <Link href="/" className="group flex items-center gap-2">
             <Image className="h-10 w-auto" src={logoSrc} alt="Bifrost" width={100} height={100} />
@@ -219,8 +219,14 @@ export default function AppSidebar() {
 
         <div className="mx-auto mt-auto flex flex-row">
           <div className="mx-auto flex flex-row gap-4">
-            {externalLinks.map((item) => (
-              <a href={item.url} target="_blank" rel="noopener noreferrer" className="group flex w-full items-center justify-between">
+            {externalLinks.map((item, index) => (
+              <a
+                key={index}
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex w-full items-center justify-between"
+              >
                 <div className="flex items-center space-x-3">
                   <item.icon className="hover:text-primary text-muted-foreground h-5 w-5" size={22} weight="regular" />
                 </div>

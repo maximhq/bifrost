@@ -5,6 +5,7 @@ package lib
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -46,7 +47,25 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, provide
 		return nil, err
 	}
 
-	return config.Keys, nil
+	keys := config.Keys
+
+	if baseAccount.store.ClientConfig.EnableGovernance {
+		includeOnlyKeysValue := (*ctx).Value("bf-governance-include-only-keys")
+		if includeOnlyKeysValue != nil {
+			includeOnlyKeys, ok := includeOnlyKeysValue.([]string)
+			if ok {
+				var filteredKeys []schemas.Key
+				for _, key := range keys {
+					if slices.Contains(includeOnlyKeys, key.ID) {
+						filteredKeys = append(filteredKeys, key)
+					}
+				}
+				keys = filteredKeys
+			}
+		}
+	}
+
+	return keys, nil
 }
 
 // GetConfigForProvider returns the complete configuration for a specific provider.
