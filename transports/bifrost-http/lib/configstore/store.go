@@ -74,6 +74,9 @@ type ConfigStore interface {
 	CreateModelPricing(tx *gorm.DB, pricing *TableModelPricing) error
 	DeleteModelPricings(tx *gorm.DB) error
 
+	// Key management
+	GetKeysByIDs(ids []string) ([]TableKey, error)
+
 	ExecuteTransaction(fn func(tx *gorm.DB) error) error
 }
 

@@ -33,6 +33,7 @@ import {
   GetUsageStatsResponse,
   DebugStatsResponse,
   HealthCheckResponse,
+  DBKey,
 } from '@/lib/types/governance'
 import { getApiBaseUrl } from '@/lib/utils/port'
 
@@ -159,6 +160,16 @@ class ApiService {
   async deleteProvider(provider: string): ServiceResponse<ProviderResponse> {
     try {
       const response = await this.client.delete(`/providers/${provider}`)
+      return [response.data, null]
+    } catch (error) {
+      return [null, this.getErrorMessage(error)]
+    }
+  }
+
+  // Get all available keys from all providers for governance selection
+  async getAllKeys(): ServiceResponse<DBKey[]> {
+    try {
+      const response = await this.client.get(`/keys`)
       return [response.data, null]
     } catch (error) {
       return [null, this.getErrorMessage(error)]

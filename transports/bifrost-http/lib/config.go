@@ -4,6 +4,7 @@ package lib
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib/vectorstore"
+	"gorm.io/gorm"
 )
 
 // HandlerStore provides access to runtime configuration values for handlers.
@@ -105,6 +107,7 @@ func LoadConfig(configDirPath string) (*Config, error) {
 
 	config := &Config{
 		configPath: configFilePath,
+		EnvKeys:    make(map[string][]configstore.EnvKeyInfo),
 	}
 
 	// Check if config file exists
@@ -133,9 +136,121 @@ func LoadConfig(configDirPath string) (*Config, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize logs store: %w", err)
 			}
-			config.Providers = make(map[schemas.ModelProvider]configstore.ProviderConfig)
-			config.MCPConfig = nil
-			config.autoDetectProviders()
+
+			logger.Info("Loading configuration from database")
+
+			// Load client configuration
+			var dbConfig *configstore.ClientConfig
+			if dbConfig, err = config.ConfigStore.GetClientConfig(); err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, err
+				}
+			}
+
+			if dbConfig == nil {
+				dbConfig = &DefaultClientConfig
+			}
+
+			config.ClientConfig = configstore.ClientConfig{
+				DropExcessRequests:      dbConfig.DropExcessRequests,
+				PrometheusLabels:        dbConfig.PrometheusLabels,
+				InitialPoolSize:         dbConfig.InitialPoolSize,
+				EnableLogging:           dbConfig.EnableLogging,
+				EnableGovernance:        dbConfig.EnableGovernance,
+				EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
+				AllowDirectKeys:         dbConfig.AllowDirectKeys,
+				EnableCaching:           dbConfig.EnableCaching,
+				AllowedOrigins:          dbConfig.AllowedOrigins,
+			}
+
+			// Load providers configuration
+			var dbProviders map[schemas.ModelProvider]configstore.ProviderConfig
+			if dbProviders, err = config.ConfigStore.GetProvidersConfig(); err != nil {
+				return nil, err
+			}
+
+			if len(dbProviders) == 0 {
+				// No providers in database, auto-detect from environment
+				config.autoDetectProviders()
+			} else {
+				processedProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig)
+
+				for providerKey, dbProvider := range dbProviders {
+					provider := schemas.ModelProvider(providerKey)
+
+					// Convert database keys to schemas.Key
+					keys := make([]schemas.Key, len(dbProvider.Keys))
+					for i, dbKey := range dbProvider.Keys {
+						keys[i] = schemas.Key{
+							ID:               dbKey.ID, // Key ID is passed in dbKey, not ID
+							Value:            dbKey.Value,
+							Models:           dbKey.Models,
+							Weight:           dbKey.Weight,
+							AzureKeyConfig:   dbKey.AzureKeyConfig,
+							VertexKeyConfig:  dbKey.VertexKeyConfig,
+							BedrockKeyConfig: dbKey.BedrockKeyConfig,
+						}
+					}
+
+					providerConfig := configstore.ProviderConfig{
+						Keys:                     keys,
+						NetworkConfig:            dbProvider.NetworkConfig,
+						ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
+						ProxyConfig:              dbProvider.ProxyConfig,
+						SendBackRawResponse:      dbProvider.SendBackRawResponse,
+					}
+
+					processedProviders[provider] = providerConfig
+				}
+
+				config.Providers = processedProviders
+			}
+
+			// Load MCP configuration
+			var dbMCPConfig *schemas.MCPConfig
+			if dbMCPConfig, err = config.ConfigStore.GetMCPConfig(); err != nil {
+				return nil, err
+			}
+
+			if dbMCPConfig == nil {
+				config.MCPConfig = nil
+			} else {
+				clientConfigs := make([]schemas.MCPClientConfig, len(dbMCPConfig.ClientConfigs))
+				for i, dbClient := range dbMCPConfig.ClientConfigs {
+					clientConfigs[i] = schemas.MCPClientConfig{
+						Name:             dbClient.Name,
+						ConnectionType:   schemas.MCPConnectionType(dbClient.ConnectionType),
+						ConnectionString: dbClient.ConnectionString,
+						StdioConfig:      dbClient.StdioConfig,
+						ToolsToExecute:   dbClient.ToolsToExecute,
+						ToolsToSkip:      dbClient.ToolsToSkip,
+					}
+				}
+
+				config.MCPConfig = &schemas.MCPConfig{
+					ClientConfigs: clientConfigs,
+				}
+			}
+
+			// Load environment variable tracking
+			var dbEnvKeys map[string][]configstore.EnvKeyInfo
+			if dbEnvKeys, err = config.ConfigStore.GetEnvKeys(); err != nil {
+				return nil, err
+			}
+
+			config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
+			for envVar, dbEnvKey := range dbEnvKeys {
+				for _, dbEnvKey := range dbEnvKey {
+					config.EnvKeys[envVar] = append(config.EnvKeys[envVar], configstore.EnvKeyInfo{
+						EnvVar:     dbEnvKey.EnvVar,
+						Provider:   dbEnvKey.Provider,
+						KeyType:    dbEnvKey.KeyType,
+						ConfigPath: dbEnvKey.ConfigPath,
+						KeyID:      dbEnvKey.KeyID,
+					})
+				}
+			}
+
 			return config, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -768,6 +883,27 @@ func (s *Config) RemoveProvider(provider schemas.ModelProvider) error {
 
 	logger.Info(fmt.Sprintf("Removed provider: %s", provider))
 	return nil
+}
+
+// GetAllKeys returns the redacted keys
+func (s *Config) GetAllKeys() ([]configstore.TableKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]configstore.TableKey, 0)
+	for providerKey, provider := range s.Providers {
+		for _, key := range provider.Keys {
+			keys = append(keys, configstore.TableKey{
+				KeyID:    key.ID,
+				Value:    "",
+				Models:   key.Models,
+				Weight:   key.Weight,
+				Provider: string(providerKey),
+			})
+		}
+	}
+
+	return keys, nil
 }
 
 // processMCPEnvVars processes environment variables in the MCP configuration.

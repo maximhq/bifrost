@@ -131,7 +131,8 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Key</TableHead>
-                <TableHead>Max Budget</TableHead>
+                <TableHead>DB Keys</TableHead>
+                <TableHead>Budget</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -139,7 +140,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
             <TableBody>
               {virtualKeys?.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
+                  <TableCell colSpan={6} className="text-muted-foreground py-8 text-center">
                     No virtual keys found. Create your first virtual key to get started.
                   </TableCell>
                 </TableRow>
@@ -172,6 +173,33 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
                           <Button variant="ghost" size="sm" onClick={() => copyToClipboard(vk.value)}>
                             <Copy className="h-4 w-4" />
                           </Button>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {vk.keys && vk.keys.length > 0 ? (
+                            vk.keys.slice(0, 2).map((dbKey, index) => (
+                              <Badge
+                                key={dbKey.key_id}
+                                variant="outline"
+                                className="text-xs"
+                                title={`${dbKey.key_id} — ${dbKey.provider_id}`}
+                              >
+                                {dbKey.key_id.substring(0, 8)}...
+                              </Badge>
+                            ))
+                          ) : (
+                            <span className="text-muted-foreground text-sm">All keys</span>
+                          )}
+                          {vk.keys && vk.keys.length > 2 && (
+                            <Badge
+                              variant="outline"
+                              className="text-xs"
+                              title={`${vk.keys.length} total keys — Providers: ${[...new Set(vk.keys.map((k) => k.provider_id))].join(', ')}`}
+                            >
+                              +{vk.keys.length - 2} more
+                            </Badge>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>

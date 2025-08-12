@@ -48,6 +48,7 @@ type CreateVirtualKeyRequest struct {
 	CustomerID       *string                 `json:"customer_id,omitempty"`       // Mutually exclusive with TeamID
 	Budget           *CreateBudgetRequest    `json:"budget,omitempty"`
 	RateLimit        *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	KeyIDs           []string                `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
 	IsActive         *bool                   `json:"is_active,omitempty"`
 }
 
@@ -60,6 +61,7 @@ type UpdateVirtualKeyRequest struct {
 	CustomerID       *string                 `json:"customer_id,omitempty"`
 	Budget           *UpdateBudgetRequest    `json:"budget,omitempty"`
 	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	KeyIDs           *[]string               `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
 	IsActive         *bool                   `json:"is_active,omitempty"`
 }
 
@@ -199,6 +201,19 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 	var vk configstore.TableVirtualKey
 	if err := h.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
+		// Get the keys if DBKeyIDs are provided
+		var keys []configstore.TableKey
+		if len(req.KeyIDs) > 0 {
+			var err error
+			keys, err = h.configStore.GetKeysByIDs(req.KeyIDs)
+			if err != nil {
+				return fmt.Errorf("failed to get keys by IDs: %w", err)
+			}
+			if len(keys) != len(req.KeyIDs) {
+				return fmt.Errorf("some keys not found: expected %d, found %d", len(req.KeyIDs), len(keys))
+			}
+		}
+
 		vk = configstore.TableVirtualKey{
 			ID:               uuid.NewString(),
 			Name:             req.Name,
@@ -209,6 +224,7 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 			TeamID:           req.TeamID,
 			CustomerID:       req.CustomerID,
 			IsActive:         isActive,
+			Keys:             keys, // Set the keys for the many-to-many relationship
 		}
 
 		if req.Budget != nil {
@@ -247,7 +263,7 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 		return nil
 	}); err != nil {
-		SendError(ctx, 500, "Failed to create virtual key", h.logger)
+		SendError(ctx, 500, err.Error(), h.logger)
 		return
 	}
 
@@ -255,6 +271,7 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 	preloadedVk, err := h.configStore.GetVirtualKey(vk.ID)
 	if err != nil {
 		h.logger.Error(fmt.Errorf("failed to load relationships for created VK: %w", err))
+		// If we can't load the full VK, use the basic one we just created
 		preloadedVk = &vk
 	}
 
@@ -262,7 +279,7 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 	h.pluginStore.CreateVirtualKeyInMemory(preloadedVk)
 
 	// If budget was created, add it to in-memory store
-	if vk.BudgetID != nil {
+	if vk.BudgetID != nil && preloadedVk.Budget != nil {
 		h.pluginStore.CreateBudgetInMemory(preloadedVk.Budget)
 	}
 
@@ -418,6 +435,25 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 				vk.RateLimitID = &rateLimit.ID
 			}
+		}
+
+		// Handle DBKey associations if provided
+		if req.KeyIDs != nil {
+			// Get the keys if DBKeyIDs are provided
+			var keys []configstore.TableKey
+			if len(*req.KeyIDs) > 0 {
+				var err error
+				keys, err = h.configStore.GetKeysByIDs(*req.KeyIDs)
+				if err != nil {
+					return fmt.Errorf("failed to get keys by IDs: %w", err)
+				}
+				if len(keys) != len(*req.KeyIDs) {
+					return fmt.Errorf("some keys not found: expected %d, found %d", len(*req.KeyIDs), len(keys))
+				}
+			}
+
+			// Set the keys for the many-to-many relationship
+			vk.Keys = keys
 		}
 
 		if err := h.configStore.UpdateVirtualKey(tx, vk); err != nil {
