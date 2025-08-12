@@ -1,5 +1,4 @@
-// Package lib provides GORM model definitions for Bifrost configuration storage
-package lib
+package configstore
 
 import (
 	"encoding/json"
@@ -9,15 +8,15 @@ import (
 	"gorm.io/gorm"
 )
 
-type DBConfigHash struct {
+type TableConfigHash struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Hash      string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"hash"`
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
 
-// DBProvider represents a provider configuration in the database
-type DBProvider struct {
+// TableProvider represents a provider configuration in the database
+type TableProvider struct {
 	ID                    uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name                  string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
 	NetworkConfigJSON     string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
@@ -28,17 +27,18 @@ type DBProvider struct {
 	UpdatedAt             time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Relationships
-	Keys []DBKey `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"keys"`
+	Keys []TableKey `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"keys"`
 
 	// Virtual fields for runtime use (not stored in DB)
 	NetworkConfig            *schemas.NetworkConfig            `gorm:"-" json:"network_config,omitempty"`
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `gorm:"-" json:"concurrency_and_buffer_size,omitempty"`
 	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
 	// Foreign keys
-	Models []DBModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
+	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
 }
 
-type DBModel struct {
+// TableModel represents a model configuration in the database
+type TableModel struct {
 	ID         string    `gorm:"primaryKey" json:"id"`
 	ProviderID uint      `gorm:"index;not null;uniqueIndex:idx_provider_name" json:"provider_id"`
 	Name       string    `gorm:"uniqueIndex:idx_provider_name" json:"name"`
@@ -46,8 +46,8 @@ type DBModel struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// DBKey represents an API key configuration in the database
-type DBKey struct {
+// TableKey represents an API key configuration in the database
+type TableKey struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	ProviderID uint      `gorm:"index;not null" json:"provider_id"`
 	KeyID      string    `gorm:"type:varchar(255);index;not null" json:"key_id"` // UUID from schemas.Key
@@ -82,8 +82,8 @@ type DBKey struct {
 	BedrockKeyConfig *schemas.BedrockKeyConfig `gorm:"-" json:"bedrock_key_config,omitempty"`
 }
 
-// DBMCPClient represents an MCP client configuration in the database
-type DBMCPClient struct {
+// TableMCPClient represents an MCP client configuration in the database
+type TableMCPClient struct {
 	ID                 uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name               string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
 	ConnectionType     string    `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
@@ -100,8 +100,8 @@ type DBMCPClient struct {
 	ToolsToSkip    []string                `gorm:"-" json:"tools_to_skip"`
 }
 
-// DBClientConfig represents global client configuration in the database
-type DBClientConfig struct {
+// TableClientConfig represents global client configuration in the database
+type TableClientConfig struct {
 	ID                      uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	DropExcessRequests      bool      `gorm:"default:false" json:"drop_excess_requests"`
 	PrometheusLabelsJSON    string    `gorm:"type:text" json:"-"` // JSON serialized []string
@@ -120,8 +120,8 @@ type DBClientConfig struct {
 	AllowedOrigins   []string `gorm:"-" json:"allowed_origins,omitempty"`
 }
 
-// DBEnvKey represents environment variable tracking in the database
-type DBEnvKey struct {
+// TableEnvKey represents environment variable tracking in the database
+type TableEnvKey struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	EnvVar     string    `gorm:"type:varchar(255);index;not null" json:"env_var"`
 	Provider   string    `gorm:"type:varchar(50);index" json:"provider"`        // Empty for MCP/client configs
@@ -131,34 +131,32 @@ type DBEnvKey struct {
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 }
 
-// DBCacheConfig represents Cache plugin configuration in the database
-type DBCacheConfig struct {
+// TableVectorStoreConfig represents Cache plugin configuration in the database
+type TableVectorStoreConfig struct {
 	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Addr            string    `gorm:"type:varchar(255);not null" json:"addr"`      // Cache server address (host:port)
-	Username        string    `gorm:"type:varchar(255)" json:"username,omitempty"` // Username for Cache AUTH
-	Password        string    `gorm:"type:text" json:"password,omitempty"`         // Password for Cache AUTH
-	DB              int       `gorm:"default:0" json:"db"`                         // Cache database number
-	TTLSeconds      int       `gorm:"default:300" json:"ttl_seconds"`              // TTL in seconds (default: 5 minutes)
-	Prefix          string    `gorm:"type:varchar(100)" json:"prefix,omitempty"`   // Cache key prefix
-	CacheByModel    bool      `gorm:"" json:"cache_by_model"`                      // Include model in cache key
-	CacheByProvider bool      `gorm:"" json:"cache_by_provider"`                   // Include provider in cache key
+	Enabled         bool      `gorm:"" json:"enabled"`                       // Enable vector store
+	Type            *string   `gorm:"type:varchar(50);not null" json:"type"` // "redis"
+	TTLSeconds      int       `gorm:"default:300" json:"ttl_seconds"`        // TTL in seconds (default: 5 minutes)
+	CacheByModel    bool      `gorm:"" json:"cache_by_model"`                // Include model in cache key
+	CacheByProvider bool      `gorm:"" json:"cache_by_provider"`             // Include provider in cache key
+	Config          *string   `gorm:"type:text" json:"config"`               // JSON serialized schemas.RedisVectorStoreConfig
 	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt       time.Time `gorm:"index;not null" json:"updated_at"`
 }
 
 // TableName sets the table name for each model
-func (DBConfigHash) TableName() string   { return "config_hashes" }
-func (DBProvider) TableName() string     { return "config_providers" }
-func (DBKey) TableName() string          { return "config_keys" }
-func (DBMCPClient) TableName() string    { return "config_mcp_clients" }
-func (DBClientConfig) TableName() string { return "config_client" }
-func (DBEnvKey) TableName() string       { return "config_env_keys" }
-func (DBCacheConfig) TableName() string  { return "config_redis" }
+func (TableConfigHash) TableName() string        { return "config_hashes" }
+func (TableProvider) TableName() string          { return "config_providers" }
+func (TableKey) TableName() string               { return "config_keys" }
+func (TableMCPClient) TableName() string         { return "config_mcp_clients" }
+func (TableClientConfig) TableName() string      { return "config_client" }
+func (TableEnvKey) TableName() string            { return "config_env_keys" }
+func (TableVectorStoreConfig) TableName() string { return "config_vector_store" }
 
 // GORM Hooks for JSON serialization/deserialization
 
 // BeforeSave hooks for serialization
-func (p *DBProvider) BeforeSave(tx *gorm.DB) error {
+func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	if p.NetworkConfig != nil {
 		data, err := json.Marshal(p.NetworkConfig)
 		if err != nil {
@@ -186,7 +184,7 @@ func (p *DBProvider) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (k *DBKey) BeforeSave(tx *gorm.DB) error {
+func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if k.Models != nil {
 		data, err := json.Marshal(k.Models)
 		if err != nil {
@@ -216,7 +214,7 @@ func (k *DBKey) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (c *DBMCPClient) BeforeSave(tx *gorm.DB) error {
+func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	if c.StdioConfig != nil {
 		data, err := json.Marshal(c.StdioConfig)
 		if err != nil {
@@ -249,7 +247,7 @@ func (c *DBMCPClient) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (cc *DBClientConfig) BeforeSave(tx *gorm.DB) error {
+func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 	if cc.PrometheusLabels != nil {
 		data, err := json.Marshal(cc.PrometheusLabels)
 		if err != nil {
@@ -270,7 +268,7 @@ func (cc *DBClientConfig) BeforeSave(tx *gorm.DB) error {
 }
 
 // AfterFind hooks for deserialization
-func (p *DBProvider) AfterFind(tx *gorm.DB) error {
+func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 	if p.NetworkConfigJSON != "" {
 		var config schemas.NetworkConfig
 		if err := json.Unmarshal([]byte(p.NetworkConfigJSON), &config); err != nil {
@@ -298,7 +296,7 @@ func (p *DBProvider) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-func (k *DBKey) AfterFind(tx *gorm.DB) error {
+func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	if k.ModelsJSON != "" {
 		if err := json.Unmarshal([]byte(k.ModelsJSON), &k.Models); err != nil {
 			return err
@@ -366,7 +364,7 @@ func (k *DBKey) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-func (c *DBMCPClient) AfterFind(tx *gorm.DB) error {
+func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	if c.StdioConfigJSON != nil {
 		var config schemas.MCPStdioConfig
 		if err := json.Unmarshal([]byte(*c.StdioConfigJSON), &config); err != nil {
@@ -390,7 +388,7 @@ func (c *DBMCPClient) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-func (cc *DBClientConfig) AfterFind(tx *gorm.DB) error {
+func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 	if cc.PrometheusLabelsJSON != "" {
 		if err := json.Unmarshal([]byte(cc.PrometheusLabelsJSON), &cc.PrometheusLabels); err != nil {
 			return err

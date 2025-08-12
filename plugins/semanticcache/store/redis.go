@@ -1,0 +1,103 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"time"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/redis/go-redis/v9"
+)
+
+type RedisConfig struct {
+	// Connection settings
+	Addr     string `json:"addr"`               // Redis server address (host:port) - REQUIRED
+	Username string `json:"username,omitempty"` // Username for Redis AUTH (optional)
+	Password string `json:"password,omitempty"` // Password for Redis AUTH (optional)
+	DB       int    `json:"db,omitempty"`       // Redis database number (default: 0)
+
+	// Connection pool and timeout settings (passed directly to Redis client)
+	PoolSize        int           `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
+	MinIdleConns    int           `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
+	MaxIdleConns    int           `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
+	ConnMaxLifetime time.Duration `json:"conn_max_lifetime,omitempty"`  // Connection maximum lifetime (optional)
+	ConnMaxIdleTime time.Duration `json:"conn_max_idle_time,omitempty"` // Connection maximum idle time (optional)
+	DialTimeout     time.Duration `json:"dial_timeout,omitempty"`       // Timeout for socket connection (optional)
+	ReadTimeout     time.Duration `json:"read_timeout,omitempty"`       // Timeout for socket reads (optional)
+	WriteTimeout    time.Duration `json:"write_timeout,omitempty"`      // Timeout for socket writes (optional)
+	ContextTimeout  time.Duration `json:"context_timeout,omitempty"`    // Timeout for Redis operations (optional)
+}
+
+// RedisStore represents the Redis vector store.
+type RedisStore struct {
+	client *redis.Client
+	config RedisConfig
+	logger schemas.Logger
+}
+
+func (s *RedisStore) GetChunk(ctx context.Context, contextKey string) (string, error) {
+	return s.client.Get(ctx, contextKey).Result()
+}
+
+// GetChunks retrieves a value from Redis.
+func (s *RedisStore) GetChunks(ctx context.Context, chunkKeys []string) ([]any, error) {
+	return s.client.MGet(ctx, chunkKeys...).Result()
+}
+
+// Add adds a value to Redis.
+func (s *RedisStore) Add(ctx context.Context, key string, value string, ttl time.Duration) error {
+	return s.client.Set(ctx, key, value, ttl).Err()
+}
+
+// Delete deletes a value from Redis.
+func (s *RedisStore) Delete(ctx context.Context, keys []string) error {
+	return s.client.Del(ctx, keys...).Err()
+}
+
+// GetAll retrieves all keys matching a pattern from Redis.
+func (s *RedisStore) GetAll(ctx context.Context, pattern string, cursor *string, count int64) ([]string, *string, error) {
+	var err error
+	var redisCursor uint64
+	if cursor != nil {
+		redisCursor, err = strconv.ParseUint(*cursor, 10, 64)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid cursor value: %w", err)
+	}
+	keys, c, err := s.client.Scan(ctx, redisCursor, pattern, count).Result()
+	var nextCursor *string
+	if c == 0 {
+		nextCursor = nil
+	} else {
+		nextCursor = bifrost.Ptr(strconv.FormatUint(c, 10))
+	}
+	return keys, nextCursor, err
+}
+
+// Close closes the Redis connection.
+func (s *RedisStore) Close(ctx context.Context) error {
+	return s.client.Close()
+}
+
+// NewRedisStore creates a new Redis vector store.
+func newRedisStore(ctx context.Context, config RedisConfig, logger schemas.Logger) (*RedisStore, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     config.Addr,
+		Username: config.Username,
+		Password: config.Password,
+		DB:       config.DB,
+	})
+
+	// Test the connection
+	if err := client.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	}
+
+	return &RedisStore{
+		client: client,
+		config: config,
+		logger: logger,
+	}, nil
+}

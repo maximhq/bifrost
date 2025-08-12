@@ -34,7 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <WebSocketProvider>
               <SidebarProvider>
                 <Sidebar />
-                <div className="w-full bg-white dark:bg-card h-[calc(100vh-2rem)] mt-[1rem] mb-[1rem] rounded-lg border border-gray-200 dark:border-gray-800 overflow-scroll custom-scrollbar">
+                <div className="w-full bg-white dark:bg-card h-[calc(100dvh-2rem)] mt-[1rem] mb-[1rem] rounded-md border border-gray-200 dark:border-gray-800 overflow-auto custom-scrollbar">
                   <main className="custom-scrollbar w-5xl relative mx-auto flex  flex-col px-4 py-12">{children}</main>
                 </div>
               </SidebarProvider>

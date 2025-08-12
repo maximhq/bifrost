@@ -13,11 +13,11 @@ import (
 // It manages provider configurations using a in-memory store for persistent storage.
 // All data processing (environment variables, key configs) is done upfront in the store.
 type BaseAccount struct {
-	store *ConfigStore // store for in-memory configuration
+	store *Config // store for in-memory configuration
 }
 
 // NewBaseAccount creates a new BaseAccount with the given store
-func NewBaseAccount(store *ConfigStore) *BaseAccount {
+func NewBaseAccount(store *Config) *BaseAccount {
 	return &BaseAccount{
 		store: store,
 	}

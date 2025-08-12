@@ -113,7 +113,7 @@ const externalLinks = [
   },
   {
     title: 'Full Documentation',
-    url: 'https://github.com/maximhq/bifrost/tree/main/docs',
+    url: 'https://getmaxim.ai/bifrost/docs',
     icon: BooksIcon,
   },
 ]

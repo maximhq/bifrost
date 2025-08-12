@@ -193,11 +193,6 @@ export default function ConfigPage() {
     <div className="space-y-6 bg-white dark:bg-card">
       {/* Page Header */}
       <div>
-        <h1 className="text-3xl font-bold">Configuration</h1>
-        <p className="text-muted-foreground mt-2">Configure AI providers, API keys, and system settings for your Bifrost instance.</p>
-      </div>
-
-      <div>
         <CardHeader className="mb-4 px-0">
           <CardTitle className="flex items-center gap-2">Core System Settings</CardTitle>
           <CardDescription>Configure core Bifrost settings like request handling, pool sizes, and system behavior.</CardDescription>

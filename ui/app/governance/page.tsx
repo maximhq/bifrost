@@ -75,12 +75,7 @@ export default function GovernancePage() {
   return loading ? (
     <FullPageLoader />
   ) : (
-    <div className="">
-      <div>
-        <h1 className="mb-2 text-3xl font-bold">Governance</h1>
-        <p className="text-muted-foreground">Manage virtual keys, teams, customers, budgets, and rate limits</p>
-      </div>
-
+    <div className="">      
       <div className="mt-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 grid h-12 w-full grid-cols-3">

@@ -1,4 +1,4 @@
-module github.com/maximhq/bifrost/plugins/redis
+module github.com/maximhq/bifrost/plugins/semanticcache
 
 go 1.24.1
 
