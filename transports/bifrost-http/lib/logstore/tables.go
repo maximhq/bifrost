@@ -1,5 +1,4 @@
-// Package logging provides GORM model definitions and related methods
-package logging
+package logstore
 
 import (
 	"encoding/json"
@@ -10,9 +9,46 @@ import (
 	"gorm.io/gorm"
 )
 
-// LogEntry represents a complete log entry for a request/response cycle
+// SearchFilters represents the available filters for log searches
+type SearchFilters struct {
+	Providers     []string   `json:"providers,omitempty"`
+	Models        []string   `json:"models,omitempty"`
+	Status        []string   `json:"status,omitempty"`
+	Objects       []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	StartTime     *time.Time `json:"start_time,omitempty"`
+	EndTime       *time.Time `json:"end_time,omitempty"`
+	MinLatency    *float64   `json:"min_latency,omitempty"`
+	MaxLatency    *float64   `json:"max_latency,omitempty"`
+	MinTokens     *int       `json:"min_tokens,omitempty"`
+	MaxTokens     *int       `json:"max_tokens,omitempty"`
+	ContentSearch string     `json:"content_search,omitempty"`
+}
+
+// PaginationOptions represents pagination parameters
+type PaginationOptions struct {
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+	SortBy string `json:"sort_by"` // "timestamp", "latency", "tokens"
+	Order  string `json:"order"`   // "asc", "desc"
+}
+
+// SearchResult represents the result of a log search
+type SearchResult struct {
+	Logs       []Log             `json:"logs"`
+	Pagination PaginationOptions `json:"pagination"`
+	Stats      SearchStats       `json:"stats"`
+}
+
+type SearchStats struct {
+	TotalRequests  int64   `json:"total_requests"`
+	SuccessRate    float64 `json:"success_rate"`    // Percentage of successful requests
+	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+	TotalTokens    int64   `json:"total_tokens"`    // Total tokens used
+}
+
+// Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
-type LogEntry struct {
+type Log struct {
 	ID                  string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Timestamp           time.Time `gorm:"index;not null" json:"timestamp"`
 	Object              string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
@@ -58,30 +94,30 @@ type LogEntry struct {
 }
 
 // TableName sets the table name for GORM
-func (LogEntry) TableName() string {
+func (Log) TableName() string {
 	return "logs"
 }
 
 // BeforeCreate GORM hook to set created_at and serialize JSON fields
-func (l *LogEntry) BeforeCreate(tx *gorm.DB) error {
+func (l *Log) BeforeCreate(tx *gorm.DB) error {
 	if l.CreatedAt.IsZero() {
 		l.CreatedAt = time.Now()
 	}
-	return l.serializeFields()
+	return l.SerializeFields()
 }
 
 // BeforeSave GORM hook to serialize JSON fields
-func (l *LogEntry) BeforeSave(tx *gorm.DB) error {
-	return l.serializeFields()
+func (l *Log) BeforeSave(tx *gorm.DB) error {
+	return l.SerializeFields()
 }
 
 // AfterFind GORM hook to deserialize JSON fields
-func (l *LogEntry) AfterFind(tx *gorm.DB) error {
-	return l.deserializeFields()
+func (l *Log) AfterFind(tx *gorm.DB) error {
+	return l.DeserializeFields()
 }
 
-// serializeFields converts Go structs to JSON strings for storage
-func (l *LogEntry) serializeFields() error {
+// SerializeFields converts Go structs to JSON strings for storage
+func (l *Log) SerializeFields() error {
 	if l.InputHistoryParsed != nil {
 		if data, err := json.Marshal(l.InputHistoryParsed); err != nil {
 			return err
@@ -183,13 +219,13 @@ func (l *LogEntry) serializeFields() error {
 	}
 
 	// Build content summary for search
-	l.ContentSummary = l.buildContentSummary()
+	l.ContentSummary = l.BuildContentSummary()
 
 	return nil
 }
 
-// deserializeFields converts JSON strings back to Go structs
-func (l *LogEntry) deserializeFields() error {
+// DeserializeFields converts JSON strings back to Go structs
+func (l *Log) DeserializeFields() error {
 	if l.InputHistory != "" {
 		if err := json.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
@@ -278,8 +314,8 @@ func (l *LogEntry) deserializeFields() error {
 	return nil
 }
 
-// buildContentSummary creates a searchable text summary
-func (l *LogEntry) buildContentSummary() string {
+// BuildContentSummary creates a searchable text summary
+func (l *Log) BuildContentSummary() string {
 	var parts []string
 
 	// Add input messages

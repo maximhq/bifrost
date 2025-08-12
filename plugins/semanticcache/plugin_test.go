@@ -1,4 +1,4 @@
-package redis
+package semanticcache
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/redis/go-redis/v9"
+	"github.com/maximhq/bifrost/plugins/semanticcache/store"
 )
 
 // BaseAccount implements the schemas.Account interface for testing purposes.
@@ -48,32 +48,32 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}, nil
 }
 
-// clearTestKeysWithPrefix removes all Redis keys matching the test prefix using SCAN.
+// clearTestKeysWithStore removes all keys matching the test prefix using the store interface.
 // This is safer than FLUSHALL as it only affects test keys, not the entire Redis instance.
-func clearTestKeysWithPrefix(t *testing.T, client *redis.Client, prefix string) {
+func clearTestKeysWithStore(t *testing.T, store store.VectorStore, prefix string) {
 	ctx := context.Background()
 	pattern := prefix + "*"
 
 	var keys []string
-	var cursor uint64
+	var cursor *string
 
-	// Use SCAN to find all keys matching the prefix
+	// Use store interface to find all keys matching the prefix
 	for {
-		batch, c, err := client.Scan(ctx, cursor, pattern, 1000).Result()
+		batch, c, err := store.GetAll(ctx, pattern, cursor, 1000)
 		if err != nil {
 			t.Logf("Warning: Failed to scan keys with prefix %s: %v", prefix, err)
 			return
 		}
 		keys = append(keys, batch...)
 		cursor = c
-		if cursor == 0 {
+		if cursor == nil {
 			break
 		}
 	}
 
 	// Delete keys in batches if any were found
 	if len(keys) > 0 {
-		if err := client.Del(ctx, keys...).Err(); err != nil {
+		if err := store.Delete(ctx, keys); err != nil {
 			t.Logf("Warning: Failed to delete test keys: %v", err)
 		} else {
 			t.Logf("Cleaned up %d test keys with prefix %s", len(keys), prefix)
@@ -83,29 +83,34 @@ func clearTestKeysWithPrefix(t *testing.T, client *redis.Client, prefix string) 
 
 func TestRedisPlugin(t *testing.T) {
 	// Configure plugin with minimal Redis connection settings (only Addr is required)
-	config := RedisPluginConfig{
-		Addr:     "localhost:6379",
+	config := Config{
+		Enabled:  true,
 		CacheKey: TestCacheKey,
 		Prefix:   TestPrefix, // Use test-specific prefix to isolate test data
 		// Optional: add password if your Redis instance requires it
-		Password: os.Getenv("REDIS_PASSWORD"),
+		Store: store.Config{
+			Type: store.VectorStoreTypeRedis,
+			Config: store.RedisConfig{
+				Addr:     "localhost:6379",
+				Password: os.Getenv("REDIS_PASSWORD"),
+			},
+		},
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
 	// Initialize the Redis plugin (it will create its own client)
-	plugin, err := NewRedisPlugin(config, logger)
+	plugin, err := Init(context.Background(), config, logger)
 	if err != nil {
 		t.Skipf("Redis not available or failed to connect: %v", err)
 		return
 	}
 
-	// Get the internal client for test setup (we need to type assert to access it)
+	// Get the internal store for test setup
 	pluginImpl := plugin.(*Plugin)
-	redisClient := pluginImpl.client
 
-	// Clear test keys before test (safer than FLUSHALL)
-	clearTestKeysWithPrefix(t, redisClient, TestPrefix)
+	// Clear test keys using the store interface
+	clearTestKeysWithStore(t, pluginImpl.store, TestPrefix)
 	ctx := context.Background()
 
 	account := BaseAccount{}
@@ -278,28 +283,33 @@ func TestRedisPlugin(t *testing.T) {
 
 func TestRedisPluginStreaming(t *testing.T) {
 	// Configure plugin with minimal Redis connection settings
-	config := RedisPluginConfig{
-		Addr:     "localhost:6379",
+	config := Config{
+		Enabled:  true,
 		CacheKey: TestCacheKey,
 		Prefix:   TestPrefix, // Use test-specific prefix to isolate test data
-		Password: os.Getenv("REDIS_PASSWORD"),
+		Store: store.Config{
+			Type: store.VectorStoreTypeRedis,
+			Config: store.RedisConfig{
+				Addr:     "localhost:6379",
+				Password: os.Getenv("REDIS_PASSWORD"),
+			},
+		},
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
 	// Initialize the Redis plugin
-	plugin, err := NewRedisPlugin(config, logger)
+	plugin, err := Init(context.Background(), config, logger)
 	if err != nil {
 		t.Skipf("Redis not available or failed to connect: %v", err)
 		return
 	}
 
-	// Get the internal client for test setup
+	// Get the internal store for test setup
 	pluginImpl := plugin.(*Plugin)
-	redisClient := pluginImpl.client
 
 	// Clear test keys before test (safer than FLUSHALL)
-	clearTestKeysWithPrefix(t, redisClient, TestPrefix)
+	clearTestKeysWithStore(t, pluginImpl.store, TestPrefix)
 	ctx := context.Background()
 
 	account := BaseAccount{}

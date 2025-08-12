@@ -13,6 +13,7 @@ import (
 	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
 	"github.com/valyala/fasthttp"
 )
@@ -27,7 +28,7 @@ type WebSocketClient struct {
 type WebSocketHandler struct {
 	logManager logging.LogManager
 	logger     schemas.Logger
-	store      *lib.ConfigStore
+	store      *lib.Config
 	clients    map[*websocket.Conn]*WebSocketClient
 	mu         sync.RWMutex
 	stopChan   chan struct{} // Channel to signal heartbeat goroutine to stop
@@ -35,7 +36,7 @@ type WebSocketHandler struct {
 }
 
 // NewWebSocketHandler creates a new WebSocket handler instance
-func NewWebSocketHandler(logManager logging.LogManager, store *lib.ConfigStore, logger schemas.Logger) *WebSocketHandler {
+func NewWebSocketHandler(logManager logging.LogManager, store *lib.Config, logger schemas.Logger) *WebSocketHandler {
 	return &WebSocketHandler{
 		logManager: logManager,
 		logger:     logger,
@@ -62,7 +63,7 @@ func (h *WebSocketHandler) getUpgrader() websocket.FastHTTPUpgrader {
 				// If no Origin header, check the Host header for direct connections
 				host := string(ctx.Request.Header.Peek("Host"))
 				return isLocalhost(host)
-			}	
+			}
 			// Check if origin is allowed (localhost always allowed + configured origins)
 			return IsOriginAllowed(origin, h.store.ClientConfig.AllowedOrigins)
 		},
@@ -70,7 +71,7 @@ func (h *WebSocketHandler) getUpgrader() websocket.FastHTTPUpgrader {
 }
 
 // isLocalhost checks if the given host is localhost
-func isLocalhost(host string) bool {	
+func isLocalhost(host string) bool {
 	// Remove port if present
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]
@@ -155,7 +156,7 @@ func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageTyp
 }
 
 // BroadcastLogUpdate sends a log update to all connected WebSocket clients
-func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logging.LogEntry) {
+func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 	// Add panic recovery to prevent server crashes
 	defer func() {
 		if r := recover(); r != nil {
@@ -170,9 +171,9 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logging.LogEntry) {
 	}
 
 	message := struct {
-		Type      string            `json:"type"`
-		Operation string            `json:"operation"` // "create" or "update"
-		Payload   *logging.LogEntry `json:"payload"`
+		Type      string        `json:"type"`
+		Operation string        `json:"operation"` // "create" or "update"
+		Payload   *logstore.Log `json:"payload"`
 	}{
 		Type:      "log",
 		Operation: operationType,

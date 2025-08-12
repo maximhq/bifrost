@@ -13,18 +13,19 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 	"github.com/valyala/fasthttp"
 )
 
 // ProviderHandler manages HTTP requests for provider operations
 type ProviderHandler struct {
-	store  *lib.ConfigStore
+	store  *lib.Config
 	client *bifrost.Bifrost
 	logger schemas.Logger
 }
 
 // NewProviderHandler creates a new provider handler instance
-func NewProviderHandler(store *lib.ConfigStore, client *bifrost.Bifrost, logger schemas.Logger) *ProviderHandler {
+func NewProviderHandler(store *lib.Config, client *bifrost.Bifrost, logger schemas.Logger) *ProviderHandler {
 	return &ProviderHandler{
 		store:  store,
 		client: client,
@@ -177,7 +178,7 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Construct ProviderConfig from individual fields
-	config := lib.ProviderConfig{
+	config := configstore.ProviderConfig{
 		Keys:                     req.Keys,
 		NetworkConfig:            req.NetworkConfig,
 		ConcurrencyAndBufferSize: req.ConcurrencyAndBufferSize,
@@ -188,12 +189,6 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	if err := h.store.AddProvider(req.Provider, config); err != nil {
 		h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", req.Provider, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err), h.logger)
-		return
-	}
-
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
 		return
 	}
 
@@ -235,7 +230,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Construct ProviderConfig from individual fields
-	config := lib.ProviderConfig{
+	config := configstore.ProviderConfig{
 		Keys:                     oldConfigRaw.Keys,
 		NetworkConfig:            oldConfigRaw.NetworkConfig,
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
@@ -301,12 +296,6 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
-		return
-	}
-
 	if config.ConcurrencyAndBufferSize.Concurrency != oldConfigRaw.ConcurrencyAndBufferSize.Concurrency ||
 		config.ConcurrencyAndBufferSize.BufferSize != oldConfigRaw.ConcurrencyAndBufferSize.BufferSize {
 		// Update concurrency and queue configuration in Bifrost
@@ -339,12 +328,6 @@ func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
 	if err := h.store.RemoveProvider(provider); err != nil {
 		h.logger.Warn(fmt.Sprintf("Failed to remove provider %s: %v", provider, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove provider: %v", err), h.logger)
-		return
-	}
-
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
 		return
 	}
 
@@ -446,7 +429,7 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 	return resultKeys, nil
 }
 
-func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config lib.ProviderConfig) ProviderResponse {
+func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config configstore.ProviderConfig) ProviderResponse {
 	if config.NetworkConfig == nil {
 		config.NetworkConfig = &schemas.DefaultNetworkConfig
 	}

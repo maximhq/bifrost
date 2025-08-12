@@ -2,14 +2,24 @@
 package schemas
 
 // LogLevel represents the severity level of a log message.
-// Alias to zerolog.Level to ensure seamless interoperability.
+// Internally it maps to zerolog.Level for interoperability.
 type LogLevel string
 
+// LogLevel constants for different severity levels.
 const (
 	LogLevelDebug LogLevel = "debug"
 	LogLevelInfo  LogLevel = "info"
 	LogLevelWarn  LogLevel = "warn"
 	LogLevelError LogLevel = "error"
+)
+
+// LoggerOutputType represents the output type of a logger.
+type LoggerOutputType string
+
+// LoggerOutputType constants for different output types.
+const (
+	LoggerOutputTypeJSON   LoggerOutputType = "json"
+	LoggerOutputTypePretty LoggerOutputType = "pretty"
 )
 
 // Logger defines the interface for logging operations in the Bifrost system.
@@ -36,4 +46,10 @@ type Logger interface {
 	// Fatal logs a fatal-level message.
 	// This is used for critical situations that require immediate attention and will terminate the program.
 	Fatal(msg string, err error)
+
+	// SetLevel sets the log level for the logger.
+	SetLevel(level LogLevel)
+
+	// SetOutputType sets the output type for the logger.
+	SetOutputType(outputType LoggerOutputType)
 }

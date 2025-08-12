@@ -20,13 +20,7 @@ type DefaultLogger struct {
 	stdoutLogger zerolog.Logger
 }
 
-type LoggerOutputType string
-
-const (
-	LoggerOutputTypeJSON   LoggerOutputType = "json"
-	LoggerOutputTypePretty LoggerOutputType = "pretty"
-)
-
+// toZerologLevel converts a Bifrost log level to a Zerolog level.
 func toZerologLevel(l schemas.LogLevel) zerolog.Level {
 	switch l {
 	case schemas.LogLevelDebug:
@@ -102,12 +96,12 @@ func (logger *DefaultLogger) SetLevel(level schemas.LogLevel) {
 // SetOutputType sets the output type for the logger.
 // This determines the format of the log output.
 // If the output type is unknown, it defaults to JSON
-func (logger *DefaultLogger) SetOutputType(outputType LoggerOutputType) {
+func (logger *DefaultLogger) SetOutputType(outputType schemas.LoggerOutputType) {
 	switch outputType {
-	case LoggerOutputTypePretty:
+	case schemas.LoggerOutputTypePretty:
 		logger.stdoutLogger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
 		logger.stderrLogger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
-	case LoggerOutputTypeJSON:
+	case schemas.LoggerOutputTypeJSON:
 		logger.stdoutLogger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 		logger.stderrLogger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 	default:

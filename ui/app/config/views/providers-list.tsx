@@ -94,7 +94,7 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
       <div className="rounded-sm border">
         <Table>
           <TableHeader>
-            <TableRow>
+            <TableRow className="px-2">
               <TableHead>Provider</TableHead>
               <TableHead>Concurrency</TableHead>
               <TableHead>Buffer Size</TableHead>
@@ -114,7 +114,7 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
             {providers.map((provider) => (
               <TableRow
                 key={provider.name}
-                className="hover:bg-muted/50 cursor-pointer transition-colors"
+                className="hover:bg-muted/50 cursor-pointer px-2 transition-colors"
                 onClick={() => handleEditProvider(provider)}
               >
                 <TableCell>
