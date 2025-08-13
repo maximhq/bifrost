@@ -40,6 +40,12 @@ func NewVectorStore(ctx context.Context, config Config, logger schemas.Logger) (
 			return nil, fmt.Errorf("invalid redis config")
 		}
 		return newRedisStore(ctx, redisConfig, logger)
+	case VectorStoreTypeRedisCluster:
+		redisClusterConfig, ok := config.Config.(RedisClusterConfig)
+		if !ok {
+			return nil, fmt.Errorf("invalid redis cluster config")
+		}
+		return newRedisClusterStore(ctx, redisClusterConfig, logger)
 	}
 
 	return nil, fmt.Errorf("unsupported vector store type: %s", config.Type)

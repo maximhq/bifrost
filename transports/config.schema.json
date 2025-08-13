@@ -1,0 +1,790 @@
+{
+  "$schema": "https://json-schema.org/draft/2019-09/schema",
+  "$id": "https://www.getbifrost.ai/schema",
+  "title": "Bifrost Configuration Schema",
+  "description": "Schema for Bifrost HTTP transport configuration",
+  "type": "object",
+  "properties": {
+    "client": {
+      "type": "object",
+      "description": "Client configuration settings",
+      "properties": {
+        "drop_excess_requests": {
+          "type": "boolean",
+          "description": "Whether to drop excess requests when pool is full"
+        },
+        "initial_pool_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Initial size of the connection pool"
+        },
+        "prometheus_labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Labels to use for Prometheus metrics"
+        },
+        "allowed_origins": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": "CORS allowed origins"
+        },
+        "enable_logging": {
+          "type": "boolean",
+          "description": "Enable request/response logging"
+        },
+        "enable_caching": {
+          "type": "boolean",
+          "description": "Enable response caching"
+        },
+        "enable_governance": {
+          "type": "boolean",
+          "description": "Enable governance features"
+        }
+      },
+      "additionalProperties": false
+    },
+    "providers": {
+      "type": "object",
+      "description": "AI provider configurations",
+      "properties": {
+        "openai": {
+          "$ref": "#/$defs/provider"
+        },
+        "anthropic": {
+          "$ref": "#/$defs/provider"
+        },
+        "bedrock": {
+          "$ref": "#/$defs/providerWithBedrockConfig"
+        },
+        "cohere": {
+          "$ref": "#/$defs/provider"
+        },
+        "azure": {
+          "$ref": "#/$defs/providerWithAzureConfig"
+        },
+        "vertex": {
+          "$ref": "#/$defs/providerWithVertexConfig"
+        },
+        "mistral": {
+          "$ref": "#/$defs/provider"
+        },
+        "ollama": {
+          "$ref": "#/$defs/provider"
+        },
+        "groq": {
+          "$ref": "#/$defs/provider"
+        },
+        "sgl": {
+          "$ref": "#/$defs/provider"
+        },
+        "parasail": {
+          "$ref": "#/$defs/provider"
+        },
+        "cerebras": {
+          "$ref": "#/$defs/provider"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mcp": {
+      "type": "object",
+      "description": "Model Context Protocol configuration",
+      "properties": {
+        "client_configs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mcpClientConfig"
+          },
+          "description": "MCP client configurations"
+        }
+      },
+      "additionalProperties": false
+    },
+    "vector_store": {
+      "type": "object",
+      "description": "Vector store configuration for caching",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable vector store"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["redis", "redis-cluster"],
+          "description": "Vector store type"
+        },
+        "config": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/redisConfig"
+            },
+            {
+              "$ref": "#/$defs/redisClusterConfig"
+            }
+          ]
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cache TTL in seconds"
+        },
+        "cache_by_model": {
+          "type": "boolean",
+          "description": "Include model in cache key"
+        },
+        "cache_by_provider": {
+          "type": "boolean",
+          "description": "Include provider in cache key"
+        }
+      },
+      "additionalProperties": false
+    },
+    "config_store": {
+      "type": "object",
+      "description": "Configuration store settings",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable configuration store"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["sqlite"],
+          "description": "Configuration store type"
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Database file path"
+            }
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "logs_store": {
+      "type": "object",
+      "description": "Logs store settings",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable logs store"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["sqlite"],
+          "description": "Logs store type"
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Database file path"
+            }
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "networkConfig": {
+      "type": "object",
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL for the provider (optional, required for Ollama)"
+        },
+        "extra_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Additional headers to send with requests"
+        },
+        "default_request_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Default request timeout in seconds"
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of retries"
+        },
+        "retry_backoff_initial_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Initial retry backoff in milliseconds"
+        },
+        "retry_backoff_max_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum retry backoff in milliseconds"
+        }
+      },
+      "additionalProperties": false
+    },
+    "concurrencyConfig": {
+      "type": "object",
+      "properties": {
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of concurrent requests"
+        },
+        "buffer_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Buffer size for requests"
+        }
+      },
+      "required": ["concurrency", "buffer_size"],
+      "additionalProperties": false
+    },
+    "baseKey": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "API key value (can use env. prefix)"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Supported models for this key"
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Weight for load balancing"
+        }
+      },
+      "required": ["weight"],
+      "additionalProperties": false
+    },
+    "bedrockKey": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseKey"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bedrock_key_config": {
+              "type": "object",
+              "properties": {
+                "access_key": {
+                  "type": "string",
+                  "description": "AWS access key (can use env. prefix)"
+                },
+                "secret_key": {
+                  "type": "string",
+                  "description": "AWS secret key (can use env. prefix)"
+                },
+                "session_token": {
+                  "type": "string",
+                  "description": "AWS session token (can use env. prefix)"
+                },
+                "deployments": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Model to deployment mappings"
+                },
+                "arn": {
+                  "type": "string",
+                  "description": "AWS ARN"
+                },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region"
+                }
+              },
+              "required": ["region"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["bedrock_key_config"]
+        }
+      ]
+    },
+    "azureKey": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseKey"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "azure_key_config": {
+              "type": "object",
+              "properties": {
+                "endpoint": {
+                  "type": "string",
+                  "description": "Azure endpoint (can use env. prefix)"
+                },
+                "deployments": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Model to deployment mappings"
+                },
+                "api_version": {
+                  "type": "string",
+                  "description": "Azure API version"
+                }
+              },
+              "required": ["endpoint", "api_version"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["azure_key_config"]
+        }
+      ]
+    },
+    "vertexKey": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseKey"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "vertex_key_config": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "string",
+                  "description": "Google Cloud project ID (can use env. prefix)"
+                },
+                "region": {
+                  "type": "string",
+                  "description": "Google Cloud region"
+                },
+                "auth_credentials": {
+                  "type": "string",
+                  "description": "Authentication credentials (can use env. prefix)"
+                }
+              },
+              "required": ["project_id", "region"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["vertex_key_config"]
+        }
+      ]
+    },
+    "provider": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/baseKey"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/networkConfig"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrencyConfig"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxyConfig"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "providerWithBedrockConfig": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bedrockKey"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/networkConfig"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrencyConfig"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxyConfig"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "providerWithAzureConfig": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/azureKey"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/networkConfig"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrencyConfig"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxyConfig"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "providerWithVertexConfig": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/vertexKey"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/networkConfig"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrencyConfig"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxyConfig"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "mcpClientConfig": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the MCP client"
+        },
+        "connection_type": {
+          "type": "string",
+          "enum": ["stdio", "websocket", "http"],
+          "description": "Connection type for MCP client"
+        },
+        "stdio_config": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "Command to execute"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Command arguments"
+            },
+            "envs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Environment variables"
+            }
+          },
+          "required": ["command"],
+          "additionalProperties": false
+        },
+        "websocket_config": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "WebSocket URL"
+            }
+          },
+          "required": ["url"],
+          "additionalProperties": false
+        },
+        "http_config": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "HTTP URL"
+            }
+          },
+          "required": ["url"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["name", "connection_type"],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "connection_type": {
+              "const": "stdio"
+            }
+          },
+          "required": ["stdio_config"]
+        },
+        {
+          "properties": {
+            "connection_type": {
+              "const": "websocket"
+            }
+          },
+          "required": ["websocket_config"]
+        },
+        {
+          "properties": {
+            "connection_type": {
+              "const": "http"
+            }
+          },
+          "required": ["http_config"]
+        }
+      ]
+    },
+    "redisConfig": {
+      "type": "object",
+      "description": "Redis configuration for single instance",
+      "properties": {
+        "addr": {
+          "type": "string",
+          "description": "Redis server address (host:port) - REQUIRED"
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for Redis AUTH (optional)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for Redis AUTH (can use env. prefix)"
+        },
+        "db": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Redis database number (default: 0)"
+        },
+        "prefix": {
+          "type": "string",
+          "description": "Key prefix for Redis keys"
+        },
+        "pool_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of socket connections (optional)"
+        },
+        "min_idle_conns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum number of idle connections (optional)"
+        },
+        "max_idle_conns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of idle connections (optional)"
+        },
+        "conn_max_lifetime": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Connection maximum lifetime (e.g., '1h', '30m', '5s')"
+        },
+        "conn_max_idle_time": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Connection maximum idle time (e.g., '5m', '30s')"
+        },
+        "dial_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for socket connection (e.g., '5s')"
+        },
+        "read_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for socket reads (e.g., '3s')"
+        },
+        "write_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for socket writes (e.g., '3s')"
+        },
+        "context_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for Redis operations (e.g., '5s')"
+        }
+      },
+      "required": ["addr"],
+      "additionalProperties": false
+    },
+    "redisClusterConfig": {
+      "type": "object",
+      "description": "Redis Cluster configuration for cluster deployment",
+      "properties": {
+        "addrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Redis cluster node addresses (host:port) - REQUIRED"
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for Redis AUTH (optional)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for Redis AUTH (can use env. prefix)"
+        },
+        "prefix": {
+          "type": "string",
+          "description": "Key prefix for Redis keys"
+        },
+        "max_redirects": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of retries for cluster redirects (optional)"
+        },
+        "read_only": {
+          "type": "boolean",
+          "description": "Enable read-only mode (optional)"
+        },
+        "route_by_latency": {
+          "type": "boolean",
+          "description": "Route read-only commands by latency (optional)"
+        },
+        "route_randomly": {
+          "type": "boolean",
+          "description": "Route read-only commands randomly (optional)"
+        },
+        "pool_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of socket connections (optional)"
+        },
+        "min_idle_conns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum number of idle connections (optional)"
+        },
+        "max_idle_conns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of idle connections (optional)"
+        },
+        "conn_max_lifetime": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Connection maximum lifetime (e.g., '1h', '30m', '5s')"
+        },
+        "conn_max_idle_time": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Connection maximum idle time (e.g., '5m', '30s')"
+        },
+        "dial_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for socket connection (e.g., '5s')"
+        },
+        "read_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for socket reads (e.g., '3s')"
+        },
+        "write_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for socket writes (e.g., '3s')"
+        },
+        "context_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "description": "Timeout for Redis operations (e.g., '5s')"
+        }
+      },
+      "required": ["addrs"],
+      "additionalProperties": false
+    },
+    "proxyConfig": {
+      "type": "object",
+      "description": "Proxy configuration for provider connections",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["none", "http", "socks5", "environment"],
+          "description": "Type of proxy to use"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL of the proxy server"
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for proxy authentication"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for proxy authentication"
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    }
+  }
+}

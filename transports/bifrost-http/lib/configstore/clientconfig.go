@@ -2,9 +2,6 @@ package configstore
 
 import (
 	"github.com/maximhq/bifrost/core/schemas"
-
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib/logstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib/vectorstore"
 )
 
 // EnvKeyInfo stores information about a key sourced from environment
@@ -30,6 +27,7 @@ type ClientConfig struct {
 	AllowedOrigins          []string `json:"allowed_origins,omitempty"` // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 }
 
+
 // ProviderConfig represents the configuration for a specific AI model provider.
 // It includes API keys, network settings, and concurrency settings.
 type ProviderConfig struct {
@@ -42,17 +40,6 @@ type ProviderConfig struct {
 
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
-
-// BifrostHTTPConfig represents the complete configuration structure for Bifrost HTTP transport.
-// It includes both provider configurations and MCP configuration.
-type BifrostHTTPConfig struct {
-	ClientConfig   *ClientConfig       `json:"client"`       // Client configuration
-	ProviderConfig ConfigMap           `json:"providers"`    // Provider configurations
-	MCPConfig      *schemas.MCPConfig  `json:"mcp"`          // MCP configuration (optional)
-	VectorStore    *vectorstore.Config `json:"vector_store"` // Vector store configuration (optional)
-	ConfigStore    *Config             `json:"config_store"` // Config store configuration (optional)
-	LogsStore      *logstore.Config    `json:"logs_store"`   // Logs store configuration (optional)
-}
 
 type GovernanceConfig struct {
 	VirtualKeys []TableVirtualKey `json:"virtual_keys"`
