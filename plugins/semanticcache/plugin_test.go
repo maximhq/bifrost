@@ -3,6 +3,7 @@ package semanticcache
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,16 +25,21 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 
 const (
 	TestCacheKey = "x-test-cache-key"
-	TestPrefix   = "test_redis_plugin_"
+	TestPrefix   = "test_semantic_cache_plugin_"
 )
 
 // GetKeysForProvider returns a mock API key configuration for testing.
 // Uses the OPENAI_API_KEY environment variable for authentication.
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey == "" {
+		openaiKey = "test-key" // Use a placeholder for testing Redis functionality
+	}
+	
 	return []schemas.Key{
 		{
-			Value:  os.Getenv("OPENAI_API_KEY"),
-			Models: []string{"gpt-4o-mini", "gpt-4-turbo"},
+			Value:  openaiKey,
+			Models: []string{}, // Empty models array means it supports ALL models
 			Weight: 1.0,
 		},
 	}, nil
@@ -103,7 +109,12 @@ func clearTestKeysWithStore(t *testing.T, vs store.VectorStore, prefix string) {
 	}
 }
 
-func TestRedisPlugin(t *testing.T) {
+func TestSemanticCachePlugin(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY is not set, skipping test")
+		return
+	}
+
 	// Configure plugin with minimal Redis connection settings (only Addr is required)
 	config := Config{
 		Enabled:  true,
@@ -299,11 +310,15 @@ func TestRedisPlugin(t *testing.T) {
 			testRequest.Provider, response2.ExtraFields.Provider)
 	}
 
-	t.Log("Redis caching test completed successfully!")
-	t.Log("The Redis plugin successfully cached the response and served it faster on the second request.")
+	t.Log("Semantic caching test completed successfully!")
+	t.Log("The Semantic Cache plugin successfully cached the response and served it faster on the second request.")
 }
 
-func TestRedisPluginStreaming(t *testing.T) {
+func TestSemanticCachePluginStreaming(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY is not set, skipping test")
+		return
+	}
 	// Configure plugin with minimal Redis connection settings
 	config := Config{
 		Enabled:  true,
@@ -320,7 +335,7 @@ func TestRedisPluginStreaming(t *testing.T) {
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
-	// Initialize the Redis plugin
+	// Initialize the semantic cache plugin
 	plugin, err := Init(context.Background(), config, logger)
 	if err != nil {
 		t.Skipf("Redis not available or failed to connect: %v", err)
@@ -463,5 +478,168 @@ func TestRedisPluginStreaming(t *testing.T) {
 		}
 	}
 
-	t.Log("Redis streaming cache test completed successfully!")
+	t.Log("Semantic cache streaming test completed successfully!")
+}
+
+// TestSemanticCachePluginWithRedisCluster tests the semantic cache plugin with Redis Cluster backend
+func TestSemanticCachePluginWithRedisCluster(t *testing.T) {	
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY is not set, skipping test")
+		return
+	}
+	// Get Redis Cluster addresses from environment or use defaults
+	redisClusterAddrs := []string{"localhost:7000", "localhost:7001", "localhost:7002"}
+	if envAddrs := os.Getenv("REDIS_CLUSTER_ADDRS"); envAddrs != "" {
+		// If provided as a single comma-separated string, split it
+		// For simplicity, we'll just use it as a single address
+		redisClusterAddrs = strings.Split(envAddrs, ",")
+	}
+
+	// Configure plugin with Redis Cluster
+	config := Config{
+		Enabled:  true,
+		CacheKey: TestCacheKey,
+		Prefix:   TestPrefix + "cluster_", // Use cluster-specific prefix
+		Store: store.Config{
+			Type: store.VectorStoreTypeRedisCluster,
+			Config: store.RedisClusterConfig{
+				Addrs:    redisClusterAddrs,
+				Password: os.Getenv("REDIS_PASSWORD"),
+				Username: os.Getenv("REDIS_USERNAME"),
+			},
+		},
+	}
+
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+
+	// Initialize the Redis Cluster plugin
+	plugin, err := Init(context.Background(), config, logger)
+	if err != nil {
+		t.Skipf("Redis Cluster not available or failed to connect: %v", err)
+		return
+	}
+
+	// Get the internal store for test setup
+	pluginImpl := plugin.(*Plugin)
+
+	// Clear test keys using the store interface
+	clearTestKeysWithStore(t, pluginImpl.store, TestPrefix+"cluster_")
+	ctx := context.Background()
+
+	account := BaseAccount{}
+	ctx = context.WithValue(ctx, ContextKey(TestCacheKey), "test-cluster-value")
+
+	// Initialize Bifrost with the plugin
+	client, err := bifrost.Init(schemas.BifrostConfig{
+		Account: &account,
+		Plugins: []schemas.Plugin{plugin},
+		Logger:  logger,
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost with Redis Cluster: %v", err)
+	}
+	defer client.Cleanup()
+
+	// Create a test request
+	testRequest := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("What is Redis Cluster? Answer in one short sentence."),
+					},
+				},
+			},
+		},
+		Params: &schemas.ModelParameters{
+			Temperature: bifrost.Ptr(0.7),
+			MaxTokens:   bifrost.Ptr(50),
+		},
+	}
+
+	t.Log("Making first request with Redis Cluster (should go to OpenAI and be cached)...")
+
+	// Make first request (will go to OpenAI and be cached in Redis Cluster)
+	start1 := time.Now()
+	response1, bifrostErr1 := client.ChatCompletionRequest(ctx, testRequest)
+	duration1 := time.Since(start1)
+
+	if bifrostErr1 != nil {
+		t.Fatalf("First request failed with Redis Cluster: %v", bifrostErr1)
+	}
+
+	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
+		t.Fatal("First response from Redis Cluster is invalid")
+	}
+
+	t.Logf("First request with Redis Cluster completed in %v", duration1)
+	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
+
+	// Wait a moment to ensure cache is written to cluster
+	time.Sleep(100 * time.Millisecond)
+
+	t.Log("Making second identical request with Redis Cluster (should be served from cache)...")
+
+	// Make second identical request (should be cached in Redis Cluster)
+	start2 := time.Now()
+	response2, bifrostErr2 := client.ChatCompletionRequest(ctx, testRequest)
+	duration2 := time.Since(start2)
+
+	if bifrostErr2 != nil {
+		t.Fatalf("Second request failed with Redis Cluster: %v", bifrostErr2)
+	}
+
+	if response2 == nil || len(response2.Choices) == 0 || response2.Choices[0].Message.Content.ContentStr == nil {
+		t.Fatal("Second response from Redis Cluster is invalid")
+	}
+
+	t.Logf("Second request with Redis Cluster completed in %v", duration2)
+	t.Logf("Response: %s", *response2.Choices[0].Message.Content.ContentStr)
+
+	// Check if second request was cached
+	cached := false
+	if response2.ExtraFields.RawResponse != nil {
+		if rawMap, ok := response2.ExtraFields.RawResponse.(map[string]interface{}); ok {
+			if cachedFlag, exists := rawMap["bifrost_cached"]; exists {
+				if cachedBool, ok := cachedFlag.(bool); ok && cachedBool {
+					cached = true
+					t.Log("Second request was served from Redis Cluster cache!")
+					
+					if cacheKey, exists := rawMap["bifrost_cache_key"]; exists {
+						t.Logf("Cache key: %v", cacheKey)
+					}
+				}
+			}
+		}
+	}
+
+	if !cached {
+		t.Fatal("Second request was not cached in Redis Cluster - cache functionality is not working")
+	}
+
+	// Performance comparison
+	t.Logf("Redis Cluster Performance Summary:")
+	t.Logf("First request (OpenAI):  %v", duration1)
+	t.Logf("Second request (Cache):  %v", duration2)
+
+	if duration2 < duration1 {
+		speedup := float64(duration1) / float64(duration2)
+		t.Logf("Redis Cluster cache speedup: %.2fx faster", speedup)
+	}
+
+	// Verify responses are identical
+	content1 := *response1.Choices[0].Message.Content.ContentStr
+	content2 := *response2.Choices[0].Message.Content.ContentStr
+
+	if content1 != content2 {
+		t.Errorf("Response content differs between Redis Cluster cached and original:\nOriginal: %s\nCached:   %s", content1, content2)
+	} else {
+		t.Log("Both responses have identical content with Redis Cluster")
+	}
+
+	t.Log("Semantic caching with Redis Cluster test completed successfully!")
+	t.Log("The Redis Cluster backend successfully cached the response and served it faster on the second request.")
 }
