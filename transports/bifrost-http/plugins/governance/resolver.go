@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 )
 
 // Decision represents the result of governance evaluation
@@ -35,12 +36,12 @@ type RequestContext struct {
 
 // EvaluationResult contains the complete result of governance evaluation
 type EvaluationResult struct {
-	Decision      Decision    `json:"decision"`
-	Reason        string      `json:"reason"`
-	VirtualKey    *VirtualKey `json:"virtual_key,omitempty"`
-	RateLimitInfo *RateLimit  `json:"rate_limit_info,omitempty"`
-	BudgetInfo    []*Budget   `json:"budget_info,omitempty"` // All budgets in hierarchy
-	UsageInfo     *UsageInfo  `json:"usage_info,omitempty"`
+	Decision      Decision                     `json:"decision"`
+	Reason        string                       `json:"reason"`
+	VirtualKey    *configstore.TableVirtualKey `json:"virtual_key,omitempty"`
+	RateLimitInfo *configstore.TableRateLimit  `json:"rate_limit_info,omitempty"`
+	BudgetInfo    []*configstore.TableBudget   `json:"budget_info,omitempty"` // All budgets in hierarchy
+	UsageInfo     *UsageInfo                   `json:"usage_info,omitempty"`
 }
 
 // UsageInfo represents current usage levels for rate limits and budgets
@@ -128,7 +129,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *RequestContext) *EvaluationResult 
 }
 
 // isModelAllowed checks if the requested model is allowed for this VK
-func (r *BudgetResolver) isModelAllowed(vk *VirtualKey, model string) bool {
+func (r *BudgetResolver) isModelAllowed(vk *configstore.TableVirtualKey, model string) bool {
 	// Empty AllowedModels means all models are allowed
 	if len(vk.AllowedModels) == 0 {
 		return true
@@ -138,7 +139,7 @@ func (r *BudgetResolver) isModelAllowed(vk *VirtualKey, model string) bool {
 }
 
 // isProviderAllowed checks if the requested provider is allowed for this VK
-func (r *BudgetResolver) isProviderAllowed(vk *VirtualKey, provider schemas.ModelProvider) bool {
+func (r *BudgetResolver) isProviderAllowed(vk *configstore.TableVirtualKey, provider schemas.ModelProvider) bool {
 	// Empty AllowedProviders means all providers are allowed
 	if len(vk.AllowedProviders) == 0 {
 		return true
@@ -148,7 +149,7 @@ func (r *BudgetResolver) isProviderAllowed(vk *VirtualKey, provider schemas.Mode
 }
 
 // checkRateLimits checks the VK's rate limits using flexible approach
-func (r *BudgetResolver) checkRateLimits(vk *VirtualKey, ctx *RequestContext) *EvaluationResult {
+func (r *BudgetResolver) checkRateLimits(vk *configstore.TableVirtualKey, ctx *RequestContext) *EvaluationResult {
 	// No rate limits defined
 	if vk.RateLimit == nil {
 		return nil
@@ -202,7 +203,7 @@ func (r *BudgetResolver) checkRateLimits(vk *VirtualKey, ctx *RequestContext) *E
 }
 
 // checkBudgetHierarchy checks the budget hierarchy atomically (VK → Team → Customer)
-func (r *BudgetResolver) checkBudgetHierarchy(vk *VirtualKey, ctx *RequestContext) *EvaluationResult {
+func (r *BudgetResolver) checkBudgetHierarchy(vk *configstore.TableVirtualKey, ctx *RequestContext) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
 	if err := r.store.CheckBudget(vk); err != nil {
 		r.logger.Debug(fmt.Sprintf("Atomic budget check failed for VK %s: %s", vk.ID, err.Error()))

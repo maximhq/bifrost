@@ -3,34 +3,12 @@ package governance
 
 import (
 	"context"
-	"fmt"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"gorm.io/gorm"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib/configstore"
 )
-
-// autoMigrateGovernanceTables ensures all governance tables exist
-func autoMigrateGovernanceTables(db *gorm.DB) error {
-	// List of all governance models to migrate (new hierarchical system)
-	models := []interface{}{
-		&Budget{},
-		&RateLimit{},
-		&Customer{},
-		&Team{},
-		&VirtualKey{},
-		&Config{},
-		&ModelPricing{},
-	}
-
-	for _, model := range models {
-		if err := db.AutoMigrate(model); err != nil {
-			return fmt.Errorf("failed to migrate model %T: %w", model, err)
-		}
-	}
-
-	return nil
-}
 
 // Standalone utility functions for use across the governance plugin
 
@@ -108,4 +86,54 @@ func isCacheReadRequest(req *schemas.BifrostRequest, headers map[string]string) 
 	// For now, cache detection relies on headers only
 
 	return false
+}
+
+func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) configstore.TableModelPricing {
+	provider := entry.Provider
+
+	if provider == "vertex_ai-language-models" {
+		provider = "vertex"
+	}
+
+	// Handle provider/model format - extract just the model name
+	modelName := modelKey
+	if strings.Contains(modelKey, "/") {
+		parts := strings.Split(modelKey, "/")
+		if len(parts) > 1 {
+			modelName = parts[1]
+		}
+	}
+
+	pricing := configstore.TableModelPricing{
+		Model:              modelName,
+		Provider:           provider,
+		InputCostPerToken:  entry.InputCostPerToken,
+		OutputCostPerToken: entry.OutputCostPerToken,
+		Mode:               entry.Mode,
+
+		// Additional pricing for media
+		InputCostPerImage:          entry.InputCostPerImage,
+		InputCostPerVideoPerSecond: entry.InputCostPerVideoPerSecond,
+		InputCostPerAudioPerSecond: entry.InputCostPerAudioPerSecond,
+
+		// Character-based pricing
+		InputCostPerCharacter:  entry.InputCostPerCharacter,
+		OutputCostPerCharacter: entry.OutputCostPerCharacter,
+
+		// Pricing above 128k tokens
+		InputCostPerTokenAbove128kTokens:          entry.InputCostPerTokenAbove128kTokens,
+		InputCostPerCharacterAbove128kTokens:      entry.InputCostPerCharacterAbove128kTokens,
+		InputCostPerImageAbove128kTokens:          entry.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens: entry.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens: entry.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:         entry.OutputCostPerTokenAbove128kTokens,
+		OutputCostPerCharacterAbove128kTokens:     entry.OutputCostPerCharacterAbove128kTokens,
+
+		// Cache and batch pricing
+		CacheReadInputTokenCost:   entry.CacheReadInputTokenCost,
+		InputCostPerTokenBatches:  entry.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches: entry.OutputCostPerTokenBatches,
+	}
+
+	return pricing
 }

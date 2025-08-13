@@ -1,15 +1,15 @@
 'use client'
 
 import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-    AlertDialogTrigger,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -106,21 +106,21 @@ export default function TeamsTable({ teams, customers, virtualKeys, onRefresh }:
               </TableRow>
             </TableHeader>
             <TableBody>
-              {teams.length === 0 ? (
+              {teams?.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-muted-foreground py-8 text-center">
                     No teams found. Create your first team to get started.
                   </TableCell>
                 </TableRow>
               ) : (
-                teams.map((team) => {
+                teams?.map((team) => {
                   const vks = getVirtualKeysForTeam(team.id)
                   const customerName = getCustomerName(team.customer_id)
 
                   return (
                     <TableRow key={team.id}>
                       <TableCell className="max-w-[200px]">
-                        <div className="font-medium truncate">{team.name}</div>
+                        <div className="truncate font-medium">{team.name}</div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">

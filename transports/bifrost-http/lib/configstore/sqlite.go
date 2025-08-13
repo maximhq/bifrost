@@ -328,6 +328,259 @@ func (s *SQLiteConfigStore) UpdateEnvKeys(keys map[string][]EnvKeyInfo) error {
 	return nil
 }
 
+// GetConfig retrieves a specific config from the database.
+func (s *SQLiteConfigStore) GetConfig(key string) (*TableConfig, error) {
+	var config TableConfig
+	if err := s.db.First(&config, "key = ?", key).Error; err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+// UpdateConfig updates a specific config in the database.
+func (s *SQLiteConfigStore) UpdateConfig(tx *gorm.DB, config *TableConfig) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(config).Error
+}
+
+// GetModelPricings retrieves all model pricing records from the database.
+func (s *SQLiteConfigStore) GetModelPricings() ([]TableModelPricing, error) {
+	var modelPricings []TableModelPricing
+	if err := s.db.Find(&modelPricings).Error; err != nil {
+		return nil, err
+	}
+	return modelPricings, nil
+}
+
+// CreateModelPricing creates a new model pricing record in the database.
+func (s *SQLiteConfigStore) CreateModelPricing(tx *gorm.DB, pricing *TableModelPricing) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Create(pricing).Error
+}
+
+// DeleteModelPricings deletes all model pricing records from the database.
+func (s *SQLiteConfigStore) DeleteModelPricings(tx *gorm.DB) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&TableModelPricing{}).Error
+}
+
+// GOVERNANCE METHODS
+
+// GetVirtualKeys retrieves all virtual keys from the database.
+func (s *SQLiteConfigStore) GetVirtualKeys() ([]TableVirtualKey, error) {
+	var virtualKeys []TableVirtualKey
+
+	// Preload all relationships for complete information
+	if err := s.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").Find(&virtualKeys).Error; err != nil {
+		return nil, err
+	}
+
+	return virtualKeys, nil
+}
+
+// GetVirtualKey retrieves a virtual key from the database.
+func (s *SQLiteConfigStore) GetVirtualKey(id string) (*TableVirtualKey, error) {
+	var virtualKey TableVirtualKey
+	if err := s.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").First(&virtualKey, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &virtualKey, nil
+}
+
+func (s *SQLiteConfigStore) CreateVirtualKey(tx *gorm.DB, virtualKey *TableVirtualKey) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Create(virtualKey).Error
+}
+
+func (s *SQLiteConfigStore) UpdateVirtualKey(tx *gorm.DB, virtualKey *TableVirtualKey) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(virtualKey).Error
+}
+
+// DeleteVirtualKey deletes a virtual key from the database.
+func (s *SQLiteConfigStore) DeleteVirtualKey(id string) error {
+	return s.db.Delete(&TableVirtualKey{}, "id = ?", id).Error
+}
+
+// GetTeams retrieves all teams from the database.
+func (s *SQLiteConfigStore) GetTeams(customerID string) ([]TableTeam, error) {
+	// Preload relationships for complete information
+	query := s.db.Preload("Customer").Preload("Budget")
+
+	// Optional filtering by customer
+	if customerID != "" {
+		query = query.Where("customer_id = ?", customerID)
+	}
+
+	var teams []TableTeam
+	if err := query.Find(&teams).Error; err != nil {
+		return nil, err
+	}
+	return teams, nil
+}
+
+// GetTeam retrieves a specific team from the database.
+func (s *SQLiteConfigStore) GetTeam(id string) (*TableTeam, error) {
+	var team TableTeam
+	if err := s.db.Preload("Customer").Preload("Budget").First(&team, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &team, nil
+}
+
+// CreateTeam creates a new team in the database.
+func (s *SQLiteConfigStore) CreateTeam(tx *gorm.DB, team *TableTeam) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Create(team).Error
+}
+
+// UpdateTeam updates an existing team in the database.
+func (s *SQLiteConfigStore) UpdateTeam(tx *gorm.DB, team *TableTeam) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(team).Error
+}
+
+// DeleteTeam deletes a team from the database.
+func (s *SQLiteConfigStore) DeleteTeam(id string) error {
+	return s.db.Delete(&TableTeam{}, "id = ?", id).Error
+}
+
+// GetCustomers retrieves all customers from the database.
+func (s *SQLiteConfigStore) GetCustomers() ([]TableCustomer, error) {
+	var customers []TableCustomer
+	if err := s.db.Preload("Teams").Preload("Budget").Find(&customers).Error; err != nil {
+		return nil, err
+	}
+	return customers, nil
+}
+
+// GetCustomer retrieves a specific customer from the database.
+func (s *SQLiteConfigStore) GetCustomer(id string) (*TableCustomer, error) {
+	var customer TableCustomer
+	if err := s.db.Preload("Teams").Preload("Budget").First(&customer, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &customer, nil
+}
+
+// CreateCustomer creates a new customer in the database.
+func (s *SQLiteConfigStore) CreateCustomer(tx *gorm.DB, customer *TableCustomer) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Create(customer).Error
+}
+
+// UpdateCustomer updates an existing customer in the database.
+func (s *SQLiteConfigStore) UpdateCustomer(tx *gorm.DB, customer *TableCustomer) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(customer).Error
+}
+
+// DeleteCustomer deletes a customer from the database.
+func (s *SQLiteConfigStore) DeleteCustomer(id string) error {
+	return s.db.Delete(&TableCustomer{}, "id = ?", id).Error
+}
+
+// GetRateLimit retrieves a specific rate limit from the database.
+func (s *SQLiteConfigStore) GetRateLimit(id string) (*TableRateLimit, error) {
+	var rateLimit TableRateLimit
+	if err := s.db.First(&rateLimit, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &rateLimit, nil
+}
+
+// CreateRateLimit creates a new rate limit in the database.
+func (s *SQLiteConfigStore) CreateRateLimit(tx *gorm.DB, rateLimit *TableRateLimit) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Create(rateLimit).Error
+}
+
+// UpdateRateLimit updates a rate limit in the database.
+func (s *SQLiteConfigStore) UpdateRateLimit(tx *gorm.DB, rateLimit *TableRateLimit) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(rateLimit).Error
+}
+
+// UpdateRateLimits updates multiple rate limits in the database.
+func (s *SQLiteConfigStore) UpdateRateLimits(tx *gorm.DB, rateLimits []*TableRateLimit) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(&rateLimits).Error
+}
+
+// GetBudgets retrieves all budgets from the database.
+func (s *SQLiteConfigStore) GetBudgets() ([]TableBudget, error) {
+	var budgets []TableBudget
+	if err := s.db.Find(&budgets).Error; err != nil {
+		return nil, err
+	}
+	return budgets, nil
+}
+
+// GetBudget retrieves a specific budget from the database.
+func (s *SQLiteConfigStore) GetBudget(tx *gorm.DB, id string) (*TableBudget, error) {
+	if tx == nil {
+		tx = s.db
+	}
+	var budget TableBudget
+	if err := tx.First(&budget, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &budget, nil
+}
+
+// CreateBudget creates a new budget in the database.
+func (s *SQLiteConfigStore) CreateBudget(tx *gorm.DB, budget *TableBudget) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Create(budget).Error
+}
+
+// UpdateBudgets updates multiple budgets in the database.
+func (s *SQLiteConfigStore) UpdateBudgets(tx *gorm.DB, budgets []*TableBudget) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(&budgets).Error
+}
+
+// UpdateBudget updates a budget in the database.
+func (s *SQLiteConfigStore) UpdateBudget(tx *gorm.DB, budget *TableBudget) error {
+	if tx == nil {
+		tx = s.db
+	}
+	return tx.Save(budget).Error
+}
+
+// ExecuteTransaction executes a transaction.
+func (s *SQLiteConfigStore) ExecuteTransaction(fn func(tx *gorm.DB) error) error {
+	return s.db.Transaction(fn)
+}
+
 // newSqliteConfigStore creates a new SQLite config store.
 func newSqliteConfigStore(config *SQLiteConfig) (ConfigStore, error) {
 	db, err := gorm.Open(sqlite.Open(config.Path), &gorm.Config{})
@@ -342,6 +595,13 @@ func newSqliteConfigStore(config *SQLiteConfig) (ConfigStore, error) {
 		&TableClientConfig{},
 		&TableEnvKey{},
 		&TableVectorStoreConfig{},
+		&TableBudget{},
+		&TableRateLimit{},
+		&TableCustomer{},
+		&TableTeam{},
+		&TableVirtualKey{},
+		&TableConfig{},
+		&TableModelPricing{},
 	); err != nil {
 		return nil, err
 	}
