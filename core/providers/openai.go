@@ -486,7 +486,7 @@ func handleOpenAIStreaming(
 			}
 
 			// Handle regular content chunks
-			if choice.Delta.Content != nil || len(choice.Delta.ToolCalls) > 0 {
+			if choice.BifrostStreamResponseChoice != nil && (choice.BifrostStreamResponseChoice.Delta.Content != nil || len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0) {
 				if params != nil {
 					response.ExtraFields.Params = *params
 				}
