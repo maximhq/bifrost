@@ -334,10 +334,10 @@ export default function ConfigPage() {
               <div className="flex items-center justify-between space-x-2">
                 <div className="space-y-0.5">
                   <label htmlFor="enable-caching" className="text-sm font-medium">
-                    Enable Caching
+                    Enable Semantic Caching
                   </label>
                   <p className="text-muted-foreground text-sm">
-                    Enable Redis caching for requests. Send <b>x-bf-cache-key</b> header with requests to use caching.
+                    Enable semantic caching for requests. Send <b>x-bf-cache-key</b> header with requests to use semantic caching.
                   </p>
                 </div>
                 <Switch

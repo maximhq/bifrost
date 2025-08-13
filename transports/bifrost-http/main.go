@@ -69,6 +69,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -362,19 +363,22 @@ func main() {
 		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), config, logger)
 	}
 
-	// var governancePlugin *governance.GovernancePlugin
+	var governancePlugin *governance.GovernancePlugin
 	var governanceHandler *handlers.GovernanceHandler
 
 	if config.ClientConfig.EnableGovernance {
 		// Initialize governance plugin
-		// governancePlugin, err = governance.NewGovernancePlugin(configDB, logger, &store.ClientConfig.EnforceGovernanceHeader)
-		// if err != nil {
-		// 	logger.Fatal("failed to initialize governance plugin", err)
-		// }
+		governancePlugin, err = governance.NewGovernancePlugin(config, logger, &config.ClientConfig.EnforceGovernanceHeader)
+		if err != nil {
+			logger.Fatal("failed to initialize governance plugin", err)
+		}
 
-		// loadedPlugins = append(loadedPlugins, governancePlugin)
+		loadedPlugins = append(loadedPlugins, governancePlugin)
 
-		// governanceHandler = handlers.NewGovernanceHandler(governancePlugin, configDB, logger)
+		governanceHandler, err = handlers.NewGovernanceHandler(governancePlugin, config.ConfigStore, logger)
+		if err != nil {
+			logger.Error(fmt.Errorf("failed to initialize governance handler: %w", err))
+		}
 	}
 
 	var cacheHandler *handlers.CacheHandler

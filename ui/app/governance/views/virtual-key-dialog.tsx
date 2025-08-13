@@ -406,13 +406,13 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
                   </SelectTrigger>
                   <SelectContent className="w-full">
                     <SelectItem value="none">No Assignment</SelectItem>
-                    {teams.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
-                    {customers.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}
+                    {teams?.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
+                    {customers?.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}
                   </SelectContent>
                 </Select>
               </div>
 
-              {formData.entityType === 'team' && teams.length > 0 && (
+              {formData.entityType === 'team' && teams?.length > 0 && (
                 <div className="space-y-2">
                   <Label>Select Team</Label>
                   <Select value={formData.teamId} onValueChange={(value) => updateField('teamId', value)}>
@@ -434,7 +434,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
                 </div>
               )}
 
-              {formData.entityType === 'customer' && customers.length > 0 && (
+              {formData.entityType === 'customer' && customers?.length > 0 && (
                 <div className="space-y-2">
                   <Label>Select Customer</Label>
                   <Select value={formData.customerId} onValueChange={(value) => updateField('customerId', value)}>
@@ -456,7 +456,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
               )}
             </div>
           </div>
-          <div className="bg-white dark:bg-card sticky bottom-0 py-3 border-t border-border">
+          <div className="dark:bg-card border-border sticky bottom-0 border-t bg-white py-3">
             <FormFooter validator={validator} label="Virtual Key" onCancel={onCancel} isLoading={isLoading} isEditing={isEditing} />
           </div>
         </form>

@@ -53,3 +53,11 @@ type BifrostHTTPConfig struct {
 	ConfigStore    *Config             `json:"config_store"` // Config store configuration (optional)
 	LogsStore      *logstore.Config    `json:"logs_store"`   // Logs store configuration (optional)
 }
+
+type GovernanceConfig struct {
+	VirtualKeys []TableVirtualKey `json:"virtual_keys"`
+	Teams       []TableTeam       `json:"teams"`
+	Customers   []TableCustomer   `json:"customers"`
+	Budgets     []TableBudget     `json:"budgets"`
+	RateLimits  []TableRateLimit  `json:"rate_limits"`
+}

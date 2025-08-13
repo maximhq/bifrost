@@ -33,6 +33,7 @@ type ConfigData struct {
 	Client            *configstore.ClientConfig             `json:"client"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
+	Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
 	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
 	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
 	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
@@ -53,8 +54,7 @@ type Config struct {
 	muMCP  sync.RWMutex
 	client *bifrost.Bifrost
 
-	configDirPath string
-	configPath    string
+	configPath string
 
 	// Stores
 	ConfigStore configstore.ConfigStore
@@ -62,9 +62,10 @@ type Config struct {
 	LogsStore   logstore.LogStore
 
 	// In-memory storage
-	ClientConfig configstore.ClientConfig
-	Providers    map[schemas.ModelProvider]configstore.ProviderConfig
-	MCPConfig    *schemas.MCPConfig
+	ClientConfig     configstore.ClientConfig
+	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
+	MCPConfig        *schemas.MCPConfig
+	GovernanceConfig *configstore.GovernanceConfig
 
 	// Track which keys come from environment variables
 	EnvKeys map[string][]configstore.EnvKeyInfo
@@ -303,6 +304,9 @@ func LoadConfig(configDirPath string) (*Config, error) {
 	}
 	if config.EnvKeys == nil {
 		config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
+	}
+	if configData.Governance != nil {
+		config.GovernanceConfig = configData.Governance
 	}
 
 	logger.Info("Successfully loaded configuration.")
