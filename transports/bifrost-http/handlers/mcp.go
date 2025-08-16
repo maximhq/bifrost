@@ -17,11 +17,11 @@ import (
 type MCPHandler struct {
 	client *bifrost.Bifrost
 	logger schemas.Logger
-	store  *lib.ConfigStore
+	store  *lib.Config
 }
 
 // NewMCPHandler creates a new MCP handler instance
-func NewMCPHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.ConfigStore) *MCPHandler {
+func NewMCPHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.Config) *MCPHandler {
 	return &MCPHandler{
 		client: client,
 		logger: logger,
@@ -152,12 +152,6 @@ func (h *MCPHandler) AddMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
-		return
-	}
-
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client added successfully",
@@ -186,12 +180,6 @@ func (h *MCPHandler) EditMCPClientTools(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
-		return
-	}
-
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client tools edited successfully",
@@ -208,12 +196,6 @@ func (h *MCPHandler) RemoveMCPClient(ctx *fasthttp.RequestCtx) {
 
 	if err := h.store.RemoveMCPClient(name); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove MCP client: %v", err), h.logger)
-		return
-	}
-
-	if err := h.store.SaveConfig(); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to save configuration: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to save configuration: %v", err), h.logger)
 		return
 	}
 

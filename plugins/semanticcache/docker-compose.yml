@@ -1,0 +1,264 @@
+# Redis setup for testing
+version: '3.8'
+
+services:
+  # Redis single instance for basic testing
+  redis:
+    image: redis:7-alpine
+    container_name: redis_single
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - redis_network
+
+  # Redis Cluster setup (3 master nodes)
+  redis-cluster-node-1:
+    image: redis:7-alpine
+    container_name: redis_cluster_node_1
+    ports:
+      - "7000:6379"
+      - "17000:16379"
+    command: |
+      sh -c '
+        rm -rf /data/nodes.conf /data/node-1.aof* /data/dump.rdb
+        redis-server \
+          --port 6379 \
+          --cluster-enabled yes \
+          --cluster-config-file nodes.conf \
+          --cluster-node-timeout 5000 \
+          --cluster-announce-ip redis-cluster-node-1 \
+          --cluster-announce-port 6379 \
+          --cluster-announce-bus-port 16379 \
+          --appendonly yes \
+          --appendfilename node-1.aof
+      '
+    volumes:
+      - redis_cluster_1:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "redis-cli -p 6379 ping && redis-cli -p 6379 INFO cluster | grep cluster_enabled:1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - redis_network
+
+  redis-cluster-node-2:
+    image: redis:7-alpine
+    container_name: redis_cluster_node_2
+    ports:
+      - "7001:6379"
+      - "17001:16379"
+    command: |
+      sh -c '
+        rm -rf /data/nodes.conf /data/node-2.aof* /data/dump.rdb
+        redis-server \
+          --port 6379 \
+          --cluster-enabled yes \
+          --cluster-config-file nodes.conf \
+          --cluster-node-timeout 5000 \
+          --cluster-announce-ip redis-cluster-node-2 \
+          --cluster-announce-port 6379 \
+          --cluster-announce-bus-port 16379 \
+          --appendonly yes \
+          --appendfilename node-2.aof
+      '
+    volumes:
+      - redis_cluster_2:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "redis-cli -p 6379 ping && redis-cli -p 6379 INFO cluster | grep cluster_enabled:1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - redis_network
+
+  redis-cluster-node-3:
+    image: redis:7-alpine
+    container_name: redis_cluster_node_3
+    ports:
+      - "7002:6379"
+      - "17002:16379"
+    command: |
+      sh -c '
+        rm -rf /data/nodes.conf /data/node-3.aof* /data/dump.rdb
+        redis-server \
+          --port 6379 \
+          --cluster-enabled yes \
+          --cluster-config-file nodes.conf \
+          --cluster-node-timeout 5000 \
+          --cluster-announce-ip redis-cluster-node-3 \
+          --cluster-announce-port 6379 \
+          --cluster-announce-bus-port 16379 \
+          --appendonly yes \
+          --appendfilename node-3.aof
+      '
+    volumes:
+      - redis_cluster_3:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "redis-cli -p 6379 ping && redis-cli -p 6379 INFO cluster | grep cluster_enabled:1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - redis_network
+
+  # Cluster initialization and monitoring service
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: redis_cluster_init
+    depends_on:
+      redis-cluster-node-1:
+        condition: service_healthy
+      redis-cluster-node-2:
+        condition: service_healthy
+      redis-cluster-node-3:
+        condition: service_healthy
+    command: |
+      sh -c '
+        echo "Starting Redis cluster initialization and monitoring..."
+        
+        # Function to check if cluster is healthy
+        check_cluster_health() {
+          local cluster_state=$$(redis-cli -h redis-cluster-node-1 -p 6379 CLUSTER INFO | grep "cluster_state:ok" | wc -l)
+          local nodes_count=$$(redis-cli -h redis-cluster-node-1 -p 6379 CLUSTER NODES | grep "master" | wc -l)
+          
+          if [ "$$cluster_state" -eq 1 ] && [ "$$nodes_count" -eq 3 ]; then
+            return 0
+          else
+            return 1
+          fi
+        }
+        
+        # Function to initialize cluster
+        initialize_cluster() {
+          echo "Initializing Redis cluster..."
+          
+          # Try to reset cluster state if nodes are already configured
+          echo "Resetting cluster state on all nodes..."
+          redis-cli -h redis-cluster-node-1 -p 6379 CLUSTER RESET HARD 2>/dev/null || echo "Node 1 reset not needed"
+          redis-cli -h redis-cluster-node-2 -p 6379 CLUSTER RESET HARD 2>/dev/null || echo "Node 2 reset not needed"  
+          redis-cli -h redis-cluster-node-3 -p 6379 CLUSTER RESET HARD 2>/dev/null || echo "Node 3 reset not needed"
+          
+          # Clear any existing data
+          redis-cli -h redis-cluster-node-1 -p 6379 FLUSHALL 2>/dev/null || echo "Node 1 flush not needed"
+          redis-cli -h redis-cluster-node-2 -p 6379 FLUSHALL 2>/dev/null || echo "Node 2 flush not needed"
+          redis-cli -h redis-cluster-node-3 -p 6379 FLUSHALL 2>/dev/null || echo "Node 3 flush not needed"
+          
+          sleep 3
+          
+          echo "Creating Redis cluster..."
+          timeout 60 redis-cli --cluster create \
+            redis-cluster-node-1:6379 \
+            redis-cluster-node-2:6379 \
+            redis-cluster-node-3:6379 \
+            --cluster-replicas 0 \
+            --cluster-yes
+            
+          if [ $$? -eq 0 ]; then
+            echo "Redis cluster creation command completed"
+            sleep 5
+            
+            # Verify cluster is working
+            if check_cluster_health; then
+              echo "Redis cluster is healthy!"
+              echo "Testing cluster connectivity..."
+              redis-cli -h redis-cluster-node-1 -p 6379 SET test_key "cluster_initialized_$$(date +%s)"
+              test_result=$$(redis-cli -h redis-cluster-node-2 -p 6379 GET test_key)
+              echo "Test result: $$test_result"
+              return 0
+            else
+              echo "Cluster creation failed - not healthy"
+              return 1
+            fi
+          else
+            echo "Redis cluster creation command failed"
+            return 1
+          fi
+        }
+        
+        # Initial wait for nodes to be ready
+        echo "Waiting for Redis nodes to be ready..."
+        sleep 10
+        
+        # Verify cluster mode is enabled on all nodes
+        echo "Verifying cluster mode is enabled on all nodes..."
+        for node in redis-cluster-node-1 redis-cluster-node-2 redis-cluster-node-3; do
+          cluster_enabled=$$(redis-cli -h $$node -p 6379 INFO cluster | grep "cluster_enabled:1" | wc -l)
+          if [ "$$cluster_enabled" -ne 1 ]; then
+            echo "ERROR: Cluster mode not enabled on $$node"
+            exit 1
+          else
+            echo "Cluster mode verified on $$node"
+          fi
+        done
+        
+        # Check if cluster already exists and is healthy
+        if check_cluster_health; then
+          echo "Redis cluster already exists and is healthy"
+        else
+          echo "Redis cluster needs initialization"
+          if ! initialize_cluster; then
+            echo "Failed to initialize cluster, exiting"
+            exit 1
+          fi
+        fi
+        
+        echo "Starting cluster monitoring loop..."
+        while true; do
+          sleep 30
+          if check_cluster_health; then
+            echo "$$(date): Cluster is healthy"
+          else
+            echo "$$(date): Cluster is unhealthy, attempting re-initialization..."
+            if initialize_cluster; then
+              echo "$$(date): Cluster re-initialization successful"
+            else
+              echo "$$(date): Cluster re-initialization failed"
+            fi
+          fi
+        done
+      '
+    restart: unless-stopped
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "redis-cluster-node-1", "-p", "6379", "CLUSTER", "INFO"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis with authentication (optional for testing auth scenarios)
+  redis-auth:
+    image: redis:7-alpine
+    container_name: redis_auth
+    ports:
+      - "6380:6379"
+    command: redis-server --requirepass testpassword --appendonly yes
+    volumes:
+      - redis_auth_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "testpassword", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - redis_network
+
+volumes:
+  redis_data:
+  redis_cluster_1:
+  redis_cluster_2:
+  redis_cluster_3:
+  redis_auth_data:
+
+networks:
+  redis_network:
+    driver: bridge

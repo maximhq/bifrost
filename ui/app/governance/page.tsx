@@ -1,14 +1,14 @@
 'use client'
 
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { useState, useEffect } from 'react'
-import { toast } from 'sonner'
-import { apiService } from '@/lib/api'
-import { VirtualKey, Team, Customer } from '@/lib/types/governance'
-import VirtualKeysTable from '@/components/governance/virtual-keys-table'
-import TeamsTable from '@/components/governance/teams-table'
-import CustomersTable from '@/components/governance/customers-table'
 import FullPageLoader from '@/components/full-page-loader'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { apiService } from '@/lib/api'
+import { Customer, Team, VirtualKey } from '@/lib/types/governance'
+import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import CustomersTable from './views/customers-table'
+import TeamsTable from './views/teams-table'
+import VirtualKeysTable from './views/virtual-keys-table'
 export default function GovernancePage() {
   const [activeTab, setActiveTab] = useState('virtual-keys')
   const [virtualKeys, setVirtualKeys] = useState<VirtualKey[]>([])
@@ -31,7 +31,7 @@ export default function GovernancePage() {
         return
       } else if (coreConfigResult[0]) {
         const config = coreConfigResult[0]
-        if (!config.enable_governance) {
+        if (!config.client_config.enable_governance) {
           toast.error('Governance is not enabled. Please enable it in the core settings.')
           return
         }
@@ -76,11 +76,6 @@ export default function GovernancePage() {
     <FullPageLoader />
   ) : (
     <div className="">
-      <div>
-        <h1 className="mb-2 text-3xl font-bold">Governance</h1>
-        <p className="text-muted-foreground">Manage virtual keys, teams, customers, budgets, and rate limits</p>
-      </div>
-
       <div className="mt-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 grid h-12 w-full grid-cols-3">

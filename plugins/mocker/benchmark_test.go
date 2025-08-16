@@ -11,7 +11,7 @@ import (
 
 // BenchmarkMockerPlugin_PreHook_SimpleRule benchmarks simple rule matching
 func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
-	plugin, err := NewMockerPlugin(MockerConfig{
+	plugin, err := Init(MockerConfig{
 		Enabled: true,
 		Rules: []MockRule{
 			{
@@ -64,7 +64,7 @@ func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
 
 // BenchmarkMockerPlugin_PreHook_RegexRule benchmarks regex rule matching
 func BenchmarkMockerPlugin_PreHook_RegexRule(b *testing.B) {
-	plugin, err := NewMockerPlugin(MockerConfig{
+	plugin, err := Init(MockerConfig{
 		Enabled: true,
 		Rules: []MockRule{
 			{
@@ -157,7 +157,7 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 		},
 	})
 
-	plugin, err := NewMockerPlugin(MockerConfig{
+	plugin, err := Init(MockerConfig{
 		Enabled: true,
 		Rules:   rules,
 	})
@@ -192,7 +192,7 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 
 // BenchmarkMockerPlugin_PreHook_NoMatch benchmarks when no rules match
 func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
-	plugin, err := NewMockerPlugin(MockerConfig{
+	plugin, err := Init(MockerConfig{
 		Enabled:         true,
 		DefaultBehavior: DefaultBehaviorPassthrough,
 		Rules: []MockRule{
@@ -246,7 +246,7 @@ func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
 
 // BenchmarkMockerPlugin_PreHook_Template benchmarks template processing
 func BenchmarkMockerPlugin_PreHook_Template(b *testing.B) {
-	plugin, err := NewMockerPlugin(MockerConfig{
+	plugin, err := Init(MockerConfig{
 		Enabled: true,
 		Rules: []MockRule{
 			{

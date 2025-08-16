@@ -130,6 +130,14 @@ export interface BifrostErrorResponse {
   }
 }
 
+// Bifrost Config
+export interface BifrostConfig {
+  client_config: CoreConfig
+  is_db_connected: boolean
+  is_cache_connected: boolean
+  is_logs_connected: boolean
+}
+
 // Core Bifrost configuration types
 export interface CoreConfig {
   drop_excess_requests: boolean

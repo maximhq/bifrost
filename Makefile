@@ -1,8 +1,9 @@
 # Makefile for Bifrost
 
 # Variables
+HOST ?= localhost
 PORT ?= 8080
-PLUGINS ?= maxim
+APP_DIR ?=
 PROMETHEUS_LABELS ?=
 LOGGING_STYLE ?= json
 LOGGING_LEVEL ?= info
@@ -15,7 +16,7 @@ BLUE=\033[0;34m
 CYAN=\033[0;36m
 NC=\033[0m # No Color
 
-.PHONY: help dev dev-ui build run install-air clean test install-ui work-init work-clean
+.PHONY: help dev dev-ui build run install-air clean test install-ui work-init work-clean docs
 
 # Default target
 help: ## Show this help message
@@ -24,8 +25,8 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-15s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(YELLOW)Environment Variables:$(NC)"
+	@echo "  HOST              Server host (default: localhost)"
 	@echo "  PORT              Server port (default: 8080)"
-	@echo "  PLUGINS           Comma-separated plugins to load (default: maxim)"
 	@echo "  PROMETHEUS_LABELS Labels for Prometheus metrics"
 	@echo "  LOGGING_STYLE Logger output format: json|pretty (default: json)"
 	@echo "  LOGGING_LEVEL Logger level: debug|info|warn|error (default: info)"
@@ -55,11 +56,12 @@ dev: install-ui install-air ## Start complete development environment (UI + API 
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
 	@$(MAKE) work-init >/dev/null
 	@cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
+		-host "$(HOST)" \
 		-port "$(PORT)" \
-		-plugins "$(PLUGINS)" \
 		-log-style "$(LOGGING_STYLE)" \
 		-log-level "$(LOGGING_LEVEL)" \
-		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
+		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+		$(if $(APP_DIR),-app-dir "$(APP_DIR)")
 
 build-ui: install-ui ## Build ui
 	@echo "$(GREEN)Building ui...$(NC)"
@@ -71,11 +73,17 @@ build: build-ui ## Build bifrost-http binary
 	@cd transports/bifrost-http && GOWORK=off go build -o ../../tmp/bifrost-http .
 	@echo "$(GREEN)Built: tmp/bifrost-http$(NC)"
 
+docs: ## Prepare local docs
+	@echo "$(GREEN)Checking if mintlify is installed...$(NC)"
+	@which mintlify > /dev/null || (echo "$(RED)Error: mintlify is not installed. Installing.$(NC)" && npm install -g mintlify)
+	@echo "$(GREEN)Preparing local docs...$(NC)"
+	@cd docs && mintlify dev
+
 run: build ## Build and run bifrost-http (no hot reload)
 	@echo "$(GREEN)Running bifrost-http...$(NC)"
 	@./tmp/bifrost-http \
+		-host "$(HOST)" \
 		-port "$(PORT)" \
-		-plugins "$(PLUGINS)" \
 		-log-style "$(LOGGING_STYLE)" \
 		-log-level "$(LOGGING_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
@@ -108,7 +116,7 @@ test-all: test-core test-plugins test ## Run all tests
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin
 	@echo "$(GREEN)Quick starting Bifrost with example configuration...$(NC)"
-	@$(MAKE) dev CONFIG_FILE=transports/config.example.json PLUGINS=maxim
+	@$(MAKE) dev CONFIG_FILE=transports/config.example.json
 
 docker-build:
 	@echo "$(GREEN)Building Docker image...$(NC)"

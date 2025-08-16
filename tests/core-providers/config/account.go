@@ -99,7 +99,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				Models: []string{"anthropic.claude-v2:1", "mistral.mixtral-8x7b-instruct-v0:1", "mistral.mistral-large-2402-v1:0", "anthropic.claude-3-sonnet-20240229-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    os.Getenv("AWS_ACCESS_KEY"),
+					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
 					SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
 					SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
 					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),

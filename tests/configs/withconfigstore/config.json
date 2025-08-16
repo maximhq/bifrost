@@ -1,0 +1,20 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "vector_store": {
+    "type": "redis_cluster",
+    "config": {
+      "addrs": [
+        "localhost:7000",
+        "localhost:7001",
+        "localhost:7002"
+      ]
+    }    
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../tests/configs/withconfigstore/config.db"
+    }
+  }
+}

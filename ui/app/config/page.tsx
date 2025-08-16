@@ -1,20 +1,20 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Switch } from '@/components/ui/switch'
-import { AlertTriangle } from 'lucide-react'
-import { CoreConfig } from '@/lib/types/config'
-import { apiService } from '@/lib/api'
-import { toast } from 'sonner'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { parseArrayFromText, isArrayEqual } from '@/lib/utils/array'
-import { validateOrigins } from '@/lib/utils/validation'
+import CacheConfigForm from '@/app/config/views/cache-config-form'
 import FullPageLoader from '@/components/full-page-loader'
-import CacheConfigForm from '@/components/config/cache-config-form'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
+import { apiService } from '@/lib/api'
+import { CoreConfig } from '@/lib/types/config'
+import { isArrayEqual, parseArrayFromText } from '@/lib/utils/array'
+import { validateOrigins } from '@/lib/utils/validation'
+import { AlertTriangle } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 
 const defaultConfig = {
   drop_excess_requests: false,
@@ -64,15 +64,15 @@ export default function ConfigPage() {
 
   useEffect(() => {
     const fetchConfig = async () => {
-      const [coreConfig, error] = await apiService.getCoreConfig()
+      const [bifrostConfig, error] = await apiService.getCoreConfig()
       if (error) {
         toast.error(error)
-      } else if (coreConfig) {
-        setConfig(coreConfig)
+      } else if (bifrostConfig) {
+        setConfig(bifrostConfig.client_config)
         setLocalValues({
-          initial_pool_size: coreConfig.initial_pool_size?.toString() || '300',
-          prometheus_labels: coreConfig.prometheus_labels?.join(', ') || '',
-          allowed_origins: coreConfig.allowed_origins?.join(', ') || '',
+          initial_pool_size: bifrostConfig.client_config.initial_pool_size?.toString() || '300',
+          prometheus_labels: bifrostConfig.client_config.prometheus_labels?.join(', ') || '',
+          allowed_origins: bifrostConfig.client_config.allowed_origins?.join(', ') || '',
         })
       }
       setIsLoading(false)
@@ -86,7 +86,7 @@ export default function ConfigPage() {
       if (error) {
         toast.error(error)
       } else if (response) {
-        setConfigInDB(response)
+        setConfigInDB(response.client_config)
       }
     }
     fetchConfigInDB()
@@ -190,13 +190,8 @@ export default function ConfigPage() {
   return isLoading ? (
     <FullPageLoader />
   ) : (
-    <div className="bg-background space-y-6">
+    <div className="dark:bg-card space-y-6 bg-white">
       {/* Page Header */}
-      <div>
-        <h1 className="text-3xl font-bold">Configuration</h1>
-        <p className="text-muted-foreground mt-2">Configure AI providers, API keys, and system settings for your Bifrost instance.</p>
-      </div>
-
       <div>
         <CardHeader className="mb-4 px-0">
           <CardTitle className="flex items-center gap-2">Core System Settings</CardTitle>
@@ -339,10 +334,10 @@ export default function ConfigPage() {
               <div className="flex items-center justify-between space-x-2">
                 <div className="space-y-0.5">
                   <label htmlFor="enable-caching" className="text-sm font-medium">
-                    Enable Caching
+                    Enable Semantic Caching
                   </label>
                   <p className="text-muted-foreground text-sm">
-                    Enable Redis caching for requests. Send <b>x-bf-cache-key</b> header with requests to use caching.
+                    Enable semantic caching for requests. Send <b>x-bf-cache-key</b> header with requests to use semantic caching.
                   </p>
                 </div>
                 <Switch
