@@ -7,7 +7,7 @@ require (
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.1.19
+	github.com/maximhq/bifrost/core v1.1.20
 	github.com/maximhq/bifrost/plugins/maxim v1.0.6
 	github.com/maximhq/bifrost/plugins/redis v1.0.0
 	github.com/prometheus/client_golang v1.22.0
