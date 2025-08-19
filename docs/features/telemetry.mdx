@@ -1,0 +1,178 @@
+---
+title: "Telemetry"
+description: "Comprehensive Prometheus-based monitoring for Bifrost Gateway with custom metrics and labels."
+icon: "gauge"
+---
+
+## Overview
+
+Bifrost provides built-in telemetry and monitoring capabilities through Prometheus metrics collection. The telemetry system tracks both HTTP-level performance metrics and upstream provider interactions, giving you complete visibility into your AI gateway's performance and usage patterns.
+
+**Key Features:**
+- **Prometheus Integration** - Native metrics collection at `/metrics` endpoint
+- **Custom Labels** - Configurable dimensions for detailed analysis
+- **Dynamic Headers** - Runtime label injection via `x-bf-prom-*` headers
+- **Async Collection** - Zero-latency impact on request processing
+- **Multi-Level Tracking** - HTTP transport + upstream provider metrics
+
+The telemetry plugin operates asynchronously to ensure metrics collection doesn't impact request latency or connection performance. For detailed architecture information, see [Architecture > Plugins > Telemetry](../architecture/plugins/telemetry).
+
+---
+
+## Default Metrics
+
+### HTTP Transport Metrics
+
+These metrics track all incoming HTTP requests to Bifrost:
+
+| Metric | Type | Description | Labels |
+|--------|------|-------------|---------|
+| `http_requests_total` | Counter | Total number of HTTP requests | `path`, `method`, `status`, custom labels |
+| `http_request_duration_seconds` | Histogram | Duration of HTTP requests | `path`, `method`, `status`, custom labels |
+| `http_request_size_bytes` | Histogram | Size of incoming HTTP requests | `path`, `method`, `status`, custom labels |
+| `http_response_size_bytes` | Histogram | Size of outgoing HTTP responses | `path`, `method`, `status`, custom labels |
+
+### Upstream Provider Metrics
+
+These metrics track requests forwarded to AI providers:
+
+| Metric | Type | Description | Labels |
+|--------|------|-------------|---------|
+| `bifrost_upstream_requests_total` | Counter | Total requests forwarded to upstream providers | `target`, `method`, custom labels |
+| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests | `target`, `method`, custom labels |
+
+**Label Definitions:**
+- `target`: Provider and model (e.g., `openai/gpt-4o-mini`)
+- `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
+- `path`: HTTP endpoint path
+- `status`: HTTP status code
+
+---
+
+## Configuration
+
+Configure custom Prometheus labels to add dimensions for filtering and analysis:
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. **Navigate to Configuration**
+   - Open Bifrost UI at `http://localhost:8080`
+   - Go to **Configuration** → **Client Settings**
+
+2. **Configure Prometheus Labels**
+   ```
+   Custom Labels: team, environment, organization, project
+   ```
+
+3. **Save Configuration**
+   - Click **Save Changes**
+   - Labels will be applied to new metrics immediately
+
+</Tab>
+<Tab title="API">
+
+```bash
+# Update prometheus labels via API
+curl -X PATCH http://localhost:8080/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client": {
+      "prometheus_labels": ["team", "environment", "organization", "project"]
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "client": {
+    "prometheus_labels": ["team", "environment", "organization", "project"],
+    "drop_excess_requests": false,
+    "initial_pool_size": 300
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Dynamic Label Injection
+
+Add custom label values at runtime using `x-bf-prom-*` headers:
+
+```bash
+# Add custom labels to specific requests
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-prom-team: engineering" \
+  -H "x-bf-prom-environment: production" \
+  -H "x-bf-prom-organization: my-org" \
+  -H "x-bf-prom-project: my-project" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+**Header Format:**
+- Prefix: `x-bf-prom-`
+- Label name: Any string after the prefix
+- Value: String value for the label
+
+---
+
+## Infrastructure Setup
+
+### Development & Testing
+
+For local development and testing, use the provided Docker Compose setup:
+
+```bash
+# Navigate to telemetry plugin directory
+cd plugins/telemetry
+
+# Start Prometheus and Grafana
+docker-compose up -d
+
+# Access endpoints
+# Prometheus: http://localhost:9090
+# Grafana: http://localhost:3000 (admin/admin)
+# Bifrost metrics: http://localhost:8080/metrics
+```
+
+> **⚠️ Development Only**: The provided Docker Compose setup is for testing purposes only. Do not use in production without proper security, scaling, and persistence configuration.
+
+You can use the Prometheus scraping endpoint to create your own Grafana dashboards. Given below are few examples created using the Docker Compose setup.
+
+![Grafana Dashboard](../media/grafana-dashboard.png)
+
+### Production Deployment
+
+For production environments:
+
+1. **Deploy Prometheus** with proper persistence, retention, and security
+2. **Configure scraping** to target your Bifrost instances at `/metrics`
+3. **Set up Grafana** with authentication and dashboards
+4. **Configure alerts** based on your SLA requirements
+
+**Prometheus Scrape Configuration:**
+```yaml
+scrape_configs:
+  - job_name: "bifrost-gateway"
+    static_configs:
+      - targets: ["bifrost-instance-1:8080", "bifrost-instance-2:8080"]
+    scrape_interval: 30s
+    metrics_path: /metrics
+```
+
+---
+
+## Next Steps
+
+- **[Architecture Overview](../architecture/plugins/telemetry)** - Deep dive into telemetry architecture
+- **[Prometheus Documentation](https://prometheus.io/docs/)** - Official Prometheus guides
+- **[Grafana Setup](https://grafana.com/docs/)** - Dashboard creation and management
+- **[Logging](./logging)** - Request/response logging for detailed analysis

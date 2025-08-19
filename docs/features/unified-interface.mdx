@@ -1,0 +1,100 @@
+---
+title: "Unified Interface"
+description: "Every AI provider returns the same OpenAI-compatible response format, making it seamless to switch between providers without changing your application code."
+icon: "layer-group"
+---
+
+## One Format, All Providers
+
+The beauty of Bifrost lies in its unified interface: regardless of whether you're using OpenAI, Anthropic, AWS Bedrock, Google Vertex, or any other supported provider, you always get the same response format. This means your application logic never needs to change when switching providers.
+
+Bifrost standardizes all provider responses to follow the **OpenAI-compatible structure**, so you can write your code once and use it with any provider.
+
+## How It Works
+
+When you make a request to any provider through Bifrost, the response always follows the same structure - the familiar OpenAI format that most developers already know. Behind the scenes, Bifrost handles all the complexity of translating between different provider formats.
+
+<Tabs group="unified-interface">
+
+<Tab title="Gateway">
+
+```bash
+# Same response format regardless of provider
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Returns OpenAI-compatible format:
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion", 
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! How can I help you?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 9,
+    "total_tokens": 19
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+// Same response structure regardless of provider
+type BifrostResponse struct {
+    ID      string                    `json:"id,omitempty"`
+    Object  string                    `json:"object,omitempty"`
+    Choices []BifrostResponseChoice   `json:"choices"`
+    Usage   *LLMUsage                `json:"usage,omitempty"`
+    Model   string                   `json:"model,omitempty"`
+    Created int64                    `json:"created,omitempty"`
+}
+
+// Works with any provider
+response, err := client.ChatCompletion(ctx, &schemas.BifrostRequest{
+    Provider: schemas.OpenAI,    // or Anthropic, Bedrock, etc.
+    Model:    "gpt-4o-mini",     // or "claude-3-sonnet", etc.
+    Messages: messages,
+})
+// Response structure is always the same!
+```
+
+</Tab>
+
+
+</Tabs>
+
+## The Power of Consistency
+
+This unified approach means you can:
+
+- **Switch providers instantly** without changing application logic
+- **Mix and match providers** using fallbacks and load balancing
+- **Future-proof your code** as new providers get added
+- **Use familiar OpenAI patterns** regardless of the underlying provider
+
+Whether you're calling OpenAI's GPT-4, Anthropic's Claude, or AWS Bedrock's models, your application sees the exact same response structure. This consistency is what makes Bifrost's advanced features like automatic fallbacks and multi-provider load balancing possible.
+
+## Provider Transparency
+
+While the response format stays consistent, Bifrost doesn't hide which provider actually handled your request. Provider information is always available in the `extra_fields` section, along with any provider-specific metadata you might need for debugging or analytics.
+
+This gives you the best of both worlds: consistent application logic with full transparency into the underlying provider behavior.
+
+**Learn more about configuring provider transparency:**
+- **[Go SDK Provider Configuration](../quickstart/go-sdk/provider-configuration)** - Configure `SendBackRawResponse` and other provider settings
+- **[Gateway Provider Configuration](../quickstart/gateway/provider-configuration)** - Configure `send_back_raw_response` via API, UI, or config file

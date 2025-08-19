@@ -1,0 +1,309 @@
+---
+title: "Langchain SDK"
+description: "Use Bifrost as a drop-in proxy for Langchain applications with zero code changes."
+icon: "https://registry.npmmirror.com/@lobehub/icons-static-png/latest/files/dark/langchain-color.png"
+---
+
+Since Langchain already provides multi-provider abstraction and chaining capabilities, Bifrost adds enterprise features like governance, semantic caching, MCP tools, observability, etc, on top of your existing setup.
+
+<Warning>
+**Provider Compatibility:** This integration only works for AI providers that both Langchain and Bifrost support. If you're using a provider specific to Langchain that Bifrost doesn't support (or vice versa), those requests will fail.
+</Warning>
+---
+
+## Setup
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python {7}
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+# Configure client to use Bifrost
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base="http://localhost:8080/langchain",  # Point to Bifrost
+    openai_api_key="dummy-key"  # Keys managed by Bifrost
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {7}
+import { ChatOpenAI } from "@langchain/openai";
+
+// Configure client to use Bifrost
+const llm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",  // Point to Bifrost
+  },
+  openAIApiKey: "dummy-key"  // Keys managed by Bifrost
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Provider/Model Usage Examples
+
+Your existing Langchain provider switching works unchanged through Bifrost:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+
+base_url = "http://localhost:8080/langchain"
+
+# OpenAI models via Langchain
+openai_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base=base_url
+)
+
+# Anthropic models via Langchain  
+anthropic_llm = ChatAnthropic(
+    model="claude-3-sonnet-20240229",
+    anthropic_api_url=base_url
+)
+
+# Google models via Langchain
+google_llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    google_api_base=base_url
+)
+
+# All work the same way
+openai_response = openai_llm.invoke([HumanMessage(content="Hello GPT!")])
+anthropic_response = anthropic_llm.invoke([HumanMessage(content="Hello Claude!")])
+google_response = google_llm.invoke([HumanMessage(content="Hello Gemini!")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+
+const baseURL = "http://localhost:8080/langchain";
+
+// OpenAI models via Langchain
+const openaiLlm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: { baseURL }
+});
+
+// Anthropic models via Langchain
+const anthropicLlm = new ChatAnthropic({
+  model: "claude-3-sonnet-20240229",
+  clientOptions: { baseURL }
+});
+
+// Google models via Langchain
+const googleLlm = new ChatGoogleGenerativeAI({
+  model: "gemini-1.5-flash",
+  baseURL
+});
+
+// All work the same way
+const openaiResponse = await openaiLlm.invoke("Hello GPT!");
+const anthropicResponse = await anthropicLlm.invoke("Hello Claude!");
+const googleResponse = await googleLlm.invoke("Hello Gemini!");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Adding Custom Headers
+
+Add Bifrost-specific headers for governance and tracking:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+# Add custom headers for Bifrost features
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base="http://localhost:8080/langchain",
+    default_headers={
+        "x-bf-vk": "your-virtual-key",          # Virtual key for governance
+        "x-bf-user-id": "user123",              # User tracking
+        "x-bf-team-id": "team-ai",              # Team tracking  
+        "x-bf-trace-id": "trace-456"            # Custom trace ID
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+
+// Add custom headers for Bifrost features
+const llm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "x-bf-vk": "your-virtual-key",          // Virtual key for governance
+      "x-bf-user-id": "user123",              // User tracking
+      "x-bf-team-id": "team-ai",              // Team tracking  
+      "x-bf-trace-id": "trace-456"            // Custom trace ID
+    }
+  }
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Using Direct Keys
+
+Pass API keys directly to bypass Bifrost's key management. You can pass any provider's API key since Bifrost only looks for `Authorization` or `x-api-key` headers. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Quickstart Configuration](../quickstart/README) for enabling direct API key usage.
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
+
+# Using OpenAI key directly
+openai_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base="http://localhost:8080/langchain",
+    default_headers={
+        "Authorization": "Bearer sk-your-openai-key"
+    }
+)
+
+# Using Anthropic key for Claude models
+anthropic_llm = ChatAnthropic(
+    model="claude-3-sonnet-20240229",
+    anthropic_api_url="http://localhost:8080/langchain",
+    default_headers={
+        "x-api-key": "sk-ant-your-anthropic-key"
+    }
+)
+
+# Using Azure OpenAI with direct Azure key
+from langchain_openai import AzureChatOpenAI
+
+azure_llm = AzureChatOpenAI(
+    deployment_name="gpt-4o-aug",
+    api_key="your-azure-api-key",
+    azure_endpoint="http://localhost:8080/langchain",
+    api_version="2024-05-01-preview",
+    max_tokens=100,
+    default_headers={
+        "x-bf-azure-endpoint": "https://your-resource.openai.azure.com",
+    }
+)
+
+openai_response = openai_llm.invoke([HumanMessage(content="Hello GPT!")])
+anthropic_response = anthropic_llm.invoke([HumanMessage(content="Hello Claude!")])
+azure_response = azure_llm.invoke([HumanMessage(content="Hello from Azure!")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
+
+// Using OpenAI key directly
+const openaiLlm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "Authorization": "Bearer sk-your-openai-key"
+    }
+  }
+});
+
+// Using Anthropic key for Claude models
+const anthropicLlm = new ChatAnthropic({
+  model: "claude-3-sonnet-20240229",
+  clientOptions: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "x-api-key": "sk-ant-your-anthropic-key"
+    }
+  }
+});
+
+// Using Azure OpenAI with direct Azure key
+import { AzureChatOpenAI } from "@langchain/openai";
+
+const azureLlm = new AzureChatOpenAI({
+  deploymentName: "gpt-4o-aug",
+  apiKey: "your-azure-api-key",
+  azureOpenAIEndpoint: "http://localhost:8080/langchain",
+  apiVersion: "2024-05-01-preview",
+  maxTokens: 100,
+  configuration: {
+    defaultHeaders: {
+      "x-bf-azure-endpoint": "https://your-resource.openai.azure.com",
+    }
+  }
+});
+
+const openaiResponse = await openaiLlm.invoke("Hello GPT!");
+const anthropicResponse = await anthropicLlm.invoke("Hello Claude!");
+const azureResponse = await azureLlm.invoke("Hello from Azure!");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Supported Features
+
+The Langchain integration supports all features that are available in both the Langchain SDK and Bifrost core functionality. Your existing Langchain chains and workflows work seamlessly with Bifrost's enterprise features. 😄
+
+---
+
+## Next Steps
+
+- **[Governance Features](../features/governance)** - Virtual keys and team management
+- **[Semantic Caching](../features/semantic-caching)** - Intelligent response caching
+- **[Configuration](../quickstart/README)** - Provider setup and API key management

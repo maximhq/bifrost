@@ -1,0 +1,231 @@
+---
+title: "What is an integration?"
+description: "Protocol adapters that translate between Bifrost's unified API and provider-specific API formats like OpenAI, Anthropic, and Google GenAI."
+icon: "box"
+---
+
+## Overview
+
+An integration is a protocol adapter that translates between Bifrost's unified API and provider-specific API formats. Each integration handles request transformation, response normalization, and error mapping between the external API contract and Bifrost's internal processing pipeline.
+
+Integrations enable you to utilize Bifrost's features like governance, MCP tools, load balancing, semantic caching, multi-provider support, and more, all while preserving your existing SDK-based architecture. Bifrost handles all the overhead of structure conversion, requiring only a single URL change to switch from direct provider APIs to Bifrost's gateway.
+
+Bifrost converts the request/response format of the provider API to the Bifrost API format based on the integration used, so you don't have to.
+
+---
+
+## Quick Migration
+
+### **Before (Direct Provider)**
+
+```python
+import openai
+
+client = openai.OpenAI(
+    api_key="your-openai-key"
+)
+```
+
+### **After (Bifrost)**
+
+```python {4}
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",  # Point to Bifrost
+    api_key="dummy-key" # Keys are handled in Bifrost now
+)
+```
+
+**That's it!** Your application now benefits from Bifrost's features with no other changes.
+
+---
+
+## Supported Integrations
+
+1. [OpenAI](./openai-sdk)
+2. [Anthropic](./anthropic-sdk)
+3. [Google GenAI](./genai-sdk)
+4. [LiteLLM](./litellm-sdk)
+5. [Langchain](./langchain-sdk)
+
+---
+
+## Provider-Prefixed Models
+
+Use multiple providers seamlessly by prefixing model names with the provider:
+
+<Tabs>
+<Tab title="OpenAI">
+```python
+import openai
+
+# Single client, multiple providers
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="dummy"  # API keys configured in Bifrost
+)
+
+# OpenAI models
+response1 = client.chat.completions.create(
+    model="gpt-4o-mini", # (default OpenAI since it's OpenAI's SDK)
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+</Tab>
+<Tab title="Anthropic">
+```python
+import openai
+
+# Anthropic models using OpenAI SDK format
+response2 = client.chat.completions.create(
+    model="anthropic/claude-3-sonnet-20240229",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+</Tab>
+<Tab title="Azure OpenAI">
+```python
+import openai
+
+# Azure OpenAI models
+response4 = client.chat.completions.create(
+    model="azure/gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+</Tab>
+<Tab title="Vertex">
+```python
+import openai
+
+# Google Vertex models
+response3 = client.chat.completions.create(
+    model="vertex/gemini-pro",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+</Tab>
+<Tab title="Ollama">
+```python
+import openai
+
+# Local Ollama models
+response5 = client.chat.completions.create(
+    model="ollama/llama3.1:8b",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+</Tab>
+</Tabs>
+
+---
+
+## Direct API Usage
+
+For custom HTTP clients or when you have existing provider-specific setup and want to use Bifrost gateway without restructuring your codebase:
+
+```python {5,18,31,}
+import requests
+
+# Fully OpenAI compatible endpoint
+response = requests.post(
+    "http://localhost:8080/openai/v1/chat/completions",
+    headers={
+        "Authorization": f"Bearer {openai_key}",
+        "Content-Type": "application/json"
+    },
+    json={
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": "Hello!"}]
+    }
+)
+
+# Fully Anthropic compatible endpoint
+response = requests.post(
+    "http://localhost:8080/anthropic/v1/messages",
+    headers={
+        "Content-Type": "application/json",
+    },
+    json={
+        "model": "claude-3-sonnet-20240229",
+        "max_tokens": 1000,
+        "messages": [{"role": "user", "content": "Hello!"}]
+    }
+)
+
+# Fully Google GenAI compatible endpoint
+response = requests.post(
+    "http://localhost:8080/genai/v1beta/models/gemini-1.5-flash/generateContent",
+    headers={
+        "Content-Type": "application/json",
+    },
+    json={
+        "contents": [
+            {"parts": [{"text": "Hello!"}]}
+        ],
+        "generation_config": {
+            "max_output_tokens": 1000,
+            "temperature": 1
+        }
+    }
+)
+```
+
+---
+
+
+## Migration Strategies
+
+### **Gradual Migration**
+
+1. **Start with development** - Test Bifrost in dev environment
+2. **Canary deployment** - Route 5% of traffic through Bifrost
+3. **Feature-by-feature** - Migrate specific endpoints gradually
+4. **Full migration** - Switch all traffic to Bifrost
+
+### **Blue-Green Migration**
+
+```python
+import os
+import random
+
+# Route traffic based on feature flag
+def get_base_url(provider: str) -> str:
+    if os.getenv("USE_BIFROST", "false") == "true":
+        return f"http://bifrost:8080/{provider}"
+    else:
+        return f"https://api.{provider}.com"
+
+# Gradual rollout
+def should_use_bifrost() -> bool:
+    rollout_percentage = int(os.getenv("BIFROST_ROLLOUT", "0"))
+    return random.randint(1, 100) <= rollout_percentage
+```
+
+### **Feature Flag Integration**
+
+```python
+# Using feature flags for safe migration
+import openai
+from feature_flags import get_flag
+
+def create_client():
+    if get_flag("use_bifrost_openai"):
+        base_url = "http://bifrost:8080/openai"
+    else:
+        base_url = "https://api.openai.com"
+
+    return openai.OpenAI(
+        base_url=base_url,
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+```
+
+---
+
+## Next Steps
+
+- **[HTTP Transport Overview](../http-transport)** - Main HTTP transport guide
+- **[Endpoints](../endpoints)** - Complete API reference
+- **[Configuration](../configuration/)** - Provider setup and config

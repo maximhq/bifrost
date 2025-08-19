@@ -1,0 +1,264 @@
+---
+title: "Multimodal Support"
+description: "Process multiple types of content including images, audio, and text with AI models. Bifrost supports vision analysis, speech synthesis, and audio transcription across various providers."
+icon: "images"
+---
+
+## Vision: Analyzing Images with AI
+
+Send images to vision-capable models for analysis, description, and understanding. This example shows how to analyze an image from a URL using GPT-4o with high detail processing for better accuracy.
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o",
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "What do you see in this image? Please describe it in detail."
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
+                        "detail": "high"
+                    }
+                }
+            ]
+        }
+    ]
+}'
+```
+
+**Response includes detailed image analysis:**
+```json
+{
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "I can see a beautiful wooden boardwalk extending through a natural landscape..."
+        }
+    }]
+}
+```
+
+## Text-to-Speech: Converting Text to Audio
+
+Convert text into natural-sounding speech using AI voice models. This example demonstrates generating an MP3 audio file from text using the "alloy" voice. The result is returned as binary audio data.
+
+```bash
+curl --location 'http://localhost:8080/v1/audio/speech' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/tts-1",
+    "input": "Hello! This is a sample text that will be converted to speech using Bifrost speech synthesis capabilities. The weather today is wonderful, and I hope you are having a great day!",
+    "voice": "alloy",
+    "response_format": "mp3"
+}' \
+--output "output.mp3"
+```
+
+**Save audio to file:**
+```bash
+# The --output flag saves the binary audio data directly to a file
+# File size will vary based on input text length
+```
+
+## Speech-to-Text: Transcribing Audio Files
+
+Convert audio files into text using AI transcription models. This example shows how to transcribe an MP3 file using OpenAI's Whisper model, with an optional context prompt to improve accuracy.
+
+```bash
+curl --location 'http://localhost:8080/v1/audio/transcriptions' \
+--form 'file=@"output.mp3"' \
+--form 'model="openai/whisper-1"' \
+--form 'prompt="This is a sample audio transcription from Bifrost speech synthesis."'
+```
+
+**Response format:**
+```json
+{
+    "text": "Hello! This is a sample text that will be converted to speech using Bifrost speech synthesis capabilities. The weather today is wonderful, and I hope you are having a great day!"
+}
+```
+
+## Advanced Vision Examples
+
+### Multiple Images
+
+Send multiple images in a single request for comparison or analysis. This is useful for comparing products, analyzing changes over time, or understanding relationships between different visual elements.
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o",
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Compare these two images. What are the differences?"
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image1.jpg"
+                    }
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image2.jpg"
+                    }
+                }
+            ]
+        }
+    ]
+}'
+```
+
+### Base64 Images
+
+Process local images by encoding them as base64 data URLs. This approach is ideal when you need to analyze images stored locally on your system without uploading them to external URLs first.
+
+```bash
+# First, encode your local image to base64
+base64_image=$(base64 -i local_image.jpg)
+data_url="data:image/jpeg;base64,$base64_image"
+
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o",
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Analyze this image and describe what you see."
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "'$data_url'",
+                        "detail": "high"
+                    }
+                }
+            ]
+        }
+    ]
+}'
+```
+
+## Audio Configuration Options
+
+### Voice Selection for Speech Synthesis
+
+OpenAI provides six distinct voice options, each with different characteristics:
+
+- `alloy` - Balanced, natural voice
+- `echo` - Deep, resonant voice  
+- `fable` - Expressive, storytelling voice
+- `onyx` - Strong, confident voice
+- `nova` - Bright, energetic voice
+- `shimmer` - Gentle, soothing voice
+
+```bash
+# Example with different voice
+curl --location 'http://localhost:8080/v1/audio/speech' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/tts-1",
+    "input": "This is the nova voice speaking.",
+    "voice": "nova",
+    "response_format": "mp3"
+}' \
+--output "sample_nova.mp3"
+```
+
+### Audio Formats
+
+Generate audio in different formats depending on your use case. MP3 for general use, Opus for web streaming, AAC for mobile apps, and FLAC for high-quality audio applications.
+
+```bash
+# MP3 format (default)
+"response_format": "mp3"
+
+# Opus format for web streaming
+"response_format": "opus"
+
+# AAC format for mobile apps
+"response_format": "aac"
+
+# FLAC format for high-quality audio
+"response_format": "flac"
+```
+
+## Transcription Options
+
+### Language Specification
+
+Improve transcription accuracy by specifying the source language. This is particularly helpful for non-English audio or when the audio contains technical terms or specific domain vocabulary.
+
+```bash
+curl --location 'http://localhost:8080/v1/audio/transcriptions' \
+--form 'file=@"spanish_audio.mp3"' \
+--form 'model="openai/whisper-1"' \
+--form 'language="es"' \
+--form 'prompt="This is a Spanish audio recording about technology."'
+```
+
+### Response Formats
+
+Choose between simple text output or detailed JSON responses with timestamps. The verbose JSON format provides word-level and segment-level timing information, useful for creating subtitles or analyzing speech patterns.
+
+```bash
+# Text only response
+curl --location 'http://localhost:8080/v1/audio/transcriptions' \
+--form 'file=@"audio.mp3"' \
+--form 'model="openai/whisper-1"' \
+--form 'response_format="text"'
+
+# JSON with timestamps
+curl --location 'http://localhost:8080/v1/audio/transcriptions' \
+--form 'file=@"audio.mp3"' \
+--form 'model="openai/whisper-1"' \
+--form 'response_format="verbose_json"' \
+--form 'timestamp_granularities[]=word' \
+--form 'timestamp_granularities[]=segment'
+```
+
+## Provider Support
+
+Different providers support different multimodal capabilities:
+
+| Provider | Vision | Text-to-Speech | Speech-to-Text |
+|----------|--------|----------------|----------------|
+| OpenAI | ✅ GPT-4V, GPT-4o | ✅ TTS-1, TTS-1-HD | ✅ Whisper |
+| Anthropic | ✅ Claude 3 Sonnet/Opus | ❌ | ❌ |
+| Google Vertex | ✅ Gemini Pro Vision | ✅ | ✅ |
+| Azure OpenAI | ✅ GPT-4V | ✅ | ✅ Whisper |
+
+## Next Steps
+
+Now that you understand multimodal capabilities, explore these related topics:
+
+### Essential Topics
+
+- **[Streaming Responses](./streaming)** - Real-time multimodal processing
+- **[Tool Calling](./tool-calling)** - Combine with external tools
+- **[Provider Configuration](./provider-configuration)** - Multiple providers for different capabilities
+- **[Integrations](./integrations)** - Drop-in compatibility with existing SDKs
+
+### Advanced Topics
+
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities
+- **[Architecture](../../architecture/)** - How Bifrost works internally
+- **[Deployment](../../deployment/)** - Production setup and scaling

@@ -1,0 +1,251 @@
+---
+title: "Load Balance"
+description: "Intelligent API key management with weighted load balancing, model-specific filtering, and automatic failover. Distribute traffic across multiple keys for optimal performance and reliability."
+icon: "scale-balanced"
+---
+
+## Smart Key Distribution
+
+Bifrost's key management system goes beyond simple API key storage. It provides intelligent load balancing, model-specific key filtering, and weighted distribution to optimize performance and manage costs across multiple API keys.
+
+When you configure multiple keys for a provider, Bifrost automatically distributes requests using sophisticated selection algorithms that consider key weights, model compatibility, and deployment mappings.
+
+## How Key Selection Works
+
+Bifrost follows a precise selection process for every request:
+
+1. **Context Override Check**: First checks if a key is explicitly provided in context (bypassing management)
+2. **Provider Key Lookup**: Retrieves all configured keys for the requested provider
+3. **Model Filtering**: Filters keys that support the requested model
+4. **Deployment Validation**: For Azure/Bedrock, validates deployment mappings
+5. **Weighted Selection**: Uses weighted random selection among eligible keys
+
+This ensures optimal key usage while respecting your configuration constraints.
+
+## Implementation Examples
+
+<Tabs group="keys-management">
+
+<Tab title="Gateway">
+
+```bash
+# Configure multiple keys with weights via API
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "keys": [
+      {
+        "value": "env.OPENAI_API_KEY_1",
+        "models": ["gpt-4o", "gpt-4o-mini"],
+        "weight": 0.7
+      },
+      {
+        "value": "env.OPENAI_API_KEY_2", 
+        "models": [],
+        "weight": 0.3
+      }
+    ]
+  }'
+
+# Regular request (uses weighted key selection)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Request with direct API key (bypasses key management)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-direct-api-key" \
+  -d '{
+    "model": "openai/gpt-4o-mini", 
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+package main
+
+import (
+    "context"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.OpenAI:
+        return []schemas.Key{
+            {
+                ID:     "primary-key",
+                Value:  "env.OPENAI_API_KEY_1",
+                Models: ["gpt-4o", "gpt-4o-mini"], // Model whitelist
+                Weight: 0.7,                       // 70% of traffic
+            },
+            {
+                ID:     "secondary-key", 
+                Value:  "env.OPENAI_API_KEY_2",
+                Models: [], // Empty = supports all models
+                Weight: 0.3, // 30% of traffic
+            },
+        }, nil
+    case schemas.Anthropic:
+        return []schemas.Key{
+            {
+                Value:  "env.ANTHROPIC_API_KEY",
+                Models: ["claude-3-5-sonnet-20241022"],
+                Weight: 1.0,
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+
+// Using with explicit context key (bypasses key management)
+func makeRequestWithDirectKey() {
+    ctx := context.Background()
+    
+    // Direct key bypasses all key management
+    directKey := schemas.Key{
+        Value:  "sk-direct-api-key",
+        Weight: 1.0,
+    }
+    ctx = context.WithValue(ctx, schemas.BifrostContextKey, directKey)
+    
+    response, err := client.ChatCompletion(ctx, &schemas.BifrostRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o-mini",
+        Messages: messages,
+    })
+}
+```
+
+</Tab>
+
+</Tabs>
+
+## Weighted Load Balancing
+
+Bifrost uses weighted random selection to distribute requests across multiple keys. This allows you to:
+
+**Control Traffic Distribution:**
+- Assign higher weights to premium keys with better rate limits
+- Balance between production and backup keys
+- Gradually migrate traffic during key rotation
+
+**Weight Calculation Example:**
+```
+Key 1: Weight 0.7 (70% probability)
+Key 2: Weight 0.3 (30% probability)
+Total Weight: 1.0
+
+Random selection ensures statistical distribution over time
+```
+
+**Algorithm Details:**
+1. Calculate total weight of all eligible keys
+2. Generate random number between 0 and total weight
+3. Select key based on cumulative weight ranges
+4. If selected key fails, automatic fallback to next available key
+
+## Model Whitelisting and Filtering
+
+Keys can be restricted to specific models for access control and cost management:
+
+**Model Filtering Logic:**
+- **Empty `models` array**: Key supports ALL models for that provider
+- **Populated `models` array**: Key only supports listed models
+- **Model mismatch**: Key is excluded from selection for that request
+
+**Use Cases:**
+- **Premium Models**: Dedicated keys for expensive models (GPT-4, Claude-3)
+- **Team Separation**: Different keys for different teams or projects
+- **Cost Control**: Restrict access to specific model tiers
+- **Compliance**: Separate keys for different security requirements
+
+**Example Model Restrictions:**
+```json
+{
+  "keys": [
+    {
+      "value": "premium-key",
+      "models": ["gpt-4o", "o1-preview"],  // Only premium models
+      "weight": 1.0
+    },
+    {
+      "value": "standard-key", 
+      "models": ["gpt-4o-mini", "gpt-3.5-turbo"], // Only standard models
+      "weight": 1.0
+    }
+  ]
+}
+```
+
+## Deployment Mapping (Azure & Bedrock)
+
+For cloud providers with deployment-based routing, Bifrost validates deployment availability:
+
+**Azure OpenAI:**
+- Keys must have deployment mappings for specific models
+- Deployment name maps to actual Azure deployment identifier
+- Missing deployment excludes key from selection
+
+**AWS Bedrock:**
+- Supports model profiles and direct model access
+- Deployment mappings enable inference profile routing
+- ARN configuration determines URL formation
+
+**Deployment Validation Process:**
+1. Check if provider uses deployments (Azure/Bedrock)
+2. Verify deployment exists for requested model
+3. Exclude keys without proper deployment mapping
+4. Continue with standard weighted selection
+
+## Direct Key Bypass
+
+For scenarios requiring explicit key control, Bifrost supports bypassing the entire key management system:
+
+**Go SDK Context Override:**
+Pass a key directly in the request context using `schemas.BifrostContextKey`. This completely bypasses provider key lookup and selection.
+
+**Gateway Header-based Keys:**
+Send API keys in `Authorization` (Bearer) or `x-api-key` headers. Requires `allow_direct_keys` setting to be enabled.
+
+**Enable Direct Keys:**
+
+<Tabs group="direct-keys-config">
+
+<Tab title="Web UI">
+
+![Web UI](../../media/ui-config-direct-keys.png)
+
+1. Navigate to **Configuration** page
+2. Toggle **"Allow Direct Keys"** to enabled
+3. Save configuration
+
+</Tab>
+
+<Tab title="config.json">
+```json
+{
+  "client": {
+    "allow_direct_keys": true
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+**When to Use Direct Keys:**
+- Per-user API key scenarios
+- External key management systems
+- Testing with specific keys
+- Debugging key-related issues

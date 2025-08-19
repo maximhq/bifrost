@@ -1,0 +1,306 @@
+---
+title: JSON Parser
+description: A simple Bifrost plugin that handles partial JSON chunks in streaming responses by making them valid JSON objects.
+icon: "code-branch"
+---
+
+## Overview
+
+When using AI providers that stream JSON responses, the individual chunks often contain incomplete JSON that cannot be parsed directly. This plugin automatically detects and fixes partial JSON chunks by adding the necessary closing braces, brackets, and quotes to make them valid JSON.
+
+## Features
+
+- **Automatic JSON Completion**: Detects partial JSON and adds missing closing characters
+- **Streaming Only**: Processes only streaming responses (non-streaming responses are ignored)
+- **Flexible Usage Modes**: Supports two usage types for different deployment scenarios
+- **Safe Fallback**: Returns original content if JSON cannot be fixed
+- **Memory Leak Prevention**: Automatic cleanup of stale accumulated content with configurable intervals
+- **Zero Dependencies**: Only depends on Go's standard library
+
+## Usage
+
+### Usage Types
+
+The plugin supports two usage types:
+
+1. **AllRequests**: Processes all streaming responses automatically
+2. **PerRequest**: Processes only when explicitly enabled via request context
+
+
+```go
+package main
+
+import (
+    "time"
+    "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+    "github.com/maximhq/bifrost/plugins/jsonparser"
+)
+
+func main() {
+    // Create the JSON parser plugin for all requests
+    jsonPlugin := jsonparser.NewJsonParserPlugin(jsonparser.PluginConfig{
+        Usage:           jsonparser.AllRequests,
+        CleanupInterval: 2 * time.Minute,  // Cleanup every 2 minutes
+        MaxAge:          10 * time.Minute,  // Remove entries older than 10 minutes
+    })
+    
+    // Initialize Bifrost with the plugin
+    client, err := bifrost.Init(schemas.BifrostConfig{
+        Account: &MyAccount{},
+        Plugins: []schemas.Plugin{
+            jsonPlugin,
+        },
+    })
+    
+    if err != nil {
+        panic(err)
+    }
+    
+    // Use the client normally - JSON parsing happens automatically
+    // in the PostHook for all streaming responses
+}
+```
+
+### PerRequest Mode
+
+```go
+package main
+
+import (
+    "context"
+    "time"
+    "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+    "github.com/maximhq/bifrost/plugins/jsonparser"
+)
+
+func main() {
+    // Create the JSON parser plugin for per-request control
+    jsonPlugin := jsonparser.NewJsonParserPlugin(jsonparser.PluginConfig{
+        Usage:           jsonparser.PerRequest,
+        CleanupInterval: 2 * time.Minute,  // Cleanup every 2 minutes
+        MaxAge:          10 * time.Minute,  // Remove entries older than 10 minutes
+    })
+    
+    // Initialize Bifrost with the plugin
+    client, err := bifrost.Init(schemas.BifrostConfig{
+        Account: &MyAccount{},
+        Plugins: []schemas.Plugin{
+            jsonPlugin,
+        },
+    })
+    
+    if err != nil {
+        panic(err)
+    }
+
+    ctx := context.WithValue(context.Background(), jsonparser.EnableStreamingJSONParser, true)
+    
+    // Enable JSON parsing for specific requests
+    stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, request)
+    if bifrostErr != nil {
+            // handle error
+    }
+    for chunk := range stream {
+        _ = chunk // handle each streaming chunk
+    }
+}
+```
+
+### Configuration
+
+```go
+// Custom cleanup configuration
+plugin := jsonparser.NewJsonParserPlugin(jsonparser.PluginConfig{
+    Usage:           jsonparser.AllRequests,
+    CleanupInterval: 2 * time.Minute,  // Cleanup every 2 minutes
+    MaxAge:          10 * time.Minute,  // Remove entries older than 10 minutes
+})
+```
+
+#### Default Values
+
+- **CleanupInterval**: 5 minutes (how often to run cleanup)
+- **MaxAge**: 30 minutes (how old entries can be before cleanup)
+- **Usage**: Must be specified (AllRequests or PerRequest)
+
+### Context Key for PerRequest Mode
+
+When using `PerRequest` mode, the plugin checks for the context key `jsonparser.EnableStreamingJSONParser` with a boolean value:
+
+- `true`: Enable JSON parsing for this request
+- `false`: Disable JSON parsing for this request
+- Key not present: Disable JSON parsing for this request
+
+**Example:**
+
+```go
+import (
+    "context"
+
+    "github.com/maximhq/bifrost/plugins/jsonparser"
+)
+
+// Enable JSON parsing for this request
+ctx := context.WithValue(context.Background(), jsonparser.EnableStreamingJSONParser, true)
+
+// Disable JSON parsing for this request
+ctx := context.WithValue(context.Background(), jsonparser.EnableStreamingJSONParser, false)
+
+// No context key - JSON parsing disabled (default behavior)
+ctx := context.Background()
+```
+
+## How It Works
+
+The plugin implements an optimized `parsePartialJSON` function with the following steps:
+
+1. **Usage Check**: Determines if processing should occur based on usage type and context
+2. **Validates Input**: First tries to parse the string as valid JSON
+3. **Character Analysis**: If invalid, processes the string character-by-character to track:
+   - String boundaries (inside/outside quotes)
+   - Escape sequences
+   - Opening/closing braces and brackets
+4. **Auto-Completion**: Adds missing closing characters in the correct order
+5. **Validation**: Verifies the completed JSON is valid
+6. **Fallback**: Returns original content if completion fails
+
+### Memory Management
+
+The plugin automatically manages memory by:
+
+1. **Accumulating Content**: Stores partial JSON chunks with timestamps for each request
+2. **Periodic Cleanup**: Runs a background goroutine that removes stale entries based on `MaxAge`
+3. **Request Completion**: Automatically clears accumulated content when requests complete successfully
+4. **Configurable Intervals**: Allows customization of cleanup frequency and retention periods
+
+### Real-Life Streaming Example
+
+Here's a practical example showing how the JSON parser plugin fixes broken JSON chunks in streaming responses:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "time"
+    "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+    "github.com/maximhq/bifrost/plugins/jsonparser"
+)
+
+func main() {
+    // Create JSON parser plugin
+    jsonPlugin := jsonparser.NewJsonParserPlugin(jsonparser.PluginConfig{
+        Usage:           jsonparser.AllRequests,
+        CleanupInterval: 2 * time.Minute,
+        MaxAge:          10 * time.Minute,
+    })
+    
+    // Initialize Bifrost with the plugin
+    client, err := bifrost.Init(schemas.BifrostConfig{
+        Account: &MyAccount{},
+        Plugins: []schemas.Plugin{jsonPlugin},
+    })
+    if err != nil {
+        panic(err)
+    }
+    defer client.Cleanup()
+
+    // Request structured JSON response  
+    request := &schemas.BifrostRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o-mini",
+        Messages: []schemas.BifrostMessage{
+            {
+                Role: schemas.ModelChatMessageRoleUser,
+                Content: schemas.MessageContent{
+                    ContentStr: bifrost.Ptr("Return user profile as JSON: {\"name\": \"John Doe\", \"email\": \"john@example.com\"}"),
+                },
+            },
+        },
+    }
+
+    // Stream the response
+    stream, bifrostErr := client.ChatCompletionStreamRequest(context.Background(), request)
+    if bifrostErr != nil {
+        panic(bifrostErr)
+    }
+
+    fmt.Println("Streaming JSON response:")
+    for chunk := range stream {
+        if chunk.BifrostResponse != nil && len(chunk.BifrostResponse.Choices) > 0 {
+            choice := chunk.BifrostResponse.Choices[0]
+            if choice.BifrostStreamResponseChoice != nil && choice.BifrostStreamResponseChoice.Delta.Content != nil {
+                content := *choice.BifrostStreamResponseChoice.Delta.Content
+                fmt.Printf("Chunk: %s\n", content)
+                
+                // With JSON parser, you can parse each chunk immediately
+                var jsonData map[string]interface{}
+                if err := json.Unmarshal([]byte(content), &jsonData); err == nil {
+                    fmt.Printf("✅ Valid JSON parsed successfully\n")
+                } else {
+                    fmt.Printf("❌ Invalid JSON: %v\n", err)
+                }
+            }
+        }
+    }
+}
+```
+
+**Without JSON Parser** (raw streaming chunks):
+```
+Chunk 1: `{`                    ❌ Invalid JSON
+Chunk 2: `{"name"`              ❌ Invalid JSON  
+Chunk 3: `{"name": "John"`      ❌ Invalid JSON
+Chunk 4: `{"name": "John Doe"`  ❌ Invalid JSON
+```
+
+**With JSON Parser** (processed chunks):
+```
+Chunk 1: `{}`                               ✅ Valid JSON
+Chunk 2: `{"name": ""}`                     ✅ Valid JSON
+Chunk 3: `{"name": "John"}`                 ✅ Valid JSON  
+Chunk 4: `{"name": "John Doe"}`             ✅ Valid JSON
+```
+
+### Use Cases
+
+- **Function Calling**: Stream tool call arguments as valid JSON throughout the response
+- **Structured Data**: Stream complex JSON objects (user profiles, product catalogs) progressively
+- **Real-time Parsing**: Enable client-side JSON parsing at each streaming step without waiting for completion
+- **API Integration**: Forward streaming JSON to downstream services that expect valid JSON
+- **Live Updates**: Update UI components with valid JSON data as it streams in
+
+### Example Transformations
+
+| Input | Output |
+|-------|--------|
+| `{"name": "John"` | `{"name": "John"}` |
+| `["apple", "banana"` | `["apple", "banana"]` |
+| `{"user": {"name": "John"` | `{"user": {"name": "John"}}` |
+| `{"message": "Hello\nWorld"` | `{"message": "Hello\nWorld"}` |
+| `""` (empty string) | `{}` |
+| `"   "` (whitespace only) | `{}` |
+
+## Testing
+
+Run the test suite:
+
+```bash
+cd plugins/jsonparser
+go test -v
+```
+
+The tests cover:
+- Plugin interface compliance
+- Both usage types (AllRequests and PerRequest)
+- Context-based enabling/disabling
+- Streaming responses only (non-streaming responses are ignored)
+- Various JSON completion scenarios
+- Edge cases and error conditions
+- Memory cleanup functionality with real and simulated requests
+- Configuration options and default values

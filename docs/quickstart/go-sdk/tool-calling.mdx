@@ -1,0 +1,271 @@
+---
+title: "Tool Calling"
+description: "Enable AI models to use external functions and services by defining tool schemas or connecting to Model Context Protocol (MCP) servers. This allows AI to interact with databases, APIs, file systems, and more."
+icon: "wrench"
+---
+
+## Function Calling with Custom Tools
+
+Enable AI models to use external functions by defining tool schemas. Models can then call these functions automatically based on user requests.
+
+```go
+// Define a tool for the calculator
+calculatorTool := schemas.Tool{
+	Type: "function",
+	Function: schemas.Function{
+		Name:        "calculator",
+		Description: "A calculator tool",
+		Parameters: schemas.FunctionParameters{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"operation": map[string]interface{}{
+					"type":        "string",
+					"description": "The operation to perform",
+					"enum":        []string{"add", "subtract", "multiply", "divide"},
+				},
+				"a": map[string]interface{}{
+					"type":        "number",
+					"description": "The first number",
+				},
+				"b": map[string]interface{}{
+					"type":        "number",
+					"description": "The second number",
+				},
+			},
+			Required: []string{"operation", "a", "b"},
+		},
+	},
+}
+
+response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o-mini",
+	Input: schemas.RequestInput{
+		ChatCompletionInput: &[]schemas.BifrostMessage{
+			{
+				Role: schemas.ModelChatMessageRoleUser,
+				Content: schemas.MessageContent{
+					ContentStr: bifrost.Ptr("What is 2+2? Use the calculator tool."),
+				},
+			},
+		},
+	},
+	Params: &schemas.ModelParameters{
+		Tools: &[]schemas.Tool{calculatorTool},
+	},
+})
+
+if err != nil {
+	panic(err)
+}
+
+toolCalls := response.Choices[0].Message.AssistantMessage.ToolCalls
+if toolCalls != nil {
+	for _, toolCall := range *toolCalls {
+		fmt.Printf("Tool call in response - %s: %s\n", *toolCall.ID, *toolCall.Function.Name)
+		fmt.Printf("Tool call arguments - %s\n", toolCall.Function.Arguments)
+	}
+}
+```
+
+## Connecting to MCP Servers
+
+Connect to Model Context Protocol (MCP) servers to give AI models access to external tools and services without manually defining each function.
+
+```go
+client, initErr := bifrost.Init(schemas.BifrostConfig{
+	Account: &MyAccount{},
+	MCPConfig: &schemas.MCPConfig{
+		ClientConfigs: []schemas.MCPClientConfig{
+			// Sample youtube-mcp server
+			{
+				Name:             "youtube-mcp",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: bifrost.Ptr("http://your-youtube-mcp-url"),
+			},
+		},
+	},
+})
+if initErr != nil {
+	panic(initErr)
+}
+defer client.Cleanup()
+
+response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o-mini",
+	Input: schemas.RequestInput{
+		ChatCompletionInput: &[]schemas.BifrostMessage{
+			{
+				Role: schemas.ModelChatMessageRoleUser,
+				Content: schemas.MessageContent{
+					ContentStr: bifrost.Ptr("What do you see when you search for 'bifrost' on youtube?"),
+				},
+			},
+		},
+	},
+})
+
+if err != nil {
+	panic(err)
+}
+
+toolCalls := response.Choices[0].Message.AssistantMessage.ToolCalls
+if toolCalls != nil {
+	for _, toolCall := range *toolCalls {
+		fmt.Printf("Tool call in response - %s: %s\n", *toolCall.ID, *toolCall.Function.Name)
+		fmt.Printf("Tool call arguments - %s\n", toolCall.Function.Arguments)
+	}
+}
+```
+
+Read more about MCP connections and in-house tool registration via local MCP server in the [MCP Features](../../features/mcp) section.
+
+## Advanced Tool Examples
+
+### Weather API Tool
+
+```go
+weatherTool := schemas.Tool{
+	Type: "function",
+	Function: schemas.Function{
+		Name:        "get_weather",
+		Description: "Get the current weather for a location",
+		Parameters: schemas.FunctionParameters{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"location": map[string]interface{}{
+					"type":        "string",
+					"description": "The city and state, e.g. San Francisco, CA",
+				},
+				"unit": map[string]interface{}{
+					"type":        "string",
+					"description": "Temperature unit",
+					"enum":        []string{"celsius", "fahrenheit"},
+				},
+			},
+			Required: []string{"location"},
+		},
+	},
+}
+```
+
+### Database Query Tool
+
+```go
+databaseTool := schemas.Tool{
+	Type: "function",
+	Function: schemas.Function{
+		Name:        "query_database",
+		Description: "Execute a SQL query on the customer database",
+		Parameters: schemas.FunctionParameters{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "The SQL query to execute",
+				},
+				"table": map[string]interface{}{
+					"type":        "string",
+					"description": "The table to query",
+					"enum":        []string{"customers", "orders", "products"},
+				},
+			},
+			Required: []string{"query", "table"},
+		},
+	},
+}
+```
+
+### File System Tool
+
+```go
+fileSystemTool := schemas.Tool{
+	Type: "function",
+	Function: schemas.Function{
+		Name:        "read_file",
+		Description: "Read the contents of a file",
+		Parameters: schemas.FunctionParameters{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": "The file path to read",
+				},
+				"encoding": map[string]interface{}{
+					"type":        "string",
+					"description": "File encoding",
+					"enum":        []string{"utf-8", "ascii", "base64"},
+					"default":     "utf-8",
+				},
+			},
+			Required: []string{"path"},
+		},
+	},
+}
+```
+
+## Multiple Tool Support
+
+Use multiple tools in a single request:
+
+```go
+response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o-mini",
+	Input: schemas.RequestInput{
+		ChatCompletionInput: &[]schemas.BifrostMessage{
+			{
+				Role: schemas.ModelChatMessageRoleUser,
+				Content: schemas.MessageContent{
+					ContentStr: bifrost.Ptr("What's the weather in New York and calculate 15% tip for a $50 bill?"),
+				},
+			},
+		},
+	},
+	Params: &schemas.ModelParameters{
+		Tools: &[]schemas.Tool{weatherTool, calculatorTool},
+		ToolChoice: bifrost.Ptr("auto"), // Let AI decide which tools to use
+	},
+})
+```
+
+## Tool Choice Options
+
+Control how the AI uses tools:
+
+```go
+// Force use of a specific tool
+Params: &schemas.ModelParameters{
+	Tools: &[]schemas.Tool{calculatorTool},
+	ToolChoiceStruct: &schemas.ToolChoiceStruct{
+		Type: "function",
+		Function: schemas.ToolChoiceFunction{
+			Name: "calculator",
+		},
+	},
+}
+
+// Let AI decide automatically
+Params: &schemas.ModelParameters{
+	Tools: &[]schemas.Tool{calculatorTool, weatherTool},
+	ToolChoice: &schemas.ToolChoice{
+		ToolChoiceStr: bifrost.Ptr("auto"),
+	},
+}
+
+// Disable tool usage
+Params: &schemas.ModelParameters{
+	Tools: &[]schemas.Tool{calculatorTool},
+	ToolChoice: &schemas.ToolChoice{
+		ToolChoiceStr: bifrost.Ptr("none"),
+	},
+}
+```
+
+## Next Steps
+
+- **[Multimodal AI](./multimodal)** - Process images, audio, and multimedia content
+- **[Streaming Responses](./streaming)** - Real-time response generation
+- **[Provider Configuration](./provider-configuration)** - Multiple providers for redundancy
+- **[MCP Features](../../features/mcp)** - Advanced MCP server management

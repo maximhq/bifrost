@@ -1,0 +1,289 @@
+---
+title: "Semantic Caching"
+description: "Intelligent response caching based on semantic similarity. Reduce costs and latency by serving cached responses for semantically similar requests."
+icon: "database"
+---
+
+## Overview
+
+Semantic caching goes beyond traditional string-based caching by understanding the meaning of requests. Instead of requiring exact matches, Bifrost can serve cached responses for requests that are semantically similar, dramatically reducing API costs and response times.
+
+**Key Benefits:**
+- **Cost Reduction** - Avoid redundant API calls for similar questions
+- **Improved Latency** - Instant responses for semantically similar requests  
+- **Intelligent Matching** - Vector similarity matching instead of exact string matches
+- **Configurable Thresholds** - Control cache hit sensitivity
+- **Multi-Provider Support** - Works across all AI providers
+
+## How It Works
+
+Semantic caching uses vector embeddings to determine similarity between requests:
+
+1. **Request Processing** - Incoming requests are converted to vector embeddings
+2. **Similarity Search** - The cache searches for semantically similar previous requests
+3. **Threshold Matching** - If similarity exceeds the configured threshold, cached response is returned
+4. **Cache Miss** - If no similar request found, the request proceeds to the AI provider
+5. **Cache Storage** - New responses are stored with their vector embeddings for future matching
+
+**Example Semantic Matches:**
+```
+Original: "What is machine learning?"
+Similar:  "Can you explain machine learning?"
+Similar:  "Define machine learning"
+Similar:  "What does ML mean?"
+```
+
+All of these would return the same cached response if they exceed the similarity threshold.
+
+## Configuration
+
+Configure semantic caching through multiple methods:
+
+<Tabs group="semantic-cache-config">
+<Tab title="Web UI">
+
+1. **Navigate to Configuration**
+   - Open Bifrost UI at `http://localhost:8080`
+   - Go to **Configuration** → **Semantic Cache**
+
+2. **Configure Cache Settings**
+   - **Enable Semantic Cache**: Toggle on/off
+   - **Similarity Threshold**: 0.0 to 1.0 (higher = more strict matching)
+   - **Cache TTL**: Time-to-live for cached responses
+   - **Vector Store**: Choose Redis or in-memory storage
+
+3. **Save Configuration**
+   - Click **Save Changes**
+   - Cache will be active for new requests immediately
+
+</Tab>
+<Tab title="API">
+
+```bash
+# Enable semantic caching
+curl -X PATCH http://localhost:8080/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "semantic_cache": {
+      "enabled": true,
+      "similarity_threshold": 0.85,
+      "ttl_seconds": 3600,
+      "vector_store": "redis"
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "semantic_cache": {
+    "enabled": true,
+    "similarity_threshold": 0.85,
+    "ttl_seconds": 3600,
+    "vector_store": {
+      "type": "redis",
+      "config": {
+        "host": "localhost",
+        "port": 6379,
+        "db": 0
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Configuration Options
+
+| Setting | Description | Default | Range |
+|---------|-------------|---------|-------|
+| `enabled` | Enable/disable semantic caching | `false` | boolean |
+| `similarity_threshold` | Minimum similarity score for cache hits | `0.85` | 0.0 - 1.0 |
+| `ttl_seconds` | Cache entry time-to-live | `3600` | 1 - ∞ |
+| `vector_store` | Storage backend for embeddings | `memory` | `redis`, `memory` |
+
+## Storage Backends
+
+### Redis (Recommended)
+- **Best for**: Production deployments
+- **Features**: Persistent storage, clustering support, high performance
+- **Setup**: Requires Redis server
+
+```json
+{
+  "vector_store": {
+    "type": "redis",
+    "config": {
+      "host": "localhost",
+      "port": 6379,
+      "password": "optional-password",
+      "db": 0
+    }
+  }
+}
+```
+
+### In-Memory
+- **Best for**: Development and testing
+- **Features**: Zero setup, high performance
+- **Limitations**: Non-persistent, single instance only
+
+```json
+{
+  "vector_store": {
+    "type": "memory"
+  }
+}
+```
+
+## Usage Examples
+
+<Tabs group="semantic-cache-usage">
+<Tab title="Go SDK">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func main() {
+    client, err := bifrost.Init(schemas.BifrostConfig{
+        Account: account,
+        // Semantic cache is configured via config.json or API
+    })
+
+    // First request - will miss cache and call provider
+    response1, err := client.ChatCompletion(context.Background(), &schemas.BifrostRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o-mini",
+        Messages: []schemas.BifrostMessage{
+            {
+                Role: schemas.ModelChatMessageRoleUser,
+                Content: schemas.MessageContent{
+                    ContentStr: bifrost.Ptr("What is artificial intelligence?"),
+                },
+            },
+        },
+    })
+
+    // Second request - semantically similar, will hit cache
+    response2, err := client.ChatCompletion(context.Background(), &schemas.BifrostRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o-mini", 
+        Messages: []schemas.BifrostMessage{
+            {
+                Role: schemas.ModelChatMessageRoleUser,
+                Content: schemas.MessageContent{
+                    ContentStr: bifrost.Ptr("Can you explain AI?"),
+                },
+            },
+        },
+    })
+
+    // Check if response came from cache
+    if response2.ExtraFields.CacheHit {
+        fmt.Println("Response served from semantic cache!")
+    }
+}
+```
+
+</Tab>
+<Tab title="Gateway">
+
+```bash
+# First request - cache miss
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is artificial intelligence?"
+      }
+    ]
+  }'
+
+# Response includes cache info
+{
+  "choices": [...],
+  "extra_fields": {
+    "cache_hit": false,
+    "provider": "openai",
+    "latency": 1.2
+  }
+}
+
+# Second request - semantically similar
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user", 
+        "content": "Can you explain AI?"
+      }
+    ]
+  }'
+
+# Response served from cache
+{
+  "choices": [...],
+  "extra_fields": {
+    "cache_hit": true,
+    "similarity_score": 0.87,
+    "latency": 0.05
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+## Performance Considerations
+
+### Similarity Threshold Tuning
+
+| Threshold | Behavior | Use Case |
+|-----------|----------|----------|
+| 0.95-1.0  | Very strict matching | Exact semantic equivalence required |
+| 0.85-0.95 | Balanced matching | General purpose (recommended) |
+| 0.70-0.85 | Loose matching | Maximize cache hits, accept broader similarity |
+| 0.0-0.70  | Very loose matching | Development/testing only |
+
+### Cache Performance
+
+- **Vector Search**: O(log n) with proper indexing
+- **Memory Usage**: ~1KB per cached request (embedding + metadata)
+- **Hit Rate**: Typically 15-30% for conversational applications
+- **Latency Reduction**: 95%+ faster than provider API calls
+
+## Monitoring & Analytics
+
+Track semantic cache performance through:
+
+- **Cache Hit Rate** - Percentage of requests served from cache
+- **Similarity Scores** - Distribution of similarity matches  
+- **Cost Savings** - Reduced API calls and token usage
+- **Latency Improvements** - Response time comparisons
+
+Cache metrics are available through:
+- Bifrost UI dashboard at `/logs`
+- Prometheus metrics endpoint
+- Request tracing logs
+
+## Next Steps
+
+- **[Telemetry](./telemetry)** - Monitor cache performance with metrics
+- **[Tracing](./tracing)** - Debug cache behavior with request logs
+- **[Architecture](../architecture/plugins/semantic-cache)** - Deep dive into implementation details

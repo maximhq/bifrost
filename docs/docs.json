@@ -4,13 +4,12 @@
   "logo": {
     "dark": "/media/bifrost-logo-dark.png",
     "light": "/media/bifrost-logo.png"
-  },  
-  "theme": "mint",
+  },
+  "theme": "palm",
   "favicon": "/media/bifrost-logo.png",
   "colors": {
-    "primary": "#0D9488",
-    "light": "#10B981",
-    "dark": "#059669"
+    "primary": "#0C3B43",
+    "light": "#07C983"
   },
   "topbarLinks": [
     {
@@ -49,96 +48,98 @@
     "tabs": [
       {
         "tab": "Documentation",
+        "icon": "book-open-cover",
         "groups": [
           {
-            "group": "Get Started",
+            "group": "Quick Start",
+            "icon": "rocket",
             "pages": [
-              "quickstart/README",
-              "quickstart/go-package",
-              "quickstart/http-transport"
-            ]
-          },
-          {
-            "group": "Core Concepts",
-            "pages": [
-              "mcp",
-              "plugins",
-              "governance",
-              "usage/providers",
-              "usage/key-management",
-              "usage/memory-management",
-              "usage/networking",
-              "usage/errors"
-            ]
-          },
-          {
-            "group": "Go Package Usage",
-            "pages": [
-              "usage/go-package/README",
-              "usage/go-package/bifrost-client",
-              "usage/go-package/account",
-              "usage/go-package/logging",
-              "usage/go-package/mcp",
-              "usage/go-package/plugins",
-              "usage/go-package/schemas"
-            ]
-          },
-          {
-            "group": "HTTP Transport",
-            "pages": [
-              "usage/http-transport/README",
-              "usage/http-transport/endpoints"
-            ]
-          },
-          {
-            "group": "Configuration",
-            "pages": [
-              "usage/http-transport/configuration/providers",
-              "usage/http-transport/configuration/mcp",
-              "usage/http-transport/configuration/plugins"
+              {
+                "group": "Gateway",
+                "icon": "server",
+                "pages": [
+                  "quickstart/gateway/setting-up",
+                  "quickstart/gateway/provider-configuration",
+                  "quickstart/gateway/streaming",
+                  "quickstart/gateway/tool-calling",
+                  "quickstart/gateway/multimodal",
+                  "quickstart/gateway/integrations"
+                ]
+              },
+              {
+                "group": "Use as Go SDK",
+                "icon": "code",
+                "pages": [
+                  "quickstart/go-sdk/setting-up",
+                  "quickstart/go-sdk/provider-configuration",
+                  "quickstart/go-sdk/streaming",
+                  "quickstart/go-sdk/tool-calling",
+                  "quickstart/go-sdk/multimodal"
+                ]
+              }
             ]
           },
           {
             "group": "Integrations",
+            "icon": "plug",
             "pages": [
-              "usage/http-transport/integrations/README",
-              "usage/http-transport/integrations/openai-compatible",
-              "usage/http-transport/integrations/anthropic-compatible",
-              "usage/http-transport/integrations/azure-compatible",
-              "usage/http-transport/integrations/genai-compatible",
-              "usage/http-transport/integrations/migration-guide"
+              "integrations/what-is-an-integration",
+              "integrations/openai-sdk",
+              "integrations/anthropic-sdk",
+              "integrations/genai-sdk",
+              "integrations/litellm-sdk",
+              "integrations/langchain-sdk"
             ]
           },
           {
-            "group": "Architecture",
+            "group": "Open Source Features",
+            "icon": "bolt",
             "pages": [
-              "architecture/README",
-              "architecture/system-overview",
-              "architecture/request-flow",
-              "architecture/concurrency",
-              "architecture/design-decisions",
-              "architecture/mcp",
-              "architecture/plugins"
+              "features/unified-interface",
+              "features/drop-in-replacement",
+              "features/fallbacks",
+              "features/keys-management",
+              "features/mcp",
+              "features/tracing",
+              "features/telemetry",
+              "features/observability",
+              "features/governance",
+              {
+                "group": "Plugins",
+                "icon": "puzzle-piece",
+                "pages": [
+                  "features/plugins/mocker",
+                  "features/plugins/jsonparser"
+                ]
+              }
             ]
-          },
+          }          
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "icon": "codepen",
+        "pages": [
           {
-            "group": "Performance & Monitoring",
+            "group": "Core Architecture",
+            "icon": "sitemap",
             "pages": [
-              "benchmarks",
-              "usage/audio",
-              "ci-pipeline"
-            ]
-          },
-          {
-            "group": "Contributing",
-            "pages": [
-              "contributing/README",
-              "contributing/code-conventions",
-              "contributing/provider",
-              "contributing/plugin",
-              "contributing/http-integration"
+              "architecture/core/concurrency",
+              "architecture/core/request-flow",
+              "architecture/core/mcp",
+              "architecture/core/plugins"
             ]
           }
+        ]
+      },
+      {
+        "tab": "Benchmarks",
+        "icon": "chart-line",
+        "pages": [
+          "benchmarking/getting-started",
+          "benchmarking/t3.medium",
+          "benchmarking/t3.xl",
+          "benchmarking/run-your-own-benchmarks"
         ]
       }
     ]
@@ -153,6 +154,5 @@
     "auth": {
       "method": "bearer"
     }
-  },
-  "openapi": "/usage/http-transport/openapi.json"
+  }
 }
