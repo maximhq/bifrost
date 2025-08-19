@@ -182,10 +182,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			config.ConfigStore, err = configstore.NewConfigStore(&configstore.Config{
 				Enabled: true,
 				Type:    configstore.ConfigStoreTypeSQLite,
-				Config: configstore.SQLiteConfig{
+				Config: &configstore.SQLiteConfig{
 					Path: configDBPath,
 				},
-			})
+			}, logger)
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize config store: %w", err)
 			}
@@ -198,7 +198,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				},
 			}, logger)
 			if err != nil {
-				return nil, fmt.Errorf("failed to initialize logs store: %w", err)
+				return nil, fmt.Errorf("failed to initialize logs store: %v", err)
 			}
 
 			logger.Info("loading configuration from database")
@@ -339,7 +339,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// Initializing config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
 		logger.Info("initializing config store: %v", configData.ConfigStoreConfig)
-		config.ConfigStore, err = configstore.NewConfigStore(configData.ConfigStoreConfig)
+		config.ConfigStore, err = configstore.NewConfigStore(configData.ConfigStoreConfig, logger)
 		if err != nil {
 			return nil, err
 		}

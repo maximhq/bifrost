@@ -16,7 +16,7 @@ BLUE=\033[0;34m
 CYAN=\033[0;36m
 NC=\033[0m # No Color
 
-.PHONY: all help dev build run install-air clean test install-ui work-init work-clean docs
+.PHONY: all help dev build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-build
 
 all: help
 
@@ -56,7 +56,7 @@ dev: install-ui install-air ## Start complete development environment (UI + API 
 	@cd ui && npm run dev &
 	@sleep 3
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
-	@$(MAKE) work-init >/dev/null
+	@$(MAKE) setup-workspace >/dev/null
 	@cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
 		-host "$(HOST)" \
 		-port "$(PORT)" \
@@ -74,6 +74,15 @@ build: build-ui ## Build bifrost-http binary
 	@echo "$(GREEN)Building bifrost-http...$(NC)"
 	@cd transports/bifrost-http && GOWORK=off go build -o ../../tmp/bifrost-http .
 	@echo "$(GREEN)Built: tmp/bifrost-http$(NC)"
+
+docker-build: build-ui ## Build Docker image
+	@echo "$(GREEN)Building Docker image...$(NC)"	
+	@docker build -f transports/Dockerfile -t bifrost .
+	@echo "$(GREEN)Docker image built: bifrost$(NC)"
+
+docker-run: ## Run Docker container
+	@echo "$(GREEN)Running Docker container...$(NC)"
+	@docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -v $(shell pwd):/app/data bifrost
 
 docs: ## Prepare local docs
 	@echo "$(GREEN)Preparing local docs...$(NC)"
@@ -118,15 +127,6 @@ quick-start: ## Quick start with example config and maxim plugin
 	@echo "$(GREEN)Quick starting Bifrost with example configuration...$(NC)"
 	@$(MAKE) dev
 
-docker-build:
-	@echo "$(GREEN)Building Docker image...$(NC)"
-	@docker build -f transports/Dockerfile -t bifrost .
-	@echo "$(GREEN)Docker image built: bifrost$(NC)"
-
-docker-run: ## Run Docker container
-	@echo "$(GREEN)Running Docker container...$(NC)"
-	@docker run -p $(PORT):8080 -v $(shell pwd):/app/data bifrost
-
 # Linting and formatting
 lint: ## Run linter for Go code
 	@echo "$(GREEN)Running golangci-lint...$(NC)"
@@ -137,19 +137,31 @@ fmt: ## Format Go code
 	@gofmt -s -w .
 	@goimports -w .
 
-# Git hooks and development setup
-setup-git-hooks: ## Set up Git hooks for development
-	@echo "$(GREEN)Setting up Git hooks...$(NC)"
-	@echo "#!/bin/sh\nmake fmt\nmake lint" > .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
-	@echo "$(GREEN)Git hooks installed$(NC)"
-
 # Workspace helpers
-work-init: ## Create local go.work to use local modules for development
-	@echo "$(GREEN)Initializing Go workspace...$(NC)"
-	@test -f go.work || go work init ./core ./transports
-	@go work use ./core ./transports
-	@echo "$(YELLOW)Go workspace ready (not committed).$(NC)"
+setup-workspace: ## Set up Go workspace with all local modules for development
+	@echo "$(GREEN)Setting up Go workspace for local development...$(NC)"
+	@echo "$(YELLOW)Cleaning existing workspace...$(NC)"
+	@rm -f go.work go.work.sum || true
+	@echo "$(YELLOW)Initializing new workspace...$(NC)"
+	@go work init ./core ./framework ./transports
+	@echo "$(YELLOW)Adding plugin modules...$(NC)"
+	@go work use ./plugins/governance ./plugins/jsonparser ./plugins/logging
+	@go work use ./plugins/maxim ./plugins/mocker ./plugins/semanticcache ./plugins/telemetry
+	@echo "$(YELLOW)Syncing workspace...$(NC)"
+	@go work sync
+	@echo "$(GREEN)✓ Go workspace ready with all local modules$(NC)"
+	@echo ""
+	@echo "$(CYAN)Local modules in workspace:$(NC)"
+	@go list -m all | grep "github.com/maximhq/bifrost" | grep -v " v" | sed 's/^/  ✓ /'
+	@echo ""
+	@echo "$(CYAN)Remote modules (no local version):$(NC)"
+	@go list -m all | grep "github.com/maximhq/bifrost" | grep " v" | sed 's/^/  → /'
+	@echo ""
+	@echo "$(YELLOW)Note: go.work files are not committed to version control$(NC)"
+
+work-init: ## Create local go.work to use local modules for development (legacy)
+	@echo "$(YELLOW)⚠️  work-init is deprecated, use 'make setup-workspace' instead$(NC)"
+	@$(MAKE) setup-workspace
 
 work-clean: ## Remove local go.work
 	@rm -f go.work go.work.sum || true

@@ -5,9 +5,9 @@
     "type": "redis_cluster",
     "config": {
       "addrs": [
-        "localhost:7000",
-        "localhost:7001",
-        "localhost:7002"
+        "localhost:6371",
+        "localhost:6372",
+        "localhost:6373"
       ]
     }
   },

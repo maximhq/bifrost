@@ -18,7 +18,10 @@ jobs:
         with:
           args: |
             📝 **Commit to Main Branch**
-            **Commit**: ```${{ github.event.head_commit.message }}```
+            **Commit**: 
+            ````
+            ${{ github.event.head_commit.message }}
+            ````
             **SHA**: `${{ github.sha }}`
             **Author**: ${{ github.event.head_commit.author.username || github.event.head_commit.author.name || github.event.sender.login || github.actor }}
             **[View Commit](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})**

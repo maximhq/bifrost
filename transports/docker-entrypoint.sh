@@ -36,5 +36,41 @@ fix_permissions() {
 # Fix permissions before starting the application
 fix_permissions
 
-# Execute the main application with all passed arguments
-exec /app/main "$@" 
+# Parse command line arguments and set environment variables
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --port|-port)
+                if [ -n "$2" ]; then
+                    export APP_PORT="$2"
+                    shift 2
+                else
+                    echo "Error: --port requires a value"
+                    exit 1
+                fi
+                ;;
+            --host|-host)
+                if [ -n "$2" ]; then
+                    export APP_HOST="$2"
+                    shift 2
+                else
+                    echo "Error: --host requires a value"
+                    exit 1
+                fi
+                ;;
+            *)
+                # Keep other arguments for the main application
+                set -- "$@" "$1"
+                shift
+                ;;
+        esac
+    done
+}
+
+# Parse arguments if any are provided
+if [ $# -gt 1 ]; then
+    parse_args "$@"
+fi
+
+# Build the command with environment variables and standard arguments
+exec /app/main -app-dir /app/data -port "$APP_PORT" -host "$APP_HOST" 

@@ -133,7 +133,7 @@ func newRedisStore(ctx context.Context, config RedisConfig, logger schemas.Logge
 		defer cancel()
 	}
 	if err := client.Ping(pingCtx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
 
 	return &RedisStore{

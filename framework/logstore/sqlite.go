@@ -188,19 +188,12 @@ func (s *SQLiteLogStore) FindAll(query any, fields ...string) ([]*Log, error) {
 }
 
 func newSqliteLogStore(config *SQLiteConfig, logger schemas.Logger) (*SQLiteLogStore, error) {
-	db, err := gorm.Open(sqlite.Open(config.Path), &gorm.Config{})
+	// Configure SQLite with proper settings to handle concurrent access
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=1000&_foreign_keys=ON", config.Path)
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, err
-	} else {
-		walErr := db.Exec("PRAGMA journal_mode=WAL;").Error
-		if walErr != nil {
-			logger.Warn("failed to set journal mode to WAL: %v", walErr)
-		}
-		synchronousErr := db.Exec("PRAGMA synchronous=NORMAL;").Error
-		if synchronousErr != nil {
-			logger.Warn("failed to set synchronous mode to NORMAL: %v", synchronousErr)
-		}
-	}
+	}	
 	if err := db.AutoMigrate(&Log{}); err != nil {
 		return nil, err
 	}

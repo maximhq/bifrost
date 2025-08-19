@@ -88,14 +88,14 @@ type ConfigStore interface {
 }
 
 // NewConfigStore creates a new config store based on the configuration
-func NewConfigStore(config *Config) (ConfigStore, error) {
+func NewConfigStore(config *Config, logger schemas.Logger) (ConfigStore, error) {
 	if !config.Enabled {
 		return nil, nil
 	}
 	switch config.Type {
 	case ConfigStoreTypeSQLite:
-		if sqliteConfig, ok := config.Config.(SQLiteConfig); ok {
-			return newSqliteConfigStore(&sqliteConfig)
+		if sqliteConfig, ok := config.Config.(*SQLiteConfig); ok {
+			return newSqliteConfigStore(sqliteConfig, logger)
 		}
 		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
 	}

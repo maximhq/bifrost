@@ -158,7 +158,7 @@ func (t *UsageTracker) PerformStartupResets() error {
 	if err != nil {
 		errors = append(errors, fmt.Sprintf("failed to load virtual keys for reset: %s", err.Error()))
 	} else {
-		t.logger.Debug(fmt.Sprintf("Startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
+		t.logger.Debug(fmt.Sprintf("startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
 	}
 
 	for i := range allVKs {

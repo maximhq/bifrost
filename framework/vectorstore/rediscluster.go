@@ -211,10 +211,10 @@ func newRedisClusterStore(ctx context.Context, config RedisClusterConfig, logger
 		testClient.Close()
 
 		if err != nil {
-			logger.Warn("redis cluster node not reachable", "addr", addr, "error", err)
+			logger.Warn("redis cluster node not reachable addr: %s - %v", addr, err)
 			// Don't fail immediately, try other nodes
 		} else {
-			logger.Debug("redis cluster node reachable %s", addr)
+			logger.Debug("redis cluster node reachable addr: %s", addr)
 		}
 	}
 
@@ -273,12 +273,12 @@ func newRedisClusterStore(ctx context.Context, config RedisClusterConfig, logger
 	// Test the connection with better error handling
 	if err := client.Ping(pingCtx).Err(); err != nil {
 		// Log the specific error for debugging
-		logger.Error("failed to connect to Redis Cluster", "error", err, "addrs", config.Addrs)
+		logger.Error("failed to connect to redis cluster: %v, addrs: %v", err, config.Addrs)
 		client.Close()
-		return nil, fmt.Errorf("failed to connect to Redis Cluster: %w", err)
+		return nil, fmt.Errorf("failed to connect to redis cluster: %w", err)
 	}
 
-	logger.Info("successfully connected to Redis Cluster", "addrs", config.Addrs)
+	logger.Info("successfully connected to redis cluster: %v", config.Addrs)
 	return &RedisClusterStore{
 		client: client,
 		config: config,

@@ -45,7 +45,7 @@ func NewGovernanceStore(logger schemas.Logger, configStore configstore.ConfigSto
 		}
 	}
 
-	store.logger.Info("Governance store initialized successfully")
+	store.logger.Info("governance store initialized successfully")
 	return store, nil
 }
 

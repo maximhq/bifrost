@@ -12,7 +12,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormLogger "gorm.io/gorm/logger"
 )
 
 // SQLiteConfig represents the configuration for a SQLite database.
@@ -22,7 +22,8 @@ type SQLiteConfig struct {
 
 // SQLiteConfigStore represents a configuration store that uses a SQLite database.
 type SQLiteConfigStore struct {
-	db *gorm.DB
+	db     *gorm.DB
+	logger schemas.Logger
 }
 
 // UpdateClientConfig updates the client configuration in the database.
@@ -796,16 +797,17 @@ func (s *SQLiteConfigStore) removeNullKeys() error {
 // removeDuplicateKeysAndNullKeys removes duplicate keys based on key_id and value combination
 // Keeps the record with the smallest ID (oldest record) and deletes duplicates
 func (s *SQLiteConfigStore) removeDuplicateKeysAndNullKeys() error {
+	s.logger.Debug("removing duplicate keys and null keys from the database")
 	// Check if the config_keys table exists first
 	if !s.doesTableExist("config_keys") {
 		return nil
 	}
-
+	s.logger.Debug("removing null keys from the database")
 	// First, remove null keys
 	if err := s.removeNullKeys(); err != nil {
 		return fmt.Errorf("failed to remove null keys: %w", err)
 	}
-
+	s.logger.Debug("deleting duplicate keys from the database")
 	// Find and delete duplicate keys, keeping only the one with the smallest ID
 	// This query deletes all records except the one with the minimum ID for each (key_id, value) pair
 	result := s.db.Exec(`
@@ -820,13 +822,12 @@ func (s *SQLiteConfigStore) removeDuplicateKeysAndNullKeys() error {
 	if result.Error != nil {
 		return fmt.Errorf("failed to remove duplicate keys: %w", result.Error)
 	}
-
+	s.logger.Debug("migration complete")
 	return nil
 }
 
 // newSqliteConfigStore creates a new SQLite config store.
-func newSqliteConfigStore(config *SQLiteConfig) (ConfigStore, error) {
-	// Checking if DB exists, and create the file if it doesn't exist
+func newSqliteConfigStore(config *SQLiteConfig, logger schemas.Logger) (ConfigStore, error) {		
 	if _, err := os.Stat(config.Path); os.IsNotExist(err) {
 		// Create DB file
 		f, err := os.Create(config.Path)
@@ -835,26 +836,23 @@ func newSqliteConfigStore(config *SQLiteConfig) (ConfigStore, error) {
 		}
 		_ = f.Close()
 	}
-	db, err := gorm.Open(sqlite.Open(config.Path), &gorm.Config{
-		Logger:      logger.Default.LogMode(logger.Silent),
-		PrepareStmt: true,
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=1000&_foreign_keys=ON", config.Path)
+	logger.Debug("opening DB with dsn: %s", dsn)
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
-
-	if db != nil {
-		_ = db.Exec("PRAGMA journal_mode=WAL;").Error
-		_ = db.Exec("PRAGMA busy_timeout=5000;").Error
-	}
 
 	if err != nil {
 		return nil, err
 	}
-
-	s := &SQLiteConfigStore{db: db}
+	logger.Debug("db opened for configstore")
+	s := &SQLiteConfigStore{db: db, logger: logger}
 
 	// Run migration to remove duplicate keys before AutoMigrate
 	if err := s.removeDuplicateKeysAndNullKeys(); err != nil {
 		return nil, fmt.Errorf("failed to remove duplicate keys: %w", err)
 	}
+	logger.Debug("running migration to remove duplicate keys")
 	// Auto migrate to all new tables
 	if err := db.AutoMigrate(
 		&TableConfigHash{},

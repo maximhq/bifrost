@@ -127,7 +127,7 @@ func (pm *PricingManager) calculateCostForUsage(provider string, model string, u
 	// Get pricing for the model
 	pricing, exists := pm.getPricing(model, provider, requestType)
 	if !exists {
-		pm.logger.Warn(fmt.Sprintf("Pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, requestType))
+		pm.logger.Warn("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, requestType)
 		return 0.0
 	}
 
@@ -251,7 +251,7 @@ func (pm *PricingManager) shouldSync() bool {
 
 	lastSync, err := time.Parse(time.RFC3339, config.Value)
 	if err != nil {
-		pm.logger.Warn(fmt.Sprintf("Failed to parse last sync time: %v", err))
+		pm.logger.Warn("failed to parse last sync time: %v", err)
 		return true
 	}
 
@@ -325,7 +325,7 @@ func (pm *PricingManager) syncPricing() error {
 		return fmt.Errorf("failed to reload pricing cache: %w", err)
 	}
 
-	pm.logger.Info(fmt.Sprintf("Successfully synced %d pricing records", len(pricingData)))
+	pm.logger.Info("successfully synced %d pricing records", len(pricingData))
 	return nil
 }
 
@@ -360,7 +360,7 @@ func (pm *PricingManager) loadPricingFromURL() (PricingData, error) {
 		return nil, fmt.Errorf("failed to unmarshal pricing data: %w", err)
 	}
 
-	pm.logger.Debug(fmt.Sprintf("Successfully downloaded and parsed %d pricing records", len(pricingData)))
+	pm.logger.Debug("successfully downloaded and parsed %d pricing records", len(pricingData))
 	return pricingData, nil
 }
 
@@ -409,7 +409,7 @@ func (pm *PricingManager) loadPricingFromDatabase() error {
 	for i, pricing := range pm.pricingCache {
 		pm.pricingIndex[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = i
 	}
-	pm.logger.Debug(fmt.Sprintf("Loaded %d pricing records into cache", len(pricingRecords)))
+	pm.logger.Debug("loaded %d pricing records into cache", len(pricingRecords))
 	return nil
 }
 

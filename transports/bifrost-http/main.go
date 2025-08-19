@@ -310,7 +310,7 @@ func main() {
 	// Initialize high-performance configuration store with dedicated database
 	config, err := lib.LoadConfig(ctx, configDir)
 	if err != nil {
-		logger.Fatal("failed to load config", err)
+		logger.Fatal("failed to load config %w", err)
 	}
 
 	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
@@ -321,7 +321,7 @@ func main() {
 	loadedPlugins := []schemas.Plugin{}
 
 	telemetry.InitPrometheusMetrics(config.ClientConfig.PrometheusLabels)
-	logger.Debug("Prometheus Go/Process collectors registered.")
+	logger.Debug("prometheus Go/Process collectors registered.")
 
 	promPlugin := telemetry.NewPrometheusPlugin()
 
@@ -482,7 +482,7 @@ func main() {
 	// Apply CORS middleware to all routes
 	corsHandler := corsMiddleware(config, r.Handler)
 
-	logger.Info("successfully started bifrost. Serving UI on http://%s:%s", host, port)
+	logger.Info("successfully started bifrost. Serving UI on http://%s:%s/ui", host, port)
 	if err := fasthttp.ListenAndServe(net.JoinHostPort(host, port), corsHandler); err != nil {
 		logger.Fatal("Error starting server", err)
 	}
