@@ -11,12 +11,12 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.1.23
 	github.com/maximhq/bifrost/framework v1.0.0
-	github.com/maximhq/bifrost/plugins/governance v1.2.0-prerelease1
-	github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease1
-	github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease1
+	github.com/maximhq/bifrost/plugins/governance v1.2.0-prerelease2
+	github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease2
+	github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease2
 	github.com/maximhq/bifrost/plugins/redis v1.0.0
-	github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease1
-	github.com/maximhq/bifrost/plugins/telemetry v1.2.0-prerelease1
+	github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease2
+	github.com/maximhq/bifrost/plugins/telemetry v1.2.0-prerelease2
 	github.com/prometheus/client_golang v1.23.0
 	github.com/valyala/fasthttp v1.65.0
 	google.golang.org/genai v1.20.0
