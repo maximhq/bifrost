@@ -70,7 +70,9 @@ for platform in "${platforms[@]}"; do
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   else # Darwin (macOS)
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" \
+    # Disable CGO for Darwin cross-compilation to avoid toolchain complexity
+    # This will require using alternative drivers for database functionality
+    env GOWORK=off CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
       go build -trimpath -ldflags "-s -w -buildid=" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
   fi
