@@ -101,7 +101,19 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@v1
+        run: |
+          # Verify Docker is available
+          docker --version
+          # Install Docker Compose if not available as plugin
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Installing Docker Compose..."
+            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            docker-compose --version
+          else
+            echo "Docker Compose plugin is available"
+            docker compose version
+          fi
 
       - name: Release framework
         id: release
@@ -141,7 +153,19 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@v1
+        run: |
+          # Verify Docker is available
+          docker --version
+          # Install Docker Compose if not available as plugin
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Installing Docker Compose..."
+            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            docker-compose --version
+          else
+            echo "Docker Compose plugin is available"
+            docker compose version
+          fi
 
       - name: Release all changed plugins
         id: release
@@ -182,7 +206,19 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@v1
+        run: |
+          # Verify Docker is available
+          docker --version
+          # Install Docker Compose if not available as plugin
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Installing Docker Compose..."
+            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            docker-compose --version
+          else
+            echo "Docker Compose plugin is available"
+            docker compose version
+          fi
 
       - name: Release bifrost-http
         id: release
