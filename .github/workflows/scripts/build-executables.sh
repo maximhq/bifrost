@@ -6,9 +6,13 @@ set -euo pipefail
 
 echo "🔨 Building Go executables..."
 
+# Get the script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
 # Clean and create dist directory
-rm -rf ../dist
-mkdir -p ../dist
+rm -rf "$PROJECT_ROOT/dist"
+mkdir -p "$PROJECT_ROOT/dist"
 
 # Define platforms
 platforms=(
@@ -19,7 +23,8 @@ platforms=(
   "windows/amd64"
 )
 
-MODULE_PATH="${MODULE_PATH:-transports/bifrost-http}"
+MODULE_PATH="$PROJECT_ROOT/transports/bifrost-http"
+
 
 for platform in "${platforms[@]}"; do
   IFS='/' read -r PLATFORM_DIR GOARCH <<< "$platform"
@@ -35,7 +40,10 @@ for platform in "${platforms[@]}"; do
   [[ "$GOOS" = "windows" ]] && output_name+='.exe'
 
   echo "Building bifrost-http for $PLATFORM_DIR/$GOARCH..."
-  mkdir -p "../dist/$PLATFORM_DIR/$GOARCH"
+  mkdir -p "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH"
+
+  # Change to the module directory for building
+  cd "$MODULE_PATH"
 
   if [[ "$GOOS" = "linux" ]]; then
     if [[ "$GOARCH" = "amd64" ]]; then
@@ -49,7 +57,7 @@ for platform in "${platforms[@]}"; do
     env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -tags "netgo,osusergo,static_build" \
       -ldflags "-s -w -buildid= -linkmode external -extldflags -static" \
-      -o "../dist/$PLATFORM_DIR/$GOARCH/$output_name" "./$MODULE_PATH"
+      -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   elif [[ "$GOOS" = "windows" ]]; then
     if [[ "$GOARCH" = "amd64" ]]; then
@@ -59,13 +67,16 @@ for platform in "${platforms[@]}"; do
 
     env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -ldflags "-s -w -buildid=" \
-      -o "../dist/$PLATFORM_DIR/$GOARCH/$output_name" "./$MODULE_PATH"
+      -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   else # Darwin (macOS)
     env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" \
       go build -trimpath -ldflags "-s -w -buildid=" \
-      -o "../dist/$PLATFORM_DIR/$GOARCH/$output_name" "./$MODULE_PATH"
+      -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
   fi
+
+  # Change back to project root
+  cd "$PROJECT_ROOT"
 done
 
 echo "✅ All binaries built successfully"
