@@ -184,7 +184,7 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: ./.github/workflows/scripts/release-all-plugins.sh "${{ needs.detect-changes.outputs.changed-plugins }}"
+        run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   # Bifrost HTTP Release
   bifrost-http-approval:
