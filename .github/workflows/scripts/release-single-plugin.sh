@@ -43,7 +43,7 @@ echo "🏷️ Tag name: $TAG_NAME"
 
 # Starting dependencies of plugin tests
 echo "🔧 Starting dependencies of plugin tests..."
-docker-compose -f ../tests/docker-compose.yml up -d
+docker-compose -f tests/docker-compose.yml up -d
 sleep 20
 
 # Update plugin dependencies
@@ -78,7 +78,7 @@ cd ../..
 
 # Shutting down dependencies
 echo "🔧 Shutting down dependencies of plugin tests..."
-docker-compose -f ../tests/docker-compose.yml down
+docker-compose -f tests/docker-compose.yml down
 
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"
@@ -92,6 +92,12 @@ fi
 
 # Create GitHub release
 TITLE="Plugin $PLUGIN_NAME v$PLUGIN_VERSION"
+
+# Mark prereleases when version contains a hyphen
+PRERELEASE_FLAG=""
+if [[ "$PLUGIN_VERSION" == *-* ]]; then
+  PRERELEASE_FLAG="--prerelease"
+fi
 
 BODY="## Plugin Release: $PLUGIN_NAME v$PLUGIN_VERSION
 
@@ -124,8 +130,9 @@ if gh release view "$TAG_NAME" >/dev/null 2>&1; then
 else
   gh release create "$TAG_NAME" \
     --title "$TITLE" \
-    --notes "$BODY"
+    --notes "$BODY" \
+    ${PRERELEASE_FLAG}
 fi
 
 echo "✅ Plugin $PLUGIN_NAME released successfully"
-echo "success=true" >> "$GITHUB_OUTPUT"
+echo "success=true" >> "${GITHUB_OUTPUT:-/dev/null}"

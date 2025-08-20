@@ -276,15 +276,28 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Determine Docker tags
+        id: tags
+        run: |
+          VERSION="${{ needs.detect-changes.outputs.transport-version }}"
+          BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}"
+          
+          # Check if version contains prerelease identifiers (hyphen)
+          if [[ "$VERSION" == *-* ]]; then
+            echo "🔍 Detected prerelease version: v${VERSION} - skipping 'latest' tag"
+            echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "🔍 Detected stable version: v${VERSION} - including 'latest' tag"
+            echo "tags=${BASE_TAG},${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./transports/Dockerfile
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${{ needs.detect-changes.outputs.transport-version }}
-            ${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max

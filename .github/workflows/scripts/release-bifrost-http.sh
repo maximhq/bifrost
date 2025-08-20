@@ -88,6 +88,13 @@ git push origin "$TAG_NAME"
 
 # Create GitHub release
 TITLE="Bifrost HTTP v$VERSION"
+
+# Mark prereleases when version contains a hyphen
+PRERELEASE_FLAG=""
+if [[ "$VERSION" == *-* ]]; then
+  PRERELEASE_FLAG="--prerelease"
+fi
+
 BODY="## Bifrost HTTP Transport Release v$VERSION
 
 ### 🚀 Bifrost HTTP Transport v$VERSION
@@ -126,7 +133,8 @@ fi
 echo "🎉 Creating GitHub release for $TITLE..."
 gh release create "$TAG_NAME" \
   --title "$TITLE" \
-  --notes "$BODY"
+  --notes "$BODY" \
+  ${PRERELEASE_FLAG}
 
 echo "✅ Bifrost HTTP released successfully"
 echo "success=true" >> "$GITHUB_OUTPUT"

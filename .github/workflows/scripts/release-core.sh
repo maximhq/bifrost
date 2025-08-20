@@ -42,6 +42,13 @@ git push origin "$TAG_NAME"
 
 # Create GitHub release
 TITLE="Core v$VERSION"
+
+# Mark prereleases when version contains a hyphen
+PRERELEASE_FLAG=""
+if [[ "$VERSION" == *-* ]]; then
+  PRERELEASE_FLAG="--prerelease"
+fi
+
 BODY="## Core Release v$VERSION
 
 ### 🔧 Core Library v$VERSION
@@ -65,7 +72,8 @@ _This release was automatically created from version file: \`core/version\`_"
 echo "🎉 Creating GitHub release for $TITLE..."
 gh release create "$TAG_NAME" \
   --title "$TITLE" \
-  --notes "$BODY"
+  --notes "$BODY" \
+  ${PRERELEASE_FLAG}
 
 echo "✅ Core released successfully"
 echo "success=true" >> "$GITHUB_OUTPUT"

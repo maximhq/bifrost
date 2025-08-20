@@ -35,7 +35,7 @@ echo "📋 Changed plugins JSON: $CHANGED_PLUGINS_JSON"
 # No work early‐exit if array is empty
 if jq -e 'length==0' <<<"$CHANGED_PLUGINS_JSON" >/dev/null 2>&1; then
   echo "⏭️ No plugins to release"
-  echo "success=true" >> "$GITHUB_OUTPUT"
+  echo "success=true" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
@@ -60,7 +60,7 @@ fi
 
 if [ ${#PLUGINS[@]} -eq 0 ]; then
   echo "⏭️ No plugins to release"
-  echo "success=true" >> "$GITHUB_OUTPUT"
+  echo "success=true" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
@@ -99,11 +99,11 @@ echo "   ❌ Failed: ${#FAILED_PLUGINS[@]}"
 
 if [ ${#FAILED_PLUGINS[@]} -gt 0 ]; then
   echo "   Failed plugins: ${FAILED_PLUGINS[*]}"
-  echo "success=false" >> "$GITHUB_OUTPUT"
+  echo "success=false" >> "${GITHUB_OUTPUT:-/dev/null}"
   echo "❌ Plugin release process completed with failures"
   exit $OVERALL_EXIT_CODE
 else
   echo "   🎉 All plugins released successfully!"
-  echo "success=true" >> "$GITHUB_OUTPUT"
+  echo "success=true" >> "${GITHUB_OUTPUT:-/dev/null}"
   echo "✅ All plugin releases completed successfully"
 fi

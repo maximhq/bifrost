@@ -81,6 +81,13 @@ fi
 
 # Create GitHub release
 TITLE="Framework $VERSION"
+
+# Mark prereleases when version contains a hyphen
+PRERELEASE_FLAG=""
+if [[ "$VERSION" == *-* ]]; then
+  PRERELEASE_FLAG="--prerelease"
+fi
+
 BODY="## Framework Release $VERSION
 
 ### 📦 Framework Library $VERSION
@@ -105,7 +112,8 @@ if gh release view "$TAG_NAME" >/dev/null 2>&1; then
 else
   gh release create "$TAG_NAME" \
     --title "$TITLE" \
-    --notes "$BODY"
+    --notes "$BODY" \
+    ${PRERELEASE_FLAG}
 fi
 
 echo "✅ Framework released successfully"
