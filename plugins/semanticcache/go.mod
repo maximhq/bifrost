@@ -6,6 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.1.23
 	github.com/maximhq/bifrost/framework v1.0.1
 )
@@ -32,7 +33,6 @@ require (
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect

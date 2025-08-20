@@ -17,30 +17,50 @@ const (
 	VectorStoreTypeRedisCluster VectorStoreType = "redis_cluster"
 )
 
+// SearchResult represents a search result with metadata.
+type SearchResult struct {
+	Key        string                 `json:"key"`
+	Value      string                 `json:"value"`
+	Similarity float64                `json:"similarity"`
+	Metadata   map[string]interface{} `json:"metadata"`
+}
+
 // VectorStore represents the interface for the vector store.
 type VectorStore interface {
+	// Basic operations (for response caching)
 	GetChunk(ctx context.Context, contextKey string) (string, error)
 	GetChunks(ctx context.Context, chunkKeys []string) ([]any, error)
 	Add(ctx context.Context, key string, value string, ttl time.Duration) error
 	Delete(ctx context.Context, keys []string) error
 	GetAll(ctx context.Context, pattern string, cursor *string, count int64) ([]string, *string, error)
 	Close(ctx context.Context) error
+
+	// Unified semantic cache operations (with native vector search)
+	AddSemanticCache(ctx context.Context, key string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error
+	SearchSemanticCache(ctx context.Context, indexName string, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]SearchResult, error)
+
+	// Index management
+	EnsureSemanticIndex(ctx context.Context, indexName string, keyPrefix string, embeddingDim int, metadataFields []string) error
+	DropSemanticIndex(ctx context.Context, indexName string) error
 }
+
+// IMPORTANT: VectorStore user should call EnsureSemanticIndex before using the vector store.
+// This is because the vector store does not create the index automatically.
 
 // Config represents the configuration for the vector store.
 type Config struct {
-	Enabled         bool            `json:"enabled"`
-	Type            VectorStoreType `json:"type"`
-	Config          any             `json:"config"`
+	Enabled bool            `json:"enabled"`
+	Type    VectorStoreType `json:"type"`
+	Config  any             `json:"config"`
 }
 
 // UnmarshalJSON unmarshals the config from JSON.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled         bool            `json:"enabled"`
-		Type            string          `json:"type"`
-		Config          json.RawMessage `json:"config"` // Keep as raw JSON
+		Enabled bool            `json:"enabled"`
+		Type    string          `json:"type"`
+		Config  json.RawMessage `json:"config"` // Keep as raw JSON
 	}
 
 	var temp TempConfig

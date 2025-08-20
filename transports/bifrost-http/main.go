@@ -60,10 +60,13 @@ import (
 	"mime"
 	"net"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -499,15 +502,61 @@ func main() {
 	// Apply CORS middleware to all routes
 	corsHandler := corsMiddleware(config, r.Handler)
 
-	logger.Info("successfully started bifrost. Serving UI on http://%s:%s", host, port)
-	if err := fasthttp.ListenAndServe(net.JoinHostPort(host, port), corsHandler); err != nil {
-		logger.Fatal("Error starting server: %v", err)
+	// Create fasthttp server instance
+	server := &fasthttp.Server{
+		Handler: corsHandler,
 	}
 
-	// Cleanup resources on shutdown
-	if wsHandler != nil {
-		wsHandler.Stop()
-	}
+	// Create channels for signal and error handling
+	sigChan := make(chan os.Signal, 1)
+	errChan := make(chan error, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	client.Cleanup()
+	// Start server in a goroutine
+	serverAddr := net.JoinHostPort(host, port)
+	go func() {
+		logger.Info("successfully started bifrost, serving UI on http://%s:%s", host, port)
+		if err := server.ListenAndServe(serverAddr); err != nil {
+			errChan <- err
+		}
+	}()
+
+	// Wait for either termination signal or server error
+	select {
+	case sig := <-sigChan:
+		logger.Info("received signal %v, initiating graceful shutdown...", sig)
+
+		// Create shutdown context with timeout
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Perform graceful shutdown
+		if err := server.Shutdown(); err != nil {
+			logger.Error("error during graceful shutdown: %v", err)
+		} else {
+			logger.Info("server gracefully shutdown")
+		}
+
+		// Wait for shutdown to complete or timeout
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Cleanup resources
+			if wsHandler != nil {
+				wsHandler.Stop()
+			}
+			client.Cleanup()
+		}()
+
+		select {
+		case <-done:
+			logger.Info("cleanup completed")
+		case <-shutdownCtx.Done():
+			logger.Warn("cleanup timed out after 30 seconds")
+		}
+
+	case err := <-errChan:
+		logger.Error("server failed to start: %v", err)
+		os.Exit(1)
+	}
 }
