@@ -2,6 +2,7 @@ package vectorstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -49,7 +50,7 @@ func (s *RedisStore) GetChunk(ctx context.Context, contextKey string) (string, e
 	ctx, cancel := s.withTimeout(ctx)
 	defer cancel()
 	val, err := s.client.Get(ctx, contextKey).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return "", ErrNotFound
 	}
 	return val, err
@@ -125,13 +126,9 @@ func newRedisStore(ctx context.Context, config RedisConfig, logger schemas.Logge
 		WriteTimeout:    config.WriteTimeout,
 	})
 
-	// Test the connection
-	pingCtx := ctx
-	if config.ContextTimeout > 0 {
-		var cancel context.CancelFunc
-		pingCtx, cancel = context.WithTimeout(ctx, config.ContextTimeout)
-		defer cancel()
-	}
+	// Test the connection with a reasonable timeout (not using ContextTimeout for initial connection)
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}

@@ -488,8 +488,8 @@ func TestRedisStore_TTLOperations(t *testing.T) {
 		if err == nil {
 			t.Error("Key should be expired")
 		}
-		if errors.Is(err, ErrNotFound) {
-			t.Errorf("Should return redis.Nil for expired key, got: %v", err)
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("Should return ErrNotFound for expired key, got: %v", err)
 		}
 	})
 
@@ -724,9 +724,9 @@ func TestRedisStore_ContextTimeoutHandling(t *testing.T) {
 	}
 
 	t.Run("context timeout in config", func(t *testing.T) {
-		// Create store with very short context timeout
+		// Create store with very short context timeout for operations
 		timeoutConfig := config
-		timeoutConfig.ContextTimeout = 1 * time.Nanosecond
+		timeoutConfig.ContextTimeout = 1 * time.Nanosecond // Extremely short timeout
 
 		ctx := context.Background()
 		store, err := newRedisStore(ctx, timeoutConfig, logger)
@@ -735,10 +735,11 @@ func TestRedisStore_ContextTimeoutHandling(t *testing.T) {
 		}
 		defer store.Close(ctx)
 
-		// This should timeout due to config timeout
+		// This should timeout due to config timeout being very short
 		err = store.Add(ctx, "test:config:timeout", "value", time.Minute)
 		if err == nil {
 			t.Error("Should timeout with short config timeout")
+			return
 		}
 		if !strings.Contains(err.Error(), "context deadline exceeded") {
 			t.Errorf("Should timeout with context deadline exceeded, got: %v", err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -145,23 +146,50 @@ func (s *RedisClusterStore) GetAll(ctx context.Context, pattern string, cursor *
 	// This is a simplified implementation - in production, you might want to
 	// implement more sophisticated cursor handling across multiple nodes
 	var allKeys []string
+	var keysMutex sync.Mutex
+	var nodeCursors sync.Map
+
+	// Initialize sync.Map with existing cursors
+	for nodeAddr, cursor := range clusterCursor.NodeCursors {
+		nodeCursors.Store(nodeAddr, cursor)
+	}
 
 	// Get all master nodes and scan each one
 	err = s.client.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
 		nodeAddr := client.Options().Addr
-		nodeCursor := clusterCursor.NodeCursors[nodeAddr]
+		
+		// Read the cursor from sync.Map
+		nodeCursorVal, _ := nodeCursors.Load(nodeAddr)
+		var nodeCursor uint64
+		if nodeCursorVal != nil {
+			nodeCursor = nodeCursorVal.(uint64)
+		}
+		
 		keys, c, scanErr := client.Scan(ctx, nodeCursor, pattern, count).Result()
 		if scanErr != nil {
 			return scanErr
 		}
+		
+		// Store the new cursor in sync.Map
+		nodeCursors.Store(nodeAddr, c)
+		
+		// Only lock for appending keys to the slice
+		keysMutex.Lock()
 		allKeys = append(allKeys, keys...)
-		clusterCursor.NodeCursors[nodeAddr] = c
+		keysMutex.Unlock()
+		
 		return nil
 	})
 
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Update the original cursor map with values from sync.Map
+	nodeCursors.Range(func(key, value interface{}) bool {
+		clusterCursor.NodeCursors[key.(string)] = value.(uint64)
+		return true
+	})
 
 	var nextCursor *string
 	allDone := true
