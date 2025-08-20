@@ -118,7 +118,7 @@ jobs:
       - name: Release framework
         id: release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}          
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
   plugins-release:
@@ -171,6 +171,8 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   bifrost-http-release:

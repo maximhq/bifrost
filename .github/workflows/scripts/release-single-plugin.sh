@@ -41,18 +41,6 @@ TAG_NAME="plugins/${PLUGIN_NAME}/v${PLUGIN_VERSION}"
 echo "📦 Plugin version: $PLUGIN_VERSION"
 echo "🏷️ Tag name: $TAG_NAME"
 
-# Starting dependencies of plugin tests
-echo "🔧 Starting dependencies of plugin tests..."
-# Use docker compose (v2) if available, fallback to docker-compose (v1)
-if command -v docker-compose >/dev/null 2>&1; then
-  docker-compose -f tests/docker-compose.yml up -d
-elif docker compose version >/dev/null 2>&1; then
-  docker compose -f tests/docker-compose.yml up -d
-else
-  echo "❌ Neither docker-compose nor docker compose is available"
-  exit 1
-fi
-sleep 20
 
 # Update plugin dependencies
 echo "🔧 Updating plugin dependencies..."
@@ -83,18 +71,6 @@ else
 fi
 
 cd ../..
-
-# Shutting down dependencies
-echo "🔧 Shutting down dependencies of plugin tests..."
-# Use docker compose (v2) if available, fallback to docker-compose (v1)
-if command -v docker-compose >/dev/null 2>&1; then
-  docker-compose -f tests/docker-compose.yml down
-elif docker compose version >/dev/null 2>&1; then
-  docker compose -f tests/docker-compose.yml down
-else
-  echo "❌ Neither docker-compose nor docker compose is available"
-  exit 1
-fi
 
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"
