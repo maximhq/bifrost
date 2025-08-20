@@ -157,27 +157,27 @@ func (s *RedisClusterStore) GetAll(ctx context.Context, pattern string, cursor *
 	// Get all master nodes and scan each one
 	err = s.client.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
 		nodeAddr := client.Options().Addr
-		
+
 		// Read the cursor from sync.Map
 		nodeCursorVal, _ := nodeCursors.Load(nodeAddr)
 		var nodeCursor uint64
 		if nodeCursorVal != nil {
 			nodeCursor = nodeCursorVal.(uint64)
 		}
-		
+
 		keys, c, scanErr := client.Scan(ctx, nodeCursor, pattern, count).Result()
 		if scanErr != nil {
 			return scanErr
 		}
-		
+
 		// Store the new cursor in sync.Map
 		nodeCursors.Store(nodeAddr, c)
-		
+
 		// Only lock for appending keys to the slice
 		keysMutex.Lock()
 		allKeys = append(allKeys, keys...)
 		keysMutex.Unlock()
-		
+
 		return nil
 	})
 
@@ -218,11 +218,37 @@ func (s *RedisClusterStore) Close(ctx context.Context) error {
 	return s.client.Close()
 }
 
+// Only semantic cache and basic operations remain
+
+// Removed all old metadata and embedding methods - using semantic cache only
+
+// AddSemanticCache stores an embedding with metadata - not supported in Redis Cluster due to RediSearch limitations.
+func (s *RedisClusterStore) AddSemanticCache(ctx context.Context, key string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
+	return ErrNotSupported
+}
+
+// SearchSemanticCache performs native vector similarity search - not supported in Redis Cluster.
+func (s *RedisClusterStore) SearchSemanticCache(ctx context.Context, indexName string, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]SearchResult, error) {
+	return nil, ErrNotSupported
+}
+
+// EnsureSemanticIndex creates a semantic vector index - not supported in Redis Cluster.
+func (s *RedisClusterStore) EnsureSemanticIndex(ctx context.Context, indexName string, keyPrefix string, embeddingDim int, metadataFields []string) error {
+	return ErrNotSupported
+}
+
+// DropSemanticIndex deletes the semantic vector index - not supported in Redis Cluster.
+func (s *RedisClusterStore) DropSemanticIndex(ctx context.Context, indexName string) error {
+	return nil // No-op for cluster, nothing to drop
+}
+
+// Removed manual cosine similarity - using native vector search only
+
 // newRedisClusterStore creates a new Redis Cluster vector store.
 func newRedisClusterStore(ctx context.Context, config RedisClusterConfig, logger schemas.Logger) (*RedisClusterStore, error) {
 	if len(config.Addrs) == 0 {
 		return nil, fmt.Errorf("at least one Redis cluster address is required")
-	}	
+	}
 
 	// First, test individual node connectivity to provide better error messages
 	for _, addr := range config.Addrs {

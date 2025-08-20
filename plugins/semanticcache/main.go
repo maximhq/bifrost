@@ -6,13 +6,13 @@ package semanticcache
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"sort"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
+	"github.com/google/uuid"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -24,12 +24,19 @@ import (
 // The VectorStore abstraction handles the underlying storage implementation and its defaults.
 // Only specify values you want to override from the semantic cache defaults.
 type Config struct {
-	CacheKey    string `json:"cache_key"`     // Cache key for context lookup - REQUIRED
-	CacheTTLKey string `json:"cache_ttl_key"` // Cache TTL key for context lookup (optional)
+	CacheKey          string `json:"cache_key"`           // Cache key for context lookup - REQUIRED
+	CacheTTLKey       string `json:"cache_ttl_key"`       // Cache TTL key for context lookup (optional)
+	CacheThresholdKey string `json:"cache_threshold_key"` // Cache threshold for context lookup (optional)
+
+	// Embedding Model settings
+	Provider       schemas.ModelProvider `json:"provider"`
+	Keys           []schemas.Key         `json:"keys"`
+	EmbeddingModel string                `json:"embedding_model,omitempty"` // Model to use for generating embeddings (optional)
 
 	// Plugin behavior settings
-	TTL    time.Duration `json:"ttl,omitempty"`    // Time-to-live for cached responses (default: 5min)
-	Prefix string        `json:"prefix,omitempty"` // Prefix for cache keys (optional)
+	TTL       time.Duration `json:"ttl,omitempty"`       // Time-to-live for cached responses (default: 5min)
+	Threshold float64       `json:"threshold,omitempty"` // Cosine similarity threshold for semantic matching (default: 0.8)
+	Prefix    string        `json:"prefix,omitempty"`    // Prefix for cache keys (optional)
 
 	// Advanced caching behavior
 	CacheByModel    *bool `json:"cache_by_model,omitempty"`    // Include model in cache key (default: true)
@@ -41,12 +48,17 @@ type Config struct {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// Define a temporary struct to avoid infinite recursion
 	type TempConfig struct {
-		CacheKey        string      `json:"cache_key"`
-		CacheTTLKey     string      `json:"cache_ttl_key"`
-		TTL             interface{} `json:"ttl,omitempty"`
-		Prefix          string      `json:"prefix,omitempty"`
-		CacheByModel    *bool       `json:"cache_by_model,omitempty"`
-		CacheByProvider *bool       `json:"cache_by_provider,omitempty"`
+		CacheKey          string        `json:"cache_key"`
+		CacheTTLKey       string        `json:"cache_ttl_key"`
+		CacheThresholdKey string        `json:"cache_threshold_key"`
+		Provider          string        `json:"provider"`
+		Keys              []schemas.Key `json:"keys"`
+		EmbeddingModel    string        `json:"embedding_model,omitempty"`
+		TTL               interface{}   `json:"ttl,omitempty"`
+		Threshold         float64       `json:"threshold,omitempty"`
+		Prefix            string        `json:"prefix,omitempty"`
+		CacheByModel      *bool         `json:"cache_by_model,omitempty"`
+		CacheByProvider   *bool         `json:"cache_by_provider,omitempty"`
 	}
 
 	var temp TempConfig
@@ -57,9 +69,14 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	// Set simple fields
 	c.CacheKey = temp.CacheKey
 	c.CacheTTLKey = temp.CacheTTLKey
+	c.CacheThresholdKey = temp.CacheThresholdKey
+	c.Provider = schemas.ModelProvider(temp.Provider)
+	c.Keys = temp.Keys
+	c.EmbeddingModel = temp.EmbeddingModel
 	c.Prefix = temp.Prefix
 	c.CacheByModel = temp.CacheByModel
 	c.CacheByProvider = temp.CacheByProvider
+	c.Threshold = temp.Threshold
 
 	// Handle TTL field with custom parsing for VectorStore-backed cache behavior
 	if temp.TTL != nil {
@@ -98,9 +115,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 //   - config: Plugin configuration including semantic cache and caching settings
 //   - logger: Logger instance for plugin operations
 type Plugin struct {
-	store  vectorstore.VectorStore
-	config Config
-	logger schemas.Logger
+	store          vectorstore.VectorStore
+	config         Config
+	logger         schemas.Logger
+	client         *bifrost.Bifrost
+	isIndexCreated atomic.Bool // Track if semantic index was created (performance optimization)
 }
 
 // Plugin constants
@@ -109,7 +128,31 @@ const (
 	PluginLoggerPrefix     string        = "[Semantic Cache]"
 	CacheConnectionTimeout time.Duration = 5 * time.Second
 	CacheSetTimeout        time.Duration = 30 * time.Second
+	DefaultCacheTTL        time.Duration = 5 * time.Minute
+	DefaultCacheThreshold  float64       = 0.8
+	DefaultKeyPrefix       string        = "semantic_cache"
+	SemanticIndexName      string        = "bifrost_semantic_index"
 )
+
+type PluginAccount struct {
+	provider schemas.ModelProvider
+	keys     []schemas.Key
+}
+
+func (pa *PluginAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{pa.provider}, nil
+}
+
+func (pa *PluginAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	return pa.keys, nil
+}
+
+func (pa *PluginAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{
+		NetworkConfig:            schemas.DefaultNetworkConfig,
+		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+	}, nil
+}
 
 // Dependencies is a list of dependencies that the plugin requires.
 var Dependencies []framework.FrameworkDependency = []framework.FrameworkDependency{framework.FrameworkDependencyVectorStore}
@@ -136,7 +179,15 @@ func Init(ctx context.Context, config Config, logger schemas.Logger, store vecto
 	// Set plugin-specific defaults (not Redis defaults)
 	if config.TTL == 0 {
 		logger.Debug(PluginLoggerPrefix + " TTL is not set, using default of 5 minutes")
-		config.TTL = 5 * time.Minute
+		config.TTL = DefaultCacheTTL
+	}
+	if config.Threshold == 0 {
+		logger.Debug(PluginLoggerPrefix + " Threshold is not set, using default of " + strconv.FormatFloat(DefaultCacheThreshold, 'f', -1, 64))
+		config.Threshold = DefaultCacheThreshold
+	}
+	if config.Prefix == "" {
+		logger.Debug(PluginLoggerPrefix + " Prefix is not set, using default of " + DefaultKeyPrefix)
+		config.Prefix = DefaultKeyPrefix
 	}
 
 	// Set cache behavior defaults
@@ -147,69 +198,48 @@ func Init(ctx context.Context, config Config, logger schemas.Logger, store vecto
 		config.CacheByProvider = bifrost.Ptr(true)
 	}
 
+	if config.Provider == "" || config.Keys == nil {
+		return nil, fmt.Errorf("provider and keys are required for semantic cache")
+	}
+
+	bifrost, err := bifrost.Init(schemas.BifrostConfig{
+		Logger: logger,
+		Account: &PluginAccount{
+			provider: config.Provider,
+			keys:     config.Keys,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize bifrost for semantic cache: %w", err)
+	}
+
 	return &Plugin{
 		store:  store,
 		config: config,
 		logger: logger,
+		client: bifrost,
 	}, nil
-}
-
-// generateRequestHash creates an xxhash of the request for semantic cache key generation.
-// It normalizes the request by including only the relevant fields based on VectorStore configuration:
-// - Provider (if CacheByProvider is true)
-// - Model (if CacheByModel is true)
-// - Input (chat completion or text completion)
-// - Parameters (all parameters are included)
-//
-// Note: Fallbacks are excluded as they only affect error handling, not the actual response.
-//
-// Parameters:
-//   - req: The Bifrost request to hash for semantic cache key generation
-//   - cacheKey: The cache key prefix from context
-//
-// Returns:
-//   - string: Hexadecimal representation of the xxhash for semantic cache storage
-//   - error: Any error that occurred during request normalization or hashing
-func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, cacheKey string) (string, error) {
-	// Create a normalized request for hashing
-	// Note: Fallbacks are excluded as they only affect error handling, not the actual response
-	normalizedReq := struct {
-		Provider schemas.ModelProvider    `json:"provider,omitempty"`
-		Model    string                   `json:"model,omitempty"`
-		Input    schemas.RequestInput     `json:"input"`
-		Params   *schemas.ModelParameters `json:"params,omitempty"`
-	}{
-		Input: req.Input,
-	}
-
-	// Include provider and model based on configuration
-	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
-		normalizedReq.Provider = req.Provider
-	}
-	if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
-		normalizedReq.Model = req.Model
-	}
-
-	// Include all parameters in cache key
-	normalizedReq.Params = req.Params
-
-	// Marshal to JSON for consistent hashing
-	jsonData, err := json.Marshal(normalizedReq)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Generate hash based on configured algorithm
-	hash := xxhash.Sum64(jsonData)
-	return fmt.Sprintf("%s_%x", cacheKey, hash), nil
 }
 
 // ContextKey is a custom type for context keys to prevent key collisions
 type ContextKey string
 
 const (
-	requestHashKey ContextKey = "semantic_cache_request_hash"
-	isCacheHitKey  ContextKey = "semantic_cache_is_cache_hit"
+	requestIDKey        ContextKey = "semantic_cache_request_id"
+	requestHashKey      ContextKey = "semantic_cache_request_hash"
+	requestEmbeddingKey ContextKey = "semantic_cache_embedding"
+	requestMetadataKey  ContextKey = "semantic_cache_metadata"
+	requestModelKey     ContextKey = "semantic_cache_model"
+	requestProviderKey  ContextKey = "semantic_cache_provider"
+	isCacheHitKey       ContextKey = "semantic_cache_is_cache_hit"
+	CacheHitTypeKey     ContextKey = "semantic_cache_cache_hit_type"
+)
+
+type CacheType string
+
+const (
+	CacheTypeDirect   CacheType = "direct"
+	CacheTypeSemantic CacheType = "semantic"
 )
 
 // GetName returns the canonical name of the semantic cache plugin.
@@ -223,6 +253,7 @@ func (plugin *Plugin) GetName() string {
 
 // PreHook is called before a request is processed by Bifrost.
 // It checks if a cached response exists for the request hash and returns it if found.
+// Uses pattern-based lookup with new key format: {provider}-{model}-{reqid}-{suffix}
 //
 // Parameters:
 //   - ctx: Pointer to the context.Context
@@ -246,181 +277,67 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		return req, nil, nil
 	}
 
-	// Generate hash for the request
-	hash, err := plugin.generateRequestHash(req, cacheKey)
-	if err != nil {
-		// If we can't generate hash, just continue without caching
-		plugin.logger.Debug(PluginLoggerPrefix + " Failed to generate request hash, continuing without caching")
-		return req, nil, nil
-	}
+	// Generate UUID for this request
+	requestID := uuid.New().String()
 
-	// Store hash in context for PostHook
-	*ctx = context.WithValue(*ctx, requestHashKey, hash)
+	// Store request ID, model, and provider in context for PostHook
+	*ctx = context.WithValue(*ctx, requestIDKey, requestID)
+	*ctx = context.WithValue(*ctx, requestModelKey, req.Model)
+	*ctx = context.WithValue(*ctx, requestProviderKey, req.Provider)
 
-	requestTypeValue := (*ctx).Value(bifrost.BifrostContextKeyRequestType)
-	if requestTypeValue == nil {
-		plugin.logger.Debug(PluginLoggerPrefix + " No request type found in context, continuing without caching")
-		return req, nil, nil
-	}
-	requestType, ok := requestTypeValue.(bifrost.RequestType)
+	requestType, ok := (*ctx).Value(bifrost.BifrostContextKeyRequestType).(bifrost.RequestType)
 	if !ok {
-		plugin.logger.Debug(PluginLoggerPrefix + " Request type is not a bifrost.RequestType, continuing without caching")
 		return req, nil, nil
 	}
 
-	// Create cache key
-	cacheKey = plugin.config.Prefix + hash
-
-	if plugin.isStreamingRequest(requestType) {
-		// For streaming requests, find all chunks and create a stream
-		chunkPattern := cacheKey + "_chunk_*"
-
-		// Get all chunk keys matching the pattern using SCAN
-		var chunkKeys []string
-		var cursor *string
-		for {
-			batch, c, err := plugin.store.GetAll(*ctx, chunkPattern, cursor, 1000)
-			if err != nil {
-				plugin.logger.Warn(PluginLoggerPrefix + " Failed to scan cached chunks, continuing with request")
-				return req, nil, nil
-			}
-			chunkKeys = append(chunkKeys, batch...)
-			cursor = c
-			if cursor == nil {
-				break
-			}
-		}
-
-		if len(chunkKeys) == 0 {
-			plugin.logger.Debug(PluginLoggerPrefix + " No cached chunks found, continuing with request")
-			return req, nil, nil
-		}
-
-		plugin.logger.Info(fmt.Sprintf("%s Found %d cached chunks for request %s, returning stream", PluginLoggerPrefix, len(chunkKeys), cacheKey))
-
-		// Create stream channel
-		streamChan := make(chan *schemas.BifrostStream)
-
-		go func() {
-			defer close(streamChan)
-
-			// Get all chunk data
-			chunkData, err := plugin.store.GetChunks(*ctx, chunkKeys)
-			if err != nil {
-				if !errors.Is(err, vectorstore.ErrNotFound) {
-					plugin.logger.Debug(PluginLoggerPrefix + " No cached chunks found, continuing with request")
-					return
-				}
-				plugin.logger.Warn(PluginLoggerPrefix + " Failed to retrieve cached chunks")
-				return
-			}
-
-			var chunks []schemas.BifrostResponse
-			for _, data := range chunkData {
-				if data == nil {
-					continue
-				}
-
-				// Unmarshal cached response
-				var cachedResponse schemas.BifrostResponse
-				if err := json.Unmarshal([]byte(data.(string)), &cachedResponse); err != nil {
-					plugin.logger.Warn(PluginLoggerPrefix + " Failed to unmarshal cached chunk, skipping")
-					continue
-				}
-
-				chunks = append(chunks, cachedResponse)
-			}
-
-			// Sort chunks by index
-			sort.Slice(chunks, func(i, j int) bool {
-				return chunks[i].ExtraFields.ChunkIndex < chunks[j].ExtraFields.ChunkIndex
-			})
-
-			// Send chunks in order
-			for _, chunk := range chunks {
-				if chunk.ExtraFields.RawResponse == nil {
-					chunk.ExtraFields.RawResponse = make(map[string]interface{})
-				}
-				if rawResponseMap, ok := chunk.ExtraFields.RawResponse.(map[string]interface{}); ok {
-					rawResponseMap["bifrost_cached"] = true
-					rawResponseMap["bifrost_cache_key"] = fmt.Sprintf("%s_chunk_%d", cacheKey, chunk.ExtraFields.ChunkIndex)
-				}
-
-				chunk.ExtraFields.Provider = req.Provider
-
-				streamChan <- &schemas.BifrostStream{
-					BifrostResponse: &chunk,
-				}
-			}
-		}()
-
-		*ctx = context.WithValue(*ctx, isCacheHitKey, true)
-
-		// Return short-circuit with stream
-		return req, &schemas.PluginShortCircuit{
-			Stream: streamChan,
-		}, nil
-
-	} else {
-		// Check if cached response exists
-		cachedData, err := plugin.store.GetChunk(*ctx, cacheKey)
-		if err != nil {
-			if errors.Is(err, vectorstore.ErrNotFound) {
-				plugin.logger.Debug(PluginLoggerPrefix + " No cached response found, continuing with request")
-				// No cached response found, continue with normal processing
-				return req, nil, nil
-			}
-			// Log error but continue processing
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to get cached response, continuing without caching")
-			return req, nil, nil
-		}
-
-		// Unmarshal cached response
-		var cachedResponse schemas.BifrostResponse
-		if err := json.Unmarshal([]byte(cachedData), &cachedResponse); err != nil {
-			// If we can't unmarshal, just continue without cached response
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to unmarshal cached response, continuing without caching")
-			return req, nil, nil
-		}
-
-		plugin.logger.Debug(fmt.Sprintf("%s Found cached response for request %s, returning it", PluginLoggerPrefix, cacheKey))
-
-		// Mark response as cached in extra fields
-		if cachedResponse.ExtraFields.RawResponse == nil {
-			cachedResponse.ExtraFields.RawResponse = make(map[string]interface{})
-		}
-		if rawResponseMap, ok := cachedResponse.ExtraFields.RawResponse.(map[string]interface{}); ok {
-			rawResponseMap["bifrost_cached"] = true
-			rawResponseMap["bifrost_cache_key"] = cacheKey
-		}
-		cachedResponse.ExtraFields.Provider = req.Provider
-
-		*ctx = context.WithValue(*ctx, isCacheHitKey, true)
-
-		// Return cached response
-		return req, &schemas.PluginShortCircuit{
-			Response: &cachedResponse,
-		}, nil
+	shortCircuit, err := plugin.performDirectSearch(ctx, req, requestType)
+	if err != nil {
+		plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error())
+		// Don't return - continue to semantic search fallback
+		shortCircuit = nil // Ensure we don't use an invalid shortCircuit
 	}
 
+	if shortCircuit != nil {
+		return req, shortCircuit, nil
+	}
+
+	if req.Input.EmbeddingInput != nil || req.Input.TranscriptionInput != nil {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic search for embedding/transcription input")
+		return req, nil, nil
+	}
+
+	// Try semantic search as fallback
+	shortCircuit, err = plugin.performSemanticSearch(ctx, req, requestType)
+	if err != nil {
+		if plugin.isIndexCreated.Load() {
+			plugin.logger.Warn(PluginLoggerPrefix + " Semantic search failed: " + err.Error())
+		}
+		return req, nil, nil
+	}
+
+	if shortCircuit != nil {
+		return req, shortCircuit, nil
+	}
+
+	return req, nil, nil
 }
 
 // PostHook is called after a response is received from a provider.
-// It caches the response using the request hash as the key via the VectorStore abstraction, with optional filtering
-// based on configurable caching behavior.
+// It caches both the hash and response using the new key format: {provider}-{model}-{reqid}-{suffix}
+// with optional filtering based on configurable caching behavior.
 //
 // The function performs the following operations:
 // 1. Checks configurable caching behavior and skips caching for unsuccessful responses if configured
-// 2. Retrieves the request hash from the context (set during PreHook)
+// 2. Retrieves the request hash and ID from the context (set during PreHook)
 // 3. Marshals the response for storage
-// 4. Stores the response in the VectorStore-backed cache asynchronously (non-blocking)
+// 4. Stores both the hash and response in the VectorStore-backed cache asynchronously (non-blocking)
 //
 // The VectorStore Add operation runs in a separate goroutine to avoid blocking the response.
 // The function gracefully handles errors and continues without caching if any step fails,
 // ensuring that response processing is never interrupted by caching issues.
 //
 // Parameters:
-//   - ctx: Pointer to the context.Context containing the request hash
+//   - ctx: Pointer to the context.Context containing the request hash and ID
 //   - res: The response from the provider to be cached
 //   - bifrostErr: The error from the provider, if any (used for success determination)
 //
@@ -437,64 +354,122 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 	if isCacheHit != nil {
 		isCacheHitValue, ok := isCacheHit.(bool)
 		if ok && isCacheHitValue {
-			// If the cache hit is true, we should not cache
-			return res, nil, nil
+			// If the cache hit is true, we should cache direct only when the cache hit type is semantic
+			cacheHitType, ok := (*ctx).Value(CacheHitTypeKey).(CacheType)
+			if ok && cacheHitType == CacheTypeDirect {
+				return res, nil, nil
+			}
 		}
 	}
 
 	// Get the request type from context
-	requestTypeValue := (*ctx).Value(bifrost.BifrostContextKeyRequestType)
-	if requestTypeValue == nil {
-		plugin.logger.Debug(PluginLoggerPrefix + " No request type found in context, continuing without caching")
+	requestType, ok := (*ctx).Value(bifrost.BifrostContextKeyRequestType).(bifrost.RequestType)
+	if !ok {
 		return res, nil, nil
 	}
 
-	requestType, ok := requestTypeValue.(bifrost.RequestType)
+	// Get the request ID from context
+	requestID, ok := (*ctx).Value(requestIDKey).(string)
 	if !ok {
-		plugin.logger.Debug(PluginLoggerPrefix + " Request type is not a bifrost.RequestType, continuing without caching")
+		plugin.logger.Warn(PluginLoggerPrefix + " Request ID is not a string, continuing without caching")
 		return res, nil, nil
 	}
 
 	// Get the hash from context
-	hashValue := (*ctx).Value(requestHashKey)
-	if hashValue == nil {
-		// If we don't have the hash, we can't cache (expected when cache key is not present)
+	hash, ok := (*ctx).Value(requestHashKey).(string)
+	if !ok {
+		plugin.logger.Warn(PluginLoggerPrefix + " Hash is not a string, continuing without caching")
 		return res, nil, nil
 	}
 
-	hash, ok := hashValue.(string)
+	// Get embedding from context if available (only generated during semantic search)
+	var embedding []float32
+	if requestType != bifrost.EmbeddingRequest && requestType != bifrost.TranscriptionRequest {
+		embedding, ok = (*ctx).Value(requestEmbeddingKey).([]float32)
+		if !ok {
+			plugin.logger.Warn(PluginLoggerPrefix + " Embedding is not a []float32, continuing without caching")
+			return res, nil, nil
+		}
+	}
+
+	// Get the provider from context
+	provider, ok := (*ctx).Value(requestProviderKey).(schemas.ModelProvider)
 	if !ok {
-		plugin.logger.Debug(PluginLoggerPrefix + " Hash is not a string, continuing without caching")
+		plugin.logger.Warn(PluginLoggerPrefix + " Provider is not a schemas.ModelProvider, continuing without caching")
+		return res, nil, nil
+	}
+
+	// Get the model from context
+	model, ok := (*ctx).Value(requestModelKey).(string)
+	if !ok {
+		plugin.logger.Warn(PluginLoggerPrefix + " Model is not a string, continuing without caching")
 		return res, nil, nil
 	}
 
 	cacheTTL := plugin.config.TTL
 
-	// Get the request TTL from the context
-	ttlValue := (*ctx).Value(ContextKey(plugin.config.CacheTTLKey))
-	if ttlValue != nil {
-		ttl, ok := ttlValue.(time.Duration)
-		if !ok {
-			plugin.logger.Debug(PluginLoggerPrefix + " TTL is not a time.Duration, using default TTL")
-		} else {
-			cacheTTL = ttl
+	if plugin.config.CacheTTLKey != "" {
+		ttlValue := (*ctx).Value(ContextKey(plugin.config.CacheTTLKey))
+		if ttlValue != nil {
+			// Get the request TTL from the context
+			ttl, ok := ttlValue.(time.Duration)
+			if !ok {
+				plugin.logger.Warn(PluginLoggerPrefix + " TTL is not a time.Duration, using default TTL")
+			} else {
+				cacheTTL = ttl
+			}
 		}
 	}
 
-	// Create cache key
-	cacheKey := plugin.config.Prefix + hash
-
-	// Add "chunk_{index}" to the cache key for streaming responses
-	if plugin.isStreamingRequest(requestType) {
-		cacheKey = fmt.Sprintf("%s_chunk_%d", cacheKey, res.ExtraFields.ChunkIndex)
-	}
-
-	// Cache the response asynchronously to avoid blocking the response
+	// Cache hash, response, and embedding asynchronously to avoid blocking the response
 	go func() {
 		// Create a background context with timeout for the cache operation
 		// This ensures the cache operation doesn't run indefinitely
 		cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 		defer cancel()
+
+		// Create cache keys
+		hashKey := plugin.generateCacheKey(provider, model, requestID, "hash")
+
+		// Use plugin prefix for both embedding and response keys for consistency
+		embeddingKey := plugin.generateCacheKey(provider, model, requestID, "emb")
+		responseKey := plugin.generateCacheKey(provider, model, requestID, "response")
+
+		// Add "chunk_{index}" to the response key for streaming responses
+		if plugin.isStreamingRequest(requestType) {
+			responseKey = fmt.Sprintf("%s_chunk_%d", responseKey, res.ExtraFields.ChunkIndex)
+		}
+
+		// Store the hash (only once for the first chunk or non-streaming)
+		if !plugin.isStreamingRequest(requestType) || res.ExtraFields.ChunkIndex == 0 {
+			if err := plugin.store.Add(cacheCtx, hashKey, hash, cacheTTL); err != nil {
+				plugin.logger.Warn(PluginLoggerPrefix + " Failed to cache hash asynchronously: " + err.Error())
+			}
+
+			// Store embedding with metadata using native vector search if available
+			if embedding != nil {
+				// Get metadata from context
+				metadata, _ := (*ctx).Value(requestMetadataKey).(map[string]interface{})
+				if metadata == nil {
+					metadata = make(map[string]interface{})
+				}
+
+				// Ensure semantic index exists only once (performance optimization)
+				if !plugin.isIndexCreated.Load() {
+					embeddingDim := len(embedding)
+					metadataFields := []string{"temperature", "max_tokens", "tools_hash", "tool_choice", "top_p", "top_k", "stop_sequences", "presence_penalty", "frequency_penalty", "parallel_tool_calls", "user", "voice", "attachments", "stream"}
+					if err := plugin.store.EnsureSemanticIndex(cacheCtx, SemanticIndexName, plugin.config.Prefix, embeddingDim, metadataFields); err != nil {
+						plugin.logger.Warn(PluginLoggerPrefix + " Failed to ensure semantic index: " + err.Error())
+					} else {
+						plugin.isIndexCreated.Store(true) // Mark as created - never call again
+					}
+				}
+
+				if err := plugin.store.AddSemanticCache(cacheCtx, embeddingKey, embedding, metadata, cacheTTL); err != nil {
+					plugin.logger.Warn(PluginLoggerPrefix + " Failed to cache embedding with metadata asynchronously: " + err.Error())
+				}
+			}
+		}
 
 		// Marshal response for caching
 		responseData, err := json.Marshal(res)
@@ -504,12 +479,11 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 			return
 		}
 
-		// Perform the VectorStore Add operation for semantic cache storage
-		err = plugin.store.Add(cacheCtx, cacheKey, string(responseData), cacheTTL)
-		if err != nil {
+		// Store the response
+		if err := plugin.store.Add(cacheCtx, responseKey, string(responseData), cacheTTL); err != nil {
 			plugin.logger.Warn(PluginLoggerPrefix + " Failed to cache response asynchronously: " + err.Error())
 		} else {
-			plugin.logger.Debug(fmt.Sprintf("%s Cached response for request %s", PluginLoggerPrefix, cacheKey))
+			plugin.logger.Debug(fmt.Sprintf("%s Cached response for request %s", PluginLoggerPrefix, requestID))
 		}
 	}()
 
@@ -518,6 +492,7 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 
 // Cleanup performs cleanup operations for the semantic cache plugin.
 // It removes all cached entries with the configured prefix from the VectorStore-backed cache.
+// Updated to handle the new key format: {provider}-{model}-{reqid}-{suffix}
 //
 // The function performs the following operations:
 // 1. Retrieves all cache keys matching the configured prefix pattern
@@ -532,9 +507,9 @@ func (plugin *Plugin) Cleanup() error {
 	// Get all keys matching the prefix using SCAN
 	var keys []string
 	var cursor *string
-	pattern := plugin.config.Prefix + "*"
+
 	for {
-		batch, c, err := plugin.store.GetAll(context.Background(), pattern, cursor, 1000)
+		batch, c, err := plugin.store.GetAll(context.Background(), plugin.config.Prefix+"*", cursor, 1000)
 		if err != nil {
 			return fmt.Errorf("failed to scan keys for cleanup: %w", err)
 		}
@@ -549,57 +524,96 @@ func (plugin *Plugin) Cleanup() error {
 		if err := plugin.store.Delete(context.Background(), keys); err != nil {
 			return fmt.Errorf("failed to delete cache keys: %w", err)
 		}
-		plugin.logger.Debug(fmt.Sprintf("%s Cleaned up %d cache entries", PluginLoggerPrefix, len(keys)))
+		plugin.logger.Info(fmt.Sprintf("%s Cleaned up %d cache entries", PluginLoggerPrefix, len(keys)))
 	}
+
+	// Also delete the semantic index to ensure clean state for next restart
+	if plugin.isIndexCreated.Load() {
+		if err := plugin.store.DropSemanticIndex(context.Background(), SemanticIndexName); err != nil {
+			plugin.logger.Warn(PluginLoggerPrefix + " Failed to drop semantic index during cleanup: " + err.Error())
+		} else {
+			plugin.logger.Info(PluginLoggerPrefix + " Semantic index dropped successfully")
+		}
+	}
+
+	plugin.client.Cleanup()
 
 	return nil
 }
 
-// ClearCacheForKey deletes a specific cache key from the VectorStore-backed semantic cache.
-// It is used to clear a specific cache key when needed.
+// Public Methods for External Use
+
+// ClearCacheForKey deletes cache entries for a specific request ID pattern.
+// Updated to handle the new key format: {provider}-{model}-{reqid}-{suffix}
+// It deletes both hash and response keys for the given pattern.
 //
 // Parameters:
-//   - key: The cache key to delete
+//   - pattern: The pattern to match for deletion (e.g., "*-*-{requestID}-*")
 //
 // Returns:
 //   - error: Any error that occurred during cache key deletion
-func (plugin *Plugin) ClearCacheForKey(key string) error {
+func (plugin *Plugin) ClearCacheForKey(pattern string) error {
+	// Ensure pattern has prefix
+	if !strings.HasPrefix(pattern, plugin.config.Prefix) {
+		pattern = plugin.config.Prefix + pattern
+	}
+
+	// Get all keys matching the pattern
 	var keys []string
-	keys = append(keys, key)
-
-	// For streaming requests, we need to delete all chunks for the key
-	chunkPattern := key + "_chunk_*"
-
-	// Get all chunk keys matching the pattern using SCAN
-	var chunkKeys []string
 	var cursor *string
 	for {
-		batch, c, err := plugin.store.GetAll(context.Background(), chunkPattern, cursor, 1000)
+		batch, c, err := plugin.store.GetAll(context.Background(), pattern, cursor, 1000)
 		if err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to scan cached chunks, continuing with request")
+			plugin.logger.Warn(fmt.Sprintf("%s Failed to scan keys for deletion for pattern '%s': %v", PluginLoggerPrefix, pattern, err))
 			return err
 		}
-		chunkKeys = append(chunkKeys, batch...)
+		keys = append(keys, batch...)
 		cursor = c
 		if cursor == nil {
 			break
 		}
 	}
 
-	keys = append(keys, chunkKeys...)
-
-	if err := plugin.store.Delete(context.Background(), keys); err != nil {
-		plugin.logger.Warn(PluginLoggerPrefix + " Failed to get cached chunks, continuing with request")
-		return err
+	if len(keys) > 0 {
+		if err := plugin.store.Delete(context.Background(), keys); err != nil {
+			plugin.logger.Warn(fmt.Sprintf("%s Failed to delete %d cache keys for pattern '%s': %v", PluginLoggerPrefix, len(keys), pattern, err))
+			return err
+		}
+		plugin.logger.Debug(fmt.Sprintf("%s Deleted %d cache entries for pattern %s", PluginLoggerPrefix, len(keys), pattern))
 	}
 
 	return nil
 }
 
-// UTILS FUNCTIONS
+// ClearCacheForRequestID deletes cache entries for a specific request ID.
+// It deletes both hash and response keys (including streaming chunks) for the given request ID.
+//
+// Parameters:
+//   - req: The Bifrost request to generate the key pattern for
+//   - requestID: The request ID to delete cache entries for
+//
+// Returns:
+//   - error: Any error that occurred during cache key deletion
+func (plugin *Plugin) ClearCacheForRequestID(req *schemas.BifrostRequest, requestID string) error {
+	// Create patterns for hash and response keys
+	hashPattern := plugin.generateCacheKey(req.Provider, req.Model, requestID, "hash")
+	embeddingPattern := plugin.generateCacheKey(req.Provider, req.Model, requestID, "emb")
+	responsePattern := plugin.generateCacheKey(req.Provider, req.Model, requestID, "response") + "*" // Include streaming chunks
 
-func (plugin *Plugin) isStreamingRequest(requestType bifrost.RequestType) bool {
-	return requestType == bifrost.ChatCompletionStreamRequest ||
-		requestType == bifrost.SpeechStreamRequest ||
-		requestType == bifrost.TranscriptionStreamRequest
+	// Delete hash key
+	if err := plugin.ClearCacheForKey(hashPattern); err != nil {
+		plugin.logger.Warn(PluginLoggerPrefix + " Failed to delete hash key: " + err.Error())
+	}
+
+	// Delete embedding key
+	if err := plugin.ClearCacheForKey(embeddingPattern); err != nil {
+		plugin.logger.Warn(PluginLoggerPrefix + " Failed to delete embedding key: " + err.Error())
+	}
+
+	// Delete response keys (including chunks)
+	if err := plugin.ClearCacheForKey(responsePattern); err != nil {
+		plugin.logger.Warn(PluginLoggerPrefix + " Failed to delete response keys: " + err.Error())
+	}
+
+	return nil
 }
