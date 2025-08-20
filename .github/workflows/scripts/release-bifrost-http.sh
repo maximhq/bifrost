@@ -123,6 +123,9 @@ fi
 
 cd ..
 
+echo "🎨 Building UI..."
+make build-ui
+
 # Validate transport build
 echo "🔨 Validating transport build..."
 cd transports
