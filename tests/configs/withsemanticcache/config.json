@@ -18,7 +18,7 @@
       "config": {
         "cache_key": "bifrost-cckey",
         "cache_ttl_key": "bifrost-cc-ttl",        
-        "prefix": "bifrost-cc-",
+        "prefix": "{bifrost}",
         "cache_by_model": true,
         "cache_by_provider": true
       }

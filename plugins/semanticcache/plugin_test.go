@@ -26,6 +26,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 const (
 	TestCacheKey = "x-test-cache-key"
 	TestPrefix   = "test_semantic_cache_plugin_"
+	TestRedisClusterPrefix = "{test_semantic_cache_plugin_cluster}"
 )
 
 // GetKeysForProvider returns a mock API key configuration for testing.
@@ -479,7 +480,7 @@ func TestSemanticCachePluginWithRedisCluster(t *testing.T) {
 	// Configure plugin with Redis Cluster
 	config := Config{
 		CacheKey: TestCacheKey,
-		Prefix:   TestPrefix + "cluster_", // Use cluster-specific prefix
+		Prefix:   TestRedisClusterPrefix, // Use cluster-specific prefix
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
@@ -507,7 +508,7 @@ func TestSemanticCachePluginWithRedisCluster(t *testing.T) {
 	pluginImpl := plugin.(*Plugin)
 
 	// Clear test keys using the store interface
-	clearTestKeysWithStore(t, pluginImpl.store, TestPrefix+"cluster_")
+	clearTestKeysWithStore(t, pluginImpl.store, TestRedisClusterPrefix)
 	ctx := context.Background()
 
 	account := BaseAccount{}

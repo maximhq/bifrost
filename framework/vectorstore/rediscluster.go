@@ -194,7 +194,7 @@ func (s *RedisClusterStore) Close(ctx context.Context) error {
 func newRedisClusterStore(ctx context.Context, config RedisClusterConfig, logger schemas.Logger) (*RedisClusterStore, error) {
 	if len(config.Addrs) == 0 {
 		return nil, fmt.Errorf("at least one Redis cluster address is required")
-	}
+	}	
 
 	// First, test individual node connectivity to provide better error messages
 	for _, addr := range config.Addrs {
