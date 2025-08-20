@@ -35,28 +35,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
-
+      
       - name: Detect what needs release
         id: detect
         run: ./.github/workflows/scripts/detect-all-changes.sh "auto"
 
-  # Core Release
-  core-approval:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
-    environment: core-release-approval
-    steps:
-      - name: Request core release approval
-        run: |
-          echo "🔧 Core version change detected: v${{ needs.detect-changes.outputs.core-version }}"
-          echo "📦 New core release will be created"
-          echo "⚠️ This will start the full release pipeline sequentially"
-          echo "🔄 Next: Framework → Plugins → Bifrost HTTP (if needed)"
-          echo "✅ Manual approval required to proceed with core release"
-
   core-release:
-    needs: [detect-changes, core-approval]
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.core-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -88,22 +73,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
-  # Framework Release
-  framework-approval:
-    needs: [detect-changes, core-release]
-    if: always() && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.core-release.result == 'success' || needs.core-release.result == 'skipped')
-    runs-on: ubuntu-latest
-    environment: framework-release-approval
-    steps:
-      - name: Request framework release approval
-        run: |
-          echo "📦 Framework version change detected: v${{ needs.detect-changes.outputs.framework-version }}"
-          echo "🔧 Will use latest core version for dependencies"
-          echo "🔄 Next: Plugins → Bifrost HTTP (if needed)"
-          echo "✅ Manual approval required to proceed with framework release"
-
   framework-release:
-    needs: [detect-changes, core-release, framework-approval]
+    needs: [detect-changes, core-release]
     if: always() && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.core-release.result == 'success' || needs.core-release.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
@@ -129,28 +100,17 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Set up Docker Compose
+        uses: docker/setup-compose-action@v3
+
       - name: Release framework
         id: release
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
-  # Plugins Release
-  plugins-approval:
-    needs: [detect-changes, core-release, framework-release]
-    if: always() && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')
-    runs-on: ubuntu-latest
-    environment: plugins-release-approval
-    steps:
-      - name: Request plugins release approval
-        run: |
-          echo "🔌 Plugin version changes detected: ${{ needs.detect-changes.outputs.changed-plugins }}"
-          echo "📋 Will use latest core version for dependencies"
-          echo "🔄 Next: Bifrost HTTP (if needed)"
-          echo "✅ Manual approval required to proceed with plugins release"
-
   plugins-release:
-    needs: [detect-changes, core-release, framework-release, plugins-approval]
+    needs: [detect-changes, core-release, framework-release]
     if: always() && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
@@ -180,28 +140,17 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Set up Docker Compose
+        uses: docker/setup-compose-action@v3
+
       - name: Release all changed plugins
         id: release
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
-  # Bifrost HTTP Release
-  bifrost-http-approval:
-    needs: [detect-changes, core-release, framework-release, plugins-release]
-    if: always() && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')
-    runs-on: ubuntu-latest
-    environment: bifrost-http-release-approval
-    steps:
-      - name: Request bifrost-http release approval
-        run: |
-          echo "🚀 Bifrost HTTP version change detected: v${{ needs.detect-changes.outputs.transport-version }}"
-          echo "📋 Will use latest versions of all dependencies"
-          echo "🔄 Final step: Docker build and publish"
-          echo "✅ Manual approval required to proceed with bifrost-http release"
-
   bifrost-http-release:
-    needs: [detect-changes, core-release, framework-release, plugins-release, bifrost-http-approval]
+    needs: [detect-changes, core-release, framework-release, plugins-release]
     if: always() && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
@@ -231,6 +180,9 @@ jobs:
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Docker Compose
+        uses: docker/setup-compose-action@v3
 
       - name: Release bifrost-http
         id: release
