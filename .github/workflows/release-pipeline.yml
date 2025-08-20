@@ -172,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
-          MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOGGER_ID }}
+          MAXIM_LOG_REPO_ID: ${{ secrets.MAXIM_LOGGER_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
