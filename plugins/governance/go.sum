@@ -88,8 +88,8 @@ github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuE
 github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
 github.com/maximhq/bifrost/core v1.1.23 h1:ZgZVQp6E3QkGDb120iyJNL1HAo5MNQFaWrKR98uISDc=
 github.com/maximhq/bifrost/core v1.1.23/go.mod h1:2HP/S4Mo4kQTaRkTYR9R/0fnfzc2b5yzInsPW3YOpXE=
-github.com/maximhq/bifrost/framework v1.0.0 h1:r/wScaCE2P0+9OFr2P3HY1+HUCJlf9m+xHAGaxmxrf8=
-github.com/maximhq/bifrost/framework v1.0.0/go.mod h1:/pyIKbtOY16E4BNoC2x4gdxfQGT4Mo/sZF6v99fWcV4=
+github.com/maximhq/bifrost/framework v1.0.1 h1:2oNS1Pa1BPriRtWAqNQMu39BcRsBi9U4lspjvzHjpnA=
+github.com/maximhq/bifrost/framework v1.0.1/go.mod h1:YfiERPZqh5GkP7QBviBksjKdvG0Jm2A8B8C+Gf5bafY=
 github.com/maximhq/bifrost/plugins/maxim v1.0.6 h1:m1tWjbmxW9Lz4mDhXclQhZdFt/TrRPbZwFcoWY9ZAEk=
 github.com/maximhq/bifrost/plugins/maxim v1.0.6/go.mod h1:+D/E498VB4JNTEzG4fYyFJf9WQaq/9FgYrmzl49mLNc=
 github.com/maximhq/bifrost/plugins/redis v1.0.0 h1:/teFFjXo0u5lID7UwpMcyFUILRXBFduDXdZpa8hdU/8=
@@ -114,6 +114,7 @@ github.com/prometheus/procfs v0.17.0/go.mod h1:oPQLaDAMRbA+u8H5Pbfq+dl3VDAvHxMUO
 github.com/redis/go-redis/v9 v9.12.1 h1:k5iquqv27aBtnTm2tIkROUDp8JBXhXZIVu1InSgvovg=
 github.com/redis/go-redis/v9 v9.12.1/go.mod h1:huWgSWd8mW6+m0VPhJjSSQ+d6Nh1VICQ6Q5lHuCH/Iw=
 github.com/rogpeppe/go-internal v1.13.1 h1:KvO1DLK/DRN07sQ1LQKScxyZJuNnedQ5/wKSR38lUII=
+github.com/rogpeppe/go-internal v1.13.1/go.mod h1:uMEvuHeurkdAXX61udpOXGD/AzZDWNMNyH2VO9fmH0o=
 github.com/rs/xid v1.6.0/go.mod h1:7XoLgs4eV+QndskICGsho+ADou8ySMSjJKDIan90Nz0=
 github.com/rs/zerolog v1.34.0 h1:k43nTLIwcTVQAncfCw4KZ2VY6ukYoZaBPNOE8txlOeY=
 github.com/rs/zerolog v1.34.0/go.mod h1:bJsvje4Z08ROH4Nhs5iH600c3IkWhwp44iRc54W6wYQ=

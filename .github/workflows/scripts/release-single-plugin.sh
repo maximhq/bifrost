@@ -41,6 +41,11 @@ TAG_NAME="plugins/${PLUGIN_NAME}/v${PLUGIN_VERSION}"
 echo "📦 Plugin version: $PLUGIN_VERSION"
 echo "🏷️ Tag name: $TAG_NAME"
 
+# Starting dependencies of plugin tests
+echo "🔧 Starting dependencies of plugin tests..."
+docker-compose -f ../tests/docker-compose.yml up -d
+sleep 20
+
 # Update plugin dependencies
 echo "🔧 Updating plugin dependencies..."
 cd "$PLUGIN_DIR"
@@ -70,6 +75,10 @@ else
 fi
 
 cd ../..
+
+# Shutting down dependencies
+echo "🔧 Shutting down dependencies of plugin tests..."
+docker-compose -f ../tests/docker-compose.yml down
 
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"

@@ -58,8 +58,16 @@ fi
 # Validate framework build
 echo "🔨 Validating framework build..."
 go build ./...
+# Starting dependencies of framework tests
+echo "🔧 Starting dependencies of framework tests..."
+docker-compose -f ../tests/docker-compose.yml up -d
+sleep 20
 go test ./...
+# Shutting down dependencies
+echo "🔧 Shutting down dependencies of framework tests..."
+docker-compose -f ../tests/docker-compose.yml down
 cd ..
+
 echo "✅ Framework build validation successful"
 
 # Create and push tag

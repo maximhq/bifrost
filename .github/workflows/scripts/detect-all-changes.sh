@@ -150,12 +150,14 @@ else
   fi
 fi
 
-# Convert plugin array to JSON
+# Convert plugin array to JSON (compact format)
 if [ ${#PLUGIN_CHANGES[@]} -eq 0 ]; then
   CHANGED_PLUGINS_JSON="[]"
 else
-  CHANGED_PLUGINS_JSON=$(printf '%s\n' "${PLUGIN_CHANGES[@]}" | jq -R . | jq -s .)
+  CHANGED_PLUGINS_JSON=$(printf '%s\n' "${PLUGIN_CHANGES[@]}" | jq -R . | jq -s -c .)
 fi
+
+echo "CHANGED_PLUGINS_JSON: $CHANGED_PLUGINS_JSON"
 
 # Summary
 echo ""
