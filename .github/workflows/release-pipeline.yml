@@ -101,7 +101,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@v3
+        uses: docker/setup-compose-action@v1
 
       - name: Release framework
         id: release
@@ -141,7 +141,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@v3
+        uses: docker/setup-compose-action@v1
 
       - name: Release all changed plugins
         id: release
@@ -182,7 +182,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@v3
+        uses: docker/setup-compose-action@v1
 
       - name: Release bifrost-http
         id: release
