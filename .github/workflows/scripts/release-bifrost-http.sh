@@ -123,33 +123,23 @@ fi
 
 cd ..
 
-# Build UI static files
-echo "🎨 Building UI..."
-cd ui
-npm ci
-npm run build
-cd ../transports
-
 # Validate transport build
 echo "🔨 Validating transport build..."
 cd transports
-go build ./...
 go test ./...
+cd ..
 echo "✅ Transport build validation successful"
 
 # Install cross-compilation toolchains
 echo "📦 Installing cross-compilation toolchains..."
-cd ..
 bash ./.github/workflows/scripts/install-cross-compilers.sh
 
 # Build Go executables
 echo "🔨 Building executables..."
-cd transports
 bash ./.github/workflows/scripts/build-executables.sh
 
 # Configure and upload to R2
 echo "📤 Uploading binaries..."
-cd ..
 bash ./.github/workflows/scripts/configure-r2.sh
 bash ./.github/workflows/scripts/upload-to-r2.sh "$TAG_NAME"
 

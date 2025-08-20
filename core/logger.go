@@ -75,7 +75,20 @@ func (logger *DefaultLogger) Error(msg string, args ...any) {
 // Fatal logs a fatal-level message to stderr.
 // Fatal messages are always output regardless of the logger's level.
 func (logger *DefaultLogger) Fatal(msg string, args ...any) {
-	logger.stderrLogger.Fatal().Msgf(msg, args...)
+	// Check if any of the args is an error and exit with non-zero code if found
+	var errToPass error
+	for i, arg := range args {
+		if err, ok := arg.(error); ok && err != nil {
+			errToPass = err
+			// remove from args
+			args = append(args[:i], args[i+1:]...)
+		}
+	}
+	if errToPass != nil {
+		logger.stderrLogger.Fatal().Msgf(msg, errToPass)
+	} else {
+		logger.stderrLogger.Fatal().Msgf(msg, args...)
+	}
 }
 
 // SetLevel sets the logging level for the logger.

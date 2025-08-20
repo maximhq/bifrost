@@ -56,7 +56,6 @@ import (
 	"embed"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"mime"
 	"net"
 	"os"
@@ -300,7 +299,7 @@ func main() {
 	configDir := getDefaultConfigDir(appDir)
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
-		logger.Fatal(fmt.Sprintf("failed to create app directory %s", configDir), err)
+		logger.Fatal("failed to create app directory %s: %v", configDir,err)
 	}
 
 	// Register Prometheus collectors
@@ -310,7 +309,7 @@ func main() {
 	// Initialize high-performance configuration store with dedicated database
 	config, err := lib.LoadConfig(ctx, configDir)
 	if err != nil {
-		logger.Fatal("failed to load config %w", err)
+		logger.Fatal("failed to load config %v", err)
 	}
 
 	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
@@ -333,7 +332,7 @@ func main() {
 		// Use dedicated logs database with high-scale optimizations
 		loggingPlugin, err = logging.Init(logger, config.LogsStore)
 		if err != nil {
-			logger.Fatal("failed to initialize logging plugin", err)
+			logger.Fatal("failed to initialize logging plugin: %v", err)
 		}
 
 		loadedPlugins = append(loadedPlugins, loggingPlugin)
@@ -430,7 +429,7 @@ func main() {
 		Logger:             logger,
 	})
 	if err != nil {
-		logger.Fatal("failed to initialize bifrost", err)
+		logger.Fatal("failed to initialize bifrost: %v", err)
 	}
 
 	config.SetBifrostClient(client)
@@ -484,7 +483,7 @@ func main() {
 
 	logger.Info("successfully started bifrost. Serving UI on http://%s:%s/ui", host, port)
 	if err := fasthttp.ListenAndServe(net.JoinHostPort(host, port), corsHandler); err != nil {
-		logger.Fatal("Error starting server", err)
+		logger.Fatal("Error starting server: %v", err)
 	}
 
 	// Cleanup resources on shutdown
