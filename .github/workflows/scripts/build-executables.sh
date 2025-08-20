@@ -55,8 +55,8 @@ for platform in "${platforms[@]}"; do
     fi
 
     env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
-      go build -trimpath -tags "netgo,osusergo,static_build" \
-      -ldflags "-s -w -buildid= -linkmode external -extldflags -static" \
+      go build -trimpath -tags "netgo,osusergo" \
+      -ldflags "-s -w -buildid=" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   elif [[ "$GOOS" = "windows" ]]; then
