@@ -45,15 +45,6 @@ git add go.mod go.sum
 # Check if there are any changes to commit
 git add go.mod go.sum
 
-# Check if there are any changes to commit
-if ! git diff --cached --quiet; then
-  git commit -m "framework: bump core to $CORE_VERSION"
-  # Push the bump so go.mod/go.sum changes are recorded on the branch
-  CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-  git push origin "$CURRENT_BRANCH"
-else
-  echo "No dependency changes detected; skipping commit."
-fi
 
 # Validate framework build
 echo "🔨 Validating framework build..."
@@ -85,6 +76,18 @@ fi
 cd ..
 
 echo "✅ Framework build validation successful"
+
+# Check if there are any changes to commit
+if ! git diff --cached --quiet; then
+  git commit -m "framework: bump core to $CORE_VERSION --skip-pipeline"
+  # Push the bump so go.mod/go.sum changes are recorded on the branch
+  CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  git push origin "$CURRENT_BRANCH"
+else
+  echo "No dependency changes detected; skipping commit."
+fi
+
+echo "🔧 Pushed framework bump to $CURRENT_BRANCH"
 
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"

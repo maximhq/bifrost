@@ -115,7 +115,7 @@ if ! git diff --quiet go.mod go.sum; then
   if [ ${#PLUGINS_USED[@]} -gt 0 ]; then
     commit_msg="$commit_msg, plugins: ${PLUGINS_USED[*]}"
   fi
-  git commit -m "$commit_msg"
+  git commit -m "$commit_msg --skip-pipeline"
   git push -u origin HEAD
   echo "✅ Transport dependencies updated"
 else

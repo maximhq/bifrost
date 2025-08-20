@@ -52,7 +52,7 @@ if [ -f "go.mod" ]; then
   go mod tidy
   git add go.mod go.sum || true
   if ! git diff --cached --quiet; then
-    git commit -m "plugins/${PLUGIN_NAME}: bump core to $CORE_VERSION"
+    git commit -m "plugins/${PLUGIN_NAME}: bump core to $CORE_VERSION --skip-pipeline"
     git push -u origin HEAD
   fi
 
