@@ -14,8 +14,8 @@ jobs:
   # Detect what needs to be released
   detect-changes:
     runs-on: ubuntu-latest
-    # Skip if pusher is GitHub Actions Bot to avoid infinite loops or if commit message contains --skip-pipeline
-    if: !contains(github.event.head_commit.message, '--skip-pipeline')
+    # Skip if commit message contains --skip-pipeline
+    if: "!contains(github.event.head_commit.message, '--skip-pipeline')"
     outputs:
       core-needs-release: ${{ steps.detect.outputs.core-needs-release }}
       framework-needs-release: ${{ steps.detect.outputs.framework-needs-release }}
@@ -77,7 +77,7 @@ jobs:
 
   framework-release:
     needs: [detect-changes, core-release]
-    if: always() &&  !contains(github.event.head_commit.message, '--skip-pipeline') && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.core-release.result == 'success' || needs.core-release.result == 'skipped')
+    if: "always() && !contains(github.event.head_commit.message, '--skip-pipeline') && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -125,7 +125,7 @@ jobs:
 
   plugins-release:
     needs: [detect-changes, core-release, framework-release]
-    if: always()  && !contains(github.event.head_commit.message, '--skip-pipeline') && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')
+    if: "always() && !contains(github.event.head_commit.message, '--skip-pipeline') && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -180,7 +180,7 @@ jobs:
 
   bifrost-http-release:
     needs: [detect-changes, core-release, framework-release, plugins-release]
-    if: always() && !contains(github.event.head_commit.message, '--skip-pipeline') && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')
+    if: "always() && !contains(github.event.head_commit.message, '--skip-pipeline') && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -293,7 +293,7 @@ jobs:
   # Notification
   notify:
     needs: [detect-changes, core-release, framework-release, plugins-release, bifrost-http-release, docker-build]
-    if: always() && !contains(github.event.head_commit.message, '--skip-pipeline')
+    if: "always() && !contains(github.event.head_commit.message, '--skip-pipeline')"
     runs-on: ubuntu-latest
     steps:
       - name: Install jq
