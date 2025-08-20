@@ -33,14 +33,16 @@ func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Ti
 }
 
 // updateLogEntry updates an existing log entry using GORM
-func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, data *UpdateLogData, ctx context.Context) error {
+func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, timestamp time.Time, data *UpdateLogData) error {
 	updates := make(map[string]interface{})
-	// Try to get original timestamp from context first for latency calculation
-	latency, err := p.calculateLatency(requestID, timestamp, ctx)
-	if err != nil {
-		return err
+	if !timestamp.IsZero() {
+		// Try to get original timestamp from context first for latency calculation
+		latency, err := p.calculateLatency(requestID, timestamp, ctx)
+		if err != nil {
+			return err
+		}
+		updates["latency"] = latency
 	}
-	updates["latency"] = latency
 	updates["status"] = data.Status
 	if data.Model != "" {
 		updates["model"] = data.Model
@@ -115,13 +117,12 @@ func (p *LoggerPlugin) updateLogEntry(requestID string, timestamp time.Time, dat
 		} else {
 			updates["error_details"] = tempEntry.ErrorDetails
 		}
-	}
-
+	}	
 	return p.store.Update(requestID, updates)
 }
 
 // processStreamUpdate handles streaming updates using GORM
-func (p *LoggerPlugin) processStreamUpdate(requestID string, timestamp time.Time, data *StreamUpdateData, isFinalChunk bool, ctx context.Context) error {
+func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string, timestamp time.Time, data *StreamUpdateData, isFinalChunk bool) error {
 	updates := make(map[string]interface{})
 
 	// Handle error case first

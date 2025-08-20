@@ -56,6 +56,7 @@ import (
 	"embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"mime"
 	"net"
 	"os"
@@ -106,6 +107,23 @@ var (
 //   - log-style: Logger output type (json or pretty). Default is JSON.
 
 func init() {
+	// Welcome to bifrost!
+	fmt.Println(`
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   ██████╗ ██╗███████╗██████╗  ██████╗ ███████╗████████╗   ║
+║   ██╔══██╗██║██╔════╝██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝   ║
+║   ██████╔╝██║█████╗  ██████╔╝██║   ██║███████╗   ██║      ║
+║   ██╔══██╗██║██╔══╝  ██╔══██╗██║   ██║╚════██║   ██║      ║
+║   ██████╔╝██║██║     ██║  ██║╚██████╔╝███████║   ██║      ║
+║   ╚═════╝ ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝      ║
+║                                                           ║
+║═══════════════════════════════════════════════════════════║
+║                The Fastest LLM Gateway                    ║
+║═══════════════════════════════════════════════════════════║
+║            https://github.com/maximhq/bifrost             ║
+╚═══════════════════════════════════════════════════════════╝`)
+
 	// Set default host from environment variable or use localhost
 	defaultHost := os.Getenv("BIFROST_HOST")
 	if defaultHost == "" {
@@ -299,7 +317,7 @@ func main() {
 	configDir := getDefaultConfigDir(appDir)
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
-		logger.Fatal("failed to create app directory %s: %v", configDir,err)
+		logger.Fatal("failed to create app directory %s: %v", configDir, err)
 	}
 
 	// Register Prometheus collectors
@@ -481,7 +499,7 @@ func main() {
 	// Apply CORS middleware to all routes
 	corsHandler := corsMiddleware(config, r.Handler)
 
-	logger.Info("successfully started bifrost. Serving UI on http://%s:%s/ui", host, port)
+	logger.Info("successfully started bifrost. Serving UI on http://%s:%s", host, port)
 	if err := fasthttp.ListenAndServe(net.JoinHostPort(host, port), corsHandler); err != nil {
 		logger.Fatal("Error starting server: %v", err)
 	}

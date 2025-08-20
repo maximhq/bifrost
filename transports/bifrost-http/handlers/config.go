@@ -54,7 +54,9 @@ func (h *ConfigHandler) GetConfig(ctx *fasthttp.RequestCtx) {
 				fmt.Sprintf("failed to fetch config from db: %v", err), h.logger)
 			return
 		}
-		mapConfig["client_config"] = *cc
+		if cc != nil {
+			mapConfig["client_config"] = *cc
+		}
 	} else {
 		mapConfig["client_config"] = h.store.ClientConfig
 	}

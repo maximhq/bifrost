@@ -8,15 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-	getErrorMessage,
-	useGetCoreConfigQuery,
-	useGetDroppedRequestsQuery,
-	useLazyGetCoreConfigQuery,
-	useUpdateCoreConfigMutation,
-} from "@/lib/store";
+import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig } from "@/lib/types/config";
-import { isArrayEqual, parseArrayFromText } from "@/lib/utils/array";
+import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -35,15 +29,12 @@ const defaultConfig = {
 };
 
 export default function ConfigPage() {
-	const [config, setConfig] = useState<CoreConfig>(defaultConfig);
-	const [configInDB, setConfigInDB] = useState<CoreConfig>(defaultConfig);
 	const [droppedRequests, setDroppedRequests] = useState<number>(0);
-	const [isLoading, setIsLoading] = useState(true);
-
 	// RTK Query hooks
 	const { data: droppedRequestsData } = useGetDroppedRequestsQuery();
-	const { data: bifrostConfig } = useGetCoreConfigQuery({});
-	const [triggerGetConfigInDB] = useLazyGetCoreConfigQuery();
+	const { data: bifrostConfig, isLoading } = useGetCoreConfigQuery({ fromDB: true });
+	const config = bifrostConfig?.client_config;
+	const [needsRestart, setNeedsRestart] = useState<boolean>(false);
 	const [updateCoreConfig] = useUpdateCoreConfigMutation();
 
 	const [localValues, setLocalValues] = useState<{
@@ -63,14 +54,6 @@ export default function ConfigPage() {
 		}
 	}, [droppedRequestsData]);
 
-	// Handle Bifrost config data from RTK Query
-	useEffect(() => {
-		if (bifrostConfig) {
-			setConfig(bifrostConfig.client_config);
-			setIsLoading(false);
-		}
-	}, [bifrostConfig]);
-
 	// Use refs to store timeout IDs
 	const poolSizeTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const prometheusLabelsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
@@ -78,35 +61,19 @@ export default function ConfigPage() {
 
 	// Update local values when config is loaded
 	useEffect(() => {
-		if (bifrostConfig) {
+		if (bifrostConfig && config) {
 			setLocalValues({
-				initial_pool_size: bifrostConfig.client_config.initial_pool_size?.toString() || "300",
-				prometheus_labels: bifrostConfig.client_config.prometheus_labels?.join(", ") || "",
-				allowed_origins: bifrostConfig.client_config.allowed_origins?.join(", ") || "",
+				initial_pool_size: config?.initial_pool_size?.toString() || "300",
+				prometheus_labels: config?.prometheus_labels?.join(", ") || "",
+				allowed_origins: config?.allowed_origins?.join(", ") || "",
 			});
 		}
-	}, [bifrostConfig]);
-
-	// Fetch config from DB on mount
-	useEffect(() => {
-		const fetchConfigInDB = async () => {
-			const result = await triggerGetConfigInDB({ fromDB: true });
-			if (result.error) {
-				toast.error(getErrorMessage(result.error));
-			} else if (result.data) {
-				setConfigInDB(result.data.client_config);
-			}
-		};
-		fetchConfigInDB();
-	}, [triggerGetConfigInDB]);
+	}, [config]);
 
 	const updateConfig = useCallback(
 		async (field: keyof CoreConfig, value: boolean | number | string[]) => {
-			const newConfig = { ...config, [field]: value };
-			setConfig(newConfig);
-
 			try {
-				await updateCoreConfig(newConfig).unwrap();
+				await updateCoreConfig({ ...(config ?? defaultConfig), [field]: value }).unwrap();
 				toast.success("Core setting updated successfully.");
 			} catch (error) {
 				toast.error(getErrorMessage(error));
@@ -135,6 +102,7 @@ export default function ConfigPage() {
 					updateConfig("initial_pool_size", numValue);
 				}
 			}, 1000);
+			setNeedsRestart(true);
 		},
 		[updateConfig],
 	);
@@ -152,6 +120,7 @@ export default function ConfigPage() {
 			prometheusLabelsTimeoutRef.current = setTimeout(() => {
 				updateConfig("prometheus_labels", parseArrayFromText(value));
 			}, 1000);
+			setNeedsRestart(true);
 		},
 		[updateConfig],
 	);
@@ -176,6 +145,7 @@ export default function ConfigPage() {
 					toast.error(`Invalid origins: ${validation.invalidOrigins.join(", ")}. Origins must be valid URLs like https://example.com`);
 				}
 			}, 1000);
+			setNeedsRestart(true);
 		},
 		[updateConfig],
 	);
@@ -214,7 +184,7 @@ export default function ConfigPage() {
 							</label>
 							<p className="text-muted-foreground text-sm">
 								If enabled, Bifrost will drop requests that exceed pool capacity.{" "}
-								{config.drop_excess_requests && droppedRequests > 0 ? (
+								{config?.drop_excess_requests && droppedRequests > 0 ? (
 									<span>
 										Have dropped <b>{droppedRequests} requests</b> since last restart.
 									</span>
@@ -226,12 +196,12 @@ export default function ConfigPage() {
 						<Switch
 							id="drop-excess-requests"
 							size="md"
-							checked={config.drop_excess_requests}
+							checked={config?.drop_excess_requests}
 							onCheckedChange={(checked) => handleConfigChange("drop_excess_requests", checked)}
 						/>
 					</div>
 
-					{configInDB.enable_governance && (
+					{config?.enable_governance && (
 						<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
 							<div className="space-y-0.5">
 								<label htmlFor="enforce-governance" className="text-sm font-medium">
@@ -264,7 +234,7 @@ export default function ConfigPage() {
 						<Switch
 							id="allow-direct-keys"
 							size="md"
-							checked={config.allow_direct_keys}
+							checked={config?.allow_direct_keys}
 							onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
 						/>
 					</div>
@@ -294,7 +264,7 @@ export default function ConfigPage() {
 								min="1"
 							/>
 						</div>
-						{configInDB.initial_pool_size !== config.initial_pool_size && <RestartWarning />}
+						{needsRestart && <RestartWarning />}
 					</div>
 
 					<div>
@@ -310,11 +280,11 @@ export default function ConfigPage() {
 							<Switch
 								id="enable-logging"
 								size="md"
-								checked={config.enable_logging}
+								checked={config?.enable_logging}
 								onCheckedChange={(checked) => handleConfigChange("enable_logging", checked)}
 							/>
 						</div>
-						{configInDB.enable_logging !== config.enable_logging && <RestartWarning />}
+						{needsRestart && <RestartWarning />}
 					</div>
 
 					<div>
@@ -330,11 +300,11 @@ export default function ConfigPage() {
 							<Switch
 								id="enable-governance"
 								size="md"
-								checked={config.enable_governance}
+								checked={config?.enable_governance}
 								onCheckedChange={(checked) => handleConfigChange("enable_governance", checked)}
 							/>
 						</div>
-						{configInDB.enable_governance !== config.enable_governance && <RestartWarning />}
+						{needsRestart && <RestartWarning />}
 					</div>
 
 					<div>
@@ -351,12 +321,12 @@ export default function ConfigPage() {
 								<Switch
 									id="enable-caching"
 									size="md"
-									checked={config.enable_caching}
+									checked={config?.enable_caching}
 									onCheckedChange={(checked) => handleConfigChange("enable_caching", checked)}
 								/>
 							</div>
 
-							{configInDB.enable_caching && config.enable_caching && (
+							{config?.enable_caching && (
 								<div className="mt-4 space-y-4">
 									<Separator />
 									<CacheConfigForm />
@@ -364,7 +334,7 @@ export default function ConfigPage() {
 							)}
 						</div>
 
-						{configInDB.enable_caching !== config.enable_caching && <RestartWarning />}
+						{needsRestart && <RestartWarning />}
 					</div>
 
 					<div>
@@ -383,7 +353,7 @@ export default function ConfigPage() {
 								onChange={(e) => handlePrometheusLabelsChange(e.target.value)}
 							/>
 						</div>
-						{!isArrayEqual(configInDB.prometheus_labels, parseArrayFromText(localValues.prometheus_labels)) && <RestartWarning />}
+						{needsRestart && <RestartWarning />}
 					</div>
 
 					<div>
@@ -405,7 +375,7 @@ export default function ConfigPage() {
 								onChange={(e) => handleAllowedOriginsChange(e.target.value)}
 							/>
 						</div>
-						{!isArrayEqual(configInDB.allowed_origins, parseArrayFromText(localValues.allowed_origins)) && <RestartWarning />}
+						{needsRestart && <RestartWarning />}
 					</div>
 				</div>
 			</div>

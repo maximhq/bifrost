@@ -148,7 +148,7 @@ func (t *UsageTracker) PerformStartupResets() error {
 	now := time.Now()
 
 	var resetRateLimits []*configstore.TableRateLimit
-	var errors []string
+	var errs []string
 	var vksWithRateLimits int
 	var vksWithoutRateLimits int
 
@@ -156,7 +156,7 @@ func (t *UsageTracker) PerformStartupResets() error {
 	// Check ALL virtual keys (both active and inactive) for expired rate limits
 	allVKs, err := t.configStore.GetVirtualKeys()
 	if err != nil {
-		errors = append(errors, fmt.Sprintf("failed to load virtual keys for reset: %s", err.Error()))
+		errs = append(errs, fmt.Sprintf("failed to load virtual keys for reset: %s", err.Error()))
 	} else {
 		t.logger.Debug(fmt.Sprintf("startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
 	}
@@ -183,7 +183,7 @@ func (t *UsageTracker) PerformStartupResets() error {
 					rateLimitUpdated = true
 				}
 			} else {
-				errors = append(errors, fmt.Sprintf("invalid token reset duration for VK %s: %s", vk.ID, *rateLimit.TokenResetDuration))
+				errs = append(errs, fmt.Sprintf("invalid token reset duration for VK %s: %s", vk.ID, *rateLimit.TokenResetDuration))
 			}
 		}
 
@@ -197,7 +197,7 @@ func (t *UsageTracker) PerformStartupResets() error {
 					rateLimitUpdated = true
 				}
 			} else {
-				errors = append(errors, fmt.Sprintf("invalid request reset duration for VK %s: %s", vk.ID, *rateLimit.RequestResetDuration))
+				errs = append(errs, fmt.Sprintf("invalid request reset duration for VK %s: %s", vk.ID, *rateLimit.RequestResetDuration))
 			}
 		}
 
@@ -205,25 +205,24 @@ func (t *UsageTracker) PerformStartupResets() error {
 			resetRateLimits = append(resetRateLimits, rateLimit)
 		}
 	}
-
-	// ==== RESET EXPIRED BUDGETS ====
+	
 	// DB reset is also handled by this function
 	if err := t.store.ResetExpiredBudgets(); err != nil {
-		errors = append(errors, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))
+		errs = append(errs, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))
 	}
 
 	// ==== PERSIST RESETS TO DATABASE ====
 	if t.configStore != nil {
 		if len(resetRateLimits) > 0 {
-			if err := t.configStore.UpdateRateLimits(resetRateLimits, nil); err != nil {
-				errors = append(errors, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
+			if err := t.configStore.UpdateRateLimits(resetRateLimits); err != nil {
+				errs = append(errs, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
 			}
 		}
 	}
 	t.logger.Info("startup reset summary: VKs with RL=%d, without RL=%d, RL resets=%d", vksWithRateLimits, vksWithoutRateLimits, len(resetRateLimits))
-	if len(errors) > 0 {
-		t.logger.Error("startup reset encountered %d errors: %v", len(errors), errors)
-		return fmt.Errorf("startup reset completed with %d errors", len(errors))
+	if len(errs) > 0 {
+		t.logger.Error("startup reset encountered %d errors: %v", len(errs), errs)
+		return fmt.Errorf("startup reset completed with %d errors", len(errs))
 	}
 
 	return nil

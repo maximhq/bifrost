@@ -29,8 +29,8 @@ type LogStore interface {
 func NewLogStore(config *Config, logger schemas.Logger) (LogStore, error) {
 	switch config.Type {
 	case LogStoreTypeSQLite:
-		if sqliteConfig, ok := config.Config.(SQLiteConfig); ok {
-			return newSqliteLogStore(&sqliteConfig, logger)
+		if sqliteConfig, ok := config.Config.(*SQLiteConfig); ok {
+			return newSqliteLogStore(sqliteConfig, logger)
 		}
 		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
 	default:

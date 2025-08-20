@@ -325,11 +325,7 @@ func (s *SQLiteConfigStore) GetLogsStoreConfig() (*logstore.Config, error) {
 	if err := json.Unmarshal([]byte(*dbConfig.Config), &logStoreConfig); err != nil {
 		return nil, err
 	}
-	return &logstore.Config{
-		Enabled: dbConfig.Enabled,
-		Type:    logstore.LogStoreType(dbConfig.Type),
-		Config:  &logStoreConfig,
-	}, nil
+	return &logStoreConfig, nil
 }
 
 // UpdateLogsStoreConfig updates the logs store configuration in the database.
@@ -757,6 +753,7 @@ func (s *SQLiteConfigStore) UpdateBudgets(budgets []*TableBudget, tx ...*gorm.DB
 	} else {
 		txDB = s.db
 	}
+	s.logger.Debug("updating budgets: %+v", budgets)
 	for _, b := range budgets {
 		if err := txDB.Save(b).Error; err != nil {
 			return err
@@ -836,7 +833,7 @@ func newSqliteConfigStore(config *SQLiteConfig, logger schemas.Logger) (ConfigSt
 		}
 		_ = f.Close()
 	}
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=1000&_foreign_keys=ON", config.Path)
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000", config.Path)
 	logger.Debug("opening DB with dsn: %s", dsn)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
@@ -847,12 +844,11 @@ func newSqliteConfigStore(config *SQLiteConfig, logger schemas.Logger) (ConfigSt
 	}
 	logger.Debug("db opened for configstore")
 	s := &SQLiteConfigStore{db: db, logger: logger}
-
+	logger.Debug("running migration to remove duplicate keys")
 	// Run migration to remove duplicate keys before AutoMigrate
 	if err := s.removeDuplicateKeysAndNullKeys(); err != nil {
 		return nil, fmt.Errorf("failed to remove duplicate keys: %w", err)
-	}
-	logger.Debug("running migration to remove duplicate keys")
+	}	
 	// Auto migrate to all new tables
 	if err := db.AutoMigrate(
 		&TableConfigHash{},

@@ -338,14 +338,14 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 	// Check if provider currently exists
 	oldQueueValue, exists := bifrost.requestQueues.Load(providerKey)
 	if !exists {
-		bifrost.logger.Debug(fmt.Sprintf("Provider %s not currently active, initializing with new configuration", providerKey))
+		bifrost.logger.Debug("provider %s not currently active, initializing with new configuration", providerKey)
 		// If provider doesn't exist, just prepare it with new configuration
 		return bifrost.prepareProvider(providerKey, providerConfig)
 	}
 
 	oldQueue := oldQueueValue.(chan ChannelMessage)
 
-	bifrost.logger.Debug(fmt.Sprintf("Gracefully stopping existing workers for provider %s", providerKey))
+	bifrost.logger.Debug("gracefully stopping existing workers for provider %s", providerKey)
 
 	// Step 1: Create new queue with updated buffer size
 	newQueue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize)
@@ -397,7 +397,7 @@ transferComplete:
 	// Wait for all transfer goroutines to complete
 	transferWaitGroup.Wait()
 	if transferredCount > 0 {
-		bifrost.logger.Info(fmt.Sprintf("Transferred %d buffered requests to new queue for provider %s", transferredCount, providerKey))
+		bifrost.logger.Info("transferred %d buffered requests to new queue for provider %s", transferredCount, providerKey)
 	}
 
 	// Step 3: Close the old queue to signal workers to stop
@@ -410,7 +410,7 @@ transferComplete:
 	waitGroup, exists := bifrost.waitGroups.Load(providerKey)
 	if exists {
 		waitGroup.(*sync.WaitGroup).Wait()
-		bifrost.logger.Debug(fmt.Sprintf("All workers for provider %s have stopped", providerKey))
+		bifrost.logger.Debug("all workers for provider %s have stopped", providerKey)
 	}
 
 	// Step 6: Create new wait group for the updated workers
@@ -423,10 +423,10 @@ transferComplete:
 	}
 
 	// Step 8: Start new workers with updated concurrency
-	bifrost.logger.Debug(fmt.Sprintf("Starting %d new workers for provider %s with buffer size %d",
+	bifrost.logger.Debug("starting %d new workers for provider %s with buffer size %d",
 		providerConfig.ConcurrencyAndBufferSize.Concurrency,
 		providerKey,
-		providerConfig.ConcurrencyAndBufferSize.BufferSize))
+		providerConfig.ConcurrencyAndBufferSize.BufferSize)
 
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
@@ -435,7 +435,7 @@ transferComplete:
 		go bifrost.requestWorker(provider, newQueue)
 	}
 
-	bifrost.logger.Info(fmt.Sprintf("Successfully updated concurrency configuration for provider %s", providerKey))
+	bifrost.logger.Info("successfully updated concurrency configuration for provider %s", providerKey)
 	return nil
 }
 
@@ -448,7 +448,7 @@ func (bifrost *Bifrost) GetDropExcessRequests() bool {
 // This allows for hot-reloading of this configuration value.
 func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 	bifrost.dropExcessRequests.Store(value)
-	bifrost.logger.Info(fmt.Sprintf("DropExcessRequests updated to: %v", value))
+	bifrost.logger.Info("drop_excess_requests updated to: %v", value)
 }
 
 // getProviderMutex gets or creates a mutex for the given provider
@@ -1148,7 +1148,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		if providerRequiresKey(provider.GetProviderKey()) {
 			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, provider.GetProviderKey(), req.Model)
 			if err != nil {
-				bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))
+				bifrost.logger.Warn("error selecting key for model %s: %v", req.Model, err)
 				req.Err <- schemas.BifrostError{
 					IsBifrostError: false,
 					Error: schemas.ErrorField{
@@ -1162,7 +1162,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 
 		config, err := bifrost.account.GetConfigForProvider(provider.GetProviderKey())
 		if err != nil {
-			bifrost.logger.Warn(fmt.Sprintf("Error getting config for provider %s: %v", provider.GetProviderKey(), err))
+			bifrost.logger.Warn("error getting config for provider %s: %v", provider.GetProviderKey(), err)
 			req.Err <- schemas.BifrostError{
 				IsBifrostError: false,
 				Error: schemas.ErrorField{
@@ -1195,18 +1195,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 			if attempts > 0 {
 				// Log retry attempt
-				bifrost.logger.Info(fmt.Sprintf(
-					"Retrying request (attempt %d/%d) for model %s: %s",
-					attempts, config.NetworkConfig.MaxRetries, req.Model,
-					bifrostError.Error.Message,
-				))
+				bifrost.logger.Info("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, req.Model, bifrostError.Error.Message)
 
 				// Calculate and apply backoff
 				backoff := calculateBackoff(attempts-1, config)
 				time.Sleep(backoff)
 			}
 
-			bifrost.logger.Debug(fmt.Sprintf("Attempting request for provider %s", provider.GetProviderKey()))
+			bifrost.logger.Debug("attempting request for provider %s", provider.GetProviderKey())
 
 			// Attempt the request
 			if isStreamRequestType(req.Type) {
@@ -1221,7 +1217,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				}
 			}
 
-			bifrost.logger.Debug(fmt.Sprintf("Request for provider %s completed", provider.GetProviderKey()))
+			bifrost.logger.Debug("request for provider %s completed", provider.GetProviderKey())
 
 			// Check if successful or if we should retry
 			if bifrostError == nil ||
@@ -1235,9 +1231,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		if bifrostError != nil {
 			// Add retry information to error
 			if attempts > 0 {
-				bifrost.logger.Warn(fmt.Sprintf("Request failed after %d %s",
-					attempts,
-					map[bool]string{true: "retries", false: "retry"}[attempts > 1]))
+				bifrost.logger.Warn("request failed after %d %s", attempts, map[bool]string{true: "retries", false: "retry"}[attempts > 1])
 			}
 			// Send error with context awareness to prevent deadlock
 			select {
@@ -1279,7 +1273,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		}
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("Worker for provider %s exiting...", provider.GetProviderKey()))
+	bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
@@ -1334,7 +1328,7 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 		req, shortCircuit, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			p.preHookErrors = append(p.preHookErrors, err)
-			p.logger.Warn(fmt.Sprintf("Error in PreHook for plugin %s: %v", plugin.GetName(), err))
+			p.logger.Warn("error in PreHook for plugin %s: %v", plugin.GetName(), err)
 		}
 		p.executedPreHooks = i + 1
 		if shortCircuit != nil {
@@ -1361,7 +1355,7 @@ func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.Bifros
 		resp, bifrostErr, err = plugin.PostHook(ctx, resp, bifrostErr)
 		if err != nil {
 			p.postHookErrors = append(p.postHookErrors, err)
-			p.logger.Warn(fmt.Sprintf("Error in PostHook for plugin %s: %v", plugin.GetName(), err))
+			p.logger.Warn("error in PostHook for plugin %s: %v", plugin.GetName(), err)
 		}
 		// If a plugin recovers from an error (sets bifrostErr to nil and sets resp), allow that
 		// If a plugin invalidates a response (sets resp to nil and sets bifrostErr), allow that

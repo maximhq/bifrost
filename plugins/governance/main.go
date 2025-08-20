@@ -46,7 +46,7 @@ type GovernancePlugin struct {
 	isVkMandatory *bool
 }
 
-// NewGovernancePlugin creates a new governance plugin with cleanly segregated components
+// Init creates a new governance plugin with cleanly segregated components
 // All governance features are enabled by default with optimized settings
 func Init(ctx context.Context, config *Config, logger schemas.Logger, store configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig) (*GovernancePlugin, error) {
 	if store == nil {

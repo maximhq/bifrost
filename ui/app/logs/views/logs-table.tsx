@@ -74,15 +74,6 @@ export function LogsDataTable({
 		});
 	};
 
-	const handlePageSizeChange = (newSize: string) => {
-		const newLimit = parseInt(newSize);
-		onPaginationChange({
-			...pagination,
-			limit: newLimit,
-			offset: 0,
-		});
-	};
-
 	return (
 		<div className="space-y-2">
 			<LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} />
@@ -153,46 +144,15 @@ export function LogsDataTable({
 			<div className="flex items-center justify-between text-xs">
 				<div className="text-muted-foreground flex items-center gap-2">
 					{startItem.toLocaleString()}-{endItem.toLocaleString()} of {totalItems.toLocaleString()} entries
-					{/* <div className="flex items-center gap-2">
-						<Label className="text-muted-foreground text-xs">Page size </Label>
-						<Select value={pagination.limit.toString()} onValueChange={handlePageSizeChange}>
-							<SelectTrigger className="w-16 text-xs">
-								<SelectValue className="shadow-none" />
-							</SelectTrigger>
-							<SelectContent className="text-xs">
-								<SelectItem value="10">10</SelectItem>
-								<SelectItem value="25">25</SelectItem>
-								<SelectItem value="50">50</SelectItem>
-								<SelectItem value="100">100</SelectItem>
-								<SelectItem value="250">250</SelectItem>
-							</SelectContent>
-						</Select>
-					</div> */}
 				</div>
 
 				<div className="flex items-center gap-2">
-					{/* <Button variant="outline" size="sm" onClick={() => goToPage(1)} disabled={currentPage === 1}>
-						First
-					</Button> */}
 					<Button variant="outline" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1}>
 						<ChevronLeft className="size-3" />
 					</Button>
 
 					<div className="flex items-center gap-1">
 						<span>Page</span>
-						{/* <Input
-							type="number"
-							min="1"
-							max={totalPages}
-							value={currentPage}
-							onChange={(e) => {
-								const page = parseInt(e.target.value);
-								if (page >= 1 && page <= totalPages) {
-									goToPage(page);
-								}
-							}}
-							className="w-16 text-center"
-						/> */}
 						<span>{currentPage}</span>
 						<span>of {totalPages}</span>
 					</div>
@@ -200,9 +160,6 @@ export function LogsDataTable({
 					<Button variant="outline" size="sm" onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages}>
 						<ChevronRight className="size-3" />
 					</Button>
-					{/* <Button variant="outline" size="sm" onClick={() => goToPage(totalPages)} disabled={currentPage === totalPages}>
-						Last
-					</Button> */}
 				</div>
 			</div>
 		</div>

@@ -5,7 +5,6 @@ package lib
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
-	"gorm.io/gorm"
 )
 
 // HandlerStore provides access to runtime configuration values for handlers.
@@ -178,7 +176,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if os.IsNotExist(err) {
 			logger.Info("config file not found at path: %s, initializing with default values", configFilePath)
 			// Initializing with default values
-			config.ClientConfig = DefaultClientConfig
 			config.ConfigStore, err = configstore.NewConfigStore(&configstore.Config{
 				Enabled: true,
 				Type:    configstore.ConfigStoreTypeSQLite,
@@ -189,58 +186,60 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize config store: %w", err)
 			}
+			// Checking if client config already exist
+			clientConfig, err := config.ConfigStore.GetClientConfig()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get client config: %w", err)
+			}
+			if clientConfig == nil {
+				clientConfig = &DefaultClientConfig
+			}
+			err = config.ConfigStore.UpdateClientConfig(clientConfig)			
+			if err != nil {
+				return nil, fmt.Errorf("failed to update client config: %w", err)
+			}
+			config.ClientConfig = *clientConfig
+			// Checking if log store config already exist
+			logStoreConfig, err := config.ConfigStore.GetLogsStoreConfig()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get logs store config: %w", err)
+			}
+			logger.Debug("log store config from DB: %v", logStoreConfig)
+			if logStoreConfig == nil {
+				logStoreConfig = &logstore.Config{
+					Enabled: true,
+					Type:    logstore.LogStoreTypeSQLite,
+					Config: &logstore.SQLiteConfig{
+						Path: logsDBPath,
+					},
+				}
+			}
 			logger.Info("config store initialized; initializing logs store.")
-			config.LogsStore, err = logstore.NewLogStore(&logstore.Config{
-				Enabled: true,
-				Type:    logstore.LogStoreTypeSQLite,
-				Config: logstore.SQLiteConfig{
-					Path: logsDBPath,
-				},
-			}, logger)
+			config.LogsStore, err = logstore.NewLogStore(logStoreConfig, logger)
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize logs store: %v", err)
 			}
-
-			logger.Info("loading configuration from database")
-
-			// Load client configuration
-			var dbConfig *configstore.ClientConfig
-			if dbConfig, err = config.ConfigStore.GetClientConfig(); err != nil {
-				if !errors.Is(err, gorm.ErrRecordNotFound) {
-					return nil, err
-				}
+			err = config.ConfigStore.UpdateLogsStoreConfig(logStoreConfig)
+			if err != nil {
+				return nil, fmt.Errorf("failed to update logs store config: %w", err)
 			}
-
-			if dbConfig == nil {
-				dbConfig = &DefaultClientConfig
+			// No providers in database, auto-detect from environment
+			providers, err := config.ConfigStore.GetProvidersConfig()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get providers config: %w", err)
 			}
-
-			config.ClientConfig = configstore.ClientConfig{
-				DropExcessRequests:      dbConfig.DropExcessRequests,
-				PrometheusLabels:        dbConfig.PrometheusLabels,
-				InitialPoolSize:         dbConfig.InitialPoolSize,
-				EnableLogging:           dbConfig.EnableLogging,
-				EnableGovernance:        dbConfig.EnableGovernance,
-				EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
-				AllowDirectKeys:         dbConfig.AllowDirectKeys,
-				AllowedOrigins:          dbConfig.AllowedOrigins,
-			}
-
-			// Load providers configuration
-			var dbProviders map[schemas.ModelProvider]configstore.ProviderConfig
-			if dbProviders, err = config.ConfigStore.GetProvidersConfig(); err != nil {
-				return nil, err
-			}
-
-			if len(dbProviders) == 0 {
-				// No providers in database, auto-detect from environment
+			if providers == nil {
 				config.autoDetectProviders()
+				providers = config.Providers
+				// Store providers config in database
+				err = config.ConfigStore.UpdateProvidersConfig(providers)
+				if err != nil {
+					return nil, fmt.Errorf("failed to update providers config: %w", err)
+				}				
 			} else {
 				processedProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig)
-
-				for providerKey, dbProvider := range dbProviders {
+				for providerKey, dbProvider := range providers {
 					provider := schemas.ModelProvider(providerKey)
-
 					// Convert database keys to schemas.Key
 					keys := make([]schemas.Key, len(dbProvider.Keys))
 					for i, dbKey := range dbProvider.Keys {
@@ -253,8 +252,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 							VertexKeyConfig:  dbKey.VertexKeyConfig,
 							BedrockKeyConfig: dbKey.BedrockKeyConfig,
 						}
-					}
 
+					}
 					providerConfig := configstore.ProviderConfig{
 						Keys:                     keys,
 						NetworkConfig:            dbProvider.NetworkConfig,
@@ -262,45 +261,29 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						ProxyConfig:              dbProvider.ProxyConfig,
 						SendBackRawResponse:      dbProvider.SendBackRawResponse,
 					}
-
 					processedProviders[provider] = providerConfig
 				}
-
 				config.Providers = processedProviders
 			}
-
-			// Load MCP configuration
-			var dbMCPConfig *schemas.MCPConfig
-			if dbMCPConfig, err = config.ConfigStore.GetMCPConfig(); err != nil {
-				return nil, err
+			// Checking if MCP config already exists
+			mcpConfig, err := config.ConfigStore.GetMCPConfig()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get MCP config: %w", err)
 			}
-
-			if dbMCPConfig == nil {
-				config.MCPConfig = nil
-			} else {
-				clientConfigs := make([]schemas.MCPClientConfig, len(dbMCPConfig.ClientConfigs))
-				for i, dbClient := range dbMCPConfig.ClientConfigs {
-					clientConfigs[i] = schemas.MCPClientConfig{
-						Name:             dbClient.Name,
-						ConnectionType:   schemas.MCPConnectionType(dbClient.ConnectionType),
-						ConnectionString: dbClient.ConnectionString,
-						StdioConfig:      dbClient.StdioConfig,
-						ToolsToExecute:   dbClient.ToolsToExecute,
-						ToolsToSkip:      dbClient.ToolsToSkip,
-					}
+			if mcpConfig == nil {
+				if err := config.processMCPEnvVars(); err != nil {
+					logger.Warn("failed to process MCP env vars: %v", err)
 				}
-
-				config.MCPConfig = &schemas.MCPConfig{
-					ClientConfigs: clientConfigs,
+				err = config.ConfigStore.UpdateMCPConfig(config.MCPConfig)	
+				if err != nil {
+					return nil, fmt.Errorf("failed to update MCP config: %w", err)
 				}
 			}
-
 			// Load environment variable tracking
 			var dbEnvKeys map[string][]configstore.EnvKeyInfo
 			if dbEnvKeys, err = config.ConfigStore.GetEnvKeys(); err != nil {
 				return nil, err
 			}
-
 			config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
 			for envVar, dbEnvKey := range dbEnvKeys {
 				for _, dbEnvKey := range dbEnvKey {
@@ -313,7 +296,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					})
 				}
 			}
-
+			err = config.ConfigStore.UpdateEnvKeys(config.EnvKeys)
+			if err != nil {
+				return nil, fmt.Errorf("failed to update env keys: %w", err)
+			}			
 			return config, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -869,7 +855,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 		}
 	}
 
-	logger.Info("Added provider: %s", provider)
+	logger.Info("added provider: %s", provider)
 	return nil
 }
 
@@ -1015,6 +1001,10 @@ func (s *Config) GetAllKeys() ([]configstore.TableKey, error) {
 // Returns an error if any required environment variable is missing.
 // This approach ensures type safety while supporting environment variable substitution.
 func (s *Config) processMCPEnvVars() error {
+	if s.MCPConfig == nil {
+		return nil
+	}
+
 	var missingEnvVars []string
 
 	// Process each client config

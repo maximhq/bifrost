@@ -399,7 +399,7 @@ export const ProviderIcons = {
 		);
 	},
 
-	openAI: ({ size = "md", className = "", theme }: IconProps) => {
+	openai: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
 		return theme === "light" ? (

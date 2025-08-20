@@ -22,12 +22,13 @@ export default function GovernancePage() {
 
 	// Handle errors
 	useEffect(() => {
+		if (configLoading) return;
 		if (configError) {
 			toast.error(`Failed to load core config: ${getErrorMessage(configError)}`);
 			return;
 		}
 
-		if (coreConfig && !coreConfig.client_config.enable_governance) {
+		if (coreConfig && !coreConfig?.client_config?.enable_governance) {
 			toast.error("Governance is not enabled. Please enable it in the core settings.");
 			return;
 		}

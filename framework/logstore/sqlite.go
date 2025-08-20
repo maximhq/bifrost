@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,7 +29,14 @@ func (s *SQLiteLogStore) Create(entry *Log) error {
 
 // Update updates a log entry in the database.
 func (s *SQLiteLogStore) Update(id string, entry any) error {
-	return s.db.Model(&Log{}).Where("id = ?", id).Updates(entry).Error
+	tx := s.db.Model(&Log{}).Where("id = ?", id).Updates(entry)
+	if errors.Is(tx.Error, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	}
+	if tx.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return tx.Error
 }
 
 // SearchLogs searches for logs in the database.
@@ -150,6 +158,13 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 	}
 
 	if err := mainQuery.Find(&logs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return &SearchResult{
+				Logs:       logs,
+				Pagination: pagination,
+				Stats:      stats,
+			}, nil
+		}
 		return nil, err
 	}
 
@@ -164,6 +179,9 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 func (s *SQLiteLogStore) FindFirst(query any, fields ...string) (*Log, error) {
 	var log Log
 	if err := s.db.Select(fields).Where(query).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return &log, nil
@@ -182,6 +200,9 @@ func (s *SQLiteLogStore) CleanupLogs(since time.Time) error {
 func (s *SQLiteLogStore) FindAll(query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
 	if err := s.db.Select(fields).Where(query).Find(&logs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []*Log{}, nil
+		}
 		return nil, err
 	}
 	return logs, nil
@@ -189,11 +210,11 @@ func (s *SQLiteLogStore) FindAll(query any, fields ...string) ([]*Log, error) {
 
 func newSqliteLogStore(config *SQLiteConfig, logger schemas.Logger) (*SQLiteLogStore, error) {
 	// Configure SQLite with proper settings to handle concurrent access
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=1000&_foreign_keys=ON", config.Path)
+	dsn := fmt.Sprintf("%s??_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000", config.Path)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, err
-	}	
+	}
 	if err := db.AutoMigrate(&Log{}); err != nil {
 		return nil, err
 	}

@@ -5,11 +5,13 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	Bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 )
@@ -120,6 +122,39 @@ type LoggerPlugin struct {
 	streamDataPool     sync.Pool    // Pool for reusing StreamUpdateData structs
 	streamChunkPool    sync.Pool    // Pool for reusing StreamChunk structs
 	streamAccumulators sync.Map     // Track accumulators by request ID (atomic)
+}
+
+// retryOnNotFound retries a function up to 3 times with 1-second delays if it returns logstore.ErrNotFound
+func retryOnNotFound(ctx context.Context, operation func() error) error {
+	const maxRetries = 3
+	const retryDelay = time.Second
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := operation()
+		if err == nil {
+			return nil
+		}
+		
+		// Check if the error is logstore.ErrNotFound
+		if !errors.Is(err, logstore.ErrNotFound) {
+			return err
+		}
+		
+		lastErr = err
+		
+		// Don't wait after the last attempt
+		if attempt < maxRetries-1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryDelay):
+				// Continue to next retry
+			}
+		}
+	}
+	
+	return lastErr
 }
 
 // Init creates new logger plugin with given log store
@@ -310,8 +345,9 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	}
 
 	// Check if this is a streaming response
-	isStreaming := p.isStreamingResponse(result)
-	isTextStreaming := p.isTextStreamingResponse(result)
+	requestType := (*ctx).Value(Bifrost.BifrostContextKeyRequestType).(Bifrost.RequestType)
+	isStreaming := requestType == Bifrost.ChatCompletionStreamRequest || requestType == Bifrost.SpeechStreamRequest || requestType == Bifrost.TranscriptionStreamRequest
+	isTextStreaming := requestType == Bifrost.TextCompletionRequest
 
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
@@ -491,14 +527,16 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				p.putStreamUpdateData(logMsg.StreamUpdateData)
 			}
 		}()
-
 		var processingErr error
 		if logMsg.Operation == LogOperationStreamUpdate {
-			processingErr = p.processStreamUpdate(logMsg.RequestID, logMsg.Timestamp, logMsg.StreamUpdateData, isFinalChunk, ctx)
+			processingErr = retryOnNotFound(ctx, func() error {
+				return p.processStreamUpdate(ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.StreamUpdateData, isFinalChunk)
+			})
 		} else {
-			processingErr = p.updateLogEntry(logMsg.RequestID, logMsg.Timestamp, logMsg.UpdateData, ctx)
+			processingErr = retryOnNotFound(ctx, func() error {
+				return p.updateLogEntry(ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.UpdateData)
+			})
 		}
-
 		if processingErr != nil {
 			p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
 		} else {
