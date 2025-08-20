@@ -53,6 +53,7 @@ if [ -f "go.mod" ]; then
   git add go.mod go.sum || true
   if ! git diff --cached --quiet; then
     git commit -m "plugins/${PLUGIN_NAME}: bump core to $CORE_VERSION"
+    git push -u origin HEAD
   fi
 
   # Validate build

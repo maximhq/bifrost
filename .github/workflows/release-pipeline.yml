@@ -14,6 +14,8 @@ jobs:
   # Detect what needs to be released
   detect-changes:
     runs-on: ubuntu-latest
+    # Skip if pusher is GitHub Actions Bot to avoid infinite loops
+    if: github.actor != 'github-actions[bot]'
     outputs:
       core-needs-release: ${{ steps.detect.outputs.core-needs-release }}
       framework-needs-release: ${{ steps.detect.outputs.framework-needs-release }}
@@ -333,8 +335,8 @@ jobs:
             BIFROST_STATUS="❌ Failed"
           fi
 
-          TITLE="🚀 **Release Pipeline Complete**"
-          MESSAGE="$TITLE\n**Core**: $CORE_STATUS\n**Framework**: $FRAMEWORK_STATUS\n**Plugins**: $PLUGINS_STATUS\n**Bifrost HTTP**: $BIFROST_STATUS\n**Branch**: \`main\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${{ github.actor }}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+          # Build the message with proper formatting
+          MESSAGE=$(printf "🚀 **Release Pipeline Complete**\n\n**Components:**\n• Core: %s\n• Framework: %s\n• Plugins: %s\n• Bifrost HTTP: %s\n\n**Details:**\n• Branch: \`main\`\n• Commit: \`%.8s\`\n• Author: %s\n\n[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" "$CORE_STATUS" "$FRAMEWORK_STATUS" "$PLUGINS_STATUS" "$BIFROST_STATUS" "${{ github.sha }}" "${{ github.actor }}")
 
           payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
           curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"

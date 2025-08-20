@@ -116,6 +116,7 @@ if ! git diff --quiet go.mod go.sum; then
     commit_msg="$commit_msg, plugins: ${PLUGINS_USED[*]}"
   fi
   git commit -m "$commit_msg"
+  git push -u origin HEAD
   echo "✅ Transport dependencies updated"
 else
   echo "ℹ️  No dependency changes detected in transports"

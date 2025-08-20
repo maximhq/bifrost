@@ -58,12 +58,21 @@ if ! upload_with_retry "./dist/" "s3://$R2_BUCKET/bifrost/$CLI_VERSION/"; then
   exit 1
 fi
 
-# Small delay between uploads (configurable; default 2s)
-sleep "${INTER_UPLOAD_SLEEP_SECONDS:-2}"
+# Check if this is a prerelease version (semver: presence of a hyphen denotes pre-release)
+if [[ "$CLI_VERSION" == *-* ]]; then
+  echo "🔍 Detected prerelease version: $CLI_VERSION"
+  echo "⏭️ Skipping upload to latest/ for prerelease"
+else
+  echo "🔍 Detected stable release: $CLI_VERSION"
+  
+  # Small delay between uploads (configurable; default 2s)
+  sleep "${INTER_UPLOAD_SLEEP_SECONDS:-2}"
 
-# Upload to latest path
-if ! upload_with_retry "./dist/" "s3://$R2_BUCKET/bifrost/latest/"; then
-  exit 1
+  # Upload to latest path
+  echo "📤 Uploading to latest/"
+  if ! upload_with_retry "./dist/" "s3://$R2_BUCKET/bifrost/latest/"; then
+    exit 1
+  fi
 fi
 
 echo "🎉 All binaries uploaded successfully to R2"
