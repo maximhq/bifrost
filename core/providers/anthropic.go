@@ -195,6 +195,11 @@ func releaseAnthropicTextResponse(resp *AnthropicTextResponse) {
 	}
 }
 
+// Since Anthropic always needs to have a max_tokens parameter, we set a default value if not provided.
+const (
+	AnthropicDefaultMaxTokens = 4096
+)
+
 // NewAnthropicProvider creates a new Anthropic provider instance.
 // It initializes the HTTP client with the provided configuration and sets up response pools.
 // The client is configured with timeouts, concurrency limits, and optional proxy settings.
@@ -247,15 +252,18 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 // It handles parameter mapping and conversion to the format expected by Anthropic.
 // Returns the modified parameters map.
 func (provider *AnthropicProvider) prepareTextCompletionParams(params map[string]interface{}) map[string]interface{} {
-	// Check if there is a key entry for max_tokens
-	if maxTokens, exists := params["max_tokens"]; exists {
-		// Check if max_tokens_to_sample is already present
-		if _, exists := params["max_tokens_to_sample"]; !exists {
-			// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+	maxTokens, maxTokensExists := params["max_tokens"]
+	if _, exists := params["max_tokens_to_sample"]; !exists {
+		// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+		if maxTokensExists {
 			params["max_tokens_to_sample"] = maxTokens
+		} else {
+			params["max_tokens_to_sample"] = AnthropicDefaultMaxTokens
 		}
-		delete(params, "max_tokens")
 	}
+
+	delete(params, "max_tokens")
+
 	return params
 }
 
@@ -589,6 +597,11 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 	}
 
 	preparedParams := prepareParams(params)
+
+	// If max_tokens is not provided, set a default value
+	if _, exists := preparedParams["max_tokens"]; !exists {
+		preparedParams["max_tokens"] = AnthropicDefaultMaxTokens
+	}
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {

@@ -797,15 +797,17 @@ func (provider *BedrockProvider) getChatCompletionTools(params *schemas.ModelPar
 func (provider *BedrockProvider) prepareTextCompletionParams(params map[string]interface{}, model string) map[string]interface{} {
 	switch {
 	case strings.Contains(model, "anthropic."):
-		// Check if there is a key entry for max_tokens
-		if maxTokens, exists := params["max_tokens"]; exists {
-			// Check if max_tokens_to_sample is already present
-			if _, exists := params["max_tokens_to_sample"]; !exists {
-				// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+		maxTokens, maxTokensExists := params["max_tokens"]
+		if _, exists := params["max_tokens_to_sample"]; !exists {
+			// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+			if maxTokensExists {
 				params["max_tokens_to_sample"] = maxTokens
+			} else {
+				params["max_tokens_to_sample"] = AnthropicDefaultMaxTokens
 			}
-			delete(params, "max_tokens")
 		}
+
+		delete(params, "max_tokens")
 	}
 	return params
 }
@@ -959,6 +961,12 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	}
 
 	preparedParams := prepareParams(params)
+
+	if strings.Contains(model, "anthropic.") {
+		if _, exists := preparedParams["max_tokens"]; !exists {
+			preparedParams["max_tokens"] = AnthropicDefaultMaxTokens
+		}
+	}
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
@@ -1352,6 +1360,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	}
 
 	preparedParams := prepareParams(params)
+
+	if strings.Contains(model, "anthropic.") {
+		if _, exists := preparedParams["max_tokens"]; !exists {
+			preparedParams["max_tokens"] = AnthropicDefaultMaxTokens
+		}
+	}
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
