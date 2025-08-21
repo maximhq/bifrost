@@ -119,6 +119,7 @@ if ! git diff --quiet go.mod go.sum; then
 else
   echo "ℹ️  No dependency changes detected in transports"
 fi
+cd ..
 
 # Validate transport build
 echo "🔨 Validating transport build..."
@@ -127,7 +128,6 @@ go test ./...
 cd ..
 echo "✅ Transport build validation successful"
 
-cd ..
 
 # Commit and push changes if any
 if ! git diff --cached --quiet; then
