@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -113,12 +114,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 
 		// Handle governance headers (x-bf-team, x-bf-user, x-bf-customer)
 		if keyStr == "x-bf-team" || keyStr == "x-bf-user" || keyStr == "x-bf-customer" {
-			bifrostCtx = context.WithValue(bifrostCtx, ContextKey(keyStr), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, governance.ContextKey(keyStr), string(value))
 		}
 
 		// Handle virtual key header (x-bf-vk)
 		if keyStr == "x-bf-vk" {
-			bifrostCtx = context.WithValue(bifrostCtx, ContextKey(keyStr), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, governance.ContextKey(keyStr), string(value))
 		}
 
 		// Handle cache key header (x-bf-cache-key)
@@ -169,9 +170,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 
 		// Check x-api-key header if no valid Authorization header found (Anthropic style)
 		if apiKey == "" {
-			xApiKey := string(ctx.Request.Header.Peek("x-api-key"))
-			if xApiKey != "" {
-				apiKey = strings.TrimSpace(xApiKey)
+			xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
+			if xAPIKey != "" {
+				apiKey = strings.TrimSpace(xAPIKey)
 			}
 		}
 

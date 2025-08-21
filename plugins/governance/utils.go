@@ -7,10 +7,9 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
-// Standalone utility functions for use across the governance plugin
+type ContextKey string
 
 // extractHeadersFromContext extracts governance headers from context (standalone version)
 func extractHeadersFromContext(ctx context.Context) map[string]string {
@@ -32,7 +31,7 @@ func extractHeadersFromContext(ctx context.Context) map[string]string {
 
 // getStringFromContext safely extracts a string value from context
 func getStringFromContext(ctx context.Context, key string) string {
-	if value := ctx.Value(lib.ContextKey(key)); value != nil {
+	if value := ctx.Value(key); value != nil {
 		if str, ok := value.(string); ok {
 			return str
 		}
