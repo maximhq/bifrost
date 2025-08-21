@@ -121,13 +121,16 @@ else
 fi
 cd ..
 
+# We need to build UI first before we can validate the transport build
+echo "🎨 Building UI..."
+make build-ui
+
 # Validate transport build
 echo "🔨 Validating transport build..."
 cd transports
 go test ./...
 cd ..
 echo "✅ Transport build validation successful"
-
 
 # Commit and push changes if any
 if ! git diff --cached --quiet; then
@@ -137,9 +140,6 @@ if ! git diff --cached --quiet; then
 else
   echo "ℹ️ No staged changes to commit"
 fi
-
-echo "🎨 Building UI..."
-make build-ui
 
 # Install cross-compilation toolchains
 echo "📦 Installing cross-compilation toolchains..."

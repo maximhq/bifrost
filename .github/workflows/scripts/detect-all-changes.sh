@@ -12,6 +12,7 @@ CORE_NEEDS_RELEASE="false"
 FRAMEWORK_NEEDS_RELEASE="false"
 PLUGINS_NEED_RELEASE="false"
 BIFROST_HTTP_NEEDS_RELEASE="false"
+DOCKER_NEEDS_RELEASE="false"
 CHANGED_PLUGINS="[]"
 
 # Get current versions
@@ -131,24 +132,60 @@ fi
 echo ""
 echo "🚀 Checking bifrost-http..."
 TRANSPORT_TAG="transports/v${TRANSPORT_VERSION}"
+DOCKER_TAG_EXISTS="false"
+
+# Check if Git tag exists
+GIT_TAG_EXISTS="false"
 if git rev-parse --verify "$TRANSPORT_TAG" >/dev/null 2>&1; then
-  echo "   ⏭️ Tag $TRANSPORT_TAG already exists"
+  echo "   ⏭️ Git tag $TRANSPORT_TAG already exists"
+  GIT_TAG_EXISTS="true"
+fi
+
+# Check if Docker tag exists on DockerHub
+echo "   🐳 Checking DockerHub for tag v${TRANSPORT_VERSION}..."
+DOCKER_CHECK_RESPONSE=$(curl -s "https://registry.hub.docker.com/v2/repositories/maximhq/bifrost/tags/v${TRANSPORT_VERSION}/" 2>/dev/null || echo "")
+if [ -n "$DOCKER_CHECK_RESPONSE" ] && echo "$DOCKER_CHECK_RESPONSE" | grep -q '"name"'; then
+  echo "   ⏭️ Docker tag v${TRANSPORT_VERSION} already exists on DockerHub"
+  DOCKER_TAG_EXISTS="true"
 else
+  echo "   ❌ Docker tag v${TRANSPORT_VERSION} not found on DockerHub"
+fi
+
+# Determine if release is needed
+if [ "$GIT_TAG_EXISTS" = "true" ] && [ "$DOCKER_TAG_EXISTS" = "true" ]; then
+  echo "   ⏭️ Both Git tag and Docker image exist - no release needed"
+else
+  # Check version increment logic for transport release
   LATEST_TRANSPORT_TAG=$(git tag -l "transports/v*" | sort -V | tail -1)
   if [ -z "$LATEST_TRANSPORT_TAG" ]; then
     echo "   ✅ First transport release: $TRANSPORT_VERSION"
-    BIFROST_HTTP_NEEDS_RELEASE="true"
+    if [ "$GIT_TAG_EXISTS" = "false" ]; then
+      echo "   🏷️  Git tag missing - transport release needed"
+      BIFROST_HTTP_NEEDS_RELEASE="true"
+    fi
   else
     PREVIOUS_TRANSPORT_VERSION=${LATEST_TRANSPORT_TAG#transports/v}
     echo "   📋 Previous: $PREVIOUS_TRANSPORT_VERSION, Current: $TRANSPORT_VERSION"
     if [ "$(printf '%s\n' "$PREVIOUS_TRANSPORT_VERSION" "$TRANSPORT_VERSION" | sort -V | tail -1)" = "$TRANSPORT_VERSION" ] && [ "$PREVIOUS_TRANSPORT_VERSION" != "$TRANSPORT_VERSION" ]; then
       echo "   ✅ Transport version incremented: $PREVIOUS_TRANSPORT_VERSION → $TRANSPORT_VERSION"
-      BIFROST_HTTP_NEEDS_RELEASE="true"
+      if [ "$GIT_TAG_EXISTS" = "false" ]; then
+        echo "   🏷️  Git tag missing - transport release needed"
+        BIFROST_HTTP_NEEDS_RELEASE="true"
+      fi
     else
       echo "   ⏭️ No transport version increment"
     fi
   fi
+  
+  # Check if Docker image needs to be built (independent of transport release)
+  if [ "$DOCKER_TAG_EXISTS" = "false" ]; then
+    echo "   🐳 Docker image missing - docker release needed"
+    DOCKER_NEEDS_RELEASE="true"
+  fi
 fi
+
+
+
 
 # Convert plugin array to JSON (compact format)
 if [ ${#PLUGIN_CHANGES[@]} -eq 0 ]; then
@@ -166,6 +203,7 @@ echo "   Core: $CORE_NEEDS_RELEASE (v$CORE_VERSION)"
 echo "   Framework: $FRAMEWORK_NEEDS_RELEASE (v$FRAMEWORK_VERSION)"
 echo "   Plugins: $PLUGINS_NEED_RELEASE (${#PLUGIN_CHANGES[@]} plugins)"
 echo "   Bifrost HTTP: $BIFROST_HTTP_NEEDS_RELEASE (v$TRANSPORT_VERSION)"
+echo "   Docker: $DOCKER_NEEDS_RELEASE (v$TRANSPORT_VERSION)"
 
 # Set outputs (only when running in GitHub Actions)
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -174,6 +212,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "framework-needs-release=$FRAMEWORK_NEEDS_RELEASE"
     echo "plugins-need-release=$PLUGINS_NEED_RELEASE"
     echo "bifrost-http-needs-release=$BIFROST_HTTP_NEEDS_RELEASE"
+    echo "docker-needs-release=$DOCKER_NEEDS_RELEASE"
     echo "changed-plugins=$CHANGED_PLUGINS_JSON"
     echo "core-version=$CORE_VERSION"
     echo "framework-version=$FRAMEWORK_VERSION"

@@ -8,7 +8,7 @@ on:
 # Prevent concurrent runs
 concurrency:
   group: release-pipeline
-  cancel-in-progress: true  
+  cancel-in-progress: false  
 
 jobs:
   # Detect what needs to be released
@@ -21,6 +21,7 @@ jobs:
       framework-needs-release: ${{ steps.detect.outputs.framework-needs-release }}
       plugins-need-release: ${{ steps.detect.outputs.plugins-need-release }}
       bifrost-http-needs-release: ${{ steps.detect.outputs.bifrost-http-needs-release }}
+      docker-needs-release: ${{ steps.detect.outputs.docker-needs-release }}
       changed-plugins: ${{ steps.detect.outputs.changed-plugins }}
       core-version: ${{ steps.detect.outputs.core-version }}
       framework-version: ${{ steps.detect.outputs.framework-version }}
@@ -238,7 +239,7 @@ jobs:
   # Docker build and push
   docker-build:
     needs: [detect-changes, bifrost-http-release]
-    if: needs.bifrost-http-release.result == 'success'
+    if: "always() && !contains(github.event.head_commit.message, '--skip-pipeline') && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: read
