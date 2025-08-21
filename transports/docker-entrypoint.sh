@@ -73,4 +73,4 @@ if [ $# -gt 1 ]; then
 fi
 
 # Build the command with environment variables and standard arguments
-exec /app/main -app-dir /app/data -port "$APP_PORT" -host "$APP_HOST" 
+exec /app/main -app-dir "$APP_DIR" -port "$APP_PORT" -host "$APP_HOST" -log-level "$LOG_LEVEL" -log-style "$LOG_STYLE"

@@ -123,7 +123,7 @@ const promoCards = [
 				<br />
 				<br />
 				Book a demo with our team{" "}
-				<Link href="https://www.getmaxim.ai/demo" target="_blank" className="text-primary">
+				<Link href="https://calendly.com/maximai/bifrost-demo" target="_blank" className="text-primary">
 					here
 				</Link>
 				.
