@@ -67,10 +67,6 @@ if [ -f "go.mod" ]; then
   go get "github.com/maximhq/bifrost/framework@${FRAMEWORK_VERSION}"
   go mod tidy
   git add go.mod go.sum || true
-  if ! git diff --cached --quiet; then
-    git commit -m "plugins/${PLUGIN_NAME}: bump core to $CORE_VERSION and framework to $FRAMEWORK_VERSION --skip-pipeline"
-    git push -u origin HEAD
-  fi
 
   # Validate build
   echo "🔨 Validating plugin build..."
@@ -88,6 +84,15 @@ else
 fi
 
 cd ../..
+
+# Commit and push changes if any
+if ! git diff --cached --quiet; then
+  echo "🔧 Committing and pushing changes..."
+  git commit -m "plugins/${PLUGIN_NAME}: bump core to $CORE_VERSION and framework to $FRAMEWORK_VERSION --skip-pipeline"
+  git push -u origin HEAD
+else
+  echo "ℹ️ No staged changes to commit"
+fi
 
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"

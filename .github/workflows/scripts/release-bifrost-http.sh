@@ -115,17 +115,10 @@ if ! git diff --quiet go.mod go.sum; then
   if [ ${#PLUGINS_USED[@]} -gt 0 ]; then
     commit_msg="$commit_msg, plugins: ${PLUGINS_USED[*]}"
   fi
-  git commit -m "$commit_msg --skip-pipeline"
-  git push -u origin HEAD
   echo "✅ Transport dependencies updated"
 else
   echo "ℹ️  No dependency changes detected in transports"
 fi
-
-cd ..
-
-echo "🎨 Building UI..."
-make build-ui
 
 # Validate transport build
 echo "🔨 Validating transport build..."
@@ -133,6 +126,20 @@ cd transports
 go test ./...
 cd ..
 echo "✅ Transport build validation successful"
+
+cd ..
+
+# Commit and push changes if any
+if ! git diff --cached --quiet; then
+  echo "🔧 Committing and pushing changes..."
+  git commit -m "${commit_msg:-"transports: update dependencies"} --skip-pipeline"
+  git push -u origin HEAD
+else
+  echo "ℹ️ No staged changes to commit"
+fi
+
+echo "🎨 Building UI..."
+make build-ui
 
 # Install cross-compilation toolchains
 echo "📦 Installing cross-compilation toolchains..."
