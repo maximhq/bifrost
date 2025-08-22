@@ -14,7 +14,6 @@ require (
 	github.com/maximhq/bifrost/plugins/governance v1.2.0-prerelease4
 	github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease4
 	github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease2
-	github.com/maximhq/bifrost/plugins/redis v1.0.0
 	github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease2
 	github.com/maximhq/bifrost/plugins/telemetry v1.2.0-prerelease2
 	github.com/prometheus/client_golang v1.23.0

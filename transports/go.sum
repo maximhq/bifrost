@@ -123,8 +123,6 @@ github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease4 h1:ik7hdkrjblltZXG
 github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease4/go.mod h1:2GU38H14/3Pr8AEpDmnBZ2uDl+yKJ6IcXQg33jXrjiQ=
 github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease2 h1:l6lentPTCK9fyOa0LsKfIJYmxAjpm48Sk8poHnhqc3w=
 github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease2/go.mod h1:9XPljijGDL19UaCj+nrhDxLQ5ZwzMl6eJoGi7lZiWpo=
-github.com/maximhq/bifrost/plugins/redis v1.0.0 h1:/teFFjXo0u5lID7UwpMcyFUILRXBFduDXdZpa8hdU/8=
-github.com/maximhq/bifrost/plugins/redis v1.0.0/go.mod h1:nmHgyMpgPqGu45cve0HBXqOQP1L5SUTAhU3WnptD+1M=
 github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease2 h1:OrGGSxPatq6CvKAGHvH3VPzAYfJyIONFC0eDR4cwflw=
 github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease2/go.mod h1:hXt7ZRxo02NNZxrkFVpWCkrWhUDCqvu3NpFdqfqjfIg=
 github.com/maximhq/bifrost/plugins/telemetry v1.2.0-prerelease2 h1:nf1uYkcoroN8OlCSDYv/qfdEUppsp+Syw0h0PDRvQ+o=

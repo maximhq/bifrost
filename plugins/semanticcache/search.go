@@ -118,11 +118,14 @@ func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.B
 	cacheThreshold := plugin.config.Threshold
 
 	if plugin.config.CacheThresholdKey != "" {
-		threshold, ok := (*ctx).Value(ContextKey(plugin.config.CacheThresholdKey)).(float64)
-		if !ok {
-			plugin.logger.Warn(PluginLoggerPrefix + " Threshold is not a float64, using default threshold")
-		} else {
-			cacheThreshold = threshold
+		thresholdValue := (*ctx).Value(ContextKey(plugin.config.CacheThresholdKey))
+		if thresholdValue != nil {
+			threshold, ok := thresholdValue.(float64)
+			if !ok {
+				plugin.logger.Warn(PluginLoggerPrefix + " Threshold is not a float64, using default threshold")
+			} else {
+				cacheThreshold = threshold
+			}
 		}
 	}
 

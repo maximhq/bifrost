@@ -205,9 +205,6 @@ func (s *SQLiteConfigStore) GetProvidersConfig() (map[schemas.ModelProvider]Prov
 func (s *SQLiteConfigStore) GetMCPConfig() (*schemas.MCPConfig, error) {
 	var dbMCPClients []TableMCPClient
 	if err := s.db.Find(&dbMCPClients).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNotFound
-		}
 		return nil, err
 	}
 	if len(dbMCPClients) == 0 {
@@ -267,25 +264,18 @@ func (s *SQLiteConfigStore) UpdateMCPConfig(config *schemas.MCPConfig) error {
 
 // GetVectorStoreConfig retrieves the vector store configuration from the database.
 func (s *SQLiteConfigStore) GetVectorStoreConfig() (*vectorstore.Config, error) {
-	var vectorStoreType TableVectorStoreConfig
-	if err := s.db.First(&vectorStoreType).Error; err != nil {
+	var vectorStoreTableConfig TableVectorStoreConfig
+	if err := s.db.First(&vectorStoreTableConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Return default cache configuration
-			return &vectorstore.Config{
-				Enabled: false,
-			}, nil
+			return nil, nil
 		}
 		return nil, err
 	}
-	// Marshalling config
-	var vectorStoreConfig vectorstore.Config
-	if err := json.Unmarshal([]byte(*vectorStoreType.Config), &vectorStoreConfig); err != nil {
-		return nil, err
-	}
 	return &vectorstore.Config{
-		Enabled: vectorStoreType.Enabled,
-		Config:  &vectorStoreConfig,
-		Type:    vectorstore.VectorStoreType(*vectorStoreType.Type),
+		Enabled: vectorStoreTableConfig.Enabled,
+		Config:  vectorStoreTableConfig.Config,
+		Type:    vectorstore.VectorStoreType(vectorStoreTableConfig.Type),
 	}, nil
 }
 
@@ -301,6 +291,7 @@ func (s *SQLiteConfigStore) UpdateVectorStoreConfig(config *vectorstore.Config) 
 			return err
 		}
 		var record = &TableVectorStoreConfig{
+			Type:    string(config.Type),
 			Enabled: config.Enabled,
 			Config:  jsonConfig,
 		}
@@ -450,6 +441,74 @@ func (s *SQLiteConfigStore) DeleteModelPrices(tx ...*gorm.DB) error {
 		txDB = s.db
 	}
 	return txDB.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&TableModelPricing{}).Error
+}
+
+// PLUGINS METHODS
+
+func (s *SQLiteConfigStore) GetPlugins() ([]TablePlugin, error) {
+	var plugins []TablePlugin
+	if err := s.db.Find(&plugins).Error; err != nil {
+		return nil, err
+	}
+	return plugins, nil
+}
+
+func (s *SQLiteConfigStore) GetPlugin(name string) (*TablePlugin, error) {
+	var plugin TablePlugin
+	if err := s.db.First(&plugin, "name = ?", name).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &plugin, nil
+}
+
+func (s *SQLiteConfigStore) CreatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.Create(plugin).Error
+}
+
+func (s *SQLiteConfigStore) UpdatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	var localTx bool
+
+	if len(tx) > 0 {
+		txDB = tx[0]
+		localTx = false
+	} else {
+		txDB = s.db.Begin()
+		localTx = true
+	}
+
+	if err := txDB.Delete(&TablePlugin{}, "name = ?", plugin.Name).Error; err != nil {
+		if localTx {
+			txDB.Rollback()
+		}
+		return err
+	}
+
+	if err := txDB.Create(plugin).Error; err != nil {
+		if localTx {
+			txDB.Rollback()
+		}
+		return err
+	}
+
+	if localTx {
+		return txDB.Commit().Error
+	}
+
+	return nil
+}
+
+func (s *SQLiteConfigStore) DeletePlugin(name string) error {
+	return s.db.Delete(&TablePlugin{}, "name = ?", name).Error
 }
 
 // GOVERNANCE METHODS
@@ -824,7 +883,7 @@ func (s *SQLiteConfigStore) removeDuplicateKeysAndNullKeys() error {
 }
 
 // newSqliteConfigStore creates a new SQLite config store.
-func newSqliteConfigStore(config *SQLiteConfig, logger schemas.Logger) (ConfigStore, error) {		
+func newSqliteConfigStore(config *SQLiteConfig, logger schemas.Logger) (ConfigStore, error) {
 	if _, err := os.Stat(config.Path); os.IsNotExist(err) {
 		// Create DB file
 		f, err := os.Create(config.Path)
@@ -848,7 +907,7 @@ func newSqliteConfigStore(config *SQLiteConfig, logger schemas.Logger) (ConfigSt
 	// Run migration to remove duplicate keys before AutoMigrate
 	if err := s.removeDuplicateKeysAndNullKeys(); err != nil {
 		return nil, fmt.Errorf("failed to remove duplicate keys: %w", err)
-	}	
+	}
 	// Auto migrate to all new tables
 	if err := db.AutoMigrate(
 		&TableConfigHash{},
@@ -867,6 +926,7 @@ func newSqliteConfigStore(config *SQLiteConfig, logger schemas.Logger) (ConfigSt
 		&TableVirtualKey{},
 		&TableConfig{},
 		&TableModelPricing{},
+		&TablePlugin{},
 	); err != nil {
 		return nil, err
 	}

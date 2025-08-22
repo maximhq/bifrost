@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/semanticcache"
 )
 
 // HandlerStore provides access to runtime configuration values for handlers.
@@ -173,6 +174,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// Check if config file exists
 	data, err := os.ReadFile(configFilePath)
 	if err != nil {
+		// If config file doesn't exist, we will directly use the config store (create one if it doesn't exist)
 		if os.IsNotExist(err) {
 			logger.Info("config file not found at path: %s, initializing with default values", configFilePath)
 			// Initializing with default values
@@ -194,7 +196,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if clientConfig == nil {
 				clientConfig = &DefaultClientConfig
 			}
-			err = config.ConfigStore.UpdateClientConfig(clientConfig)			
+			err = config.ConfigStore.UpdateClientConfig(clientConfig)
 			if err != nil {
 				return nil, fmt.Errorf("failed to update client config: %w", err)
 			}
@@ -235,7 +237,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				err = config.ConfigStore.UpdateProvidersConfig(providers)
 				if err != nil {
 					return nil, fmt.Errorf("failed to update providers config: %w", err)
-				}				
+				}
 			} else {
 				processedProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig)
 				for providerKey, dbProvider := range providers {
@@ -274,9 +276,32 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				if err := config.processMCPEnvVars(); err != nil {
 					logger.Warn("failed to process MCP env vars: %v", err)
 				}
-				err = config.ConfigStore.UpdateMCPConfig(config.MCPConfig)	
+				err = config.ConfigStore.UpdateMCPConfig(config.MCPConfig)
 				if err != nil {
 					return nil, fmt.Errorf("failed to update MCP config: %w", err)
+				}
+			}
+			// Checking if plugins already exist
+			plugins, err := config.ConfigStore.GetPlugins()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get plugins: %w", err)
+			}
+			if plugins == nil {
+				config.Plugins = []*schemas.PluginConfig{}
+			} else {
+				config.Plugins = make([]*schemas.PluginConfig, len(plugins))
+				for i, plugin := range plugins {
+					pluginConfig := &schemas.PluginConfig{
+						Name:    plugin.Name,
+						Enabled: plugin.Enabled,
+						Config:  plugin.Config,
+					}
+					if plugin.Name == semanticcache.PluginName {
+						if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
+							logger.Warn("failed to add provider keys to semantic cache config: %v", err)
+						}
+					}
+					config.Plugins[i] = pluginConfig
 				}
 			}
 			// Load environment variable tracking
@@ -299,11 +324,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			err = config.ConfigStore.UpdateEnvKeys(config.EnvKeys)
 			if err != nil {
 				return nil, fmt.Errorf("failed to update env keys: %w", err)
-			}			
+			}
 			return config, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
+
+	// If config file exists, we will use it to only bootstrap config tables.
 
 	logger.Info("loading configuration from: %s", configFilePath)
 
@@ -311,9 +338,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := json.Unmarshal(data, &configData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-
-	// Copying plugins from config
-	config.Plugins = configData.Plugins
 
 	// Process core configuration if present, otherwise use defaults
 	if configData.Client != nil {
@@ -324,7 +348,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 	// Initializing config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
-		logger.Info("initializing config store: %v", configData.ConfigStoreConfig)
 		config.ConfigStore, err = configstore.NewConfigStore(configData.ConfigStoreConfig, logger)
 		if err != nil {
 			return nil, err
@@ -342,11 +365,26 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		logger.Info("logs store initialized")
 	}
 
+	// Initializing vector store
+	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
+		logger.Info("connecting to vectorstore")
+		// Checking type of the store
+		config.VectorStore, err = vectorstore.NewVectorStore(ctx, configData.VectorStoreConfig, logger)
+		if err != nil {
+			logger.Fatal("failed to connect to vector store: %v", err)
+		}
+		if config.ConfigStore != nil {
+			err = config.ConfigStore.UpdateVectorStoreConfig(configData.VectorStoreConfig)
+			if err != nil {
+				logger.Warn("failed to update vector store config: %v", err)
+			}
+		}
+	}
+
 	// From now on, config store gets the priority if enabled and we find data
 	// if we don't find any data in the store, then we resort to config file
 
 	// Initializing providers
-	logger.Info("initializing providers")
 	var processedProviders map[schemas.ModelProvider]configstore.ProviderConfig
 	if config.ConfigStore != nil {
 		processedProviders, err = config.ConfigStore.GetProvidersConfig()
@@ -450,9 +488,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		if mcpConfig != nil {
-			config.MCPConfig = mcpConfig
-		}
+		config.MCPConfig = mcpConfig
 	}
 
 	if config.MCPConfig == nil && configData.MCP != nil {
@@ -468,18 +504,61 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		}
 	}
 
-	// Initialize vector store
-	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
-		logger.Info("connecting to vectorstore")
-		// Checking type of the store
-		config.VectorStore, err = vectorstore.NewVectorStore(ctx, configData.VectorStoreConfig, logger)
+	if configData.Governance != nil {
+		config.GovernanceConfig = configData.Governance
+	}
+
+	if config.ConfigStore != nil {
+		plugins, err := config.ConfigStore.GetPlugins()
 		if err != nil {
-			logger.Fatal("failed to connect to vector store: %v", err)
+			return nil, fmt.Errorf("failed to get plugins: %w", err)
 		}
+		if plugins != nil {
+			config.Plugins = make([]*schemas.PluginConfig, len(plugins))
+			// TODO: Pass keys for semantic-cache plugin
+			for i, plugin := range plugins {
+				pluginConfig := &schemas.PluginConfig{
+					Name:    plugin.Name,
+					Enabled: plugin.Enabled,
+					Config:  plugin.Config,
+				}
+				if plugin.Name == semanticcache.PluginName {
+					if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
+						logger.Warn("failed to add provider keys to semantic cache config: %v", err)
+					}
+				}
+				config.Plugins[i] = pluginConfig
+			}
+		}
+	}
+
+	if len(config.Plugins) == 0 && len(configData.Plugins) > 0 {
+		config.Plugins = configData.Plugins
+
+		for i, plugin := range config.Plugins {
+			if plugin.Name == semanticcache.PluginName {
+				if err := config.AddProviderKeysToSemanticCacheConfig(plugin); err != nil {
+					logger.Warn("failed to add provider keys to semantic cache config: %v", err)
+				}
+				config.Plugins[i] = plugin
+			}
+		}
+
 		if config.ConfigStore != nil {
-			err = config.ConfigStore.UpdateVectorStoreConfig(configData.VectorStoreConfig)
-			if err != nil {
-				logger.Warn("failed to update vector store config: %v", err)
+			for _, plugin := range config.Plugins {
+				pluginConfig := &configstore.TablePlugin{
+					Name:    plugin.Name,
+					Enabled: plugin.Enabled,
+					Config:  plugin.Config,
+				}
+				if plugin.Name == semanticcache.PluginName {
+					if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {
+						logger.Warn("failed to remove provider keys from semantic cache config: %v", err)
+					}
+				}
+				if err := config.ConfigStore.CreatePlugin(pluginConfig); err != nil {
+					logger.Warn("failed to update plugin: %v", err)
+				}
 			}
 		}
 	}
@@ -490,17 +569,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		if envKeys != nil {
-			config.EnvKeys = envKeys
-		}
+		config.EnvKeys = envKeys
 	}
 
 	if config.EnvKeys == nil {
 		config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
-	}
-
-	if configData.Governance != nil {
-		config.GovernanceConfig = configData.Governance
 	}
 
 	logger.Info("successfully loaded configuration")
@@ -1735,4 +1808,68 @@ func (s *Config) GetVectorStoreConfigRedacted() (*vectorstore.Config, error) {
 		return &redactedConfig, nil
 	}
 	return nil, nil
+}
+
+func (s *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConfig) error {
+	if config.Name != semanticcache.PluginName {
+		return nil
+	}
+
+	// Check if config.Config exists
+	if config.Config == nil {
+		return fmt.Errorf("semantic_cache plugin config is nil")
+	}
+
+	// Type assert config.Config to map[string]interface{}
+	configMap, ok := config.Config.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
+	}
+
+	// Check if provider key exists and is a string
+	providerVal, exists := configMap["provider"]
+	if !exists {
+		return fmt.Errorf("semantic_cache plugin missing required 'provider' field")
+	}
+
+	provider, ok := providerVal.(string)
+	if !ok {
+		return fmt.Errorf("semantic_cache plugin 'provider' field must be a string, got %T", providerVal)
+	}
+
+	if provider == "" {
+		return fmt.Errorf("semantic_cache plugin 'provider' field cannot be empty")
+	}
+
+	keys, err := s.GetProviderConfigRaw(schemas.ModelProvider(provider))
+	if err != nil {
+		return fmt.Errorf("failed to get provider config for %s: %w", provider, err)
+	}
+
+	configMap["keys"] = keys.Keys
+
+	return nil
+}
+
+func (s *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstore.TablePlugin) error {
+	if config.Name != semanticcache.PluginName {
+		return nil
+	}
+
+	// Check if config.Config exists
+	if config.Config == nil {
+		return fmt.Errorf("semantic_cache plugin config is nil")
+	}
+
+	// Type assert config.Config to map[string]interface{}
+	configMap, ok := config.Config.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
+	}
+
+	configMap["keys"] = []schemas.Key{}
+
+	config.Config = configMap
+
+	return nil
 }

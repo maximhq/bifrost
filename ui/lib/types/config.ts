@@ -147,18 +147,16 @@ export interface CoreConfig {
 	enable_governance: boolean;
 	enforce_governance_header: boolean;
 	allow_direct_keys: boolean;
-	enable_caching: boolean;
 	allowed_origins: string[];
 }
 
-// Redis configuration types
+// Semantic cache configuration types
 export interface CacheConfig {
-	id?: number;
-	addr: string;
-	username?: string;
-	password?: string;
-	db: number;
+	provider: ModelProvider;
+	keys: Key[];
+	embedding_model: string;
 	ttl_seconds: number;
+	threshold: number;
 	prefix?: string;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
