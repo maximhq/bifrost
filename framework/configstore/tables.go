@@ -138,7 +138,7 @@ type TableEnvKey struct {
 type TableVectorStoreConfig struct {
 	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Enabled         bool      `json:"enabled"`                               // Enable vector store
-	Type            *string   `gorm:"type:varchar(50);not null" json:"type"` // "redis"
+	Type            string    `gorm:"type:varchar(50);not null" json:"type"` // "redis"
 	TTLSeconds      int       `gorm:"default:300" json:"ttl_seconds"`        // TTL in seconds (default: 5 minutes)
 	CacheByModel    bool      `gorm:"" json:"cache_by_model"`                // Include model in cache key
 	CacheByProvider bool      `gorm:"" json:"cache_by_provider"`             // Include provider in cache key
@@ -157,6 +157,20 @@ type TableLogStoreConfig struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
 
+// TablePlugin represents a plugin configuration in the database
+
+type TablePlugin struct {
+	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name       string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	Enabled    bool      `json:"enabled"`
+	ConfigJSON string    `gorm:"type:text" json:"-"` // JSON serialized plugin.Config
+	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
+
+	// Virtual fields for runtime use (not stored in DB)
+	Config any `gorm:"-" json:"config,omitempty"`
+}
+
 // TableName sets the table name for each model
 func (TableConfigHash) TableName() string        { return "config_hashes" }
 func (TableProvider) TableName() string          { return "config_providers" }
@@ -167,6 +181,7 @@ func (TableClientConfig) TableName() string      { return "config_client" }
 func (TableEnvKey) TableName() string            { return "config_env_keys" }
 func (TableVectorStoreConfig) TableName() string { return "config_vector_store" }
 func (TableLogStoreConfig) TableName() string    { return "config_log_store" }
+func (TablePlugin) TableName() string            { return "config_plugins" }
 
 // GORM Hooks for JSON serialization/deserialization
 
@@ -334,6 +349,20 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
+func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
+	if p.Config != nil {
+		data, err := json.Marshal(p.Config)
+		if err != nil {
+			return err
+		}
+		p.ConfigJSON = string(data)
+	} else {
+		p.ConfigJSON = "{}"
+	}
+
+	return nil
+}
+
 // AfterFind hooks for deserialization
 func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 	if p.NetworkConfigJSON != "" {
@@ -471,6 +500,18 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(cc.AllowedOriginsJSON), &cc.AllowedOrigins); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
+	if p.ConfigJSON != "" {
+		if err := json.Unmarshal([]byte(p.ConfigJSON), &p.Config); err != nil {
+			return err
+		}
+	} else {
+		p.Config = nil
 	}
 
 	return nil

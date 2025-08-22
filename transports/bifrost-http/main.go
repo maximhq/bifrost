@@ -91,10 +91,9 @@ var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 // Command line flags
 var (
-	port          string   // Port to run the server on
-	host          string   // Host to bind the server to
-	appDir        string   // Application data directory
-	pluginsToLoad []string // Plugins to load
+	port   string // Port to run the server on
+	host   string // Host to bind the server to
+	appDir string // Application data directory
 
 	logLevel       string // Logger level: debug, info, warn, error
 	logOutputStyle string // Logger output style: json, pretty
@@ -105,7 +104,6 @@ var (
 //   - host: Host to bind the server to (default: localhost, can be overridden with BIFROST_HOST env var)
 //   - port: Server port (default: 8080)
 //   - app-dir: Application data directory (default: current directory)
-//   - plugins: Comma-separated list of plugins to load
 //   - log-level: Logger level (debug, info, warn, error). Default is info.
 //   - log-style: Logger output type (json or pretty). Default is JSON.
 
@@ -388,7 +386,7 @@ func main() {
 			continue
 		}
 		switch strings.ToLower(plugin.Name) {
-		case "maxim":
+		case maxim.PluginName:
 			if os.Getenv("MAXIM_LOG_REPO_ID") == "" {
 				logger.Warn("maxim log repo id is required to initialize maxim plugin")
 				continue
@@ -404,7 +402,7 @@ func main() {
 			} else {
 				loadedPlugins = append(loadedPlugins, maximPlugin)
 			}
-		case "semantic_cache":
+		case semanticcache.PluginName:
 			if !plugin.Enabled {
 				logger.Debug("semantic cache plugin is disabled, skipping initialization")
 				continue
@@ -429,12 +427,14 @@ func main() {
 			// Set hardcoded values
 			semCacheConfig.CacheKey = "request-cache-key"
 			semCacheConfig.CacheTTLKey = "request-cache-ttl"
+			semCacheConfig.CacheThresholdKey = "request-cache-threshold"
 
 			semanticCachePlugin, err := semanticcache.Init(ctx, semCacheConfig, logger, config.VectorStore)
 			if err != nil {
-				logger.Fatal("failed to initialize semantic cache plugin: %v", err)
+				logger.Fatal("failed to initialize semantic cache: %v", err)
 			} else {
 				loadedPlugins = append(loadedPlugins, semanticCachePlugin)
+				logger.Info("successfully initialized semantic cache")
 			}
 		}
 	}
@@ -461,6 +461,7 @@ func main() {
 	mcpHandler := handlers.NewMCPHandler(client, logger, config)
 	integrationHandler := handlers.NewIntegrationHandler(client, config)
 	configHandler := handlers.NewConfigHandler(client, logger, config)
+	pluginsHandler := handlers.NewPluginsHandler(config.ConfigStore, logger)
 
 	// Set up WebSocket callback for real-time log updates
 	if wsHandler != nil && loggingPlugin != nil {
@@ -478,6 +479,7 @@ func main() {
 	mcpHandler.RegisterRoutes(r)
 	integrationHandler.RegisterRoutes(r)
 	configHandler.RegisterRoutes(r)
+	pluginsHandler.RegisterRoutes(r)
 	if governanceHandler != nil {
 		governanceHandler.RegisterRoutes(r)
 	}

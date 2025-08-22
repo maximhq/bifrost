@@ -147,6 +147,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 			}
 			// If both parsing attempts fail, we silently ignore the header and use default TTL
 		}
+
+		if keyStr == "x-bf-cache-threshold" {
+			threshold, err := strconv.ParseFloat(string(value), 64)
+			if err == nil {
+				// Clamp threshold to the inclusive range [0.0, 1.0]
+				if threshold < 0.0 {
+					threshold = 0.0
+				} else if threshold > 1.0 {
+					threshold = 1.0
+				}
+				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.ContextKey("request-cache-threshold"), threshold)
+			}
+			// If parsing fails, silently ignore the header (no context value set)
+		}
 	})
 
 	if allowDirectKeys {
