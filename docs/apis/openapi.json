@@ -687,7 +687,35 @@
           "$ref": "#/paths/~1openai~1v1~1audio~1speech/post/requestBody"
         },
         "responses": {
-          "$ref": "#/paths/~1openai~1v1~1audio~1speech/post/responses"
+          "200": {
+            "description": "Audio data",
+            "content": {
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
         },
         "security": [
           {
@@ -796,7 +824,58 @@
           "$ref": "#/paths/~1openai~1v1~1audio~1transcriptions/post/requestBody"
         },
         "responses": {
-          "$ref": "#/paths/~1openai~1v1~1audio~1transcriptions/post/responses"
+          "200": {
+            "description": "Transcription result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAITranscriptionResponse"
+                },
+                "examples": {
+                  "openai_transcription_response": {
+                    "summary": "OpenAI transcription response",
+                    "value": {
+                      "text": "Hello, this is a test of audio transcription.",
+                      "task": "transcribe",
+                      "language": "english", 
+                      "duration": 3.45,
+                      "segments": [
+                        {
+                          "id": 0,
+                          "seek": 0,
+                          "start": 0.0,
+                          "end": 3.45,
+                          "text": "Hello, this is a test of audio transcription.",
+                          "tokens": [15496, 11, 341, 307, 257, 1500, 295, 264, 6278, 35288, 4122, 13],
+                          "temperature": 0.0,
+                          "avg_logprob": -0.23,
+                          "compression_ratio": 1.2,
+                          "no_speech_prob": 0.01
+                        }
+                      ],
+                      "words": [
+                        {"word": "Hello", "start": 0.0, "end": 0.5},
+                        {"word": "this", "start": 0.6, "end": 0.8},
+                        {"word": "is", "start": 0.9, "end": 1.0}
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
         },
         "security": [
           {
@@ -1652,7 +1731,7 @@
         }
       }
     },
-    "/chat/completions": {
+    "/litellm/chat/completions": {
       "post": {
         "summary": "LiteLLM Compatible Chat Completions",
         "description": "LiteLLM-compatible chat completions endpoint that automatically detects the provider from the model name and converts requests accordingly.",
@@ -3319,6 +3398,80 @@
           }
         }
       }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad Request - Invalid request format or missing required fields",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": true,
+              "status_code": 400,
+              "error": {
+                "type": "invalid_request_error",
+                "message": "Invalid request format"
+              }
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Unauthorized - Invalid or missing API key",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": true,
+              "status_code": 401,
+              "error": {
+                "type": "authentication_error",
+                "message": "Invalid API key provided"
+              }
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Rate Limited - Too many requests",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": true,
+              "status_code": 429,
+              "error": {
+                "type": "rate_limit_error",
+                "message": "Rate limit exceeded"
+              }
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Internal Server Error - An unexpected error occurred",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            },
+            "example": {
+              "is_bifrost_error": true,
+              "status_code": 500,
+              "error": {
+                "type": "api_error",
+                "message": "Internal server error occurred"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "tags": [
@@ -3378,81 +3531,5 @@
       "name": "Monitoring",
       "description": "Monitoring and observability endpoint"
     }
-  ],
-  "responses": {
-    "BadRequest": {
-      "description": "Bad Request - Invalid request format or missing required fields",
-      "content": {
-        "application/json": {
-          "schema": {
-            "$ref": "#/components/schemas/BifrostError"
-          },
-          "example": {
-            "is_bifrost_error": true,
-            "status_code": 400,
-            "error": {
-              "type": "invalid_request_error",
-              "code": "missing_required_parameter",
-              "message": "Provider is required",
-              "param": "provider"
-            }
-          }
-        }
-      }
-    },
-    "Unauthorized": {
-      "description": "Unauthorized - Invalid or missing API key",
-      "content": {
-        "application/json": {
-          "schema": {
-            "$ref": "#/components/schemas/BifrostError"
-          },
-          "example": {
-            "is_bifrost_error": true,
-            "status_code": 401,
-            "error": {
-              "type": "authentication_error",
-              "message": "Invalid API key provided"
-            }
-          }
-        }
-      }
-    },
-    "RateLimited": {
-      "description": "Too Many Requests - Rate limit exceeded",
-      "content": {
-        "application/json": {
-          "schema": {
-            "$ref": "#/components/schemas/BifrostError"
-          },
-          "example": {
-            "is_bifrost_error": false,
-            "status_code": 429,
-            "error": {
-              "type": "rate_limit_error",
-              "message": "Rate limit exceeded. Please try again later."
-            }
-          }
-        }
-      }
-    },
-    "InternalServerError": {
-      "description": "Internal Server Error - Server or provider error",
-      "content": {
-        "application/json": {
-          "schema": {
-            "$ref": "#/components/schemas/BifrostError"
-          },
-          "example": {
-            "is_bifrost_error": true,
-            "status_code": 500,
-            "error": {
-              "type": "api_error",
-              "message": "Internal server error occurred"
-            }
-          }
-        }
-      }
-    }
-  }
+  ]
 }

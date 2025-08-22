@@ -14,34 +14,23 @@
   "topbarLinks": [
     {
       "name": "Support",
-      "url": "mailto:support@maxim.dev"
+      "url": "mailto:akshay@getmaxim.ai"
     }
   ],
   "topbarCtaButton": {
     "name": "Dashboard",
-    "url": "https://dashboard.maxim.dev"
+    "url": "https://www.getbifrost.ai"
   },
-  "tabs": [
-    {
-      "name": "API Reference",
-      "url": "api-reference"
-    }
-  ],
-  "anchors": [
-    {
-      "name": "Documentation",
-      "icon": "book-open-cover",
-      "url": "https://docs.bifrost.dev"
-    },
+  "anchors": [    
     {
       "name": "Community",
       "icon": "slack",
-      "url": "https://join.slack.com/bifrost"
+      "url": "https://getmax.im/bifrost-discord"
     },
     {
       "name": "Blog",
       "icon": "newspaper",
-      "url": "https://blog.bifrost.dev"
+      "url": "https://getmaxim.ai/blog"
     }
   ],
   "navigation": {
@@ -101,8 +90,7 @@
               "features/keys-management",
               "features/mcp",
               "features/tracing",
-              "features/telemetry",
-              "features/observability",
+              "features/telemetry",              
               "features/governance",
               {
                 "group": "Plugins",
@@ -113,7 +101,31 @@
                 ]
               }
             ]
-          }          
+          },
+          {
+            "group": "Enterprise Features",
+            "icon": "building",
+            "pages": [
+              "enterprise/clustering",
+              "enterprise/governance",
+              "enterprise/mcp-with-fa",
+              "enterprise/vault-support",
+              "enterprise/invpc-deployments",
+              "enterprise/intelligent-load-balancing",
+              "enterprise/custom-plugins",
+              "enterprise/log-exports"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "icon": "code",
+        "groups": [
+          {
+            "group": "API Reference",
+            "openapi": "apis/openapi.json"
+          }
         ]
       },
       {
@@ -144,15 +156,11 @@
       }
     ]
   },
-  "footerSocials": {
-    "twitter": "https://twitter.com/maximdev",
-    "github": "https://github.com/maxim-dev/bifrost",
-    "linkedin": "https://www.linkedin.com/company/maxim-dev"
-  },
-  "api": {
-    "baseUrl": "http://localhost:8080",
-    "auth": {
-      "method": "bearer"
+  "footer": {
+    "socials": {
+      "x": "https://x.com/getmaximai",
+      "github": "https://github.com/maximhq/bifrost",
+      "linkedin": "https://linkedin.com/company/maxim-ai"
     }
-  }
+  }  
 }

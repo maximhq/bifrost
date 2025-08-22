@@ -143,11 +143,13 @@ docker-compose up -d
 # Bifrost metrics: http://localhost:8080/metrics
 ```
 
-> **⚠️ Development Only**: The provided Docker Compose setup is for testing purposes only. Do not use in production without proper security, scaling, and persistence configuration.
+<Warning>
+**Development Only**: The provided Docker Compose setup is for testing purposes only. Do not use in production without proper security, scaling, and persistence configuration.
+</Warning>
 
 You can use the Prometheus scraping endpoint to create your own Grafana dashboards. Given below are few examples created using the Docker Compose setup.
 
-![Grafana Dashboard](../media/grafana-dashboard.png)
+![Grafana Dashboard](../../media/grafana-dashboard.png)
 
 ### Production Deployment
 

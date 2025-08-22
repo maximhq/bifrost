@@ -1,0 +1,527 @@
+---
+title: "Clustering"
+description: "High-availability peer-to-peer clustering with intelligent traffic distribution, automatic failover, and gossip-based state synchronization for enterprise-scale deployments."
+icon: "circle-nodes"
+---
+
+## Overview
+
+**Bifrost Clustering** provides enterprise-grade high availability through a peer-to-peer network architecture that ensures continuous service availability, intelligent traffic distribution, and automatic failover capabilities. The clustering system uses gossip protocols to maintain consistent state across all nodes while providing seamless scaling and fault tolerance.
+
+### Why Clustering is Required
+
+Modern AI gateway deployments face several critical challenges that clustering addresses:
+
+| Challenge | Impact | Clustering Solution |
+|-----------|--------|-------------------|
+| **Single Point of Failure** | Complete service outage if gateway fails | Distributed architecture with automatic failover |
+| **Traffic Spikes** | Performance degradation under high load | Dynamic load distribution across multiple nodes |
+| **Provider Rate Limits** | Request throttling and service interruption | Distributed rate limit tracking and intelligent routing |
+| **Regional Latency** | Poor user experience in distant regions | Geographic distribution with local processing |
+| **Maintenance Windows** | Service downtime during updates | Rolling updates with zero-downtime deployment |
+| **Capacity Planning** | Over/under-provisioning resources | Elastic scaling based on real-time demand |
+
+### Key Benefits
+
+| Feature | Description |
+|---------|-------------|
+| **Peer-to-Peer Architecture** | No single point of failure with equal node participation |
+| **Gossip-Based State Sync** | Real-time synchronization of traffic patterns and limits |
+| **Automatic Failover** | Seamless traffic redistribution when nodes fail |
+| **Request Migration** | Ongoing requests continue on healthy nodes |
+| **Zero-Downtime Updates** | Rolling deployments without service interruption |
+| **Intelligent Load Distribution** | AI-driven traffic routing based on node capacity |
+
+---
+
+## Architecture
+
+### Peer-to-Peer Network Design
+
+Bifrost clustering uses a **peer-to-peer (P2P) network** where all nodes are equal participants. This design eliminates single points of failure and provides superior fault tolerance compared to master-slave architectures.
+
+![Clustering diagram](../../media/clustering-diagram.png)
+
+### Minimum Node Requirements
+
+**Recommended: 3+ nodes minimum** for optimal fault tolerance and consensus.
+
+| Cluster Size | Fault Tolerance | Use Case |
+|--------------|-----------------|----------|
+| **3 nodes** | 1 node failure | Small production deployments |
+| **5 nodes** | 2 node failures | Medium production deployments |
+| **7+ nodes** | 3+ node failures | Large enterprise deployments |
+
+---
+
+## Gossip Protocol Implementation
+
+### State Synchronization
+
+The gossip protocol ensures all nodes maintain consistent views of:
+
+- **Traffic Patterns**: Request volume, latency metrics, error rates per model-key-id
+- **Rate Limit States**: Current usage counters for each provider/model combination
+- **Node Health**: CPU, memory, network status of all peers
+- **Configuration Changes**: Provider updates, routing rules, policies
+- **Model Performance**: Real-time metrics for intelligent load balancing
+- **Provider Weights**: Dynamic weight adjustments based on performance
+
+### Gossip Message Types
+
+#### Traffic Update Messages
+
+```json
+{
+  "version": 1,
+  "type": "traffic_update",
+  "node_id": "bifrost-node-a",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "data": {
+    "requests_per_minute": 1250,
+    "avg_latency_ms": 145,
+    "error_rate": 0.02,
+    "traffic_percentage_overall": 33.4,
+    "provider_metrics": {
+      "openai": {
+        "traffic_percentage": 64.0,
+        "model_keys": {
+          "gpt-4-key-1": {
+            "avg_latency_ms": 1200,
+            "current_weight": 0.8,
+            "error_rate": 0.01,
+            "traffic_percentage": 45.2,
+            "requests_count": 362,
+            "tokens_processed": 87500
+          },
+          "gpt-4-key-2": {
+            "avg_latency_ms": 1450,
+            "current_weight": 0.6,
+            "error_rate": 0.03,
+            "traffic_percentage": 18.8,
+            "requests_count": 150,
+            "tokens_processed": 32000
+          }
+        }
+      },
+      "anthropic": {
+        "traffic_percentage": 36.0,
+        "model_keys": {
+          "claude-3-key-1": {
+            "avg_latency_ms": 980,
+            "current_weight": 1.0,
+            "error_rate": 0.005,
+            "traffic_percentage": 28.5,
+            "requests_count": 228,
+            "tokens_processed": 54000
+          },
+          "claude-3-key-2": {
+            "avg_latency_ms": 1100,
+            "current_weight": 0.9,
+            "error_rate": 0.008,
+            "traffic_percentage": 7.5,
+            "requests_count": 60,
+            "tokens_processed": 15000
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Weight Adjustment Messages
+
+```json
+{
+  "version": 1,
+  "type": "weight_update",
+  "node_id": "bifrost-node-b",
+  "timestamp": "2024-01-15T10:30:15Z",
+  "data": {
+    "provider": "openai",
+    "model_key_id": "gpt-4-key-2",
+    "weight_change": {
+      "from": 0.8,
+      "to": 0.6,
+      "reason": "high_error_rate",
+      "threshold_exceeded": 0.025
+    },
+    "performance_metrics": {
+      "avg_latency_ms": 1450,
+      "error_rate": 0.03,
+      "success_rate": 0.97
+    }
+  }
+}
+```
+
+#### Performance Alert Messages
+
+```json
+{
+  "version": 1,
+  "type": "performance_alert",
+  "node_id": "bifrost-node-c",
+  "timestamp": "2024-01-15T10:31:00Z",
+  "data": {
+    "alert_type": "latency_spike",
+    "provider": "anthropic",
+    "model_key_id": "claude-3-key-1",
+    "current_metrics": {
+      "avg_latency_ms": 2800,
+      "baseline_latency_ms": 980,
+      "spike_percentage": 185.7
+    },
+    "recommended_action": "reduce_weight"
+  }
+}
+```
+
+### Convergence Guarantees
+
+- **Eventually Consistent**: All nodes converge to the same state within seconds
+- **Partition Tolerance**: Nodes continue operating during network splits
+- **Conflict Resolution**: Timestamp-based ordering for conflicting updates
+
+---
+
+## Automatic Failover & Request Migration
+
+### Node Failure Detection
+
+Bifrost uses multiple failure detection mechanisms:
+
+1. **Heartbeat Monitoring**: Regular ping/pong between all nodes
+2. **Request Timeout Tracking**: Failed API calls indicate node issues
+3. **Gossip Silence Detection**: Missing gossip messages trigger health checks
+4. **Load Balancer Health Checks**: External monitoring integration
+
+### Traffic Redistribution
+
+When a node fails, traffic is automatically redistributed:
+
+![Traffic distribution](../../media/traffic-redistribution.png)
+
+### Request Migration Strategies
+
+Based on configuration, ongoing requests can be handled in multiple ways:
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| **Complete on Origin** | Requests finish on the original node | Stateful operations |
+| **Migrate to Healthy Node** | Transfer to available nodes | Stateless operations |
+| **Retry with Backoff** | Restart request on healthy node | Idempotent operations |
+| **Circuit Breaker** | Fail fast and return error | Time-sensitive operations |
+
+---
+
+## Configuration
+
+### Basic Cluster Setup
+
+```json
+{
+  "cluster": {
+    "enabled": true,
+    "node_id": "bifrost-node-1",
+    "bind_address": "0.0.0.0:8080",
+    "peers": [
+      "bifrost-node-2:8080",
+      "bifrost-node-3:8080"
+    ],
+    "gossip": {
+      "port": 7946,
+      "interval": "1s",
+      "timeout": "5s"
+    }
+  }
+}
+```
+
+### Advanced Clustering Options
+
+```json
+{
+  "cluster": {
+    "enabled": true,
+    "node_id": "bifrost-node-1",
+    "bind_address": "0.0.0.0:8080",
+    "peers": [
+      "bifrost-node-2:8080",
+      "bifrost-node-3:8080"
+    ],
+    "gossip": {
+      "port": 7946,
+      "interval": "1s",
+      "timeout": "5s",
+      "max_packet_size": 1400,
+      "compression": true
+    },
+    "failover": {
+      "detection_threshold": 3,
+      "recovery_timeout": "30s",
+      "request_migration": "migrate_to_healthy"
+    },
+    "load_balancing": {
+      "algorithm": "weighted_round_robin",
+      "health_check_interval": "10s",
+      "weight_adjustment": "auto"
+    }
+  }
+}
+```
+
+### Request Migration Configuration
+
+```json
+{
+  "cluster": {
+    "failover": {
+      "request_migration": "migrate_to_healthy",
+      "migration_strategies": {
+        "chat_completions": "migrate_to_healthy",
+        "embeddings": "complete_on_origin",
+        "streaming": "circuit_breaker"
+      },
+      "timeout_behavior": {
+        "short_timeout": "retry_with_backoff",
+        "long_timeout": "migrate_to_healthy"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Deployment Patterns
+
+### Docker Compose Cluster
+
+```yaml
+version: '3.8'
+services:
+  bifrost-node-1:
+    image: bifrost:latest
+    environment:
+      - CLUSTER_ENABLED=true
+      - NODE_ID=bifrost-node-1
+      - PEERS=bifrost-node-2:8080,bifrost-node-3:8080
+    ports:
+      - "8080:8080"
+      - "7946:7946"
+    
+  bifrost-node-2:
+    image: bifrost:latest
+    environment:
+      - CLUSTER_ENABLED=true
+      - NODE_ID=bifrost-node-2
+      - PEERS=bifrost-node-1:8080,bifrost-node-3:8080
+    ports:
+      - "8081:8080"
+      - "7947:7946"
+    
+  bifrost-node-3:
+    image: bifrost:latest
+    environment:
+      - CLUSTER_ENABLED=true
+      - NODE_ID=bifrost-node-3
+      - PEERS=bifrost-node-1:8080,bifrost-node-2:8080
+    ports:
+      - "8082:8080"
+      - "7948:7946"
+```
+
+### Kubernetes Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bifrost-cluster
+spec:
+  serviceName: bifrost-cluster
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bifrost
+  template:
+    metadata:
+      labels:
+        app: bifrost
+    spec:
+      containers:
+      - name: bifrost
+        image: bifrost:latest
+        env:
+        - name: CLUSTER_ENABLED
+          value: "true"
+        - name: NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PEERS
+          value: "bifrost-cluster-0.bifrost-cluster:8080,bifrost-cluster-1.bifrost-cluster:8080,bifrost-cluster-2.bifrost-cluster:8080"
+        ports:
+        - containerPort: 8080
+          name: api
+        - containerPort: 7946
+          name: gossip
+```
+
+---
+
+## Monitoring & Observability
+
+### Cluster Health Metrics
+
+Monitor these key metrics for cluster health:
+
+```json
+{
+  "cluster_metrics": {
+    "nodes_total": 3,
+    "nodes_healthy": 3,
+    "nodes_failed": 0,
+    "gossip_messages_per_second": 45,
+    "state_convergence_time_ms": 250,
+    "request_migration_rate": 0.001,
+    "load_distribution": {
+      "node-1": 0.33,
+      "node-2": 0.34,
+      "node-3": 0.33
+    },
+    "provider_performance": {
+      "openai": {
+        "total_traffic_percentage": 64.0,
+        "model_keys": {
+          "gpt-4-key-1": {
+            "avg_latency_ms": 1200,
+            "current_weight": 0.8,
+            "error_rate": 0.01,
+            "traffic_percentage": 45.2,
+            "health_status": "healthy"
+          },
+          "gpt-4-key-2": {
+            "avg_latency_ms": 1450,
+            "current_weight": 0.6,
+            "error_rate": 0.03,
+            "traffic_percentage": 18.8,
+            "health_status": "degraded"
+          }
+        }
+      },
+      "anthropic": {
+        "total_traffic_percentage": 36.0,
+        "model_keys": {
+          "claude-3-key-1": {
+            "avg_latency_ms": 980,
+            "current_weight": 1.0,
+            "error_rate": 0.005,
+            "traffic_percentage": 28.5,
+            "health_status": "healthy"
+          },
+          "claude-3-key-2": {
+            "avg_latency_ms": 1100,
+            "current_weight": 0.9,
+            "error_rate": 0.008,
+            "traffic_percentage": 7.5,
+            "health_status": "healthy"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Alerting Rules
+
+Set up alerts for critical cluster events:
+
+**Cluster-Level Alerts:**
+- Node failure detection
+- High request migration rates
+- Gossip convergence delays
+- Uneven load distribution
+- Network partition events
+
+**Model-Key-ID Performance Alerts:**
+- High error rates per model-key-id (> 2.5%)
+- Latency spikes per model-key-id (> 150% of baseline)
+- Weight adjustments frequency (> 10 per minute)
+- Traffic imbalance across model keys (> 80% on single key)
+- Provider-level performance degradation
+
+**Example Alert Configuration:**
+```yaml
+alerts:
+  - name: "High Error Rate - Model Key"
+    condition: "error_rate > 0.025"
+    scope: "model_key_id"
+    action: "reduce_weight"
+    
+  - name: "Latency Spike - Model Key"
+    condition: "avg_latency_ms > baseline * 1.5"
+    scope: "model_key_id"
+    action: "temporary_circuit_break"
+    
+  - name: "Traffic Imbalance - Provider"
+    condition: "single_key_traffic_percentage > 0.8"
+    scope: "provider"
+    action: "rebalance_weights"
+```
+
+---
+
+## Best Practices
+
+### Deployment Guidelines
+
+1. **Use Odd Number of Nodes**: Prevents split-brain scenarios
+2. **Geographic Distribution**: Deploy across availability zones
+3. **Resource Sizing**: Ensure nodes can handle redistributed load
+4. **Network Security**: Secure gossip communication with encryption
+5. **Monitoring Setup**: Implement comprehensive cluster monitoring
+
+### Performance Optimization
+
+1. **Gossip Tuning**: Adjust interval based on cluster size and network latency
+2. **Load Balancer Configuration**: Use health checks and proper timeouts  
+3. **Request Routing**: Optimize based on provider latency and capacity
+4. **State Compression**: Enable gossip compression for large clusters
+5. **Connection Pooling**: Maintain persistent connections between nodes
+
+### Troubleshooting
+
+Common issues and solutions:
+
+| Issue | Symptoms | Solution |
+|-------|----------|----------|
+| **Split Brain** | Inconsistent responses | Ensure odd number of nodes |
+| **Gossip Storms** | High network usage | Tune gossip interval and packet size |
+| **Uneven Load** | Some nodes overloaded | Check load balancing configuration |
+| **Migration Loops** | Requests bouncing between nodes | Review migration strategies |
+
+---
+
+## Security Considerations
+
+### Network Security
+
+- **Gossip Encryption**: Enable TLS for gossip protocol communication
+- **API Authentication**: Secure inter-node API calls with mutual TLS
+- **Network Segmentation**: Isolate cluster traffic in private networks
+- **Firewall Rules**: Restrict gossip ports to cluster nodes only
+
+### Access Control
+
+- **Node Authentication**: Verify node identity before joining cluster
+- **Configuration Signing**: Cryptographically sign configuration updates
+- **Audit Logging**: Track all cluster membership and configuration changes
+- **Secret Management**: Secure storage and rotation of cluster secrets
+
+---
+
+This clustering architecture ensures Bifrost can handle enterprise-scale deployments with high availability, automatic failover, and intelligent traffic distribution while maintaining security and performance standards.

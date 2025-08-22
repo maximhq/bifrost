@@ -25,12 +25,12 @@ Bifrost is a high-performance AI gateway that connects you to 12+ providers (Ope
 **What You Need**
 
 - Any AI provider API key (OpenAI, Anthropic, Bedrock, etc.)
-- Node.js 18+ installed (or use Docker instead via [Docker installation](./docs/quickstart/http-transport.md))
+- Node.js 18+ installed 
 - 20 seconds of your time ⏰
 
 ### Using Bifrost HTTP Transport
 
-📖 For detailed setup guides with multiple providers, advanced configuration, and language examples, see [Quick Start Documentation](./docs/quickstart/http-transport.md)
+📖 For detailed setup guides with multiple providers, advanced configuration, and language examples, see [Quick Start Documentation](https://docs.getbifrost.ai)
 
 **Step 1:** Start Bifrost
 
@@ -70,7 +70,7 @@ Your AI gateway is now running with a beautiful web interface. You can:
 - **🔄 Add providers and MCP clients on-the-fly** - Scale and failover without restarts
 - **🚀 Drop into existing code** - Zero changes to your OpenAI/Anthropic apps
 
-> **Want more?** See our [Complete Setup Guide](./docs/quickstart/http-transport.md) for multi-provider configuration, failover strategies, and production deployment.
+> **Want more?** See our [Complete Setup Guide](https://docs.getbifrost.ai/quickstart/gateway/setting-up) for multi-provider configuration, failover strategies, and production deployment.
 
 ## 📑 Table of Contents
 
@@ -165,7 +165,7 @@ There are three ways to use Bifrost - choose the one that fits your needs:
 
 For direct integration into your Go applications. Provides maximum performance and control.
 
-> **📖 [2-Minute Go Package Setup](./docs/quickstart/go-package.md)**
+> **📖 [2-Minute Go Package Setup](https://docs.getbifrost.ai/quickstart/go-sdk/setting-up)**
 
 Quick example:
 
@@ -177,7 +177,7 @@ go get github.com/maximhq/bifrost/core
 
 For language-agnostic integration and microservices architecture.
 
-> **📖 [30-Second HTTP Transport Setup](./docs/quickstart/http-transport.md)**
+> **📖 [30-Second HTTP Transport Setup](https://docs.getbifrost.ai/quickstart/gateway/setting-up)**
 
 Quick example:
 
@@ -189,7 +189,7 @@ npx @maximhq/bifrost
 
 Replace existing OpenAI/Anthropic APIs without changing your application code.
 
-> **📖 [1-Minute Drop-in Integration](./docs/usage/http-transport/integrations/README.md)**
+> **📖 [1-Minute Drop-in Integration](https://docs.getbifrost.ai/quickstart/gateway/integrations)**
 
 Quick example:
 
@@ -202,7 +202,7 @@ Quick example:
 
 ## 📊 Performance
 
-**Bifrost adds virtually zero overhead to your AI requests.** In our sustained 5,000 RPS benchmark (see full methodology in [docs/benchmarks.md](./docs/benchmarks.md)), the gateway added only **11 µs** of overhead per request – that's **less than 0.001%** of a typical GPT-4o response time.
+**Bifrost adds virtually zero overhead to your AI requests.** In our sustained 5,000 RPS benchmark (see full methodology in [docs/benchmarks.md](https://docs.getbifrost.ai/benchmarking/getting-started)), the gateway added only **11 µs** of overhead per request – that's **less than 0.001%** of a typical GPT-4o response time.
 
 **Translation:** Your users won't notice Bifrost is there, but you'll sleep better knowing your AI never goes down.
 
@@ -230,7 +230,7 @@ Bifrost is deliberately configurable so you can dial the **speed ↔ memory** tr
 
 Choose higher settings (like the t3.xlarge profile above) for raw speed, or lower ones (t3.medium) for reduced memory footprint – or find the sweet spot for your workload.
 
-> **Need more numbers?** Dive into the [full benchmark report](./docs/benchmarks.md) for breakdowns of every internal stage (JSON marshalling, HTTP call, parsing, etc.), hardware sizing guides and tuning tips.
+> **Need more numbers?** Dive into the [full benchmark report](https://docs.getbifrost.ai/benchmarking/getting-started) for breakdowns of every internal stage (JSON marshalling, HTTP call, parsing, etc.), hardware sizing guides and tuning tips.
 
 ---
 
@@ -241,42 +241,27 @@ Choose higher settings (like the t3.xlarge profile above) for raw speed, or lowe
 <details>
 <summary><strong>🚀 I want to get started (2 minutes)</strong></summary>
 
-- **[📖 Documentation Hub](./docs/README.md)** - Your complete roadmap to Bifrost
-- **[🔧 Go Package Setup](./docs/quickstart/go-package.md)** - Direct integration into your Go app
-- **[🌐 HTTP API Setup](./docs/quickstart/http-transport.md)** - Language-agnostic service deployment
-- **[🔄 Drop-in Replacement](./docs/usage/http-transport/integrations/README.md)** - Replace OpenAI/Anthropic with zero code changes
+- **[🔧 Go Package Setup](https://docs.getbifrost.ai/quickstart/go-sdk/setting-up)** - Direct integration into your Go app
+- **[🌐 HTTP API Setup](https://docs.getbifrost.ai/quickstart/gateway/setting-up)** - Language-agnostic service deployment
+- **[🔄 Drop-in Replacement](https://docs.getbifrost.ai/integrations/what-is-an-integration)** - Replace OpenAI/Anthropic with zero code changes
 
 </details>
 
 <details>
 <summary><strong>🎯 I want to understand what Bifrost can do</strong></summary>
 
-- **[🔗 Multi-Provider Support](./docs/usage/providers.md)** - Connect to 12+ AI providers with one API
-- **[🛡️ Fallback & Reliability](./docs/usage/providers.md#fallback-mechanisms)** - Never lose a request with automatic failover
-- **[🛠️ MCP Tool Integration](./docs/usage/http-transport/configuration/mcp.md)** - Give your AI external capabilities
-- **[🔌 Plugin Ecosystem](./docs/usage/http-transport/configuration/plugins.md)** - Extend Bifrost with custom middleware
-- **[🔑 Key Management](./docs/usage/key-management.md)** - Rotate API keys without downtime
-- **[📡 Networking](./docs/usage/networking.md)** - Proxies, timeouts, and connection tuning
-
-</details>
-
-<details>
-<summary><strong>⚙️ I want to deploy this to production</strong></summary>
-
-- **[🏗️ System Architecture](./docs/architecture/README.md)** - Understand how Bifrost works internally
-- **[📊 Performance Tuning](./docs/benchmarks.md)** - Squeeze out every microsecond
-- **[🚀 Production Deployment](./docs/usage/http-transport/README.md)** - Scale to millions of requests
-- **[🔧 Complete API Reference](./docs/usage/README.md)** - Every endpoint, parameter, and response
-- **[🐛 Error Handling](./docs/usage/errors.md)** - Troubleshoot like a pro
+- **[🔗 Multi-Provider Support](https://docs.getbifrost.ai/integrations/what-is-an-integration)** - Connect to 12+ AI providers with one API
+- **[🛡️ Fallback & Reliability](https://docs.getbifrost.ai/features/fallbacks)** - Never lose a request with automatic failover
+- **[🛠️ MCP Tool Integration](https://docs.getbifrost.ai/features/mcp)** - Give your AI external capabilities
+- **[🔌 Plugin Ecosystem](https://docs.getbifrost.ai/features/plugins/mocker)** - Extend Bifrost with custom middleware
+- **[🔑 Provider management](https://docs.getbifrost.ai/quickstart/gateway/provider-configuration)** - Rotate API keys without downtime
 
 </details>
 
 <details>
 <summary><strong>📱 I'm migrating from another tool</strong></summary>
 
-- **[🔄 Migration Guides](./docs/usage/http-transport/integrations/migration-guide.md)** - Step-by-step migration from OpenAI, Anthropic, LiteLLM
-- **[🎓 Real-World Examples](./docs/examples/)** - Production-ready code samples
-- **[❓ Common Questions](./docs/usage/errors.md)** - Solutions to frequent issues
+- **[🔄 Migration Guides](https://docs.getbifrost.ai/integrations/what-is-an-integration)** - Step-by-step migration from OpenAI, Anthropic, LiteLLM
 
 </details>
 
@@ -352,7 +337,7 @@ The build script includes:
 
 ## 🤝 Contributing
 
-See our **[Contributing Guide](./docs/contributing/README.md)** for detailed information on how to contribute to Bifrost. We welcome contributions of all kinds—whether it's bug fixes, features, documentation improvements, or new ideas. Feel free to open an issue, and once it's assigned, submit a Pull Request.
+See our **[Contributing Guide](./docs/contributing/setting-up-repo.md)** for detailed information on how to contribute to Bifrost. We welcome contributions of all kinds—whether it's bug fixes, features, documentation improvements, or new ideas. Feel free to open an issue, and once it's assigned, submit a Pull Request.
 
 ---
 
