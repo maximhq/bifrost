@@ -61,9 +61,19 @@ RUN mkdir -p /app/data/logs && \
     chmod +x /app/docker-entrypoint.sh
 USER appuser
 
+# Getting arguments
+ARG ARG_APP_PORT=8080
+ARG ARG_APP_HOST=0.0.0.0
+ARG ARG_LOG_LEVEL=info
+ARG ARG_LOG_STYLE=json
+ARG ARG_APP_DIR=/app/data
+
 # Environment variables with defaults (can be overridden at runtime)
-ENV APP_PORT=8080 \
-    APP_HOST=0.0.0.0
+ENV APP_PORT=$ARG_APP_PORT \
+    APP_HOST=$ARG_APP_HOST \
+    LOG_LEVEL=$ARG_LOG_LEVEL \
+    LOG_STYLE=$ARG_LOG_STYLE \
+    APP_DIR=$ARG_APP_DIR
 
 # Declare volume for data persistence
 VOLUME ["/app/data"]
