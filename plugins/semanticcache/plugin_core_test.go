@@ -404,7 +404,7 @@ type MockUnsupportedStore struct {
 	vectorstore.VectorStore // Embed interface to implement all methods
 }
 
-func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, indexName string, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	return nil, vectorstore.ErrNotSupported
 }
 
@@ -412,7 +412,7 @@ func (m *MockUnsupportedStore) AddSemanticCache(ctx context.Context, key string,
 	return vectorstore.ErrNotSupported
 }
 
-func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, indexName string, keyPrefix string, embeddingDim int, metadataFields []string) error {
+func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, keyPrefix string, embeddingDim int, metadataFields []string) error {
 	return vectorstore.ErrNotSupported
 }
 

@@ -8,8 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,6 +104,26 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// StreamChunk represents a single chunk from a streaming response
+type StreamChunk struct {
+	Timestamp    time.Time                // When chunk was received
+	Response     *schemas.BifrostResponse // The actual response chunk
+	FinishReason *string                  // If this is the final chunk
+	ErrorDetails *schemas.BifrostError    // Error if any
+}
+
+// StreamAccumulator manages accumulation of streaming chunks for caching
+type StreamAccumulator struct {
+	RequestID      string                 // The request ID
+	Chunks         []*StreamChunk         // All chunks for this stream
+	IsComplete     bool                   // Whether the stream is complete
+	FinalTimestamp time.Time              // When the stream completed
+	Embedding      []float32              // Embedding for the original request
+	Metadata       map[string]interface{} // Metadata for caching
+	TTL            time.Duration          // TTL for this cache entry
+	mu             sync.Mutex             // Protects chunk operations
+}
+
 // Plugin implements the schemas.Plugin interface for semantic caching.
 // It caches responses based on xxhash of normalized requests and returns cached
 // responses for identical requests. The plugin supports configurable caching behavior
@@ -115,11 +134,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 //   - config: Plugin configuration including semantic cache and caching settings
 //   - logger: Logger instance for plugin operations
 type Plugin struct {
-	store          vectorstore.VectorStore
-	config         Config
-	logger         schemas.Logger
-	client         *bifrost.Bifrost
-	isIndexCreated atomic.Bool // Track if semantic index was created (performance optimization)
+	store              vectorstore.VectorStore
+	config             Config
+	logger             schemas.Logger
+	client             *bifrost.Bifrost
+	streamAccumulators sync.Map // Track stream accumulators by request ID
 }
 
 // Plugin constants
@@ -131,7 +150,6 @@ const (
 	DefaultCacheTTL        time.Duration = 5 * time.Minute
 	DefaultCacheThreshold  float64       = 0.8
 	DefaultKeyPrefix       string        = "semantic_cache"
-	SemanticIndexName      string        = "bifrost_semantic_index"
 )
 
 type PluginAccount struct {
@@ -309,9 +327,6 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	// Try semantic search as fallback
 	shortCircuit, err = plugin.performSemanticSearch(ctx, req, requestType)
 	if err != nil {
-		if plugin.isIndexCreated.Load() {
-			plugin.logger.Warn(PluginLoggerPrefix + " Semantic search failed: " + err.Error())
-		}
 		return req, nil, nil
 	}
 
@@ -406,6 +421,12 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 		return res, nil, nil
 	}
 
+	cacheKey, ok := (*ctx).Value(ContextKey(plugin.config.CacheKey)).(string)
+	if !ok {
+		plugin.logger.Warn(PluginLoggerPrefix + " Cache key is not a string, continuing without caching")
+		return res, nil, nil
+	}
+
 	cacheTTL := plugin.config.TTL
 
 	if plugin.config.CacheTTLKey != "" {
@@ -421,69 +442,30 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 		}
 	}
 
-	// Cache hash, response, and embedding asynchronously to avoid blocking the response
+	// Cache everything in a unified VectorEntry asynchronously to avoid blocking the response
 	go func() {
 		// Create a background context with timeout for the cache operation
-		// This ensures the cache operation doesn't run indefinitely
 		cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 		defer cancel()
 
-		// Create cache keys
-		hashKey := plugin.generateCacheKey(provider, model, requestID, "hash")
+		// Get metadata from context
+		metadata, _ := (*ctx).Value(requestMetadataKey).(map[string]interface{})
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
 
-		// Use plugin prefix for both embedding and response keys for consistency
-		embeddingKey := plugin.generateCacheKey(provider, model, requestID, "emb")
-		responseKey := plugin.generateCacheKey(provider, model, requestID, "response")
+		// Build unified metadata with provider, model, and all params
+		unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, metadata, hash, cacheKey, cacheTTL)
 
-		// Add "chunk_{index}" to the response key for streaming responses
+		// Handle streaming vs non-streaming responses
 		if plugin.isStreamingRequest(requestType) {
-			responseKey = fmt.Sprintf("%s_chunk_%d", responseKey, res.ExtraFields.ChunkIndex)
-		}
-
-		// Store the hash (only once for the first chunk or non-streaming)
-		if !plugin.isStreamingRequest(requestType) || res.ExtraFields.ChunkIndex == 0 {
-			if err := plugin.store.Add(cacheCtx, hashKey, hash, cacheTTL); err != nil {
-				plugin.logger.Warn(PluginLoggerPrefix + " Failed to cache hash asynchronously: " + err.Error())
+			if err := plugin.addStreamingResponse(cacheCtx, requestID, res, embedding, unifiedMetadata, cacheTTL); err != nil {
+				plugin.logger.Warn(fmt.Sprintf("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err))
 			}
-
-			// Store embedding with metadata using native vector search if available
-			if embedding != nil {
-				// Get metadata from context
-				metadata, _ := (*ctx).Value(requestMetadataKey).(map[string]interface{})
-				if metadata == nil {
-					metadata = make(map[string]interface{})
-				}
-
-				// Ensure semantic index exists only once (performance optimization)
-				if !plugin.isIndexCreated.Load() {
-					embeddingDim := len(embedding)
-					metadataFields := []string{"temperature", "max_tokens", "tools_hash", "tool_choice", "top_p", "top_k", "stop_sequences", "presence_penalty", "frequency_penalty", "parallel_tool_calls", "user", "voice", "attachments", "stream"}
-					if err := plugin.store.EnsureSemanticIndex(cacheCtx, SemanticIndexName, plugin.config.Prefix, embeddingDim, metadataFields); err != nil {
-						plugin.logger.Warn(PluginLoggerPrefix + " Failed to ensure semantic index: " + err.Error())
-					} else {
-						plugin.isIndexCreated.Store(true) // Mark as created - never call again
-					}
-				}
-
-				if err := plugin.store.AddSemanticCache(cacheCtx, embeddingKey, embedding, metadata, cacheTTL); err != nil {
-					plugin.logger.Warn(PluginLoggerPrefix + " Failed to cache embedding with metadata asynchronously: " + err.Error())
-				}
-			}
-		}
-
-		// Marshal response for caching
-		responseData, err := json.Marshal(res)
-		if err != nil {
-			// If we can't marshal, just return the response without caching
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to marshal response, continuing without caching")
-			return
-		}
-
-		// Store the response
-		if err := plugin.store.Add(cacheCtx, responseKey, string(responseData), cacheTTL); err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to cache response asynchronously: " + err.Error())
 		} else {
-			plugin.logger.Debug(fmt.Sprintf("%s Cached response for request %s", PluginLoggerPrefix, requestID))
+			if err := plugin.addSingleResponse(cacheCtx, requestID, res, embedding, unifiedMetadata, cacheTTL); err != nil {
+				plugin.logger.Warn(fmt.Sprintf("%s Failed to cache single response: %v", PluginLoggerPrefix, err))
+			}
 		}
 	}()
 
@@ -504,36 +486,64 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 // Returns:
 //   - error: Any error that occurred during cleanup operations
 func (plugin *Plugin) Cleanup() error {
-	// Get all keys matching the prefix using SCAN
-	var keys []string
+	// Clean up all cache entries created by this plugin
+	// We identify them by the presence of "request_hash" and "cache_key" fields which are unique to our cache entries
+	ctx := context.Background()
+
+	// Clean up old stream accumulators first
+	plugin.cleanupOldStreamAccumulators()
+
+	plugin.logger.Info(PluginLoggerPrefix + " Starting cleanup of cache entries...")
+
+	// Get all entries and filter client-side to avoid Weaviate stopwords issues
+	// Empty string filters cause issues, so we'll get all entries and filter them ourselves
+	var totalDeleted int
 	var cursor *string
 
 	for {
-		batch, c, err := plugin.store.GetAll(context.Background(), plugin.config.Prefix+"*", cursor, 1000)
+		// Get batch of all entries (no filters to avoid stopwords issues)
+		results, newCursor, err := plugin.store.GetAll(ctx, nil, cursor, 100)
 		if err != nil {
-			return fmt.Errorf("failed to scan keys for cleanup: %w", err)
+			plugin.logger.Warn(fmt.Sprintf("%s Failed to query entries for cleanup: %v", PluginLoggerPrefix, err))
+			break
 		}
-		keys = append(keys, batch...)
-		cursor = c
+
+		if len(results) == 0 {
+			break
+		}
+
+		// Filter and extract IDs for deletion (only our cache entries)
+		var idsToDelete []string
+		for _, result := range results {
+			if searchResult, ok := result.(vectorstore.SearchResult); ok {
+				// Check if this is one of our cache entries by looking at properties
+				if plugin.isCacheEntry(searchResult.Properties) {
+					idsToDelete = append(idsToDelete, searchResult.ID)
+				}
+			}
+		}
+
+		// Delete this batch
+		if len(idsToDelete) > 0 {
+			err = plugin.store.Delete(ctx, idsToDelete)
+			if err != nil {
+				plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache entries: %v", PluginLoggerPrefix, err))
+			} else {
+				totalDeleted += len(idsToDelete)
+				plugin.logger.Debug(fmt.Sprintf("%s Deleted %d cache entries", PluginLoggerPrefix, len(idsToDelete)))
+			}
+		}
+
+		cursor = newCursor
 		if cursor == nil {
 			break
 		}
 	}
 
-	if len(keys) > 0 {
-		if err := plugin.store.Delete(context.Background(), keys); err != nil {
-			return fmt.Errorf("failed to delete cache keys: %w", err)
-		}
-		plugin.logger.Info(fmt.Sprintf("%s Cleaned up %d cache entries", PluginLoggerPrefix, len(keys)))
-	}
-
-	// Also delete the semantic index to ensure clean state for next restart
-	if plugin.isIndexCreated.Load() {
-		if err := plugin.store.DropSemanticIndex(context.Background(), SemanticIndexName); err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to drop semantic index during cleanup: " + err.Error())
-		} else {
-			plugin.logger.Info(PluginLoggerPrefix + " Semantic index dropped successfully")
-		}
+	if totalDeleted > 0 {
+		plugin.logger.Info(fmt.Sprintf("%s Cleanup completed - deleted %d cache entries", PluginLoggerPrefix, totalDeleted))
+	} else {
+		plugin.logger.Info(PluginLoggerPrefix + " Cleanup completed - no cache entries found to delete")
 	}
 
 	plugin.client.Cleanup()
@@ -541,79 +551,359 @@ func (plugin *Plugin) Cleanup() error {
 	return nil
 }
 
-// Public Methods for External Use
-
-// ClearCacheForKey deletes cache entries for a specific request ID pattern.
-// Updated to handle the new key format: {provider}-{model}-{reqid}-{suffix}
-// It deletes both hash and response keys for the given pattern.
-//
-// Parameters:
-//   - pattern: The pattern to match for deletion (e.g., "*-*-{requestID}-*")
-//
-// Returns:
-//   - error: Any error that occurred during cache key deletion
-func (plugin *Plugin) ClearCacheForKey(pattern string) error {
-	// Ensure pattern has prefix
-	if !strings.HasPrefix(pattern, plugin.config.Prefix) {
-		pattern = plugin.config.Prefix + pattern
+// isCacheEntry checks if the given properties belong to a cache entry created by this plugin
+func (plugin *Plugin) isCacheEntry(properties interface{}) bool {
+	if properties == nil {
+		return false
 	}
 
-	// Get all keys matching the pattern
-	var keys []string
-	var cursor *string
-	for {
-		batch, c, err := plugin.store.GetAll(context.Background(), pattern, cursor, 1000)
-		if err != nil {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to scan keys for deletion for pattern '%s': %v", PluginLoggerPrefix, pattern, err))
-			return err
+	propsMap, ok := properties.(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	// Check for our cache-specific fields
+	// We identify cache entries by the presence of request_hash or cache_key fields
+	if requestHash, exists := propsMap["request_hash"]; exists {
+		if requestHashStr, ok := requestHash.(string); ok && requestHashStr != "" {
+			return true
 		}
-		keys = append(keys, batch...)
-		cursor = c
+	}
+
+	if cacheKey, exists := propsMap["cache_key"]; exists {
+		if cacheKeyStr, ok := cacheKey.(string); ok && cacheKeyStr != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// CleanupExpiredEntries removes expired cache entries in batches
+func (plugin *Plugin) CleanupExpiredEntries() error {
+	ctx := context.Background()
+	plugin.logger.Info("[Semantic Cache] Starting cleanup of expired cache entries...")
+
+	currentTime := time.Now().Unix()
+	var totalDeleted int
+	var cursor *string
+
+	for {
+		// Get batch of all entries
+		results, newCursor, err := plugin.store.GetAll(ctx, nil, cursor, 100)
+		if err != nil {
+			plugin.logger.Warn(fmt.Sprintf("[Semantic Cache] Failed to query entries for TTL cleanup: %v", err))
+			break
+		}
+
+		if len(results) == 0 {
+			break
+		}
+
+		// Filter expired entries and collect their IDs
+		var expiredIDs []string
+		for _, result := range results {
+			if searchResult, ok := result.(vectorstore.SearchResult); ok {
+				if plugin.isExpiredEntry(searchResult.Properties, currentTime) {
+					expiredIDs = append(expiredIDs, searchResult.ID)
+				}
+			}
+		}
+
+		// Delete expired entries
+		if len(expiredIDs) > 0 {
+			err = plugin.store.Delete(ctx, expiredIDs)
+			if err != nil {
+				plugin.logger.Warn(fmt.Sprintf("[Semantic Cache] Failed to delete expired entries: %v", err))
+			} else {
+				totalDeleted += len(expiredIDs)
+				plugin.logger.Debug(fmt.Sprintf("[Semantic Cache] Deleted %d expired entries", len(expiredIDs)))
+			}
+		}
+
+		cursor = newCursor
 		if cursor == nil {
 			break
 		}
 	}
 
-	if len(keys) > 0 {
-		if err := plugin.store.Delete(context.Background(), keys); err != nil {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to delete %d cache keys for pattern '%s': %v", PluginLoggerPrefix, len(keys), pattern, err))
-			return err
-		}
-		plugin.logger.Debug(fmt.Sprintf("%s Deleted %d cache entries for pattern %s", PluginLoggerPrefix, len(keys), pattern))
+	if totalDeleted > 0 {
+		plugin.logger.Info(fmt.Sprintf("[Semantic Cache] TTL cleanup completed - deleted %d expired entries", totalDeleted))
+	} else {
+		plugin.logger.Debug("[Semantic Cache] TTL cleanup completed - no expired entries found")
 	}
 
 	return nil
 }
 
-// ClearCacheForRequestID deletes cache entries for a specific request ID.
-// It deletes both hash and response keys (including streaming chunks) for the given request ID.
+// isExpiredEntry checks if a cache entry has expired based on its expires_at timestamp
+func (plugin *Plugin) isExpiredEntry(properties interface{}, currentTime int64) bool {
+	if properties == nil {
+		return false
+	}
+
+	propsMap, ok := properties.(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	// Check if this is a cache entry (has cache_key or request_hash)
+	if !plugin.isCacheEntry(properties) {
+		return false
+	}
+
+	// Check expiration timestamp
+	if expiresAtRaw, exists := propsMap["expires_at"]; exists {
+		if expiresAt, ok := expiresAtRaw.(float64); ok {
+			return int64(expiresAt) < currentTime
+		}
+	}
+
+	// If no expires_at field, consider it non-expired (for backward compatibility)
+	return false
+}
+
+// Public Methods for External Use
+
+// ClearCacheForKey deletes cache entries for a specific request ID or pattern.
+// With the new unified VectorStore interface, this is simplified.
 //
 // Parameters:
-//   - req: The Bifrost request to generate the key pattern for
+//   - key: The specific key or ID to delete
+//
+// Returns:
+//   - error: Any error that occurred during cache key deletion
+func (plugin *Plugin) ClearCacheForKey(key string) error {
+	// With the new unified interface, we delete by specific ID
+	if err := plugin.store.Delete(context.Background(), []string{key}); err != nil {
+		plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache key '%s': %v", PluginLoggerPrefix, key, err))
+		return err
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Deleted cache entry for key %s", PluginLoggerPrefix, key))
+	return nil
+}
+
+// ClearCacheForRequestID deletes cache entries for a specific request ID.
+// With the new unified VectorStore interface, this deletes the single unified entry.
+//
+// Parameters:
+//   - req: The Bifrost request (unused in new implementation)
 //   - requestID: The request ID to delete cache entries for
 //
 // Returns:
 //   - error: Any error that occurred during cache key deletion
 func (plugin *Plugin) ClearCacheForRequestID(req *schemas.BifrostRequest, requestID string) error {
-	// Create patterns for hash and response keys
-	hashPattern := plugin.generateCacheKey(req.Provider, req.Model, requestID, "hash")
-	embeddingPattern := plugin.generateCacheKey(req.Provider, req.Model, requestID, "emb")
-	responsePattern := plugin.generateCacheKey(req.Provider, req.Model, requestID, "response") + "*" // Include streaming chunks
-
-	// Delete hash key
-	if err := plugin.ClearCacheForKey(hashPattern); err != nil {
-		plugin.logger.Warn(PluginLoggerPrefix + " Failed to delete hash key: " + err.Error())
-	}
-
-	// Delete embedding key
-	if err := plugin.ClearCacheForKey(embeddingPattern); err != nil {
-		plugin.logger.Warn(PluginLoggerPrefix + " Failed to delete embedding key: " + err.Error())
-	}
-
-	// Delete response keys (including chunks)
-	if err := plugin.ClearCacheForKey(responsePattern); err != nil {
-		plugin.logger.Warn(PluginLoggerPrefix + " Failed to delete response keys: " + err.Error())
+	// With the new unified interface, we delete the single entry by its ID
+	if err := plugin.ClearCacheForKey(requestID); err != nil {
+		plugin.logger.Warn(PluginLoggerPrefix + " Failed to delete cache entry: " + err.Error())
+		return err
 	}
 
 	return nil
+}
+
+// buildUnifiedMetadata constructs the unified metadata structure for VectorEntry
+func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model string, params map[string]interface{}, requestHash string, cacheKey string, ttl time.Duration) map[string]interface{} {
+	unifiedMetadata := make(map[string]interface{})
+
+	// Top-level fields (outside params)
+	unifiedMetadata["provider"] = string(provider)
+	unifiedMetadata["model"] = model
+	unifiedMetadata["request_hash"] = requestHash
+	unifiedMetadata["cache_key"] = cacheKey
+
+	// Calculate expiration timestamp (current time + TTL)
+	expiresAt := time.Now().Add(ttl).Unix()
+	unifiedMetadata["expires_at"] = expiresAt
+
+	// Individual param fields will be stored as params_* by the vectorstore
+	// We pass the params map to the vectorstore, and it handles the individual field storage
+	if len(params) > 0 {
+		unifiedMetadata["params"] = params
+	}
+
+	return unifiedMetadata
+}
+
+// addSingleResponse stores a single (non-streaming) response in unified VectorEntry format
+func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
+	// Marshal response as string
+	responseData, err := json.Marshal(res)
+	if err != nil {
+		return fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	// Add response field to metadata
+	metadata["response"] = string(responseData)
+
+	// Store unified entry using new VectorStore interface
+	if err := plugin.store.Add(ctx, responseID, embedding, metadata); err != nil {
+		return fmt.Errorf("failed to store unified cache entry: %w", err)
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Successfully cached single response with ID: %s", PluginLoggerPrefix, responseID))
+	return nil
+}
+
+// addStreamingResponse handles streaming response storage by accumulating chunks
+func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
+	// Create accumulator if it doesn't exist
+	accumulator := plugin.getOrCreateStreamAccumulator(responseID, embedding, metadata, ttl)
+
+	// Create chunk from current response
+	chunk := &StreamChunk{
+		Timestamp: time.Now(),
+		Response:  res,
+	}
+
+	// Check for finish reason or errors to mark as final chunk
+	if res != nil && len(res.Choices) > 0 {
+		choice := res.Choices[0]
+		if choice.BifrostStreamResponseChoice != nil {
+			chunk.FinishReason = choice.FinishReason
+		}
+	}
+
+	// Add chunk to accumulator
+	if err := plugin.addStreamChunk(responseID, chunk); err != nil {
+		return fmt.Errorf("failed to add stream chunk: %w", err)
+	}
+
+	// If this is the final chunk, process accumulated chunks synchronously
+	// This ensures the complete stream is cached before the request finishes
+	if accumulator.IsComplete {
+		if processErr := plugin.processAccumulatedStream(ctx, responseID); processErr != nil {
+			plugin.logger.Warn(fmt.Sprintf("%s Failed to process accumulated stream for request %s: %v", PluginLoggerPrefix, responseID, processErr))
+		}
+	}
+
+	return nil
+}
+
+// ========= Streaming State Management Methods =========
+
+// createStreamAccumulator creates a new stream accumulator for a request
+func (plugin *Plugin) createStreamAccumulator(requestID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
+	accumulator := &StreamAccumulator{
+		RequestID:  requestID,
+		Chunks:     make([]*StreamChunk, 0),
+		IsComplete: false,
+		Embedding:  embedding,
+		Metadata:   metadata,
+		TTL:        ttl,
+	}
+
+	plugin.streamAccumulators.Store(requestID, accumulator)
+	return accumulator
+}
+
+// getOrCreateStreamAccumulator gets or creates a stream accumulator for a request
+func (plugin *Plugin) getOrCreateStreamAccumulator(requestID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
+	if accumulator, exists := plugin.streamAccumulators.Load(requestID); exists {
+		return accumulator.(*StreamAccumulator)
+	}
+
+	// Create new accumulator if it doesn't exist
+	return plugin.createStreamAccumulator(requestID, embedding, metadata, ttl)
+}
+
+// addStreamChunk adds a chunk to the stream accumulator
+func (plugin *Plugin) addStreamChunk(requestID string, chunk *StreamChunk) error {
+	// Get accumulator (should exist if properly initialized)
+	accumulatorInterface, exists := plugin.streamAccumulators.Load(requestID)
+	if !exists {
+		return fmt.Errorf("stream accumulator not found for request %s", requestID)
+	}
+
+	accumulator := accumulatorInterface.(*StreamAccumulator)
+	accumulator.mu.Lock()
+	defer accumulator.mu.Unlock()
+
+	// Add chunk to the list (chunks arrive in order)
+	accumulator.Chunks = append(accumulator.Chunks, chunk)
+
+	// Check if this is the final chunk
+	if chunk.FinishReason != nil || chunk.ErrorDetails != nil {
+		accumulator.IsComplete = true
+		accumulator.FinalTimestamp = chunk.Timestamp
+	}
+
+	return nil
+}
+
+// processAccumulatedStream processes all accumulated chunks and caches the complete stream
+func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID string) error {
+	accumulatorInterface, exists := plugin.streamAccumulators.Load(requestID)
+	if !exists {
+		return fmt.Errorf("stream accumulator not found for request %s", requestID)
+	}
+
+	accumulator := accumulatorInterface.(*StreamAccumulator)
+	accumulator.mu.Lock()
+	defer accumulator.mu.Unlock()
+
+	// Ensure cleanup happens
+	defer plugin.cleanupStreamAccumulator(requestID)
+
+	// Build complete stream_responses from accumulated chunks
+	var streamResponses []string
+	for _, chunk := range accumulator.Chunks {
+		if chunk.Response != nil {
+			chunkData, err := json.Marshal(chunk.Response)
+			if err != nil {
+				plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal stream chunk: %v", PluginLoggerPrefix, err))
+				continue
+			}
+			streamResponses = append(streamResponses, string(chunkData))
+		}
+	}
+
+	// Add stream_responses to metadata
+	finalMetadata := make(map[string]interface{})
+	for k, v := range accumulator.Metadata {
+		finalMetadata[k] = v
+	}
+	finalMetadata["stream_responses"] = streamResponses
+
+	// Store complete unified entry using original requestID
+	if err := plugin.store.Add(ctx, requestID, accumulator.Embedding, finalMetadata); err != nil {
+		return fmt.Errorf("failed to store complete streaming cache entry: %w", err)
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Successfully cached complete stream with %d chunks, ID: %s", PluginLoggerPrefix, len(streamResponses), requestID))
+	return nil
+}
+
+// cleanupStreamAccumulator removes the stream accumulator for a request
+func (plugin *Plugin) cleanupStreamAccumulator(requestID string) {
+	plugin.streamAccumulators.Delete(requestID)
+}
+
+// cleanupOldStreamAccumulators removes stream accumulators older than 5 minutes
+func (plugin *Plugin) cleanupOldStreamAccumulators() {
+	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
+	cleanedCount := 0
+
+	plugin.streamAccumulators.Range(func(key, value interface{}) bool {
+		requestID := key.(string)
+		accumulator := value.(*StreamAccumulator)
+		accumulator.mu.Lock()
+		defer accumulator.mu.Unlock()
+
+		// Check if this accumulator is old (no activity for 5 minutes)
+		if len(accumulator.Chunks) > 0 {
+			firstChunkTime := accumulator.Chunks[0].Timestamp
+			if firstChunkTime.Before(fiveMinutesAgo) {
+				plugin.streamAccumulators.Delete(requestID)
+				cleanedCount++
+				plugin.logger.Debug(fmt.Sprintf("%s Cleaned up old stream accumulator for request %s", PluginLoggerPrefix, requestID))
+			}
+		}
+		return true
+	})
+
+	if cleanedCount > 0 {
+		plugin.logger.Debug(fmt.Sprintf("%s Cleaned up %d old stream accumulators", PluginLoggerPrefix, cleanedCount))
+	}
 }

@@ -1777,35 +1777,20 @@ func (s *Config) GetVectorStoreConfigRedacted() (*vectorstore.Config, error) {
 	if vectorStoreConfig == nil {
 		return nil, nil
 	}
-	if vectorStoreConfig.Type == vectorstore.VectorStoreTypeRedis {
-		redisConfig, ok := vectorStoreConfig.Config.(*vectorstore.RedisConfig)
+	if vectorStoreConfig.Type == vectorstore.VectorStoreTypeWeaviate {
+		weaviateConfig, ok := vectorStoreConfig.Config.(*vectorstore.WeaviateConfig)
 		if !ok {
-			return nil, fmt.Errorf("failed to cast vector store config to redis config")
+			return nil, fmt.Errorf("failed to cast vector store config to weaviate config")
 		}
 		// Create a copy to avoid modifying the original
-		redactedRedisConfig := *redisConfig
+		redactedWeaviateConfig := *weaviateConfig
 		// Redact password if it exists
-		if redactedRedisConfig.Password != "" {
-			redactedRedisConfig.Password = RedactKey(redactedRedisConfig.Password)
+		if redactedWeaviateConfig.ApiKey != "" {
+			redactedWeaviateConfig.ApiKey = RedactKey(redactedWeaviateConfig.ApiKey)
 		}
-		redactedConfig := *vectorStoreConfig
-		redactedConfig.Config = &redactedRedisConfig
-		return &redactedConfig, nil
-	}
-	if vectorStoreConfig.Type == vectorstore.VectorStoreTypeRedisCluster {
-		redisClusterConfig, ok := vectorStoreConfig.Config.(*vectorstore.RedisClusterConfig)
-		if !ok {
-			return nil, fmt.Errorf("failed to cast vector store config to redis cluster config")
-		}
-		// Create a copy to avoid modifying the original
-		redactedConfig := *vectorStoreConfig
-		redactedRedisClusterConfig := *redisClusterConfig
-		// Redact password if it exists
-		if redactedRedisClusterConfig.Password != "" {
-			redactedRedisClusterConfig.Password = RedactKey(redactedRedisClusterConfig.Password)
-		}
-		redactedConfig.Config = &redactedRedisClusterConfig
-		return &redactedConfig, nil
+		redactedVectorStoreConfig := *vectorStoreConfig
+		redactedVectorStoreConfig.Config = &redactedWeaviateConfig
+		return &redactedVectorStoreConfig, nil
 	}
 	return nil, nil
 }

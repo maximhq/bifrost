@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"sort"
 	"strings"
 
 	"github.com/cespare/xxhash/v2"
@@ -275,128 +274,9 @@ func (plugin *Plugin) generateCacheKey(provider schemas.ModelProvider, model str
 	return fmt.Sprintf("%s%s-%s-reqid-%s-%s", plugin.config.Prefix, provider, model, requestID, suffix)
 }
 
-// getNonStreamingResponseForRequestID retrieves a non-streaming response for the given request ID.
-func (plugin *Plugin) getNonStreamingResponseForRequestID(ctx *context.Context, req *schemas.BifrostRequest, requestID string, cacheType CacheType) (*schemas.PluginShortCircuit, error) {
-	responseKey := plugin.generateCacheKey(req.Provider, req.Model, requestID, "response")
-	cachedData, err := plugin.store.GetChunk(*ctx, responseKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get cached response for key: %s: %w", responseKey, err)
-	}
+// Note: getNonStreamingResponseForRequestID moved to search.go with new VectorStore interface implementation
 
-	// Unmarshal cached response
-	var cachedResponse schemas.BifrostResponse
-	if err := json.Unmarshal([]byte(cachedData), &cachedResponse); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
-	}
-
-	// Mark response as cached
-	if cachedResponse.ExtraFields.RawResponse == nil {
-		cachedResponse.ExtraFields.RawResponse = make(map[string]interface{})
-	}
-	if rawResponseMap, ok := cachedResponse.ExtraFields.RawResponse.(map[string]interface{}); ok {
-		rawResponseMap["bifrost_cached"] = true
-		rawResponseMap["bifrost_cache_key"] = responseKey
-		rawResponseMap["bifrost_cache_type"] = string(cacheType) // Convert to string for proper type assertion in tests
-	}
-	cachedResponse.ExtraFields.Provider = req.Provider
-
-	*ctx = context.WithValue(*ctx, isCacheHitKey, true)
-	*ctx = context.WithValue(*ctx, CacheHitTypeKey, cacheType)
-
-	return &schemas.PluginShortCircuit{
-		Response: &cachedResponse,
-	}, nil
-}
-
-// getStreamingResponseForRequestID retrieves a streaming response for the given request ID.
-func (plugin *Plugin) getStreamingResponseForRequestID(ctx *context.Context, req *schemas.BifrostRequest, requestID string, cacheType CacheType) (*schemas.PluginShortCircuit, error) {
-	// Find all chunks for this request ID
-	responsePattern := plugin.generateCachePattern(req, requestID, "response_chunk_*")
-
-	// Get all chunk keys matching the pattern
-	var chunkKeys []string
-	var cursor *string
-	for {
-		batch, c, err := plugin.store.GetAll(*ctx, responsePattern, cursor, 1000)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan cached chunks: %w", err)
-		}
-		chunkKeys = append(chunkKeys, batch...)
-		cursor = c
-		if cursor == nil {
-			break
-		}
-	}
-
-	if len(chunkKeys) == 0 {
-		return nil, fmt.Errorf("no cached chunks found for key: %s", responsePattern)
-	}
-
-	// Create stream channel
-	streamChan := make(chan *schemas.BifrostStream)
-
-	go func() {
-		defer close(streamChan)
-
-		// Get all chunk data
-		chunkData, err := plugin.store.GetChunks(*ctx, chunkKeys)
-		if err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to retrieve cached chunks")
-			return
-		}
-
-		var chunks []schemas.BifrostResponse
-		for _, data := range chunkData {
-			if data == nil {
-				continue
-			}
-			chunkStr, ok := data.(string)
-			if !ok {
-				plugin.logger.Warn(PluginLoggerPrefix + " Cached chunk is not a string, skipping")
-				continue
-			}
-
-			// Unmarshal cached response
-			var cachedResponse schemas.BifrostResponse
-			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
-				plugin.logger.Warn(PluginLoggerPrefix + " Failed to unmarshal cached chunk, skipping")
-				continue
-			}
-
-			chunks = append(chunks, cachedResponse)
-		}
-
-		// Sort chunks by index
-		sort.Slice(chunks, func(i, j int) bool {
-			return chunks[i].ExtraFields.ChunkIndex < chunks[j].ExtraFields.ChunkIndex
-		})
-
-		// Send chunks in order
-		for _, chunk := range chunks {
-			if chunk.ExtraFields.RawResponse == nil {
-				chunk.ExtraFields.RawResponse = make(map[string]interface{})
-			}
-			if rawResponseMap, ok := chunk.ExtraFields.RawResponse.(map[string]interface{}); ok {
-				rawResponseMap["bifrost_cached"] = true
-				rawResponseMap["bifrost_cache_key"] = plugin.generateCacheKey(req.Provider, req.Model, requestID, fmt.Sprintf("response_chunk_%d", chunk.ExtraFields.ChunkIndex))
-				rawResponseMap["bifrost_cache_type"] = string(cacheType) // Convert to string for proper type assertion in tests
-			}
-
-			chunk.ExtraFields.Provider = req.Provider
-
-			streamChan <- &schemas.BifrostStream{
-				BifrostResponse: &chunk,
-			}
-		}
-	}()
-
-	*ctx = context.WithValue(*ctx, isCacheHitKey, true)
-	*ctx = context.WithValue(*ctx, CacheHitTypeKey, cacheType)
-
-	return &schemas.PluginShortCircuit{
-		Stream: streamChan,
-	}, nil
-}
+// Note: getStreamingResponseForRequestID moved to search.go with new VectorStore interface implementation
 
 func (plugin *Plugin) isStreamingRequest(requestType bifrost.RequestType) bool {
 	return requestType == bifrost.ChatCompletionStreamRequest ||
