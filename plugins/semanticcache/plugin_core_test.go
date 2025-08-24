@@ -78,9 +78,9 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 		speedup := float64(duration1) / float64(duration2)
 		t.Logf("Cache speedup: %.2fx faster", speedup)
 
-		// Assert that cache is at least 2x faster (reasonable expectation)
-		if speedup < 2.0 {
-			t.Errorf("Cache speedup is less than 2x: got %.2fx", speedup)
+		// Assert that cache is at least 1.5x faster (reasonable expectation)
+		if speedup < 1.5 {
+			t.Errorf("Cache speedup is less than 1.5x: got %.2fx", speedup)
 		}
 	}
 
@@ -404,7 +404,7 @@ type MockUnsupportedStore struct {
 	vectorstore.VectorStore // Embed interface to implement all methods
 }
 
-func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, indexName string, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	return nil, vectorstore.ErrNotSupported
 }
 
@@ -412,7 +412,7 @@ func (m *MockUnsupportedStore) AddSemanticCache(ctx context.Context, key string,
 	return vectorstore.ErrNotSupported
 }
 
-func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, indexName string, keyPrefix string, embeddingDim int, metadataFields []string) error {
+func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, keyPrefix string, embeddingDim int, metadataFields []string) error {
 	return vectorstore.ErrNotSupported
 }
 

@@ -431,7 +431,7 @@ func main() {
 
 			semanticCachePlugin, err := semanticcache.Init(ctx, semCacheConfig, logger, config.VectorStore)
 			if err != nil {
-				logger.Fatal("failed to initialize semantic cache: %v", err)
+				logger.Error("failed to initialize semantic cache: %v", err)
 			} else {
 				loadedPlugins = append(loadedPlugins, semanticCachePlugin)
 				logger.Info("successfully initialized semantic cache")

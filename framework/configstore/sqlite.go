@@ -507,8 +507,14 @@ func (s *SQLiteConfigStore) UpdatePlugin(plugin *TablePlugin, tx ...*gorm.DB) er
 	return nil
 }
 
-func (s *SQLiteConfigStore) DeletePlugin(name string) error {
-	return s.db.Delete(&TablePlugin{}, "name = ?", name).Error
+func (s *SQLiteConfigStore) DeletePlugin(name string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.Delete(&TablePlugin{}, "name = ?", name).Error
 }
 
 // GOVERNANCE METHODS

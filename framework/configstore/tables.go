@@ -138,7 +138,7 @@ type TableEnvKey struct {
 type TableVectorStoreConfig struct {
 	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Enabled         bool      `json:"enabled"`                               // Enable vector store
-	Type            string    `gorm:"type:varchar(50);not null" json:"type"` // "redis"
+	Type            string    `gorm:"type:varchar(50);not null" json:"type"` // "weaviate, elasticsearch, pinecone, etc."
 	TTLSeconds      int       `gorm:"default:300" json:"ttl_seconds"`        // TTL in seconds (default: 5 minutes)
 	CacheByModel    bool      `gorm:"" json:"cache_by_model"`                // Include model in cache key
 	CacheByProvider bool      `gorm:"" json:"cache_by_provider"`             // Include provider in cache key

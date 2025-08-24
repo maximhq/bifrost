@@ -151,6 +151,13 @@ func (h *PluginsHandler) UpdatePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Check if plugin exists
+	if _, err := h.configStore.GetPlugin(name); err != nil {
+		h.logger.Warn("plugin not found for update: %s", name)
+		SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
+		return
+	}
+
 	var request UpdatePluginRequest
 	if err := json.Unmarshal(ctx.PostBody(), &request); err != nil {
 		h.logger.Error("failed to unmarshal update plugin request: %v", err)

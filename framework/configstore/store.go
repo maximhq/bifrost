@@ -46,7 +46,7 @@ type ConfigStore interface {
 	GetPlugin(name string) (*TablePlugin, error)
 	CreatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error
 	UpdatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error
-	DeletePlugin(name string) error
+	DeletePlugin(name string, tx ...*gorm.DB) error
 
 	// Governance config CRUD
 	GetVirtualKeys() ([]TableVirtualKey, error)
