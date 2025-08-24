@@ -3,7 +3,7 @@ package semanticcache
 import (
 	"context"
 	"os"
-	"strings"
+	"strconv"
 	"testing"
 	"time"
 
@@ -14,10 +14,38 @@ import (
 
 // Test constants
 const (
-	TestCacheKey           = "x-test-cache-key"
-	TestPrefix             = "test_semantic_cache_plugin_"
-	TestRedisClusterPrefix = "{test_semantic_cache_plugin_cluster}"
+	TestCacheKey = "x-test-cache-key"
 )
+
+// getWeaviateConfigFromEnv retrieves Weaviate configuration from environment variables
+func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
+	scheme := os.Getenv("WEAVIATE_SCHEME")
+	if scheme == "" {
+		scheme = "https"
+	}
+
+	host := os.Getenv("WEAVIATE_HOST")
+	if host == "" {
+		host = "localhost:8080"
+	}
+
+	apiKey := os.Getenv("WEAVIATE_API_KEY")
+
+	timeoutStr := os.Getenv("WEAVIATE_TIMEOUT")
+	timeout := 30 // default
+	if timeoutStr != "" {
+		if t, err := strconv.Atoi(timeoutStr); err == nil {
+			timeout = t
+		}
+	}
+
+	return vectorstore.WeaviateConfig{
+		Scheme:  scheme,
+		Host:    host,
+		ApiKey:  apiKey,
+		Timeout: time.Duration(timeout) * time.Second,
+	}
+}
 
 // BaseAccount implements the schemas.Account interface for testing purposes.
 type BaseAccount struct{}
@@ -53,14 +81,13 @@ type TestSetup struct {
 }
 
 // NewTestSetup creates a new test setup with default configuration
-func NewTestSetup(t *testing.T, prefix string) *TestSetup {
+func NewTestSetup(t *testing.T) *TestSetup {
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
 	return NewTestSetupWithConfig(t, Config{
 		CacheKey:       TestCacheKey,
-		Prefix:         prefix,
 		Provider:       schemas.OpenAI,
 		EmbeddingModel: "text-embedding-3-small",
 		Threshold:      0.8,
@@ -79,14 +106,11 @@ func NewTestSetupWithConfig(t *testing.T, config Config) *TestSetup {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
 	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
-		Type: "redis",
-		Config: vectorstore.RedisConfig{
-			Addr:     "localhost:6379",
-			Password: os.Getenv("REDIS_PASSWORD"),
-		},
+		Type:   vectorstore.VectorStoreTypeWeaviate,
+		Config: getWeaviateConfigFromEnv(),
 	}, logger)
 	if err != nil {
-		t.Fatalf("Redis not available or failed to connect: %v", err)
+		t.Fatalf("Vector store not available or failed to connect: %v", err)
 	}
 
 	plugin, err := Init(context.Background(), config, logger, store)
@@ -96,7 +120,7 @@ func NewTestSetupWithConfig(t *testing.T, config Config) *TestSetup {
 
 	// Clear test keys
 	pluginImpl := plugin.(*Plugin)
-	clearTestKeysWithStore(t, pluginImpl.store, config.Prefix)
+	clearTestKeysWithStore(t, pluginImpl.store)
 
 	account := &BaseAccount{}
 	client, err := bifrost.Init(schemas.BifrostConfig{
@@ -125,7 +149,6 @@ func NewRedisClusterTestSetup(t *testing.T) *TestSetup {
 
 	config := Config{
 		CacheKey:       TestCacheKey,
-		Prefix:         TestRedisClusterPrefix,
 		Provider:       schemas.OpenAI,
 		EmbeddingModel: "text-embedding-3-small",
 		Threshold:      0.8,
@@ -140,40 +163,22 @@ func NewRedisClusterTestSetup(t *testing.T) *TestSetup {
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
-	redisClusterAddrs := []string{"localhost:6371", "localhost:6372", "localhost:6373"}
-	if envAddrs := os.Getenv("REDIS_CLUSTER_ADDRS"); envAddrs != "" {
-		// Parse comma-separated addresses
-		var addrs []string
-		for _, addr := range strings.Split(envAddrs, ",") {
-			if trimmed := strings.TrimSpace(addr); trimmed != "" {
-				addrs = append(addrs, trimmed)
-			}
-		}
-		if len(addrs) > 0 {
-			redisClusterAddrs = addrs
-		}
-	}
-
 	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
-		Type: "redis_cluster",
-		Config: vectorstore.RedisClusterConfig{
-			Addrs:    redisClusterAddrs,
-			Password: os.Getenv("REDIS_PASSWORD"),
-			Username: os.Getenv("REDIS_USERNAME"),
-		},
+		Type:   vectorstore.VectorStoreTypeWeaviate,
+		Config: getWeaviateConfigFromEnv(),
 	}, logger)
 	if err != nil {
-		t.Fatalf("Redis Cluster not available or failed to connect: %v", err)
+		t.Fatalf("Vector store not available or failed to connect: %v", err)
 	}
 
 	plugin, err := Init(context.Background(), config, logger, store)
 	if err != nil {
-		t.Fatalf("Failed to initialize plugin with Redis Cluster: %v", err)
+		t.Fatalf("Failed to initialize plugin with vector store: %v", err)
 	}
 
 	// Clear test keys
 	pluginImpl := plugin.(*Plugin)
-	clearTestKeysWithStore(t, pluginImpl.store, config.Prefix)
+	clearTestKeysWithStore(t, pluginImpl.store)
 
 	account := &BaseAccount{}
 	client, err := bifrost.Init(schemas.BifrostConfig{
@@ -205,33 +210,10 @@ func (ts *TestSetup) Cleanup() {
 }
 
 // clearTestKeysWithStore removes all keys matching the test prefix using the store interface
-func clearTestKeysWithStore(t *testing.T, store vectorstore.VectorStore, prefix string) {
-	ctx := context.Background()
-	pattern := prefix + "*"
-
-	var keys []string
-	var cursor *string
-
-	for {
-		batch, c, err := store.GetAll(ctx, pattern, cursor, 1000)
-		if err != nil {
-			t.Logf("Warning: Failed to scan keys with prefix %s: %v", prefix, err)
-			return
-		}
-		keys = append(keys, batch...)
-		cursor = c
-		if cursor == nil {
-			break
-		}
-	}
-
-	if len(keys) > 0 {
-		if err := store.Delete(ctx, keys); err != nil {
-			t.Logf("Warning: Failed to delete test keys: %v", err)
-		} else {
-			t.Logf("Cleaned up %d test keys with prefix %s", len(keys), prefix)
-		}
-	}
+func clearTestKeysWithStore(t *testing.T, store vectorstore.VectorStore) {
+	// With the new unified VectorStore interface, cleanup is typically handled
+	// by the vector store implementation (e.g., dropping entire classes)
+	t.Logf("Test cleanup delegated to vector store implementation")
 }
 
 // CreateBasicChatRequest creates a basic chat completion request for testing

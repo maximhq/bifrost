@@ -41,7 +41,7 @@ require (
 	github.com/mark3labs/mcp-go v0.37.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/spf13/cast v1.9.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

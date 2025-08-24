@@ -515,7 +515,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		}
 		if plugins != nil {
 			config.Plugins = make([]*schemas.PluginConfig, len(plugins))
-			// TODO: Pass keys for semantic-cache plugin
 			for i, plugin := range plugins {
 				pluginConfig := &schemas.PluginConfig{
 					Name:    plugin.Name,
@@ -546,10 +545,16 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 		if config.ConfigStore != nil {
 			for _, plugin := range config.Plugins {
+				pluginConfigCopy, err := DeepCopy(plugin.Config)
+				if err != nil {
+					logger.Warn("failed to deep copy plugin config, skipping database update: %v", err)
+					continue
+				}
+
 				pluginConfig := &configstore.TablePlugin{
 					Name:    plugin.Name,
 					Enabled: plugin.Enabled,
-					Config:  plugin.Config,
+					Config:  pluginConfigCopy,
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {
@@ -1777,35 +1782,20 @@ func (s *Config) GetVectorStoreConfigRedacted() (*vectorstore.Config, error) {
 	if vectorStoreConfig == nil {
 		return nil, nil
 	}
-	if vectorStoreConfig.Type == vectorstore.VectorStoreTypeRedis {
-		redisConfig, ok := vectorStoreConfig.Config.(*vectorstore.RedisConfig)
+	if vectorStoreConfig.Type == vectorstore.VectorStoreTypeWeaviate {
+		weaviateConfig, ok := vectorStoreConfig.Config.(*vectorstore.WeaviateConfig)
 		if !ok {
-			return nil, fmt.Errorf("failed to cast vector store config to redis config")
+			return nil, fmt.Errorf("failed to cast vector store config to weaviate config")
 		}
 		// Create a copy to avoid modifying the original
-		redactedRedisConfig := *redisConfig
+		redactedWeaviateConfig := *weaviateConfig
 		// Redact password if it exists
-		if redactedRedisConfig.Password != "" {
-			redactedRedisConfig.Password = RedactKey(redactedRedisConfig.Password)
+		if redactedWeaviateConfig.ApiKey != "" {
+			redactedWeaviateConfig.ApiKey = RedactKey(redactedWeaviateConfig.ApiKey)
 		}
-		redactedConfig := *vectorStoreConfig
-		redactedConfig.Config = &redactedRedisConfig
-		return &redactedConfig, nil
-	}
-	if vectorStoreConfig.Type == vectorstore.VectorStoreTypeRedisCluster {
-		redisClusterConfig, ok := vectorStoreConfig.Config.(*vectorstore.RedisClusterConfig)
-		if !ok {
-			return nil, fmt.Errorf("failed to cast vector store config to redis cluster config")
-		}
-		// Create a copy to avoid modifying the original
-		redactedConfig := *vectorStoreConfig
-		redactedRedisClusterConfig := *redisClusterConfig
-		// Redact password if it exists
-		if redactedRedisClusterConfig.Password != "" {
-			redactedRedisClusterConfig.Password = RedactKey(redactedRedisClusterConfig.Password)
-		}
-		redactedConfig.Config = &redactedRedisClusterConfig
-		return &redactedConfig, nil
+		redactedVectorStoreConfig := *vectorStoreConfig
+		redactedVectorStoreConfig.Config = &redactedWeaviateConfig
+		return &redactedVectorStoreConfig, nil
 	}
 	return nil, nil
 }
@@ -1872,4 +1862,14 @@ func (s *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstore.T
 	config.Config = configMap
 
 	return nil
+}
+
+func DeepCopy[T any](in T) (T, error) {
+	var out T
+	b, err := json.Marshal(in)
+	if err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(b, &out)
+	return out, err
 }

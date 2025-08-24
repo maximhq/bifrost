@@ -20,7 +20,6 @@ const defaultCacheConfig: CacheConfig = {
 	embedding_model: "text-embedding-3-small",
 	ttl_seconds: 300,
 	threshold: 0.8,
-	prefix: "",
 	cache_by_model: true,
 	cache_by_provider: true,
 };
@@ -35,6 +34,12 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	const { data: providersData, error: providersError, isLoading: providersLoading } = useGetProvidersQuery();
 
 	const providers = useMemo(() => providersData?.providers || [], [providersData]);
+
+	useEffect(() => {
+		if (providersError) {
+			toast.error(`Failed to load providers: ${getErrorMessage(providersError as any)}`);
+		}
+	}, [providersError]);
 
 	// RTK Query hooks
 	const { data: plugins, isLoading: loading } = useGetPluginsQuery();
@@ -181,7 +186,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 						<p className="text-muted-foreground text-sm">
 							Enable semantic caching for requests. Send <b>x-bf-cache-key</b> header with requests to use semantic caching.
 							{!isVectorStoreEnabled && (
-								<span className="text-destructive font-medium"> Requires vector store to be configured and enabled below.</span>
+								<span className="text-destructive font-medium">Requires vector store to be configured and enabled in config.json.</span>
 							)}
 							{!providersLoading && providers?.length === 0 && (
 								<span className="text-destructive font-medium"> Requires at least one provider to be configured.</span>
@@ -214,8 +219,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							{/* Provider and Model Settings */}
 							<div className="space-y-4">
 								<h3 className="text-sm font-medium">Provider and Model Settings</h3>
-								<div className="flex gap-4">
-									<div className="w-1/3 space-y-2">
+								<div className="grid grid-cols-2 gap-4">
+									<div className="space-y-2">
 										<Label htmlFor="provider">Configured Providers</Label>
 										<Select value={cacheConfig.provider} onValueChange={(value: ModelProvider) => updateCacheConfig({ provider: value })}>
 											<SelectTrigger className="w-full">
@@ -230,8 +235,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											</SelectContent>
 										</Select>
 									</div>
-									<div className="w-2/3 space-y-2">
-										<Label htmlFor="embedding_model">Embedding Model *</Label>
+									<div className="space-y-2">
+										<Label htmlFor="embedding_model">Embedding Model*</Label>
 										<Input
 											id="embedding_model"
 											placeholder="text-embedding-3-small"
@@ -245,7 +250,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							{/* Cache Settings */}
 							<div className="space-y-4">
 								<h3 className="text-sm font-medium">Cache Settings</h3>
-								<div className="grid grid-cols-3 gap-4">
+								<div className="grid grid-cols-2 gap-4">
 									<div className="space-y-2">
 										<Label htmlFor="ttl">TTL (seconds)</Label>
 										<Input
@@ -266,16 +271,6 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											step="0.01"
 											value={cacheConfig.threshold}
 											onChange={(e) => debouncedUpdateCacheConfig({ threshold: parseFloat(e.target.value) || 0.8 })}
-										/>
-									</div>
-									<div className="space-y-2">
-										<Label htmlFor="prefix">Key Prefix</Label>
-										<Input
-											id="prefix"
-											placeholder="Optional"
-											maxLength={50}
-											value={cacheConfig.prefix || ""}
-											onChange={(e) => debouncedUpdateCacheConfig({ prefix: e.target.value })}
 										/>
 									</div>
 								</div>

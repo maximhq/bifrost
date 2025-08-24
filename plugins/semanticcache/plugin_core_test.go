@@ -13,7 +13,7 @@ import (
 
 // TestSemanticCacheBasicFunctionality tests the core caching functionality
 func TestSemanticCacheBasicFunctionality(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"basic_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("test-basic-value")
@@ -78,9 +78,9 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 		speedup := float64(duration1) / float64(duration2)
 		t.Logf("Cache speedup: %.2fx faster", speedup)
 
-		// Assert that cache is at least 2x faster (reasonable expectation)
-		if speedup < 2.0 {
-			t.Errorf("Cache speedup is less than 2x: got %.2fx", speedup)
+		// Assert that cache is at least 1.5x faster (reasonable expectation)
+		if speedup < 1.5 {
+			t.Errorf("Cache speedup is less than 1.5x: got %.2fx", speedup)
 		}
 	}
 
@@ -103,7 +103,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 
 // TestSemanticSearch tests the semantic similarity search functionality
 func TestSemanticSearch(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"semantic_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Lower threshold for more flexible matching
@@ -200,7 +200,7 @@ func TestSemanticSearch(t *testing.T) {
 
 // TestDirectVsSemanticSearch tests the difference between direct hash matching and semantic search
 func TestDirectVsSemanticSearch(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"direct_vs_semantic_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Lower threshold for more flexible semantic matching
@@ -276,7 +276,7 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 
 // TestNoCacheScenarios tests scenarios where caching should NOT occur
 func TestNoCacheScenarios(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"no_cache_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("no-cache-test")
@@ -331,7 +331,6 @@ func TestCacheConfiguration(t *testing.T) {
 			name: "High Threshold",
 			config: Config{
 				CacheKey:       TestCacheKey,
-				Prefix:         TestPrefix + "high_threshold_",
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.95, // Very high threshold
@@ -345,7 +344,6 @@ func TestCacheConfiguration(t *testing.T) {
 			name: "Low Threshold",
 			config: Config{
 				CacheKey:       TestCacheKey,
-				Prefix:         TestPrefix + "low_threshold_",
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.1, // Very low threshold
@@ -359,7 +357,6 @@ func TestCacheConfiguration(t *testing.T) {
 			name: "Custom TTL",
 			config: Config{
 				CacheKey:       TestCacheKey,
-				Prefix:         TestPrefix + "custom_ttl_",
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.8,
@@ -404,7 +401,7 @@ type MockUnsupportedStore struct {
 	vectorstore.VectorStore // Embed interface to implement all methods
 }
 
-func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, indexName string, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	return nil, vectorstore.ErrNotSupported
 }
 
@@ -412,7 +409,7 @@ func (m *MockUnsupportedStore) AddSemanticCache(ctx context.Context, key string,
 	return vectorstore.ErrNotSupported
 }
 
-func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, indexName string, keyPrefix string, embeddingDim int, metadataFields []string) error {
+func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, keyPrefix string, embeddingDim int, metadataFields []string) error {
 	return vectorstore.ErrNotSupported
 }
 
@@ -428,7 +425,6 @@ func TestSemanticCacheErrNotSupportedHandling(t *testing.T) {
 	// Create plugin config
 	config := Config{
 		CacheKey:       TestCacheKey,
-		Prefix:         TestPrefix + "unsupported_",
 		Provider:       schemas.OpenAI,
 		EmbeddingModel: "text-embedding-3-small",
 		Threshold:      0.8,

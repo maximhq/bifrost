@@ -3,7 +3,7 @@
 # Variables
 HOST ?= localhost
 PORT ?= 8080
-APP_DIR ?= temp-redis
+APP_DIR ?= 
 PROMETHEUS_LABELS ?=
 LOGGING_STYLE ?= json
 LOGGING_LEVEL ?= info
@@ -49,8 +49,8 @@ dev: install-ui install-air ## Start complete development environment (UI + API 
 	@echo "$(GREEN)Starting Bifrost complete development environment...$(NC)"
 	@echo "$(YELLOW)This will start:$(NC)"
 	@echo "  1. UI development server (localhost:3000)"
-	@echo "  2. API server with UI proxy (localhost:$(PORT)/ui)"
-	@echo "$(CYAN)Access everything at: http://localhost:$(PORT)/ui$(NC)"
+	@echo "  2. API server with UI proxy (localhost:$(PORT))"
+	@echo "$(CYAN)Access everything at: http://localhost:$(PORT)$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
 	@cd ui && npm run dev &

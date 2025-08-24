@@ -9,7 +9,7 @@ import (
 
 // TestStreamingCacheBasicFunctionality tests streaming response caching
 func TestStreamingCacheBasicFunctionality(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"streaming_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("test-stream-value")
@@ -121,7 +121,7 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 
 // TestStreamingVsNonStreaming tests that streaming and non-streaming requests are cached separately
 func TestStreamingVsNonStreaming(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"stream_vs_non_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("stream-vs-non-test")
@@ -190,7 +190,7 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 
 // TestStreamingChunkOrdering tests that cached streaming responses maintain proper chunk ordering
 func TestStreamingChunkOrdering(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"chunk_order_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("chunk-order-test")
@@ -277,7 +277,7 @@ func TestStreamingChunkOrdering(t *testing.T) {
 
 // TestSpeechSynthesisStreaming tests speech synthesis streaming caching
 func TestSpeechSynthesisStreaming(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"speech_stream_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("speech-stream-test")

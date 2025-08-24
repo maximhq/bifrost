@@ -11,7 +11,7 @@ import (
 
 // TestParameterVariations tests that different parameters don't cache hit inappropriately
 func TestParameterVariations(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"param_variations_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("param-variations-test")
@@ -46,7 +46,7 @@ func TestParameterVariations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clear cache for this subtest
-			clearTestKeysWithStore(t, setup.Store, setup.Config.Prefix)
+			clearTestKeysWithStore(t, setup.Store)
 
 			// Make first request
 			_, err1 := setup.Client.ChatCompletionRequest(ctx, tt.request1)
@@ -74,7 +74,7 @@ func TestParameterVariations(t *testing.T) {
 
 // TestToolVariations tests caching behavior with different tool configurations
 func TestToolVariations(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"tool_variations_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("tool-variations-test")
@@ -218,7 +218,7 @@ func TestToolVariations(t *testing.T) {
 
 // TestContentVariations tests caching behavior with different content types
 func TestContentVariations(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"content_variations_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("content-variations-test")
@@ -402,7 +402,7 @@ func TestContentVariations(t *testing.T) {
 
 // TestBoundaryParameterValues tests edge case parameter values
 func TestBoundaryParameterValues(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"boundary_params_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := CreateContextWithCacheKey("boundary-params-test")
@@ -501,11 +501,10 @@ func TestBoundaryParameterValues(t *testing.T) {
 
 // TestSemanticSimilarityEdgeCases tests edge cases in semantic similarity matching
 func TestSemanticSimilarityEdgeCases(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"semantic_edge_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	// Use a lower threshold for more aggressive matching
-	setup.Config.Threshold = 0.3
+	setup.Config.Threshold = 0.7
 
 	ctx := CreateContextWithCacheKey("semantic-edge-test")
 
@@ -545,7 +544,7 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 	for i, test := range similarTests {
 		t.Run(test.description, func(t *testing.T) {
 			// Clear cache for this subtest
-			clearTestKeysWithStore(t, setup.Store, setup.Config.Prefix)
+			clearTestKeysWithStore(t, setup.Store)
 
 			// Make first request
 			request1 := CreateBasicChatRequest(test.prompt1, 0.1, 50)
@@ -599,7 +598,7 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 
 // TestErrorHandlingEdgeCases tests various error scenarios
 func TestErrorHandlingEdgeCases(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"error_edge_")
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	testRequest := CreateBasicChatRequest("Test error handling scenarios", 0.5, 50)

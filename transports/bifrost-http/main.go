@@ -409,7 +409,8 @@ func main() {
 			}
 
 			if config.VectorStore == nil {
-				logger.Fatal("vector store is required to initialize semantic cache plugin")
+				logger.Error("vector store is required to initialize semantic cache plugin, skipping initialization")
+				continue
 			}
 
 			// Convert config map to semanticcache.Config struct
@@ -431,7 +432,7 @@ func main() {
 
 			semanticCachePlugin, err := semanticcache.Init(ctx, semCacheConfig, logger, config.VectorStore)
 			if err != nil {
-				logger.Fatal("failed to initialize semantic cache: %v", err)
+				logger.Error("failed to initialize semantic cache: %v", err)
 			} else {
 				loadedPlugins = append(loadedPlugins, semanticCachePlugin)
 				logger.Info("successfully initialized semantic cache")
@@ -463,6 +464,13 @@ func main() {
 	configHandler := handlers.NewConfigHandler(client, logger, config)
 	pluginsHandler := handlers.NewPluginsHandler(config.ConfigStore, logger)
 
+	var cacheHandler *handlers.CacheHandler
+	for _, plugin := range loadedPlugins {
+		if plugin.GetName() == semanticcache.PluginName {
+			cacheHandler = handlers.NewCacheHandler(plugin, logger)
+		}
+	}
+
 	// Set up WebSocket callback for real-time log updates
 	if wsHandler != nil && loggingPlugin != nil {
 		loggingPlugin.SetLogCallback(wsHandler.BroadcastLogUpdate)
@@ -480,6 +488,9 @@ func main() {
 	integrationHandler.RegisterRoutes(r)
 	configHandler.RegisterRoutes(r)
 	pluginsHandler.RegisterRoutes(r)
+	if cacheHandler != nil {
+		cacheHandler.RegisterRoutes(r)
+	}
 	if governanceHandler != nil {
 		governanceHandler.RegisterRoutes(r)
 	}

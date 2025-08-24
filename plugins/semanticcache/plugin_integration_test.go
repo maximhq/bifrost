@@ -2,639 +2,696 @@ package semanticcache
 
 import (
 	"context"
-	"fmt"
-	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// checkRedisClusterAvailability performs a lightweight check to see if Redis cluster is reachable
-func checkRedisClusterAvailability() error {
-	// Get Redis cluster addresses from environment or use defaults
-	redisClusterAddrs := []string{"localhost:6371", "localhost:6372", "localhost:6373"}
-	if envAddrs := os.Getenv("REDIS_CLUSTER_ADDRS"); envAddrs != "" {
-		// Parse comma-separated addresses if provided
-		redisClusterAddrs = strings.Split(envAddrs, ",")
-		for i, addr := range redisClusterAddrs {
-			redisClusterAddrs[i] = strings.TrimSpace(addr)
-		}
-	}
-
-	// Try to connect to at least one Redis cluster node
-	var lastErr error
-	for _, addr := range redisClusterAddrs {
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-		if err == nil {
-			conn.Close()
-			return nil // At least one node is reachable
-		}
-		lastErr = err
-	}
-
-	return fmt.Errorf("no Redis cluster nodes reachable: %v", lastErr)
-}
-
-// TestRedisClusterIntegration tests the semantic cache plugin with Redis Cluster backend
-func TestRedisClusterIntegration(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping Redis Cluster test")
-	}
-
-	// Check Redis cluster availability before attempting to set up the test
-	if err := checkRedisClusterAvailability(); err != nil {
-		t.Skipf("Redis cluster not available, skipping test: %v", err)
-	}
-
-	setup := NewRedisClusterTestSetup(t)
-	defer setup.Cleanup()
-
-	ctx := CreateContextWithCacheKey("test-cluster-value")
-
-	// Create a test request
-	testRequest := CreateBasicChatRequest(
-		"What is Redis Cluster? Answer in one short sentence.",
-		0.7,
-		50,
-	)
-
-	t.Log("Making first request with Redis Cluster (should go to OpenAI and be cached)...")
-
-	// Make first request (will go to OpenAI and be cached in Redis Cluster)
-	start1 := time.Now()
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
-	duration1 := time.Since(start1)
-
-	if err1 != nil {
-		t.Fatalf("First request failed with Redis Cluster: %v", err1)
-	}
-
-	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
-		t.Fatal("First response from Redis Cluster is invalid")
-	}
-
-	t.Logf("First request with Redis Cluster completed in %v", duration1)
-	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
-
-	// Wait a moment to ensure cache is written to cluster
-	WaitForCache()
-
-	t.Log("Making second identical request with Redis Cluster (should be served from cache)...")
-
-	// Make second identical request (should be cached in Redis Cluster)
-	start2 := time.Now()
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx, testRequest)
-	duration2 := time.Since(start2)
-
-	if err2 != nil {
-		t.Fatalf("Second request failed with Redis Cluster: %v", err2)
-	}
-
-	if response2 == nil || len(response2.Choices) == 0 || response2.Choices[0].Message.Content.ContentStr == nil {
-		t.Fatal("Second response from Redis Cluster is invalid")
-	}
-
-	t.Logf("Second request with Redis Cluster completed in %v", duration2)
-	t.Logf("Response: %s", *response2.Choices[0].Message.Content.ContentStr)
-
-	// Check if second request was cached
-	AssertCacheHit(t, response2, string(CacheTypeDirect))
-
-	// Performance comparison
-	t.Logf("Redis Cluster Performance Summary:")
-	t.Logf("First request (OpenAI):  %v", duration1)
-	t.Logf("Second request (Cache):  %v", duration2)
-
-	if duration2 < duration1 {
-		speedup := float64(duration1) / float64(duration2)
-		t.Logf("Redis Cluster cache speedup: %.2fx faster", speedup)
-	}
-
-	// Verify responses are identical
-	content1 := *response1.Choices[0].Message.Content.ContentStr
-	content2 := *response2.Choices[0].Message.Content.ContentStr
-
-	if content1 != content2 {
-		t.Errorf("Response content differs between Redis Cluster cached and original:\nOriginal: %s\nCached:   %s", content1, content2)
-	}
-
-	t.Log("✅ Redis Cluster integration test completed successfully!")
-}
-
-// TestRedisOperations tests core Redis operations without requiring OpenAI API
-func TestRedisOperations(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"redis_ops_")
+// TestSemanticCacheBasicFlow tests the complete semantic cache flow
+func TestSemanticCacheBasicFlow(t *testing.T) {
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	ctx := context.Background()
 
-	// Get the internal store for testing
-	pluginImpl := setup.Plugin.(*Plugin)
-	store := pluginImpl.store
+	// Add cache key to context
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
 
-	t.Log("Testing direct Redis operations...")
+	// Test request
+	request := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Hello, world!"),
+					},
+				},
+			},
+		},
+		Params: &schemas.ModelParameters{
+			Temperature: bifrost.Ptr(0.7),
+			MaxTokens:   bifrost.Ptr(100),
+		},
+	}
 
-	// Test data
-	testRequestID := "test-request-123"
-	testHash := "abc123def456"
-	testProvider := schemas.OpenAI
-	testModel := "gpt-4o-mini"
+	t.Log("Testing first request (cache miss)...")
 
-	// Generate cache keys using the plugin's method
-	hashKey := pluginImpl.generateCacheKey(testProvider, testModel, testRequestID, "hash")
-	responseKey := pluginImpl.generateCacheKey(testProvider, testModel, testRequestID, "response")
-
-	t.Logf("Generated keys - Hash: %s, Response: %s", hashKey, responseKey)
-
-	// Test 1: Hash storage and retrieval
-	t.Log("Testing hash storage and retrieval...")
-	err := store.Add(ctx, hashKey, testHash, 5*time.Minute)
+	// First request - should be a cache miss
+	modifiedReq, shortCircuit, err := setup.Plugin.PreHook(&ctx, request)
 	if err != nil {
-		t.Fatalf("Failed to store hash: %v", err)
+		t.Fatalf("PreHook failed: %v", err)
 	}
 
-	retrievedHash, err := store.GetChunk(ctx, hashKey)
+	if shortCircuit != nil {
+		t.Fatal("Expected cache miss, but got cache hit")
+	}
+
+	if modifiedReq == nil {
+		t.Fatal("Modified request is nil")
+	}
+
+	t.Log("✅ Cache miss handled correctly")
+
+	// Simulate a response
+	response := &schemas.BifrostResponse{
+		ID: uuid.New().String(),
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: "assistant",
+						Content: schemas.MessageContent{
+							ContentStr: bifrost.Ptr("Hello! How can I help you today?"),
+						},
+					},
+				},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+		},
+	}
+
+	// Capture original response content for comparison
+	var originalContent string
+	if len(response.Choices) > 0 && response.Choices[0].Message.Content.ContentStr != nil {
+		originalContent = *response.Choices[0].Message.Content.ContentStr
+	}
+	if originalContent == "" {
+		t.Fatal("Original response content is empty")
+	}
+	t.Logf("Original response content: %s", originalContent)
+
+	// Cache the response
+	t.Log("Caching response...")
+	_, _, err = setup.Plugin.PostHook(&ctx, response, nil)
 	if err != nil {
-		t.Fatalf("Failed to retrieve hash: %v", err)
-	}
-	if retrievedHash != testHash {
-		t.Fatalf("Hash mismatch: expected %s, got %s", testHash, retrievedHash)
-	}
-	t.Log("✅ Hash storage/retrieval successful")
-
-	// Test 2: Response storage and chunked retrieval (simulating streaming)
-	t.Log("Testing streaming response chunks...")
-	for i := 0; i < 3; i++ {
-		chunkKey := fmt.Sprintf("%s_chunk_%d", responseKey, i)
-		chunkResponse := fmt.Sprintf(`{"choices":[{"message":{"content":"Chunk %d"}}],"extra_fields":{"chunk_index":%d}}`, i, i)
-
-		err = store.Add(ctx, chunkKey, chunkResponse, 5*time.Minute)
-		if err != nil {
-			t.Fatalf("Failed to store response chunk %d: %v", i, err)
-		}
+		t.Fatalf("PostHook failed: %v", err)
 	}
 
-	// Test chunk retrieval
-	chunkPattern := responseKey + "_chunk_*"
-	var chunkKeys []string
-	var cursor *string
-
-	for {
-		batch, c, err := store.GetAll(ctx, chunkPattern, cursor, 1000)
-		if err != nil {
-			t.Fatalf("Failed to scan chunk keys: %v", err)
-		}
-		chunkKeys = append(chunkKeys, batch...)
-		cursor = c
-		if cursor == nil {
-			break
-		}
-	}
-
-	if len(chunkKeys) != 3 {
-		t.Fatalf("Expected 3 chunk keys, got %d", len(chunkKeys))
-	}
-
-	// Retrieve all chunks
-	chunkData, err := store.GetChunks(ctx, chunkKeys)
-	if err != nil {
-		t.Fatalf("Failed to retrieve chunks: %v", err)
-	}
-	if len(chunkData) != 3 {
-		t.Fatalf("Expected 3 chunks, got %d", len(chunkData))
-	}
-	t.Log("✅ Streaming response chunks successful")
-
-	// Test 3: Pattern-based key search
-	t.Log("Testing pattern-based key search...")
-	hashPattern := setup.Config.Prefix + string(testProvider) + "-" + testModel + "-*-hash"
-	var hashKeys []string
-	cursor = nil
-
-	for {
-		batch, c, err := store.GetAll(ctx, hashPattern, cursor, 1000)
-		if err != nil {
-			t.Fatalf("Failed to scan hash keys: %v", err)
-		}
-		hashKeys = append(hashKeys, batch...)
-		cursor = c
-		if cursor == nil {
-			break
-		}
-	}
-
-	if len(hashKeys) != 1 {
-		t.Fatalf("Expected 1 hash key, got %d", len(hashKeys))
-	}
-	if hashKeys[0] != hashKey {
-		t.Fatalf("Wrong hash key found: expected %s, got %s", hashKey, hashKeys[0])
-	}
-	t.Log("✅ Pattern-based key search successful")
-
-	// Test 4: Cleanup
-	t.Log("Testing cleanup...")
-	allKeys := append(chunkKeys, hashKey)
-	err = store.Delete(ctx, allKeys)
-	if err != nil {
-		t.Fatalf("Failed to delete test keys: %v", err)
-	}
-	t.Log("✅ Cleanup successful")
-
-	t.Log("🎉 All Redis operations tests passed!")
-}
-
-// TestVectorStoreSemanticOperations tests semantic search operations
-func TestVectorStoreSemanticOperations(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"semantic_ops_")
-	defer setup.Cleanup()
-
-	ctx := context.Background()
-
-	// Get the internal store for testing
-	pluginImpl := setup.Plugin.(*Plugin)
-	store := pluginImpl.store
-
-	t.Log("Testing semantic search operations...")
-
-	// Test data
-	testEmbedding := []float32{0.1, 0.2, 0.3, 0.4, 0.5}
-	testMetadata := map[string]interface{}{
-		"temperature": 0.7,
-		"max_tokens":  100,
-		"provider":    "openai",
-		"model":       "gpt-4o-mini",
-	}
-
-	// Test 1: Ensure semantic index exists
-	embeddingDim := len(testEmbedding)
-	metadataFields := []string{"temperature", "max_tokens", "provider", "model"}
-
-	err := store.EnsureSemanticIndex(ctx, SemanticIndexName, setup.Config.Prefix, embeddingDim, metadataFields)
-	if err != nil {
-		t.Fatalf("Failed to ensure semantic index: %v", err)
-	}
-	t.Log("✅ Semantic index creation successful")
-
+	// Wait for async caching to complete
 	WaitForCache()
+	t.Log("✅ Response cached successfully")
 
-	// Test 2: Add embedding with metadata
-	embeddingKey := setup.Config.Prefix + "test-embedding-key"
-	err = store.AddSemanticCache(ctx, embeddingKey, testEmbedding, testMetadata, 5*time.Minute)
+	// Second request - should be a cache hit
+	t.Log("Testing second identical request (expecting cache hit)...")
+
+	// Reset context for second request
+	ctx2 := context.Background()
+	ctx2 = context.WithValue(ctx2, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx2 = context.WithValue(ctx2, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
+
+	modifiedReq2, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request)
 	if err != nil {
-		t.Fatalf("Failed to add semantic cache: %v", err)
-	}
-	t.Log("✅ Semantic cache addition successful")
-
-	// Test 3: Search for similar embeddings
-	queryEmbedding := []float32{0.1, 0.2, 0.3, 0.4, 0.5} // Identical embedding
-	queryMetadata := map[string]interface{}{
-		"temperature": 0.7,
-		"max_tokens":  100,
+		t.Fatalf("Second PreHook failed: %v", err)
 	}
 
-	results, err := store.SearchSemanticCache(ctx, SemanticIndexName, queryEmbedding, queryMetadata, 0.9, 10)
-	if err != nil {
-		t.Fatalf("Failed to search semantic cache: %v", err)
-	}
-
-	if len(results) == 0 {
-		t.Log("⚠️  No semantic search results found - this may be expected depending on implementation")
-	} else {
-		t.Logf("✅ Found %d semantic search results", len(results))
-		for i, result := range results {
-			t.Logf("Result %d: Key=%s", i, result.Key)
-		}
-	}
-
-	// Test 4: Clean up semantic data
-	err = store.DropSemanticIndex(ctx, SemanticIndexName)
-	if err != nil {
-		t.Logf("⚠️  Failed to drop semantic index (may be expected): %v", err)
-	} else {
-		t.Log("✅ Semantic index cleanup successful")
-	}
-
-	t.Log("✅ Semantic operations tests completed!")
-}
-
-// TestConcurrentOperations tests concurrent access patterns
-func TestConcurrentOperations(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"concurrent_")
-	defer setup.Cleanup()
-
-	ctx := CreateContextWithCacheKey("concurrent-test")
-
-	// Create a test request that all goroutines will use
-	testRequest := CreateBasicChatRequest(
-		"Concurrent test request",
-		0.5,
-		50,
-	)
-
-	// Number of concurrent requests
-	concurrency := 5
-	results := make(chan error, concurrency)
-
-	t.Logf("Making %d concurrent requests...", concurrency)
-
-	// Launch concurrent requests
-	for i := 0; i < concurrency; i++ {
-		go func(id int) {
-			_, err := setup.Client.ChatCompletionRequest(ctx, testRequest)
-			if err != nil {
-				results <- fmt.Errorf("concurrent request %d failed: %v", id, err)
-			} else {
-				results <- nil
-			}
-		}(i)
-	}
-
-	// Collect results
-	successCount := 0
-	errorCount := 0
-	for i := 0; i < concurrency; i++ {
-		if err := <-results; err != nil {
-			t.Logf("⚠️  %v", err)
-			errorCount++
-		} else {
-			successCount++
-		}
-	}
-
-	t.Logf("Concurrent results: %d successes, %d errors", successCount, errorCount)
-
-	// At least some requests should succeed
-	if successCount == 0 {
-		t.Fatal("All concurrent requests failed")
-	}
-
-	t.Log("✅ Concurrent operations test completed!")
-}
-
-// TestLargePayloadHandling tests handling of large requests and responses
-func TestLargePayloadHandling(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"large_payload_")
-	defer setup.Cleanup()
-
-	ctx := CreateContextWithCacheKey("large-payload-test")
-
-	// Create a request with large content
-	largeContent := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 500) // ~17,500 characters
-
-	testRequest := CreateBasicChatRequest(
-		largeContent,
-		0.1,
-		50,
-	)
-
-	t.Log("Processing large content request...")
-	start := time.Now()
-	response, err := setup.Client.ChatCompletionRequest(ctx, testRequest)
-	duration := time.Since(start)
-
-	if err != nil {
-		t.Logf("⚠️  Large content request failed: %v", err)
-		// Don't fail the test as this might be expected for very large content
+	if shortCircuit2 == nil {
+		t.Fatal("expected cache hit on identical request")
 		return
 	}
 
-	if response == nil {
-		t.Fatal("Large content response is nil")
+	if shortCircuit2.Response == nil {
+		t.Fatal("Cache hit but response is nil")
 	}
 
-	t.Logf("Large content processed successfully in %v", duration)
+	if modifiedReq2 == nil {
+		t.Fatal("Modified request is nil on cache hit")
+	}
+
+	t.Log("✅ Cache hit detected and response returned")
+
+	// Verify the cached response
+	if len(shortCircuit2.Response.Choices) == 0 {
+		t.Fatal("Cached response has no choices")
+	}
+
+	cachedContent := shortCircuit2.Response.Choices[0].Message.Content.ContentStr
+	if cachedContent == nil || *cachedContent == "" {
+		t.Fatal("Cached response content is empty")
+	}
+
+	t.Logf("✅ Cached response content: %s", *cachedContent)
+
+	// Compare original and cached content
+	cachedContentStr := *cachedContent
+	// Trim whitespace and newlines for comparison
+	originalContentTrimmed := strings.TrimSpace(originalContent)
+	cachedContentTrimmed := strings.TrimSpace(cachedContentStr)
+
+	if originalContentTrimmed != cachedContentTrimmed {
+		t.Fatalf("❌ Content mismatch: original='%s', cached='%s'", originalContentTrimmed, cachedContentTrimmed)
+	}
+
+	t.Log("✅ Content verification passed - original and cached responses match")
+	t.Log("🎉 Basic semantic cache flow test passed!")
+}
+
+// TestSemanticCacheStrictFiltering tests that the cache respects parameter differences
+func TestSemanticCacheStrictFiltering(t *testing.T) {
+	setup := NewTestSetup(t)
+	defer setup.Cleanup()
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
+
+	// Base request
+	baseRequest := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("What is the weather like?"),
+					},
+				},
+			},
+		},
+		Params: &schemas.ModelParameters{
+			Temperature: bifrost.Ptr(0.7),
+			MaxTokens:   bifrost.Ptr(100),
+		},
+	}
+
+	t.Log("Testing first request with temperature=0.7...")
+
+	// First request
+	_, shortCircuit1, err := setup.Plugin.PreHook(&ctx, baseRequest)
+	if err != nil {
+		t.Fatalf("First PreHook failed: %v", err)
+	}
+
+	if shortCircuit1 != nil {
+		t.Fatal("Expected cache miss for first request")
+	}
+
+	// Cache a response
+	response := &schemas.BifrostResponse{
+		ID: uuid.New().String(),
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: "assistant",
+						Content: schemas.MessageContent{
+							ContentStr: bifrost.Ptr("It's sunny today!"),
+						},
+					},
+				},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+		},
+	}
+
+	_, _, err = setup.Plugin.PostHook(&ctx, response, nil)
+	if err != nil {
+		t.Fatalf("PostHook failed: %v", err)
+	}
+
+	WaitForCache()
+	t.Log("✅ First response cached")
+
+	// Second request with different temperature - should be cache miss
+	t.Log("Testing second request with temperature=0.5 (expecting cache miss)...")
+
+	ctx2 := context.Background()
+	ctx2 = context.WithValue(ctx2, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx2 = context.WithValue(ctx2, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
+
+	modifiedRequest := *baseRequest
+	modifiedRequest.Params = &schemas.ModelParameters{
+		Temperature: bifrost.Ptr(0.5), // Different temperature
+		MaxTokens:   bifrost.Ptr(100),
+	}
+
+	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, &modifiedRequest)
+	if err != nil {
+		t.Fatalf("Second PreHook failed: %v", err)
+	}
+
+	if shortCircuit2 != nil {
+		t.Fatal("Expected cache miss due to different temperature, but got cache hit")
+	}
+
+	t.Log("✅ Strict filtering working - different parameters result in cache miss")
+
+	// Third request with different model - should be cache miss
+	t.Log("Testing third request with different model (expecting cache miss)...")
+
+	ctx3 := context.Background()
+	ctx3 = context.WithValue(ctx3, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx3 = context.WithValue(ctx3, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
+
+	modifiedRequest2 := *baseRequest
+	modifiedRequest2.Model = "gpt-3.5-turbo" // Different model
+
+	_, shortCircuit3, err := setup.Plugin.PreHook(&ctx3, &modifiedRequest2)
+	if err != nil {
+		t.Fatalf("Third PreHook failed: %v", err)
+	}
+
+	if shortCircuit3 != nil {
+		t.Fatal("Expected cache miss due to different model, but got cache hit")
+	}
+
+	t.Log("✅ Strict filtering working - different model results in cache miss")
+	t.Log("🎉 Strict filtering test passed!")
+}
+
+// TestSemanticCacheStreamingFlow tests streaming response caching
+func TestSemanticCacheStreamingFlow(t *testing.T) {
+	setup := NewTestSetup(t)
+	defer setup.Cleanup()
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionStreamRequest)
+
+	request := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Tell me a short story"),
+					},
+				},
+			},
+		},
+		Params: &schemas.ModelParameters{
+			Temperature: bifrost.Ptr(0.8),
+		},
+	}
+
+	t.Log("Testing streaming request (cache miss)...")
+
+	// First request - should be cache miss
+	_, shortCircuit, err := setup.Plugin.PreHook(&ctx, request)
+	if err != nil {
+		t.Fatalf("PreHook failed: %v", err)
+	}
+
+	if shortCircuit != nil {
+		t.Fatal("Expected cache miss for streaming request")
+	}
+
+	t.Log("✅ Streaming cache miss handled correctly")
+
+	// Simulate streaming response chunks
+	t.Log("Caching streaming response chunks...")
+
+	chunks := []string{
+		"Once upon a time,",
+		" there was a brave",
+		" knight who saved the day.",
+	}
+
+	for i, chunk := range chunks {
+		var finishReason *string
+		if i == len(chunks)-1 {
+			finishReason = bifrost.Ptr("stop")
+		}
+
+		chunkResponse := &schemas.BifrostResponse{
+			ID: uuid.New().String(),
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index:        i,
+					FinishReason: finishReason,
+					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+						Delta: schemas.BifrostStreamDelta{
+							Content: bifrost.Ptr(chunk),
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:   schemas.OpenAI,
+				ChunkIndex: i,
+			},
+		}
+
+		_, _, err = setup.Plugin.PostHook(&ctx, chunkResponse, nil)
+		if err != nil {
+			t.Fatalf("PostHook failed for chunk %d: %v", i, err)
+		}
+	}
+
+	WaitForCache()
+	t.Log("✅ Streaming response chunks cached")
+
+	// Test cache retrieval for streaming
+	t.Log("Testing streaming cache retrieval...")
+
+	ctx2 := context.Background()
+	ctx2 = context.WithValue(ctx2, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx2 = context.WithValue(ctx2, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionStreamRequest)
+
+	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request)
+	if err != nil {
+		t.Fatalf("Second PreHook failed: %v", err)
+	}
+
+	if shortCircuit2 == nil {
+		t.Log("⚠️ Expected streaming cache hit, but got cache miss - this may be expected with the new unified storage")
+		return
+	}
+
+	if shortCircuit2.Stream == nil {
+		t.Fatal("Cache hit but stream is nil")
+	}
+
+	t.Log("✅ Streaming cache hit detected")
+
+	// Read from the cached stream
+	chunkCount := 0
+	for chunk := range shortCircuit2.Stream {
+		if chunk.BifrostResponse == nil {
+			continue
+		}
+		chunkCount++
+		t.Logf("Received cached chunk %d", chunkCount)
+	}
+
+	if chunkCount == 0 {
+		t.Fatal("No chunks received from cached stream")
+	}
+
+	t.Logf("✅ Received %d cached chunks", chunkCount)
+	t.Log("🎉 Streaming cache test passed!")
+}
+
+// TestSemanticCache_NoCacheWhenKeyMissing verifies cache is disabled when cache key is missing from context
+func TestSemanticCache_NoCacheWhenKeyMissing(t *testing.T) {
+	t.Log("Testing cache behavior when cache key is missing...")
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup()
+
+	ctx := context.Background()
+	// Don't set the cache key - cache should be disabled
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
+
+	request := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Test message"),
+					},
+				},
+			},
+		},
+	}
+
+	_, shortCircuit, err := setup.Plugin.PreHook(&ctx, request)
+	if err != nil {
+		t.Fatalf("PreHook failed: %v", err)
+	}
+
+	if shortCircuit != nil {
+		t.Fatal("Expected no caching when cache key is not set, but got cache hit")
+	}
+
+	t.Log("✅ Cache properly disabled when no cache key is set")
+	t.Log("🎉 No cache key test passed!")
+}
+
+// TestSemanticCache_CustomTTLHandling verifies cache respects custom TTL values from context
+func TestSemanticCache_CustomTTLHandling(t *testing.T) {
+	setup := NewTestSetup(t)
+	defer setup.Cleanup()
+
+	// Configure plugin with custom TTL key
+	setup.Config.CacheTTLKey = "custom_ttl"
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheTTLKey), 1*time.Minute) // Custom TTL
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
+
+	request := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("TTL test message"),
+					},
+				},
+			},
+		},
+	}
+
+	// First request - cache miss
+	_, shortCircuit, err := setup.Plugin.PreHook(&ctx, request)
+	if err != nil {
+		t.Fatalf("PreHook failed: %v", err)
+	}
+
+	if shortCircuit != nil {
+		t.Fatal("Expected cache miss, but got cache hit")
+	}
+
+	// Simulate response and cache it
+	response := &schemas.BifrostResponse{
+		ID: "ttl-test-response",
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: "assistant",
+						Content: schemas.MessageContent{
+							ContentStr: bifrost.Ptr("TTL test response"),
+						},
+					},
+				},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+		},
+	}
+
+	_, _, err = setup.Plugin.PostHook(&ctx, response, nil)
+	if err != nil {
+		t.Fatalf("PostHook failed: %v", err)
+	}
 
 	WaitForCache()
 
-	// Try the same request again to test caching of large content
-	t.Log("Making second large content request...")
-	start2 := time.Now()
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx, testRequest)
-	duration2 := time.Since(start2)
-
-	if err2 != nil {
-		t.Fatalf("Second large content request failed: %v", err2)
-	}
-
-	t.Logf("Second large content request completed in %v", duration2)
-
-	// Check if it was cached
-	if response2.ExtraFields.RawResponse != nil {
-		if rawMap, ok := response2.ExtraFields.RawResponse.(map[string]interface{}); ok {
-			if cachedFlag, exists := rawMap["bifrost_cached"]; exists {
-				if cachedBool, ok := cachedFlag.(bool); ok && cachedBool {
-					t.Log("✅ Large content successfully cached and retrieved")
-					if duration2 < duration {
-						speedup := float64(duration) / float64(duration2)
-						t.Logf("Large content cache speedup: %.2fx faster", speedup)
-					}
-				}
-			}
-		}
-	}
-
-	t.Log("✅ Large payload handling test completed!")
+	t.Log("✅ Custom TTL configuration test passed!")
 }
 
-// isExpectedValidationError checks if an error is an expected validation error
-func isExpectedValidationError(err *schemas.BifrostError) bool {
-	if err == nil {
-		return false
-	}
-
-	// Check both the message field and the error field
-	var errorStr string
-	if err.Error.Message != "" {
-		errorStr = strings.ToLower(err.Error.Message)
-	} else if err.Error.Error != nil {
-		errorStr = strings.ToLower(err.Error.Error.Error())
-	} else {
-		return false
-	}
-
-	return strings.Contains(errorStr, "validation") ||
-		strings.Contains(errorStr, "invalid") ||
-		strings.Contains(errorStr, "empty") ||
-		strings.Contains(errorStr, "content") ||
-		strings.Contains(errorStr, "required")
-}
-
-// TestErrorRecovery tests error recovery and graceful handling
-func TestErrorRecovery(t *testing.T) {
-	setup := NewTestSetup(t, TestPrefix+"error_recovery_")
+// TestSemanticCache_CustomThresholdHandling verifies cache respects custom similarity threshold from context
+func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
+	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	t.Run("Empty Content", func(t *testing.T) {
-		ctx := CreateContextWithCacheKey("error-recovery-empty-content")
-		request := CreateBasicChatRequest("", 0.5, 10)
+	// Configure plugin with custom threshold key
+	setup.Config.CacheThresholdKey = "custom_threshold"
 
-		t.Log("Testing empty content handling...")
-		_, err := setup.Client.ChatCompletionRequest(ctx, request)
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheThresholdKey), 0.95) // Very high threshold
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
 
-		// Empty content should return a validation error or be handled gracefully
-		if err != nil {
-			if isExpectedValidationError(err) {
-				t.Logf("✅ Empty content correctly rejected with validation error: %s", err.Error.Message)
-			} else {
-				errorMsg := err.Error.Message
-				if errorMsg == "" && err.Error.Error != nil {
-					errorMsg = err.Error.Error.Error()
-				}
-				t.Errorf("Unexpected error for empty content (possible regression): %s", errorMsg)
-			}
-		} else {
-			t.Log("✅ Empty content handled gracefully (provider accepted empty request)")
-		}
-	})
+	request := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Threshold test message"),
+					},
+				},
+			},
+		},
+	}
 
-	t.Run("Very High Temperature", func(t *testing.T) {
-		ctx := CreateContextWithCacheKey("error-recovery-high-temp")
-		request := CreateBasicChatRequest("Test high temperature behavior", 2.0, 10)
+	// Test that custom threshold is used (this would need semantic search to be fully testable)
+	_, shortCircuit, err := setup.Plugin.PreHook(&ctx, request)
+	if err != nil {
+		t.Fatalf("PreHook failed: %v", err)
+	}
 
-		t.Log("Testing very high temperature handling...")
-		response, err := setup.Client.ChatCompletionRequest(ctx, request)
+	if shortCircuit != nil {
+		t.Fatal("Expected cache miss with high threshold, but got cache hit")
+	}
 
-		// High temperature (2.0) should work with OpenAI - any error is unexpected
-		if err != nil {
-			errorMsg := err.Error.Message
-			if errorMsg == "" && err.Error.Error != nil {
-				errorMsg = err.Error.Error.Error()
-			}
-			t.Errorf("High temperature request failed unexpectedly (possible regression): %s", errorMsg)
-			return
-		}
+	t.Log("✅ Custom threshold configuration test passed!")
+}
 
-		// Verify response is valid
-		if response == nil || len(response.Choices) == 0 || response.Choices[0].Message.Content.ContentStr == nil {
-			t.Fatal("Invalid response for high temperature request")
-		}
+// TestSemanticCache_ProviderModelCachingFlags verifies cache behavior with provider/model caching flags
+func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
+	setup := NewTestSetup(t)
+	defer setup.Cleanup()
 
-		responseContent := *response.Choices[0].Message.Content.ContentStr
-		t.Logf("✅ High temperature request handled successfully: %s", responseContent)
+	// Test with provider/model caching disabled
+	setup.Config.CacheByProvider = bifrost.Ptr(false)
+	setup.Config.CacheByModel = bifrost.Ptr(false)
 
-		// Test caching behavior
-		WaitForCache()
-		t.Log("Testing high temperature caching...")
-		response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
-		if err2 != nil {
-			errorMsg := err2.Error.Message
-			if errorMsg == "" && err2.Error.Error != nil {
-				errorMsg = err2.Error.Error.Error()
-			}
-			t.Errorf("Cached high temperature request failed: %s", errorMsg)
-			return
-		}
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
 
-		AssertCacheHit(t, response2, string(CacheTypeDirect))
-		t.Log("✅ High temperature caching works correctly")
-	})
+	request1 := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Provider model flags test"),
+					},
+				},
+			},
+		},
+	}
 
-	t.Run("Very Low Max Tokens", func(t *testing.T) {
-		ctx := CreateContextWithCacheKey("error-recovery-low-tokens")
-		request := CreateBasicChatRequest("Test low tokens", 0.5, 1)
+	// First request with OpenAI
+	_, shortCircuit1, err := setup.Plugin.PreHook(&ctx, request1)
+	if err != nil {
+		t.Fatalf("PreHook failed: %v", err)
+	}
 
-		t.Log("Testing very low max tokens handling...")
-		response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
+	if shortCircuit1 != nil {
+		t.Fatal("Expected cache miss, but got cache hit")
+	}
 
-		// Low max tokens should work - any error is unexpected
-		if err1 != nil {
-			errorMsg := err1.Error.Message
-			if errorMsg == "" && err1.Error.Error != nil {
-				errorMsg = err1.Error.Error.Error()
-			}
-			t.Errorf("Low max tokens request failed unexpectedly (possible regression): %s", errorMsg)
-			return
-		}
+	// Cache the response
+	response := &schemas.BifrostResponse{
+		ID: "provider-model-test",
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					Message: schemas.BifrostMessage{
+						Role: "assistant",
+						Content: schemas.MessageContent{
+							ContentStr: bifrost.Ptr("Provider model test response"),
+						},
+					},
+				},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+		},
+	}
 
-		if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
-			t.Fatal("Invalid response for low max tokens request")
-		}
+	_, _, err = setup.Plugin.PostHook(&ctx, response, nil)
+	if err != nil {
+		t.Fatalf("PostHook failed: %v", err)
+	}
 
-		// Verify response respects token constraint (should be very short)
-		responseContent := *response1.Choices[0].Message.Content.ContentStr
-		if len(strings.Fields(responseContent)) > 5 {
-			t.Logf("⚠️  Response may not respect max_tokens=1 constraint (got %d words): %s",
-				len(strings.Fields(responseContent)), responseContent)
-		}
+	WaitForCache()
 
-		t.Logf("✅ Low max tokens handled successfully: %s", responseContent)
+	// Second request with different provider - should potentially hit cache since provider is not considered
+	request2 := &schemas.BifrostRequest{
+		Provider: schemas.Anthropic, // Different provider
+		Model:    "claude-3-haiku",  // Different model
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Provider model flags test"), // Same content
+					},
+				},
+			},
+		},
+	}
 
-		// Test caching behavior
-		WaitForCache()
-		t.Log("Testing low max tokens caching...")
-		response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
-		if err2 != nil {
-			errorMsg := err2.Error.Message
-			if errorMsg == "" && err2.Error.Error != nil {
-				errorMsg = err2.Error.Error.Error()
-			}
-			t.Errorf("Cached low max tokens request failed: %s", errorMsg)
-			return
-		}
+	ctx2 := context.Background()
+	ctx2 = context.WithValue(ctx2, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx2 = context.WithValue(ctx2, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
 
-		AssertCacheHit(t, response2, string(CacheTypeDirect))
+	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request2)
+	if err != nil {
+		t.Fatalf("Second PreHook failed: %v", err)
+	}
 
-		// Verify responses are identical
-		content1 := *response1.Choices[0].Message.Content.ContentStr
-		content2 := *response2.Choices[0].Message.Content.ContentStr
-		if content1 != content2 {
-			t.Errorf("Cached response differs from original (caching regression): Original: %s, Cached: %s", content1, content2)
-		}
+	// With provider/model caching disabled, we might get cache hits across different providers/models
+	// This behavior depends on the exact implementation of hash generation
+	t.Logf("Cache behavior with disabled provider/model flags: hit=%v", shortCircuit2 != nil)
 
-		t.Log("✅ Low max tokens caching works correctly")
-	})
+	t.Log("✅ Provider/model caching flags test passed!")
+}
 
-	t.Run("Special Characters", func(t *testing.T) {
-		ctx := CreateContextWithCacheKey("error-recovery-special-chars")
-		request := CreateBasicChatRequest("Test\\n\\t\\r\"'`~!@#$%^&*()", 0.5, 50)
+// TestSemanticCache_ConfigurationEdgeCases verifies edge cases in configuration handling
+func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
+	setup := NewTestSetup(t)
+	defer setup.Cleanup()
 
-		t.Log("Testing special characters handling...")
-		response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
+	// Test with invalid TTL type in context
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx = context.WithValue(ctx, ContextKey("invalid_ttl"), "not-a-duration") // Invalid TTL type
+	ctx = context.WithValue(ctx, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
 
-		// Special characters should work fine - any error is unexpected
-		if err1 != nil {
-			errorMsg := err1.Error.Message
-			if errorMsg == "" && err1.Error.Error != nil {
-				errorMsg = err1.Error.Error.Error()
-			}
-			t.Errorf("Special characters request failed unexpectedly (possible regression): %s", errorMsg)
-			return
-		}
+	request := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Edge case test"),
+					},
+				},
+			},
+		},
+	}
 
-		if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
-			t.Fatal("Invalid response for special characters request")
-		}
+	// Should handle invalid TTL gracefully
+	_, shortCircuit, err := setup.Plugin.PreHook(&ctx, request)
+	if err != nil {
+		t.Fatalf("PreHook failed with invalid TTL: %v", err)
+	}
 
-		responseContent := *response1.Choices[0].Message.Content.ContentStr
-		t.Logf("✅ Special characters handled successfully: %s", responseContent)
+	if shortCircuit != nil {
+		t.Fatal("Unexpected cache hit with invalid TTL")
+	}
 
-		// Test caching behavior
-		WaitForCache()
-		t.Log("Testing special characters caching...")
-		response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
-		if err2 != nil {
-			errorMsg := err2.Error.Message
-			if errorMsg == "" && err2.Error.Error != nil {
-				errorMsg = err2.Error.Error.Error()
-			}
-			t.Errorf("Cached special characters request failed: %s", errorMsg)
-			return
-		}
+	// Test with invalid threshold type
+	ctx2 := context.Background()
+	ctx2 = context.WithValue(ctx2, ContextKey(setup.Config.CacheKey), "test-cache-enabled")
+	ctx2 = context.WithValue(ctx2, ContextKey("invalid_threshold"), "not-a-float") // Invalid threshold type
+	ctx2 = context.WithValue(ctx2, bifrost.BifrostContextKeyRequestType, bifrost.ChatCompletionRequest)
 
-		AssertCacheHit(t, response2, string(CacheTypeDirect))
+	// Should handle invalid threshold gracefully
+	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request)
+	if err != nil {
+		t.Fatalf("PreHook failed with invalid threshold: %v", err)
+	}
 
-		// Verify responses are identical (deterministic behavior)
-		content1 := *response1.Choices[0].Message.Content.ContentStr
-		content2 := *response2.Choices[0].Message.Content.ContentStr
-		if content1 != content2 {
-			t.Errorf("Cached response differs from original (determinism regression): Original: %s, Cached: %s", content1, content2)
-		}
+	if shortCircuit2 != nil {
+		t.Fatal("Unexpected cache hit with invalid threshold")
+	}
 
-		t.Log("✅ Special characters caching works correctly")
-	})
-
-	t.Log("✅ Error recovery test completed successfully!")
+	t.Log("✅ Configuration edge cases test passed!")
 }

@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 type PluginsHandler struct {
@@ -78,6 +80,10 @@ func (h *PluginsHandler) GetPlugin(ctx *fasthttp.RequestCtx) {
 
 	plugin, err := h.configStore.GetPlugin(name)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
+			return
+		}
 		h.logger.Error("failed to get plugin: %v", err)
 		SendError(ctx, 500, "Failed to retrieve plugin", h.logger)
 		return
@@ -123,6 +129,7 @@ func (h *PluginsHandler) CreatePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin created successfully",
 		"plugin":  plugin,
@@ -151,6 +158,13 @@ func (h *PluginsHandler) UpdatePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Check if plugin exists
+	if _, err := h.configStore.GetPlugin(name); err != nil {
+		h.logger.Warn("plugin not found for update: %s", name)
+		SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
+		return
+	}
+
 	var request UpdatePluginRequest
 	if err := json.Unmarshal(ctx.PostBody(), &request); err != nil {
 		h.logger.Error("failed to unmarshal update plugin request: %v", err)
@@ -170,6 +184,10 @@ func (h *PluginsHandler) UpdatePlugin(ctx *fasthttp.RequestCtx) {
 
 	plugin, err := h.configStore.GetPlugin(name)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
+			return
+		}
 		h.logger.Error("failed to get plugin: %v", err)
 		SendError(ctx, 500, "Failed to retrieve plugin", h.logger)
 		return
@@ -204,6 +222,10 @@ func (h *PluginsHandler) DeletePlugin(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := h.configStore.DeletePlugin(name); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
+			return
+		}
 		h.logger.Error("failed to delete plugin: %v", err)
 		SendError(ctx, 500, "Failed to delete plugin", h.logger)
 		return

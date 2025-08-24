@@ -6,284 +6,314 @@ icon: "database"
 
 ## Overview
 
-Semantic caching goes beyond traditional string-based caching by understanding the meaning of requests. Instead of requiring exact matches, Bifrost can serve cached responses for requests that are semantically similar, dramatically reducing API costs and response times.
+Semantic caching uses vector similarity search to intelligently cache AI responses, serving cached results for semantically similar requests even when the exact wording differs. This dramatically reduces API costs and latency for repeated or similar queries.
 
 **Key Benefits:**
-- **Cost Reduction** - Avoid redundant API calls for similar questions
-- **Improved Latency** - Instant responses for semantically similar requests  
-- **Intelligent Matching** - Vector similarity matching instead of exact string matches
-- **Configurable Thresholds** - Control cache hit sensitivity
-- **Multi-Provider Support** - Works across all AI providers
+- **Cost Reduction**: Avoid expensive LLM API calls for similar requests
+- **Improved Performance**: Sub-millisecond cache retrieval vs multi-second API calls  
+- **Intelligent Matching**: Semantic similarity beyond exact text matching
+- **Streaming Support**: Full streaming response caching with proper chunk ordering
 
-## How It Works
+---
 
-Semantic caching uses vector embeddings to determine similarity between requests:
+## Core Features
 
-1. **Request Processing** - Incoming requests are converted to vector embeddings
-2. **Similarity Search** - The cache searches for semantically similar previous requests
-3. **Threshold Matching** - If similarity exceeds the configured threshold, cached response is returned
-4. **Cache Miss** - If no similar request found, the request proceeds to the AI provider
-5. **Cache Storage** - New responses are stored with their vector embeddings for future matching
+- **Dual-Layer Caching**: Exact hash matching + semantic similarity search (customizable threshold)
+- **Vector-Powered Intelligence**: Uses embeddings to find semantically similar requests
+- **Dynamic Configuration**: Per-request TTL and threshold overrides via headers/context
+- **Model/Provider Isolation**: Separate caching per model and provider combination
 
-**Example Semantic Matches:**
-```
-Original: "What is machine learning?"
-Similar:  "Can you explain machine learning?"
-Similar:  "Define machine learning"
-Similar:  "What does ML mean?"
-```
+---
 
-All of these would return the same cached response if they exceed the similarity threshold.
+## Vector Store Setup
 
-## Configuration
+<Tabs group="vector-store-setup">
 
-Configure semantic caching through multiple methods:
+<Tab title="Go SDK">
 
-<Tabs group="semantic-cache-config">
-<Tab title="Web UI">
+```go
+import (
+    "context"
+    "github.com/maximhq/bifrost/framework/vectorstore"
+    "github.com/maximhq/bifrost/core/schemas"
+)
 
-1. **Navigate to Configuration**
-   - Open Bifrost UI at `http://localhost:8080`
-   - Go to **Configuration** → **Semantic Cache**
+// Configure vector store
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeWeaviate,
+    Config: vectorstore.WeaviateConfig{
+        Scheme:    "http",
+        Host:      "localhost:8080",
+    },
+}
 
-2. **Configure Cache Settings**
-   - **Enable Semantic Cache**: Toggle on/off
-   - **Similarity Threshold**: 0.0 to 1.0 (higher = more strict matching)
-   - **Cache TTL**: Time-to-live for cached responses
-   - **Vector Store**: Choose Redis or in-memory storage
-
-3. **Save Configuration**
-   - Click **Save Changes**
-   - Cache will be active for new requests immediately
-
-</Tab>
-<Tab title="API">
-
-```bash
-# Enable semantic caching
-curl -X PATCH http://localhost:8080/config \
-  -H "Content-Type: application/json" \
-  -d '{
-    "semantic_cache": {
-      "enabled": true,
-      "similarity_threshold": 0.85,
-      "ttl_seconds": 3600,
-      "vector_store": "redis"
-    }
-  }'
+// Create vector store
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+if err != nil {
+    log.Fatal("Failed to create vector store:", err)
+}
 ```
 
 </Tab>
+
 <Tab title="config.json">
 
 ```json
 {
-  "semantic_cache": {
+  "vector_store": {
     "enabled": true,
-    "similarity_threshold": 0.85,
-    "ttl_seconds": 3600,
-    "vector_store": {
-      "type": "redis",
-      "config": {
-        "host": "localhost",
-        "port": 6379,
-        "db": 0
-      }
+    "type": "weaviate",
+    "config": {
+      "host": "localhost:8080",
+      "scheme": "http",
+    }
+  }
+}
+```
+
+**For Weaviate Cloud:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "host": "your-cluster.weaviate.network",
+      "scheme": "https",
+      "api_key": "your-weaviate-api-key"
     }
   }
 }
 ```
 
 </Tab>
+
 </Tabs>
 
-### Configuration Options
+---
 
-| Setting | Description | Default | Range |
-|---------|-------------|---------|-------|
-| `enabled` | Enable/disable semantic caching | `false` | boolean |
-| `similarity_threshold` | Minimum similarity score for cache hits | `0.85` | 0.0 - 1.0 |
-| `ttl_seconds` | Cache entry time-to-live | `3600` | 1 - ∞ |
-| `vector_store` | Storage backend for embeddings | `memory` | `redis`, `memory` |
+## Semantic Cache Configuration
 
-## Storage Backends
+<Tabs group="cache-config">
 
-### Redis (Recommended)
-- **Best for**: Production deployments
-- **Features**: Persistent storage, clustering support, high performance
-- **Setup**: Requires Redis server
-
-```json
-{
-  "vector_store": {
-    "type": "redis",
-    "config": {
-      "host": "localhost",
-      "port": 6379,
-      "password": "optional-password",
-      "db": 0
-    }
-  }
-}
-```
-
-### In-Memory
-- **Best for**: Development and testing
-- **Features**: Zero setup, high performance
-- **Limitations**: Non-persistent, single instance only
-
-```json
-{
-  "vector_store": {
-    "type": "memory"
-  }
-}
-```
-
-## Usage Examples
-
-<Tabs group="semantic-cache-usage">
 <Tab title="Go SDK">
 
 ```go
-package main
-
 import (
-    "context"
-    "fmt"
-    "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/plugins/semanticcache"
     "github.com/maximhq/bifrost/core/schemas"
 )
 
-func main() {
-    client, err := bifrost.Init(schemas.BifrostConfig{
-        Account: account,
-        // Semantic cache is configured via config.json or API
-    })
+// Configure semantic cache plugin
+cacheConfig := semanticcache.Config{
+    CacheKey:    "request-cache-key",     // Required: bifrost will look for this key in ctx for cache triggering
+    CacheTTLKey: "request-cache-ttl",     // Optional: bifrost will look for this key in ctx for TTL override
+    CacheThresholdKey: "request-cache-threshold", // Optional: bifrost will look for this key in ctx for threshold override
+    
+    // Embedding model configuration
+    Provider:       schemas.OpenAI,
+    Keys:          []schemas.Key{{Value: "sk-..."}},
+    EmbeddingModel: "text-embedding-3-small", // Optional: defaults to provider default
+    
+    // Cache behavior
+    TTL:       5 * time.Minute,  // Default TTL: 5 minutes
+    Threshold: 0.8,              // Similarity threshold: 0.8 (80%)
+    
+    // Advanced options
+    CacheByModel:    bifrost.Ptr(true),  // Include model in cache key (default: true)
+    CacheByProvider: bifrost.Ptr(true),  // Include provider in cache key (default: true)
+}
 
-    // First request - will miss cache and call provider
-    response1, err := client.ChatCompletion(context.Background(), &schemas.BifrostRequest{
-        Provider: schemas.OpenAI,
-        Model:    "gpt-4o-mini",
-        Messages: []schemas.BifrostMessage{
-            {
-                Role: schemas.ModelChatMessageRoleUser,
-                Content: schemas.MessageContent{
-                    ContentStr: bifrost.Ptr("What is artificial intelligence?"),
-                },
-            },
-        },
-    })
+// Create plugin
+plugin, err := semanticcache.Init(context.Background(), cacheConfig, logger, store)
+if err != nil {
+    log.Fatal("Failed to create semantic cache plugin:", err)
+}
 
-    // Second request - semantically similar, will hit cache
-    response2, err := client.ChatCompletion(context.Background(), &schemas.BifrostRequest{
-        Provider: schemas.OpenAI,
-        Model:    "gpt-4o-mini", 
-        Messages: []schemas.BifrostMessage{
-            {
-                Role: schemas.ModelChatMessageRoleUser,
-                Content: schemas.MessageContent{
-                    ContentStr: bifrost.Ptr("Can you explain AI?"),
-                },
-            },
-        },
-    })
+// Add to Bifrost config
+bifrostConfig := schemas.BifrostConfig{
+    Plugins: []schemas.Plugin{plugin},
+    // ... other config
+}
+```
 
-    // Check if response came from cache
-    if response2.ExtraFields.CacheHit {
-        fmt.Println("Response served from semantic cache!")
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "semantic_cache",
+      "config": {        
+        "provider": "openai",
+        "embedding_model": "text-embedding-3-small",
+        
+        "ttl": "5m",
+        "threshold": 0.8,
+        
+        "cache_by_model": true,
+        "cache_by_provider": true
+      }
     }
+  ]
 }
 ```
 
-</Tab>
-<Tab title="Gateway">
+**Note**: All the available keys will be taken from the provider config on initialization, so make sure to add the keys to the provider you have specified in the config. Any updates to the keys will not be reflected until next restart.
 
-```bash
-# First request - cache miss
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "openai/gpt-4o-mini",
-    "messages": [
-      {
-        "role": "user",
-        "content": "What is artificial intelligence?"
-      }
-    ]
-  }'
-
-# Response includes cache info
-{
-  "choices": [...],
-  "extra_fields": {
-    "cache_hit": false,
-    "provider": "openai",
-    "latency": 1.2
-  }
-}
-
-# Second request - semantically similar
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "openai/gpt-4o-mini",
-    "messages": [
-      {
-        "role": "user", 
-        "content": "Can you explain AI?"
-      }
-    ]
-  }'
-
-# Response served from cache
-{
-  "choices": [...],
-  "extra_fields": {
-    "cache_hit": true,
-    "similarity_score": 0.87,
-    "latency": 0.05
-  }
-}
-```
+**TTL Format Options:**
+- Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
+- Numeric seconds: `300` (5 minutes), `3600` (1 hour)
 
 </Tab>
+
 </Tabs>
 
-## Performance Considerations
+---
 
-### Similarity Threshold Tuning
+## Cache Triggering
 
-| Threshold | Behavior | Use Case |
-|-----------|----------|----------|
-| 0.95-1.0  | Very strict matching | Exact semantic equivalence required |
-| 0.85-0.95 | Balanced matching | General purpose (recommended) |
-| 0.70-0.85 | Loose matching | Maximize cache hits, accept broader similarity |
-| 0.0-0.70  | Very loose matching | Development/testing only |
+<Warning>
+**Cache Key is mandatory**: Semantic caching only activates when a cache key is provided. Without a cache key, requests bypass caching entirely.
+</Warning>
 
-### Cache Performance
+<Tabs group="cache-triggering">
 
-- **Vector Search**: O(log n) with proper indexing
-- **Memory Usage**: ~1KB per cached request (embedding + metadata)
-- **Hit Rate**: Typically 15-30% for conversational applications
-- **Latency Reduction**: 95%+ faster than provider API calls
+<Tab title="Go SDK">
+Must set cache key in request context:
 
-## Monitoring & Analytics
+```go
+// This request WILL be cached
+ctx = context.WithValue(ctx, semanticcache.ContextKey("request-cache-key"), "session-123")
+response, err := client.ChatCompletionRequest(ctx, request)
 
-Track semantic cache performance through:
+// This request will NOT be cached (no context value)
+response, err := client.ChatCompletionRequest(context.Background(), request)
+```
 
-- **Cache Hit Rate** - Percentage of requests served from cache
-- **Similarity Scores** - Distribution of similarity matches  
-- **Cost Savings** - Reduced API calls and token usage
-- **Latency Improvements** - Response time comparisons
+</Tab>
 
-Cache metrics are available through:
-- Bifrost UI dashboard at `/logs`
-- Prometheus metrics endpoint
-- Request tracing logs
+<Tab title="HTTP API">
+Must set cache key in request header `x-bf-cache-key`:
 
-## Next Steps
+```bash
+# This request WILL be cached
+curl -H "x-bf-cache-key: session-123" ...
 
-- **[Telemetry](./telemetry)** - Monitor cache performance with metrics
-- **[Tracing](./tracing)** - Debug cache behavior with request logs
-- **[Architecture](../architecture/plugins/semantic-cache)** - Deep dive into implementation details
+# This request will NOT be cached (no header)
+curl ...
+```
+
+</Tab>
+
+</Tabs>
+
+## Per-Request Overrides
+
+Override default TTL and similarity threshold per request:
+
+<Tabs group="per-request-overrides">
+
+<Tab title="Go SDK">
+
+You can set TTL and threshold in the request context, in the keys you configured in the plugin config:
+
+```go
+// Go SDK: Custom TTL and threshold
+ctx = context.WithValue(ctx, semanticcache.ContextKey("request-cache-key"), "session-123")
+ctx = context.WithValue(ctx, semanticcache.ContextKey("request-cache-ttl"), 30*time.Second)
+ctx = context.WithValue(ctx, semanticcache.ContextKey("request-cache-threshold"), 0.9)
+```
+
+</Tab>
+
+<Tab title="HTTP API">
+
+You can set TTL and threshold in the request headers `x-bf-cache-ttl` and `x-bf-cache-threshold`:
+
+```bash
+# HTTP: Custom TTL and threshold
+curl -H "x-bf-cache-key: session-123" \
+     -H "x-bf-cache-ttl: 30s" \
+     -H "x-bf-cache-threshold: 0.9" ...
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Cache Management
+
+### Cache Metadata Location
+
+When responses are served from semantic cache, 3 key variables are automatically added to the response:
+
+**Location**: `response.ExtraFields.RawResponse` (as a map)
+
+**Variables**:
+- `bifrost_cached` (boolean): `true` when response served from cache
+- `bifrost_cache_key` (string): Unique cache entry ID for management operations  
+- `bifrost_cache_type` (string): `"semantic"` for similarity match, `"direct"` for hash match
+
+**Semantic Cache Only**:
+- `bifrost_cache_threshold` (number): Similarity threshold used for the match
+- `bifrost_cache_similarity` (number): Similarity score for the match
+
+These variables allow you to detect cached responses and get the cache entry ID needed for clearing specific entries.
+
+### Clear Specific Cache Entry
+
+Use the request ID from cached responses to clear specific entries:
+
+<Tabs group="cache-clear">
+
+<Tab title="HTTP API">
+
+```bash
+# Clear specific cached entry by request ID
+curl -X DELETE http://localhost:8080/api/cache/clear/550e8400-e29b-41d4-a716-446655440000
+
+# Clear all entries for a cache key
+curl -X DELETE http://localhost:8080/api/cache/clear-by-key/support-session-456
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+// Clear specific entry by request ID
+err := plugin.ClearCacheForRequestID(nil, "550e8400-e29b-41d4-a716-446655440000")
+
+// Clear all entries for a cache key  
+err := plugin.ClearCacheForKey("support-session-456")
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Use Cases
+
+### Customer Support
+Cache responses for common questions like "How do I reset my password?" or "What are your business hours?" - semantically similar variations get instant responses.
+
+### Content Generation  
+Cache blog post outlines, product descriptions, or marketing copy for similar topics, reducing costs for content teams.
+
+### Data Analysis
+Cache responses for similar analytical queries about datasets, dashboards, or reports, speeding up business intelligence workflows.
+
+---
+
+<Info>
+**Vector Store Requirement**: Semantic caching requires a configured vector store (currently Weaviate only). Without vector store setup, the plugin will not function.
+</Info>

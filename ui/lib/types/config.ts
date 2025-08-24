@@ -157,7 +157,6 @@ export interface CacheConfig {
 	embedding_model: string;
 	ttl_seconds: number;
 	threshold: number;
-	prefix?: string;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
 	created_at?: string;

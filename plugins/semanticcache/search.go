@@ -2,9 +2,10 @@ package semanticcache
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -18,83 +19,69 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 		return nil, fmt.Errorf("failed to generate request hash: %w", err)
 	}
 
+	plugin.logger.Debug(PluginLoggerPrefix + " Generated Hash for Request: " + hash)
+
 	// Store hash in context
 	*ctx = context.WithValue(*ctx, requestHashKey, hash)
 
-	// Look for cached hash first using pattern-based search
-	hashPattern := plugin.generateCachePattern(req, "", "hash")
+	// Extract metadata for strict filtering
+	_, metadata, err := plugin.extractTextForEmbedding(req, requestType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract metadata for filtering: %w", err)
+	}
 
-	// Get all hash keys matching the pattern
-	var hashKeys []string
+	// Build strict filters for direct hash search
+	filters := []vectorstore.Query{
+		{Field: "request_hash", Operator: vectorstore.QueryOperatorEqual, Value: hash},
+	}
+
+	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
+		filters = append(filters, vectorstore.Query{Field: "provider", Operator: vectorstore.QueryOperatorEqual, Value: string(req.Provider)})
+	}
+	if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
+		filters = append(filters, vectorstore.Query{Field: "model", Operator: vectorstore.QueryOperatorEqual, Value: req.Model})
+	}
+
+	// Add strict filters for ALL params
+	for key, value := range metadata {
+		filters = append(filters, vectorstore.Query{
+			Field:    "params." + key,
+			Operator: vectorstore.QueryOperatorEqual,
+			Value:    value,
+		})
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Searching for direct hash match with %d filters", PluginLoggerPrefix, len(filters)))
+
+	// Make a full copy so we don't mutate the original backing array
+	selectFields := append([]string(nil), SelectFields...)
+	if plugin.isStreamingRequest(requestType) {
+		selectFields = removeField(selectFields, "response")
+	} else {
+		selectFields = removeField(selectFields, "stream_chunks")
+	}
+
+	// Search for entries with matching hash and all params
 	var cursor *string
-	for {
-		batch, c, err := plugin.store.GetAll(*ctx, hashPattern, cursor, 1000)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan hash keys: %w", err)
-		}
-		hashKeys = append(hashKeys, batch...)
-		cursor = c
-		if cursor == nil {
-			break
-		}
-	}
-
-	if len(hashKeys) == 0 {
-		return nil, nil
-	}
-
-	// Get all hash values
-	hashData, err := plugin.store.GetChunks(*ctx, hashKeys)
+	results, _, err := plugin.store.GetAll(*ctx, filters, selectFields, cursor, 1)
 	if err != nil {
 		if errors.Is(err, vectorstore.ErrNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to retrieve cached hashes: %w", err)
+		return nil, fmt.Errorf("failed to search for direct hash match: %w", err)
 	}
 
-	// Find matching hash
-	var matchingRequestID string
-	for i, data := range hashData {
-		if data != nil {
-			storedHash, ok := data.(string)
-			if !ok {
-				plugin.logger.Debug(PluginLoggerPrefix + " Cached hash value is not a string; skipping key")
-				continue
-			}
-
-			if storedHash == hash {
-				// Extract request ID from the hash key
-				// Hash key format: {prefix}{provider}-{model}-reqid-{uuid}-hash
-				hashKey := hashKeys[i]
-
-				// Remove prefix first
-				keyWithoutPrefix := strings.TrimPrefix(hashKey, plugin.config.Prefix)
-
-				// Look for "reqid-" pattern and extract UUID after it
-				reqidIndex := strings.Index(keyWithoutPrefix, "-reqid-")
-				if reqidIndex != -1 {
-					// Extract everything after "-reqid-"
-					afterReqid := keyWithoutPrefix[reqidIndex+7:] // 7 = len("-reqid-")
-
-					// Remove the suffix ("-hash", "-emb", "-response")
-					if strings.HasSuffix(afterReqid, "-hash") {
-						matchingRequestID = strings.TrimSuffix(afterReqid, "-hash")
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if matchingRequestID == "" {
+	if len(results) == 0 {
+		plugin.logger.Debug(PluginLoggerPrefix + " No direct hash match found")
 		return nil, nil
 	}
 
-	if plugin.isStreamingRequest(requestType) {
-		return plugin.getStreamingResponseForRequestID(ctx, req, matchingRequestID, CacheTypeDirect)
-	} else {
-		return plugin.getNonStreamingResponseForRequestID(ctx, req, matchingRequestID, CacheTypeDirect)
-	}
+	// Found a matching entry - extract the response
+	result := results[0]
+	plugin.logger.Debug(fmt.Sprintf("%s Found direct hash match with ID: %s", PluginLoggerPrefix, result.ID))
+
+	// Build response from cached result
+	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeDirect, 1.0)
 }
 
 // performSemanticSearch performs semantic similarity search and returns matching response if found.
@@ -129,40 +116,220 @@ func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.B
 		}
 	}
 
+	// Build strict metadata filters as Query slices (provider, model, and all params)
+	strictFilters := []vectorstore.Query{}
+
+	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
+		strictFilters = append(strictFilters, vectorstore.Query{Field: "provider", Operator: vectorstore.QueryOperatorEqual, Value: string(req.Provider)})
+	}
+	if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
+		strictFilters = append(strictFilters, vectorstore.Query{Field: "model", Operator: vectorstore.QueryOperatorEqual, Value: req.Model})
+	}
+
+	// Add all params as strict filters
+	for key, value := range metadata {
+		strictFilters = append(strictFilters, vectorstore.Query{
+			Field:    "params." + key,
+			Operator: vectorstore.QueryOperatorEqual,
+			Value:    value,
+		})
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Performing semantic search with %d metadata filters", PluginLoggerPrefix, len(strictFilters)))
+
+	// Make a full copy so we don't mutate the original backing array
+	selectFields := append([]string(nil), SelectFields...)
+	if plugin.isStreamingRequest(requestType) {
+		selectFields = removeField(selectFields, "response")
+	} else {
+		selectFields = removeField(selectFields, "stream_chunks")
+	}
+
 	// For semantic search, we want semantic similarity in content but exact parameter matching
-	results, err := plugin.store.SearchSemanticCache(*ctx, SemanticIndexName, embedding, metadata, cacheThreshold, 1)
+	results, err := plugin.store.GetNearest(*ctx, embedding, strictFilters, selectFields, cacheThreshold, 1)
 	if err != nil {
-		// Handle unsupported operations as soft misses (e.g., Redis Cluster without RediSearch)
-		if errors.Is(err, vectorstore.ErrNotSupported) {
-			return nil, fmt.Errorf("semantic search not supported by vectorstore")
-		}
 		return nil, fmt.Errorf("failed to search semantic cache: %w", err)
 	}
 
 	if len(results) == 0 {
+		plugin.logger.Debug(PluginLoggerPrefix + " No semantic match found")
 		return nil, nil
 	}
 
-	// Extract request ID from the similar embedding key
-	// Embedding key format: {plugin_prefix}{provider}-{model}-reqid-{uuid}-emb
-	embeddingKey := results[0].Key
-	keyWithoutPrefix := strings.TrimPrefix(embeddingKey, plugin.config.Prefix)
+	// Found a semantically similar entry
+	result := results[0]
+	plugin.logger.Debug(fmt.Sprintf("%s Found semantic match with ID: %s, Score: %f", PluginLoggerPrefix, result.ID, *result.Score))
 
-	// Look for "reqid-" pattern and extract UUID after it
-	reqidIndex := strings.Index(keyWithoutPrefix, "-reqid-")
-	if reqidIndex == -1 {
-		return nil, fmt.Errorf("invalid embedding key format, missing reqid: %s", embeddingKey)
+	// Build response from cached result
+	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeSemantic, cacheThreshold)
+}
+
+// buildResponseFromResult constructs a PluginShortCircuit response from a cached VectorEntry result
+func (plugin *Plugin) buildResponseFromResult(ctx *context.Context, req *schemas.BifrostRequest, result vectorstore.SearchResult, cacheType CacheType, threshold float64) (*schemas.PluginShortCircuit, error) {
+	// Extract response data from the result properties
+	properties := result.Properties
+	if properties == nil {
+		return nil, fmt.Errorf("no properties found in cached result")
 	}
 
-	// Extract everything after "-reqid-"
-	afterReqid := keyWithoutPrefix[reqidIndex+7:] // 7 = len("-reqid-")
-	// Remove the suffix ("-emb")
-	similarRequestID := strings.TrimSuffix(afterReqid, "-emb")
+	// Check TTL - if entry has expired, delete it and return cache miss
+	if expiresAtRaw, exists := properties["expires_at"]; exists && expiresAtRaw != nil {
+		var expiresAt int64
+		var validType bool
+		switch v := expiresAtRaw.(type) {
+		case float64:
+			expiresAt = int64(v)
+			validType = true
+		case int64:
+			expiresAt = v
+			validType = true
+		case int:
+			expiresAt = int64(v)
+			validType = true
+		}
+		if validType {
+			currentTime := time.Now().Unix()
+			if expiresAt < currentTime {
+				// Entry has expired, delete it asynchronously
+				go func() {
+					deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					err := plugin.store.Delete(deleteCtx, result.ID)
+					if err != nil {
+						plugin.logger.Warn(fmt.Sprintf("%s Failed to delete expired entry %s: %v", PluginLoggerPrefix, result.ID, err))
+					}
+				}()
+				// Return nil to indicate cache miss
+				return nil, nil
+			}
+		}
+	}
 
-	// Look up the corresponding response
-	if plugin.isStreamingRequest(requestType) {
-		return plugin.getStreamingResponseForRequestID(ctx, req, similarRequestID, CacheTypeSemantic)
+	// Check if this is a streaming response - need to check for non-null values
+	streamResponses, hasStreamingResponse := properties["stream_chunks"]
+	singleResponse, hasSingleResponse := properties["response"]
+
+	// Consider fields present only if they're not null
+	hasValidSingleResponse := hasSingleResponse && singleResponse != nil
+	hasValidStreamingResponse := hasStreamingResponse && streamResponses != nil
+
+	streamChunks, ok := streamResponses.([]interface{})
+	if !ok || len(streamChunks) == 0 {
+		hasValidStreamingResponse = false
+	}
+
+	similarity := 0.0
+	if result.Score != nil {
+		similarity = *result.Score
+	}
+
+	if hasValidStreamingResponse && !hasValidSingleResponse {
+		// Handle streaming response
+		return plugin.buildStreamingResponseFromResult(ctx, req, result, streamResponses, cacheType, threshold, similarity)
+	} else if hasValidSingleResponse && !hasValidStreamingResponse {
+		// Handle single response
+		return plugin.buildSingleResponseFromResult(ctx, req, result, singleResponse, cacheType, threshold, similarity)
 	} else {
-		return plugin.getNonStreamingResponseForRequestID(ctx, req, similarRequestID, CacheTypeSemantic)
+		return nil, fmt.Errorf("cached result has invalid response data: both or neither response/stream_chunks are present (response: %v, stream_chunks: %v)", singleResponse, streamResponses)
 	}
+}
+
+// buildSingleResponseFromResult constructs a single response from cached data
+func (plugin *Plugin) buildSingleResponseFromResult(ctx *context.Context, req *schemas.BifrostRequest, result vectorstore.SearchResult, responseData interface{}, cacheType CacheType, threshold float64, similarity float64) (*schemas.PluginShortCircuit, error) {
+	responseStr, ok := responseData.(string)
+	if !ok {
+		return nil, fmt.Errorf("cached response is not a string")
+	}
+
+	// Unmarshal the cached response
+	var cachedResponse schemas.BifrostResponse
+	if err := json.Unmarshal([]byte(responseStr), &cachedResponse); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
+	}
+
+	// Mark response as cached
+	if cachedResponse.ExtraFields.RawResponse == nil {
+		cachedResponse.ExtraFields.RawResponse = make(map[string]interface{})
+	}
+	if rawResponseMap, ok := cachedResponse.ExtraFields.RawResponse.(map[string]interface{}); ok {
+		rawResponseMap["bifrost_cached"] = true
+		rawResponseMap["bifrost_cache_key"] = result.ID
+		rawResponseMap["bifrost_cache_type"] = string(cacheType)
+		if cacheType == CacheTypeSemantic {
+			rawResponseMap["bifrost_cache_threshold"] = threshold
+			rawResponseMap["bifrost_cache_similarity"] = similarity
+		} else {
+			delete(rawResponseMap, "bifrost_cache_threshold")
+			delete(rawResponseMap, "bifrost_cache_similarity")
+		}
+	}
+	cachedResponse.ExtraFields.Provider = req.Provider
+
+	*ctx = context.WithValue(*ctx, isCacheHitKey, true)
+	*ctx = context.WithValue(*ctx, CacheHitTypeKey, cacheType)
+
+	return &schemas.PluginShortCircuit{
+		Response: &cachedResponse,
+	}, nil
+}
+
+// buildStreamingResponseFromResult constructs a streaming response from cached data
+func (plugin *Plugin) buildStreamingResponseFromResult(ctx *context.Context, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamData interface{}, cacheType CacheType, threshold float64, similarity float64) (*schemas.PluginShortCircuit, error) {
+	streamArray, ok := streamData.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("cached stream_chunks is not an array")
+	}
+
+	// Create stream channel
+	streamChan := make(chan *schemas.BifrostStream)
+
+	go func() {
+		defer close(streamChan)
+
+		// Process each stream chunk
+		for i, chunkData := range streamArray {
+			chunkStr, ok := chunkData.(string)
+			if !ok {
+				plugin.logger.Warn(fmt.Sprintf("%s Stream chunk %d is not a string, skipping", PluginLoggerPrefix, i))
+				continue
+			}
+
+			// Unmarshal the chunk as BifrostResponse
+			var cachedResponse schemas.BifrostResponse
+			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
+				plugin.logger.Warn(fmt.Sprintf("%s Failed to unmarshal stream chunk %d, skipping: %v", PluginLoggerPrefix, i, err))
+				continue
+			}
+
+			// Mark chunk as cached
+			if cachedResponse.ExtraFields.RawResponse == nil {
+				cachedResponse.ExtraFields.RawResponse = make(map[string]interface{})
+			}
+			if rawResponseMap, ok := cachedResponse.ExtraFields.RawResponse.(map[string]interface{}); ok {
+				rawResponseMap["bifrost_cached"] = true
+				rawResponseMap["bifrost_cache_key"] = result.ID
+				rawResponseMap["bifrost_cache_type"] = string(cacheType)
+				if cacheType == CacheTypeSemantic {
+					rawResponseMap["bifrost_cache_threshold"] = threshold
+					rawResponseMap["bifrost_cache_similarity"] = similarity
+				} else {
+					delete(rawResponseMap, "bifrost_cache_threshold")
+					delete(rawResponseMap, "bifrost_cache_similarity")
+				}
+			}
+			cachedResponse.ExtraFields.Provider = req.Provider
+
+			// Send chunk to stream
+			streamChan <- &schemas.BifrostStream{
+				BifrostResponse: &cachedResponse,
+			}
+		}
+	}()
+
+	*ctx = context.WithValue(*ctx, isCacheHitKey, true)
+	*ctx = context.WithValue(*ctx, CacheHitTypeKey, cacheType)
+
+	return &schemas.PluginShortCircuit{
+		Stream: streamChan,
+	}, nil
 }

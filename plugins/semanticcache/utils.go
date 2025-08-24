@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"sort"
 	"strings"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -39,7 +39,15 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 
 	// Get the embedding from the first data item
 	embedding := response.Data[0].Embedding
-	if embedding.EmbeddingArray != nil {
+
+	if embedding.EmbeddingStr != nil {
+		// decode embedding.EmbeddingStr to []float32
+		var vals []float32
+		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err != nil {
+			return nil, fmt.Errorf("failed to parse string embedding: %w", err)
+		}
+		return vals, nil
+	} else if embedding.EmbeddingArray != nil {
 		return *embedding.EmbeddingArray, nil
 	} else if embedding.Embedding2DArray != nil && len(*embedding.Embedding2DArray) > 0 {
 		// Flatten 2D array into single embedding
@@ -214,192 +222,127 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 	}
 }
 
-// generateCachePattern creates search patterns for cache lookup.
-// It uses the format: {provider}-{model}-*-{suffix}
-// Provider and model are included based on CacheByProvider and CacheByModel configuration.
-//
-// Parameters:
-//   - req: The Bifrost request
-//   - suffix: Either "hash" or "response"
-//
-// Returns:
-//   - string: The formatted cache pattern for searching
-func (plugin *Plugin) generateCachePattern(req *schemas.BifrostRequest, requestID string, suffix string) string {
-	var provider, model, reqid string
-
-	// Include provider based on configuration
-	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
-		provider = string(req.Provider)
-	} else {
-		provider = "*"
-	}
-
-	// Include model based on configuration
-	if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
-		model = req.Model
-	} else {
-		model = "*"
-	}
-
-	if requestID != "" {
-		reqid = requestID
-	} else {
-		reqid = "*"
-	}
-
-	return fmt.Sprintf("%s%s-%s-reqid-%s-%s", plugin.config.Prefix, provider, model, reqid, suffix)
-}
-
-// generateCacheKey creates cache keys for storing hash and response.
-// It uses the format: {provider}-{model}-{reqid}-{suffix}
-// Provider and model are included based on CacheByProvider and CacheByModel configuration.
-//
-// Parameters:
-//   - req: The Bifrost request
-//   - requestID: The UUID for this request
-//   - suffix: Either "hash" or "response"
-//
-// Returns:
-//   - string: The formatted cache key
-func (plugin *Plugin) generateCacheKey(provider schemas.ModelProvider, model string, requestID, suffix string) string {
-	// Include provider based on configuration
-	if !(plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider) {
-		provider = "*"
-	}
-
-	// Include model based on configuration
-	if !(plugin.config.CacheByModel != nil && *plugin.config.CacheByModel) {
-		model = "*"
-	}
-
-	return fmt.Sprintf("%s%s-%s-reqid-%s-%s", plugin.config.Prefix, provider, model, requestID, suffix)
-}
-
-// getNonStreamingResponseForRequestID retrieves a non-streaming response for the given request ID.
-func (plugin *Plugin) getNonStreamingResponseForRequestID(ctx *context.Context, req *schemas.BifrostRequest, requestID string, cacheType CacheType) (*schemas.PluginShortCircuit, error) {
-	responseKey := plugin.generateCacheKey(req.Provider, req.Model, requestID, "response")
-	cachedData, err := plugin.store.GetChunk(*ctx, responseKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get cached response for key: %s: %w", responseKey, err)
-	}
-
-	// Unmarshal cached response
-	var cachedResponse schemas.BifrostResponse
-	if err := json.Unmarshal([]byte(cachedData), &cachedResponse); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
-	}
-
-	// Mark response as cached
-	if cachedResponse.ExtraFields.RawResponse == nil {
-		cachedResponse.ExtraFields.RawResponse = make(map[string]interface{})
-	}
-	if rawResponseMap, ok := cachedResponse.ExtraFields.RawResponse.(map[string]interface{}); ok {
-		rawResponseMap["bifrost_cached"] = true
-		rawResponseMap["bifrost_cache_key"] = responseKey
-		rawResponseMap["bifrost_cache_type"] = string(cacheType) // Convert to string for proper type assertion in tests
-	}
-	cachedResponse.ExtraFields.Provider = req.Provider
-
-	*ctx = context.WithValue(*ctx, isCacheHitKey, true)
-	*ctx = context.WithValue(*ctx, CacheHitTypeKey, cacheType)
-
-	return &schemas.PluginShortCircuit{
-		Response: &cachedResponse,
-	}, nil
-}
-
-// getStreamingResponseForRequestID retrieves a streaming response for the given request ID.
-func (plugin *Plugin) getStreamingResponseForRequestID(ctx *context.Context, req *schemas.BifrostRequest, requestID string, cacheType CacheType) (*schemas.PluginShortCircuit, error) {
-	// Find all chunks for this request ID
-	responsePattern := plugin.generateCachePattern(req, requestID, "response_chunk_*")
-
-	// Get all chunk keys matching the pattern
-	var chunkKeys []string
-	var cursor *string
-	for {
-		batch, c, err := plugin.store.GetAll(*ctx, responsePattern, cursor, 1000)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan cached chunks: %w", err)
-		}
-		chunkKeys = append(chunkKeys, batch...)
-		cursor = c
-		if cursor == nil {
-			break
-		}
-	}
-
-	if len(chunkKeys) == 0 {
-		return nil, fmt.Errorf("no cached chunks found for key: %s", responsePattern)
-	}
-
-	// Create stream channel
-	streamChan := make(chan *schemas.BifrostStream)
-
-	go func() {
-		defer close(streamChan)
-
-		// Get all chunk data
-		chunkData, err := plugin.store.GetChunks(*ctx, chunkKeys)
-		if err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to retrieve cached chunks")
-			return
-		}
-
-		var chunks []schemas.BifrostResponse
-		for _, data := range chunkData {
-			if data == nil {
-				continue
-			}
-			chunkStr, ok := data.(string)
-			if !ok {
-				plugin.logger.Warn(PluginLoggerPrefix + " Cached chunk is not a string, skipping")
-				continue
-			}
-
-			// Unmarshal cached response
-			var cachedResponse schemas.BifrostResponse
-			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
-				plugin.logger.Warn(PluginLoggerPrefix + " Failed to unmarshal cached chunk, skipping")
-				continue
-			}
-
-			chunks = append(chunks, cachedResponse)
-		}
-
-		// Sort chunks by index
-		sort.Slice(chunks, func(i, j int) bool {
-			return chunks[i].ExtraFields.ChunkIndex < chunks[j].ExtraFields.ChunkIndex
-		})
-
-		// Send chunks in order
-		for _, chunk := range chunks {
-			if chunk.ExtraFields.RawResponse == nil {
-				chunk.ExtraFields.RawResponse = make(map[string]interface{})
-			}
-			if rawResponseMap, ok := chunk.ExtraFields.RawResponse.(map[string]interface{}); ok {
-				rawResponseMap["bifrost_cached"] = true
-				rawResponseMap["bifrost_cache_key"] = plugin.generateCacheKey(req.Provider, req.Model, requestID, fmt.Sprintf("response_chunk_%d", chunk.ExtraFields.ChunkIndex))
-				rawResponseMap["bifrost_cache_type"] = string(cacheType) // Convert to string for proper type assertion in tests
-			}
-
-			chunk.ExtraFields.Provider = req.Provider
-
-			streamChan <- &schemas.BifrostStream{
-				BifrostResponse: &chunk,
-			}
-		}
-	}()
-
-	*ctx = context.WithValue(*ctx, isCacheHitKey, true)
-	*ctx = context.WithValue(*ctx, CacheHitTypeKey, cacheType)
-
-	return &schemas.PluginShortCircuit{
-		Stream: streamChan,
-	}, nil
-}
-
+// isStreamingRequest checks if the request is a streaming request
 func (plugin *Plugin) isStreamingRequest(requestType bifrost.RequestType) bool {
 	return requestType == bifrost.ChatCompletionStreamRequest ||
 		requestType == bifrost.SpeechStreamRequest ||
 		requestType == bifrost.TranscriptionStreamRequest
+}
+
+// buildUnifiedMetadata constructs the unified metadata structure for VectorEntry
+func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model string, params map[string]interface{}, requestHash string, cacheKey string, ttl time.Duration) map[string]interface{} {
+	unifiedMetadata := make(map[string]interface{})
+
+	// Top-level fields (outside params)
+	unifiedMetadata["provider"] = string(provider)
+	unifiedMetadata["model"] = model
+	unifiedMetadata["request_hash"] = requestHash
+	unifiedMetadata["cache_key"] = cacheKey
+
+	// Calculate expiration timestamp (current time + TTL)
+	expiresAt := time.Now().Add(ttl).Unix()
+	unifiedMetadata["expires_at"] = expiresAt
+
+	// Individual param fields will be stored as params_* by the vectorstore
+	// We pass the params map to the vectorstore, and it handles the individual field storage
+	if len(params) > 0 {
+		unifiedMetadata["params"] = params
+	}
+
+	return unifiedMetadata
+}
+
+// addSingleResponse stores a single (non-streaming) response in unified VectorEntry format
+func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
+	// Marshal response as string
+	responseData, err := json.Marshal(res)
+	if err != nil {
+		return fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	// Add response field to metadata
+	metadata["response"] = string(responseData)
+	metadata["stream_chunks"] = []string{}
+	metadata["from_bifrost_semantic_cache_plugin"] = true
+
+	// Store unified entry using new VectorStore interface
+	if err := plugin.store.Add(ctx, responseID, embedding, metadata); err != nil {
+		return fmt.Errorf("failed to store unified cache entry: %w", err)
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Successfully cached single response with ID: %s", PluginLoggerPrefix, responseID))
+	return nil
+}
+
+// addStreamingResponse handles streaming response storage by accumulating chunks
+func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
+	// Create accumulator if it doesn't exist
+	accumulator := plugin.getOrCreateStreamAccumulator(responseID, embedding, metadata, ttl)
+
+	// Create chunk from current response
+	chunk := &StreamChunk{
+		Timestamp: time.Now(),
+		Response:  res,
+	}
+
+	// Check for finish reason or set error finish reason
+	if bifrostErr != nil {
+		// Error case - mark as final chunk with error
+		chunk.FinishReason = bifrost.Ptr("error")
+	} else if res != nil && len(res.Choices) > 0 {
+		choice := res.Choices[0]
+		if choice.BifrostStreamResponseChoice != nil {
+			chunk.FinishReason = choice.FinishReason
+		}
+	}
+
+	// Add chunk to accumulator synchronously to maintain order
+	if err := plugin.addStreamChunk(responseID, chunk); err != nil {
+		return fmt.Errorf("failed to add stream chunk: %w", err)
+	}
+
+	// Check if this is the final chunk and gate final processing to ensure single invocation
+	accumulator.mu.Lock()
+	// Check for completion: either FinishReason is present, there's an error, or token usage exists
+	isComplete := chunk.FinishReason != nil || bifrostErr != nil ||
+		(res != nil && res.Usage != nil && res.Usage.TotalTokens > 0)
+	alreadyComplete := accumulator.IsComplete
+
+	// Track if any chunk has an error
+	if bifrostErr != nil {
+		accumulator.HasError = true
+	}
+
+	// Log token usage for debugging if available
+	if res != nil && res.Usage != nil && res.Usage.TotalTokens > 0 {
+		plugin.logger.Debug(fmt.Sprintf("%s Token usage in streaming chunk for request %s: %d total tokens",
+			PluginLoggerPrefix, responseID, res.Usage.TotalTokens))
+	}
+
+	if isComplete && !alreadyComplete {
+		accumulator.IsComplete = true
+		accumulator.FinalTimestamp = chunk.Timestamp
+	}
+	accumulator.mu.Unlock()
+
+	// If this is the final chunk and hasn't been processed yet, process accumulated chunks
+	// Note: processAccumulatedStream will check for errors and skip caching if any errors occurred
+	if isComplete && !alreadyComplete {
+		if processErr := plugin.processAccumulatedStream(ctx, responseID); processErr != nil {
+			plugin.logger.Warn(fmt.Sprintf("%s Failed to process accumulated stream for request %s: %v", PluginLoggerPrefix, responseID, processErr))
+		}
+	}
+
+	return nil
+}
+
+// removeField removes the first occurrence of target from the slice.
+func removeField(arr []string, target string) []string {
+	for i, v := range arr {
+		if v == target {
+			// remove element at index i
+			return append(arr[:i], arr[i+1:]...)
+		}
+	}
+	return arr // unchanged if target not found
 }

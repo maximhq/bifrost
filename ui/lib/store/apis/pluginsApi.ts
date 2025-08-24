@@ -7,7 +7,7 @@ export const pluginsApi = baseApi.injectEndpoints({
 		getPlugins: builder.query<Plugin[], void>({
 			query: () => "/plugins",
 			providesTags: ["Plugins"],
-			transformResponse: (response: PluginsResponse) => response.plugins,
+			transformResponse: (response: PluginsResponse) => response.plugins || [],
 		}),
 
 		// Create new plugin

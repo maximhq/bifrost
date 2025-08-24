@@ -46,7 +46,7 @@ type ConfigStore interface {
 	GetPlugin(name string) (*TablePlugin, error)
 	CreatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error
 	UpdatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error
-	DeletePlugin(name string) error
+	DeletePlugin(name string, tx ...*gorm.DB) error
 
 	// Governance config CRUD
 	GetVirtualKeys() ([]TableVirtualKey, error)
@@ -96,6 +96,10 @@ type ConfigStore interface {
 
 // NewConfigStore creates a new config store based on the configuration
 func NewConfigStore(config *Config, logger schemas.Logger) (ConfigStore, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config cannot be nil")
+	}
+
 	if !config.Enabled {
 		return nil, nil
 	}
