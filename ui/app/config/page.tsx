@@ -1,11 +1,10 @@
 "use client";
 
-import CacheConfigForm from "@/app/config/views/cache-config-form";
+import PluginsForm from "@/app/config/views/plugins-form";
 import FullPageLoader from "@/components/full-page-loader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
@@ -24,7 +23,7 @@ const defaultConfig = {
 	enable_governance: true,
 	enforce_governance_header: false,
 	allow_direct_keys: false,
-	enable_caching: false,
+	plugins: [],
 	allowed_origins: [],
 };
 
@@ -68,7 +67,7 @@ export default function ConfigPage() {
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
 			});
 		}
-	}, [config]);
+	}, [config, bifrostConfig]);
 
 	const updateConfig = useCallback(
 		async (field: keyof CoreConfig, value: boolean | number | string[]) => {
@@ -275,13 +274,21 @@ export default function ConfigPage() {
 								</label>
 								<p className="text-muted-foreground text-sm">
 									Enable logging of requests and responses to a SQL database. This can add 40-60mb of overhead to the system memory.
+									{!bifrostConfig?.is_logs_connected && (
+										<span className="text-destructive font-medium"> Requires logs store to be configured and enabled in config.json.</span>
+									)}
 								</p>
 							</div>
 							<Switch
 								id="enable-logging"
 								size="md"
-								checked={config?.enable_logging}
-								onCheckedChange={(checked) => handleConfigChange("enable_logging", checked)}
+								checked={config?.enable_logging && bifrostConfig?.is_logs_connected}
+								disabled={!bifrostConfig?.is_logs_connected}
+								onCheckedChange={(checked) => {
+									if (bifrostConfig?.is_logs_connected) {
+										handleConfigChange("enable_logging", checked);
+									}
+								}}
 							/>
 						</div>
 						{needsRestart && <RestartWarning />}
@@ -307,35 +314,7 @@ export default function ConfigPage() {
 						{needsRestart && <RestartWarning />}
 					</div>
 
-					<div>
-						<div className="rounded-lg border p-4">
-							<div className="flex items-center justify-between space-x-2">
-								<div className="space-y-0.5">
-									<label htmlFor="enable-caching" className="text-sm font-medium">
-										Enable Semantic Caching
-									</label>
-									<p className="text-muted-foreground text-sm">
-										Enable semantic caching for requests. Send <b>x-bf-cache-key</b> header with requests to use semantic caching.
-									</p>
-								</div>
-								<Switch
-									id="enable-caching"
-									size="md"
-									checked={config?.enable_caching}
-									onCheckedChange={(checked) => handleConfigChange("enable_caching", checked)}
-								/>
-							</div>
-
-							{config?.enable_caching && (
-								<div className="mt-4 space-y-4">
-									<Separator />
-									<CacheConfigForm />
-								</div>
-							)}
-						</div>
-
-						{needsRestart && <RestartWarning />}
-					</div>
+					<PluginsForm isVectorStoreEnabled={bifrostConfig?.is_cache_connected ?? false} />
 
 					<div>
 						<div className="space-y-2 rounded-lg border p-4">

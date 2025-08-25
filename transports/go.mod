@@ -14,7 +14,6 @@ require (
 	github.com/maximhq/bifrost/plugins/governance v1.2.0-prerelease4
 	github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease4
 	github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease2
-	github.com/maximhq/bifrost/plugins/redis v1.0.0
 	github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease2
 	github.com/maximhq/bifrost/plugins/telemetry v1.2.0-prerelease2
 	github.com/prometheus/client_golang v1.23.0
@@ -68,6 +67,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
 	github.com/maximhq/maxim-go v0.1.8 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.65.0 // indirect
 	github.com/prometheus/procfs v0.17.0 // indirect

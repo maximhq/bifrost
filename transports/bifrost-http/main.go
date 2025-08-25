@@ -60,10 +60,13 @@ import (
 	"mime"
 	"net"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -88,10 +91,9 @@ var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 // Command line flags
 var (
-	port          string   // Port to run the server on
-	host          string   // Host to bind the server to
-	appDir        string   // Application data directory
-	pluginsToLoad []string // Plugins to load
+	port   string // Port to run the server on
+	host   string // Host to bind the server to
+	appDir string // Application data directory
 
 	logLevel       string // Logger level: debug, info, warn, error
 	logOutputStyle string // Logger output style: json, pretty
@@ -102,7 +104,6 @@ var (
 //   - host: Host to bind the server to (default: localhost, can be overridden with BIFROST_HOST env var)
 //   - port: Server port (default: 8080)
 //   - app-dir: Application data directory (default: current directory)
-//   - plugins: Comma-separated list of plugins to load
 //   - log-level: Logger level (debug, info, warn, error). Default is info.
 //   - log-style: Logger output type (json or pretty). Default is JSON.
 
@@ -385,7 +386,7 @@ func main() {
 			continue
 		}
 		switch strings.ToLower(plugin.Name) {
-		case "maxim":
+		case maxim.PluginName:
 			if os.Getenv("MAXIM_LOG_REPO_ID") == "" {
 				logger.Warn("maxim log repo id is required to initialize maxim plugin")
 				continue
@@ -401,7 +402,7 @@ func main() {
 			} else {
 				loadedPlugins = append(loadedPlugins, maximPlugin)
 			}
-		case "semantic_cache":
+		case semanticcache.PluginName:
 			if !plugin.Enabled {
 				logger.Debug("semantic cache plugin is disabled, skipping initialization")
 				continue
@@ -426,12 +427,14 @@ func main() {
 			// Set hardcoded values
 			semCacheConfig.CacheKey = "request-cache-key"
 			semCacheConfig.CacheTTLKey = "request-cache-ttl"
+			semCacheConfig.CacheThresholdKey = "request-cache-threshold"
 
 			semanticCachePlugin, err := semanticcache.Init(ctx, semCacheConfig, logger, config.VectorStore)
 			if err != nil {
-				logger.Fatal("failed to initialize semantic cache plugin: %v", err)
+				logger.Error("failed to initialize semantic cache: %v", err)
 			} else {
 				loadedPlugins = append(loadedPlugins, semanticCachePlugin)
+				logger.Info("successfully initialized semantic cache")
 			}
 		}
 	}
@@ -458,6 +461,7 @@ func main() {
 	mcpHandler := handlers.NewMCPHandler(client, logger, config)
 	integrationHandler := handlers.NewIntegrationHandler(client, config)
 	configHandler := handlers.NewConfigHandler(client, logger, config)
+	pluginsHandler := handlers.NewPluginsHandler(config.ConfigStore, logger)
 
 	// Set up WebSocket callback for real-time log updates
 	if wsHandler != nil && loggingPlugin != nil {
@@ -475,6 +479,7 @@ func main() {
 	mcpHandler.RegisterRoutes(r)
 	integrationHandler.RegisterRoutes(r)
 	configHandler.RegisterRoutes(r)
+	pluginsHandler.RegisterRoutes(r)
 	if governanceHandler != nil {
 		governanceHandler.RegisterRoutes(r)
 	}
@@ -499,15 +504,61 @@ func main() {
 	// Apply CORS middleware to all routes
 	corsHandler := corsMiddleware(config, r.Handler)
 
-	logger.Info("successfully started bifrost. Serving UI on http://%s:%s", host, port)
-	if err := fasthttp.ListenAndServe(net.JoinHostPort(host, port), corsHandler); err != nil {
-		logger.Fatal("Error starting server: %v", err)
+	// Create fasthttp server instance
+	server := &fasthttp.Server{
+		Handler: corsHandler,
 	}
 
-	// Cleanup resources on shutdown
-	if wsHandler != nil {
-		wsHandler.Stop()
-	}
+	// Create channels for signal and error handling
+	sigChan := make(chan os.Signal, 1)
+	errChan := make(chan error, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	client.Cleanup()
+	// Start server in a goroutine
+	serverAddr := net.JoinHostPort(host, port)
+	go func() {
+		logger.Info("successfully started bifrost, serving UI on http://%s:%s", host, port)
+		if err := server.ListenAndServe(serverAddr); err != nil {
+			errChan <- err
+		}
+	}()
+
+	// Wait for either termination signal or server error
+	select {
+	case sig := <-sigChan:
+		logger.Info("received signal %v, initiating graceful shutdown...", sig)
+
+		// Create shutdown context with timeout
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Perform graceful shutdown
+		if err := server.Shutdown(); err != nil {
+			logger.Error("error during graceful shutdown: %v", err)
+		} else {
+			logger.Info("server gracefully shutdown")
+		}
+
+		// Wait for shutdown to complete or timeout
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Cleanup resources
+			if wsHandler != nil {
+				wsHandler.Stop()
+			}
+			client.Cleanup()
+		}()
+
+		select {
+		case <-done:
+			logger.Info("cleanup completed")
+		case <-shutdownCtx.Done():
+			logger.Warn("cleanup timed out after 30 seconds")
+		}
+
+	case err := <-errChan:
+		logger.Error("server failed to start: %v", err)
+		os.Exit(1)
+	}
 }

@@ -1,4 +1,4 @@
-import { BifrostConfig, CacheConfig, CoreConfig } from "@/lib/types/config";
+import { BifrostConfig, CoreConfig } from "@/lib/types/config";
 import { baseApi } from "./baseApi";
 
 export const configApi = baseApi.injectEndpoints({
@@ -21,30 +21,7 @@ export const configApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Config"],
 		}),
-
-		// Get cache configuration
-		getCacheConfig: builder.query<CacheConfig, void>({
-			query: () => "/config/cache",
-			providesTags: ["CacheConfig"],
-		}),
-
-		// Update cache configuration
-		updateCacheConfig: builder.mutation<{ config: CacheConfig }, CacheConfig>({
-			query: (data) => ({
-				url: "/config/cache",
-				method: "PUT",
-				body: data,
-			}),
-			invalidatesTags: ["CacheConfig"],
-		}),
 	}),
 });
 
-export const {
-	useGetCoreConfigQuery,
-	useUpdateCoreConfigMutation,
-	useGetCacheConfigQuery,
-	useUpdateCacheConfigMutation,
-	useLazyGetCoreConfigQuery,
-	useLazyGetCacheConfigQuery,
-} = configApi;
+export const { useGetCoreConfigQuery, useUpdateCoreConfigMutation, useLazyGetCoreConfigQuery } = configApi;

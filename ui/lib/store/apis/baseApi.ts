@@ -76,6 +76,7 @@ export const baseApi = createApi({
 		"DebugStats",
 		"HealthCheck",
 		"DBKeys",
+		"Plugins",
 	],
 	endpoints: () => ({}),
 });

@@ -15,7 +15,12 @@ const NotAvailableBanner = () => {
 						<div>The UI requires a database connection to store configuration data, but no database is currently configured.</div>
 						<div className="text-muted-foreground">
 							To enable the UI, please add the database settings to your config.json (see{" "}
-							<Link href="https://getmaxim.ai/bifrost/docs/configure" target="_blank" className="font-medium underline underline-offset-2">
+							<Link
+								href="https://www.getmaxim.ai/bifrost/docs/#two-configuration-modes"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="font-medium underline underline-offset-2"
+							>
 								documentation
 							</Link>
 							).

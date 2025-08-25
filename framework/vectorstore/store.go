@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -13,34 +12,48 @@ import (
 type VectorStoreType string
 
 const (
-	VectorStoreTypeRedis        VectorStoreType = "redis"
-	VectorStoreTypeRedisCluster VectorStoreType = "redis_cluster"
+	VectorStoreTypeWeaviate VectorStoreType = "weaviate"
 )
+
+// Query represents a query to the vector store.
+type Query struct {
+	Field    string
+	Operator string
+	Value    interface{}
+}
+
+// SearchResult represents a search result with metadata.
+type SearchResult struct {
+	ID         string
+	Score      float64
+	Properties map[string]interface{}
+}
 
 // VectorStore represents the interface for the vector store.
 type VectorStore interface {
-	GetChunk(ctx context.Context, contextKey string) (string, error)
-	GetChunks(ctx context.Context, chunkKeys []string) ([]any, error)
-	Add(ctx context.Context, key string, value string, ttl time.Duration) error
-	Delete(ctx context.Context, keys []string) error
-	GetAll(ctx context.Context, pattern string, cursor *string, count int64) ([]string, *string, error)
+	GetChunk(ctx context.Context, id string) (any, error)
+	GetChunks(ctx context.Context, ids []string) ([]any, error)
+	GetAll(ctx context.Context, queries []Query, selectFields []string, cursor *string, count int64) ([]any, *string, error)
+	GetNearest(ctx context.Context, vector []float32, queries []Query, selectFields []string, threshold float64, limit int64) ([]SearchResult, error)
+	Add(ctx context.Context, id string, embedding []float32, metadata map[string]interface{}) error
+	Delete(ctx context.Context, ids []string) error
 	Close(ctx context.Context) error
 }
 
 // Config represents the configuration for the vector store.
 type Config struct {
-	Enabled         bool            `json:"enabled"`
-	Type            VectorStoreType `json:"type"`
-	Config          any             `json:"config"`
+	Enabled bool            `json:"enabled"`
+	Type    VectorStoreType `json:"type"`
+	Config  any             `json:"config"`
 }
 
 // UnmarshalJSON unmarshals the config from JSON.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled         bool            `json:"enabled"`
-		Type            string          `json:"type"`
-		Config          json.RawMessage `json:"config"` // Keep as raw JSON
+		Enabled bool            `json:"enabled"`
+		Type    string          `json:"type"`
+		Config  json.RawMessage `json:"config"` // Keep as raw JSON
 	}
 
 	var temp TempConfig
@@ -54,19 +67,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 	// Parse the config field based on type
 	switch c.Type {
-	case VectorStoreTypeRedis:
-		var redisConfig RedisConfig
-		if err := json.Unmarshal(temp.Config, &redisConfig); err != nil {
-			return fmt.Errorf("failed to unmarshal redis config: %w", err)
+	case VectorStoreTypeWeaviate:
+		var weaviateConfig WeaviateConfig
+		if err := json.Unmarshal(temp.Config, &weaviateConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal weaviate config: %w", err)
 		}
-		c.Config = redisConfig
-
-	case VectorStoreTypeRedisCluster:
-		var redisClusterConfig RedisClusterConfig
-		if err := json.Unmarshal(temp.Config, &redisClusterConfig); err != nil {
-			return fmt.Errorf("failed to unmarshal redis cluster config: %w", err)
-		}
-		c.Config = redisClusterConfig
+		c.Config = weaviateConfig
 	default:
 		return fmt.Errorf("unknown vector store type: %s", temp.Type)
 	}
@@ -77,24 +83,15 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 // NewVectorStore returns a new vector store based on the configuration.
 func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) (VectorStore, error) {
 	switch config.Type {
-	case VectorStoreTypeRedis:
+	case VectorStoreTypeWeaviate:
 		if config.Config == nil {
-			return nil, fmt.Errorf("redis config is required")
+			return nil, fmt.Errorf("weaviate config is required")
 		}
-		redisConfig, ok := config.Config.(RedisConfig)
+		weaviateConfig, ok := config.Config.(WeaviateConfig)
 		if !ok {
-			return nil, fmt.Errorf("invalid redis config")
+			return nil, fmt.Errorf("invalid weaviate config")
 		}
-		return newRedisStore(ctx, redisConfig, logger)
-	case VectorStoreTypeRedisCluster:
-		if config.Config == nil {
-			return nil, fmt.Errorf("redis cluster config is required")
-		}
-		redisClusterConfig, ok := config.Config.(RedisClusterConfig)
-		if !ok {
-			return nil, fmt.Errorf("invalid redis cluster config")
-		}
-		return newRedisClusterStore(ctx, redisClusterConfig, logger)
+		return newWeaviateStore(ctx, weaviateConfig, logger)
 	}
 	return nil, fmt.Errorf("invalid vector store type: %s", config.Type)
 }
