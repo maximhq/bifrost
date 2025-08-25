@@ -345,8 +345,12 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	}
 
 	// Check if this is a streaming response
-	requestType := (*ctx).Value(Bifrost.BifrostContextKeyRequestType).(Bifrost.RequestType)
-	isStreaming := requestType == Bifrost.SpeechStreamRequest || requestType == Bifrost.TranscriptionStreamRequest
+	requestType, ok := (*ctx).Value(Bifrost.BifrostContextKeyRequestType).(Bifrost.RequestType)
+	if !ok {
+		p.logger.Error("request type missing/invalid in PostHook for request %s", requestID)
+		return result, err, nil
+	}
+	isAudioStreaming := requestType == Bifrost.SpeechStreamRequest || requestType == Bifrost.TranscriptionStreamRequest
 	isChatStreaming := requestType == Bifrost.ChatCompletionStreamRequest
 
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
@@ -357,7 +361,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
 		return p.handleStreamingResponse(ctx, result, err)
-	} else if isStreaming {
+	} else if isAudioStreaming {
 		// Handle speech/transcription streaming with original flow
 		logMsg.Operation = LogOperationStreamUpdate
 

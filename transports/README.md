@@ -140,7 +140,7 @@ docker run -p 8080:8080 maximhq/bifrost
 
 ```bash
 # Add providers programmatically
-curl -X POST http://localhost:8080/providers \
+curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{
     "provider": "openai",
