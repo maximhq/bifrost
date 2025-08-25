@@ -323,7 +323,6 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 
 		// Extract token usage
 		if result.Usage != nil && result.Usage.TotalTokens > 0 {
-			p.logger.Info("result.Usage: %+v", result.Usage)
 			chunk.TokenUsage = result.Usage
 		}
 	}
