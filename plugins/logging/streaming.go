@@ -118,7 +118,6 @@ func (p *LoggerPlugin) addStreamChunk(requestID string, chunk *StreamChunk, obje
 	// Set FinalTimestamp when either FinishReason is present or token usage exists
 	// This handles both normal completion chunks and usage-only last chunks
 	if chunk.FinishReason != nil || chunk.TokenUsage != nil {
-		accumulator.IsComplete = true
 		accumulator.FinalTimestamp = chunk.Timestamp
 	}
 
@@ -324,6 +323,7 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 
 		// Extract token usage
 		if result.Usage != nil && result.Usage.TotalTokens > 0 {
+			p.logger.Info("result.Usage: %+v", result.Usage)
 			chunk.TokenUsage = result.Usage
 		}
 	}
@@ -338,59 +338,29 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 	}
 
 	// If this is the final chunk, process accumulated chunks asynchronously
+	// Use the IsComplete flag to prevent duplicate processing
+	shouldProcess := false
 	if chunk.FinishReason != nil || chunk.TokenUsage != nil {
-		go func() {
-			if processErr := p.processAccumulatedChunks(requestID); processErr != nil {
-				p.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
-			}
-		}()
+		// Get the accumulator to check if processing has already been triggered
+		accumulator := p.getOrCreateStreamAccumulator(requestID)
+		accumulator.mu.Lock()
+		shouldProcess = !accumulator.IsComplete
+
+		// Mark as complete when we're about to process
+		if shouldProcess {
+			accumulator.IsComplete = true
+		}
+		accumulator.mu.Unlock()
+
+		if shouldProcess {
+			go func() {
+				if processErr := p.processAccumulatedChunks(requestID); processErr != nil {
+					p.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
+				}
+			}()
+		}
 	}
 
 	return result, err, nil
 }
 
-// isStreamingResponse checks if the response is a streaming delta
-func (p *LoggerPlugin) isStreamingResponse(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check for streaming choices (text-based streaming)
-	if len(result.Choices) > 0 {
-		for _, choice := range result.Choices {
-			if choice.BifrostStreamResponseChoice != nil {
-				return true
-			}
-		}
-	}
-
-	// Check for streaming speech output
-	if result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil {
-		return true
-	}
-
-	// Check for streaming transcription output
-	if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil {
-		return true
-	}
-
-	return false
-}
-
-// isTextStreamingResponse checks if the response is a text-based streaming delta
-func (p *LoggerPlugin) isTextStreamingResponse(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check for streaming choices (text-based streaming only)
-	if len(result.Choices) > 0 {
-		for _, choice := range result.Choices {
-			if choice.BifrostStreamResponseChoice != nil {
-				return true
-			}
-		}
-	}
-
-	return false
-}

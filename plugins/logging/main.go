@@ -135,14 +135,14 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 		if err == nil {
 			return nil
 		}
-		
+
 		// Check if the error is logstore.ErrNotFound
 		if !errors.Is(err, logstore.ErrNotFound) {
 			return err
 		}
-		
+
 		lastErr = err
-		
+
 		// Don't wait after the last attempt
 		if attempt < maxRetries-1 {
 			select {
@@ -153,7 +153,7 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 			}
 		}
 	}
-	
+
 	return lastErr
 }
 
@@ -346,15 +346,15 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 
 	// Check if this is a streaming response
 	requestType := (*ctx).Value(Bifrost.BifrostContextKeyRequestType).(Bifrost.RequestType)
-	isStreaming := requestType == Bifrost.ChatCompletionStreamRequest || requestType == Bifrost.SpeechStreamRequest || requestType == Bifrost.TranscriptionStreamRequest
-	isTextStreaming := requestType == Bifrost.TextCompletionRequest
+	isStreaming := requestType == Bifrost.SpeechStreamRequest || requestType == Bifrost.TranscriptionStreamRequest
+	isChatStreaming := requestType == Bifrost.ChatCompletionStreamRequest
 
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
 	logMsg.RequestID = requestID
 	logMsg.Timestamp = time.Now()
 
-	if isTextStreaming {
+	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
 		return p.handleStreamingResponse(ctx, result, err)
 	} else if isStreaming {
