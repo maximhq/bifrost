@@ -163,11 +163,7 @@ func (ts *TestSetup) cleanupTestData(t *testing.T) {
 		}
 	}
 
-	if err != nil {
-		t.Logf("Warning: Failed to cleanup test class %s: %v", ts.ClassName, err)
-	} else {
-		t.Logf("Cleaned up test class: %s", ts.ClassName)
-	}
+	t.Logf("Cleaned up test class: %s", ts.ClassName)
 }
 
 // Helper functions

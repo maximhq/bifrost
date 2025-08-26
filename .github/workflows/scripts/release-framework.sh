@@ -83,11 +83,10 @@ if ! git diff --cached --quiet; then
   # Push the bump so go.mod/go.sum changes are recorded on the branch
   CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
   git push origin "$CURRENT_BRANCH"
+  echo "🔧 Pushed framework bump to $CURRENT_BRANCH"
 else
   echo "No dependency changes detected; skipping commit."
 fi
-
-echo "🔧 Pushed framework bump to $CURRENT_BRANCH"
 
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"
