@@ -24,7 +24,7 @@
   "anchors": [    
     {
       "name": "Community",
-      "icon": "slack",
+      "icon": "discord",
       "url": "https://getmax.im/bifrost-discord"
     },
     {

@@ -6,7 +6,7 @@
 		"dev": "next dev",
 		"build": "next build && npm run fix-paths && npm run copy-build",
 		"fix-paths": "node scripts/fix-paths.js",
-		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",
+		"copy-build": "rm -rf ../transports/bifrost-http/lib/ui && cp -r out ../transports/bifrost-http/lib/ui",
 		"start": "next start",
 		"lint": "next lint"
 	},

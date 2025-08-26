@@ -11,7 +11,7 @@ bifrost-data
 # Temporary directories
 **/temp/
 /transports/ui
-/transports/bifrost-http/ui
+/transports/bifrost-http/lib/ui
 transports/bifrost-http/logs/
 transports/bifrost-http/tmp/
 node_modules
