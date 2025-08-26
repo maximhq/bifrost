@@ -84,14 +84,10 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 	// Validate that the second stream was cached
 	cached := false
 	for _, response := range responses2 {
-		if response.ExtraFields.RawResponse != nil {
-			if rawMap, ok := response.ExtraFields.RawResponse.(map[string]interface{}); ok {
-				if cachedFlag, exists := rawMap["bifrost_cached"]; exists {
-					if cachedBool, ok := cachedFlag.(bool); ok && cachedBool {
-						cached = true
-						break
-					}
-				}
+		if response.ExtraFields.CacheDebug != nil {
+			if response.ExtraFields.CacheDebug.CacheHit {
+				cached = true
+				break
 			}
 		}
 	}

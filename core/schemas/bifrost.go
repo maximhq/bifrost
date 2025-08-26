@@ -652,13 +652,23 @@ type TranscriptionUsage struct {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	Provider    ModelProvider     `json:"provider"`
-	Params      ModelParameters   `json:"model_params"`
-	Latency     *float64          `json:"latency,omitempty"`
-	ChatHistory *[]BifrostMessage `json:"chat_history,omitempty"`
-	BilledUsage *BilledLLMUsage   `json:"billed_usage,omitempty"`
-	ChunkIndex  int               `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawResponse interface{}       `json:"raw_response"`
+	Provider    ModelProvider      `json:"provider"`
+	Params      ModelParameters    `json:"model_params"`
+	Latency     *float64           `json:"latency,omitempty"`
+	ChatHistory *[]BifrostMessage  `json:"chat_history,omitempty"`
+	BilledUsage *BilledLLMUsage    `json:"billed_usage,omitempty"`
+	ChunkIndex  int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawResponse interface{}        `json:"raw_response"`
+	CacheDebug  *BifrostCacheDebug `json:"cache_debug,omitempty"`
+}
+
+// BifrostCacheDebug represents debug information about the cache.
+type BifrostCacheDebug struct {
+	CacheHit        bool     `json:"cache_hit"`
+	CacheHitType    string   `json:"cache_hit_type"`
+	CacheID         string   `json:"cache_id"`
+	CacheThreshold  *float64 `json:"cache_threshold,omitempty"`
+	CacheSimilarity *float64 `json:"cache_similarity,omitempty"`
 }
 
 const (

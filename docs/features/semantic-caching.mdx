@@ -254,16 +254,33 @@ curl -H "x-bf-cache-key: session-123" \
 
 When responses are served from semantic cache, 3 key variables are automatically added to the response:
 
-**Location**: `response.ExtraFields.RawResponse` (as a map)
+**Location**: `response.ExtraFields.CacheDebug` (as a JSON object)
 
-**Variables**:
-- `bifrost_cached` (boolean): `true` when response served from cache
-- `bifrost_cache_key` (string): Unique cache entry ID for management operations  
-- `bifrost_cache_type` (string): `"semantic"` for similarity match, `"direct"` for hash match
+**Fields**:
+- `CacheHit` (boolean): `true` when response served from cache
+- `CacheHitType` (string): `"semantic"` for similarity match, `"direct"` for hash match
+- `CacheID` (string): Unique cache entry ID for management operations  
 
 **Semantic Cache Only**:
-- `bifrost_cache_threshold` (number): Similarity threshold used for the match
-- `bifrost_cache_similarity` (number): Similarity score for the match
+- `CacheThreshold` (number): Similarity threshold used for the match
+- `CacheSimilarity` (number): Similarity score for the match
+
+Example HTTP Response:
+
+```json
+{
+  "extra_fields": {
+    "cache_debug": {
+      "cache_hit": true,
+      "cache_hit_type": "semantic",
+      "cache_id": "550e8500-e29b-41d4-a725-446655440001",
+      "cache_threshold": 0.8,
+      "cache_similarity": 0.95
+    }
+  }
+}
+```
+
 
 These variables allow you to detect cached responses and get the cache entry ID needed for clearing specific entries.
 

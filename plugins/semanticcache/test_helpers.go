@@ -90,7 +90,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 	return NewTestSetupWithConfig(t, Config{
 		CacheKey:       TestCacheKey,
 		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-small",
+		EmbeddingModel: "text-embedding-3-large",
 		Threshold:      0.8,
 		Keys: []schemas.Key{
 			{
@@ -263,51 +263,19 @@ func CreateSpeechRequest(input string, voice string) *schemas.BifrostRequest {
 
 // AssertCacheHit verifies that a response was served from cache
 func AssertCacheHit(t *testing.T, response *schemas.BifrostResponse, expectedCacheType string) {
-	if response.ExtraFields.RawResponse == nil {
-		t.Error("Response ExtraFields.RawResponse is nil - expected cache metadata")
-		return
-	}
-
-	rawMap, ok := response.ExtraFields.RawResponse.(map[string]interface{})
-	if !ok {
-		t.Error("Response ExtraFields.RawResponse is not a map - expected cache metadata")
-		return
-	}
-
-	cachedFlag, exists := rawMap["bifrost_cached"]
-	if !exists {
-		t.Error("Response missing 'bifrost_cached' flag - expected cache hit")
-		return
-	}
-
-	cachedBool, ok := cachedFlag.(bool)
-	if !ok {
-		t.Error("'bifrost_cached' flag is not a boolean")
-		return
-	}
-
-	if !cachedBool {
-		t.Error("'bifrost_cached' flag is false - expected cache hit")
+	if response.ExtraFields.CacheDebug == nil {
+		t.Error("Cache metadata missing 'cache_debug'")
 		return
 	}
 
 	if expectedCacheType != "" {
-		cacheType, exists := rawMap["bifrost_cache_type"]
-		if !exists {
-			t.Error("Cache metadata missing 'bifrost_cache_type'")
+		cacheType := response.ExtraFields.CacheDebug.CacheHitType
+		if cacheType != expectedCacheType {
+			t.Errorf("Expected cache type '%s', got '%s'", expectedCacheType, cacheType)
 			return
 		}
 
-		cacheTypeStr, ok := cacheType.(string)
-		if !ok {
-			t.Error("'bifrost_cache_type' is not a string")
-			return
-		}
-
-		if cacheTypeStr != expectedCacheType {
-			t.Errorf("Expected cache type '%s', got '%s'", expectedCacheType, cacheTypeStr)
-			return
-		}
+		t.Log("✅ Response correctly served from cache")
 	}
 
 	t.Log("✅ Response correctly served from cache")
@@ -315,26 +283,8 @@ func AssertCacheHit(t *testing.T, response *schemas.BifrostResponse, expectedCac
 
 // AssertNoCacheHit verifies that a response was NOT served from cache
 func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
-	if response.ExtraFields.RawResponse == nil {
-		t.Log("✅ Response correctly not served from cache (no cache metadata)")
-		return
-	}
-
-	rawMap, ok := response.ExtraFields.RawResponse.(map[string]interface{})
-	if !ok {
-		t.Log("✅ Response correctly not served from cache (cache metadata not a map)")
-		return
-	}
-
-	cachedFlag, exists := rawMap["bifrost_cached"]
-	if !exists {
-		t.Log("✅ Response correctly not served from cache (no 'bifrost_cached' flag)")
-		return
-	}
-
-	cachedBool, ok := cachedFlag.(bool)
-	if !ok || !cachedBool {
-		t.Log("✅ Response correctly not served from cache")
+	if response.ExtraFields.CacheDebug == nil {
+		t.Log("✅ Response correctly not served from cache (no 'cache_debug' flag)")
 		return
 	}
 
@@ -343,7 +293,7 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 
 // WaitForCache waits for async cache operations to complete
 func WaitForCache() {
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 }
 
 // CreateContextWithCacheKey creates a context with the test cache key

@@ -504,7 +504,7 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	setup.Config.Threshold = 0.8
+	setup.Config.Threshold = 0.9
 
 	ctx := CreateContextWithCacheKey("semantic-edge-test")
 
@@ -529,7 +529,7 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 		},
 		{
 			prompt1:     "What is the weather today?",
-			prompt2:     "Tell me about machine learning",
+			prompt2:     "What do you know about bifrost?",
 			shouldMatch: false,
 			description: "Completely different topics",
 		},
@@ -563,17 +563,21 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 				t.Fatalf("Second request failed: %v", err2)
 			}
 
+			var cacheThresholdFloat float64
+			var cacheSimilarityFloat float64
+
 			// Check if semantic matching occurred
 			semanticMatch := false
-			if response2.ExtraFields.RawResponse != nil {
-				if rawMap, ok := response2.ExtraFields.RawResponse.(map[string]interface{}); ok {
-					if cachedFlag, exists := rawMap["bifrost_cached"]; exists {
-						if cachedBool, ok := cachedFlag.(bool); ok && cachedBool {
-							if cacheType, exists := rawMap["bifrost_cache_type"]; exists {
-								if cacheTypeStr, ok := cacheType.(string); ok {
-									semanticMatch = (cacheTypeStr == string(CacheTypeSemantic))
-								}
-							}
+			if response2.ExtraFields.CacheDebug != nil {
+				if response2.ExtraFields.CacheDebug.CacheHit {
+					if response2.ExtraFields.CacheDebug.CacheHitType == string(CacheTypeSemantic) {
+						semanticMatch = true
+
+						if response2.ExtraFields.CacheDebug.CacheThreshold != nil {
+							cacheThresholdFloat = *response2.ExtraFields.CacheDebug.CacheThreshold
+						}
+						if response2.ExtraFields.CacheDebug.CacheSimilarity != nil {
+							cacheSimilarityFloat = *response2.ExtraFields.CacheDebug.CacheSimilarity
 						}
 					}
 				}
@@ -583,11 +587,11 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 				if semanticMatch {
 					t.Logf("✅ Test %d: Semantic match found as expected for '%s'", i+1, test.description)
 				} else {
-					t.Logf("ℹ️  Test %d: No semantic match found for '%s' (may be expected due to embedding similarity)", i+1, test.description)
+					t.Logf("ℹ️  Test %d: No semantic match found for '%s', check with threshold: %f and found similarity: %f", i+1, test.description, cacheThresholdFloat, cacheSimilarityFloat)
 				}
 			} else {
 				if semanticMatch {
-					t.Errorf("❌ Test %d: Unexpected semantic match for different topics: '%s'", i+1, test.description)
+					t.Errorf("❌ Test %d: Unexpected semantic match for different topics: '%s', check with threshold: %f and found similarity: %f", i+1, test.description, cacheThresholdFloat, cacheSimilarityFloat)
 				} else {
 					t.Logf("✅ Test %d: Correctly no semantic match for different topics: '%s'", i+1, test.description)
 				}

@@ -12,7 +12,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
-func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType bifrost.RequestType) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType bifrost.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
 	// Generate hash for the request
 	hash, err := plugin.generateRequestHash(req, requestType)
 	if err != nil {
@@ -33,6 +33,7 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 	// Build strict filters for direct hash search
 	filters := []vectorstore.Query{
 		{Field: "request_hash", Operator: vectorstore.QueryOperatorEqual, Value: hash},
+		{Field: "cache_key", Operator: vectorstore.QueryOperatorEqual, Value: cacheKey},
 	}
 
 	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
@@ -85,7 +86,7 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 }
 
 // performSemanticSearch performs semantic similarity search and returns matching response if found.
-func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType bifrost.RequestType) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType bifrost.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
 	// Extract text and metadata for embedding
 	text, metadata, err := plugin.extractTextForEmbedding(req, requestType)
 	if err != nil {
@@ -117,7 +118,9 @@ func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.B
 	}
 
 	// Build strict metadata filters as Query slices (provider, model, and all params)
-	strictFilters := []vectorstore.Query{}
+	strictFilters := []vectorstore.Query{
+		{Field: "cache_key", Operator: vectorstore.QueryOperatorEqual, Value: cacheKey},
+	}
 
 	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
 		strictFilters = append(strictFilters, vectorstore.Query{Field: "provider", Operator: vectorstore.QueryOperatorEqual, Value: string(req.Provider)})
@@ -247,22 +250,20 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *context.Context, req *s
 		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
 	}
 
-	// Mark response as cached
-	if cachedResponse.ExtraFields.RawResponse == nil {
-		cachedResponse.ExtraFields.RawResponse = make(map[string]interface{})
+	if cachedResponse.ExtraFields.CacheDebug == nil {
+		cachedResponse.ExtraFields.CacheDebug = &schemas.BifrostCacheDebug{}
 	}
-	if rawResponseMap, ok := cachedResponse.ExtraFields.RawResponse.(map[string]interface{}); ok {
-		rawResponseMap["bifrost_cached"] = true
-		rawResponseMap["bifrost_cache_key"] = result.ID
-		rawResponseMap["bifrost_cache_type"] = string(cacheType)
-		if cacheType == CacheTypeSemantic {
-			rawResponseMap["bifrost_cache_threshold"] = threshold
-			rawResponseMap["bifrost_cache_similarity"] = similarity
-		} else {
-			delete(rawResponseMap, "bifrost_cache_threshold")
-			delete(rawResponseMap, "bifrost_cache_similarity")
-		}
+	cachedResponse.ExtraFields.CacheDebug.CacheHit = true
+	cachedResponse.ExtraFields.CacheDebug.CacheHitType = string(cacheType)
+	cachedResponse.ExtraFields.CacheDebug.CacheID = result.ID
+	if cacheType == CacheTypeSemantic {
+		cachedResponse.ExtraFields.CacheDebug.CacheThreshold = &threshold
+		cachedResponse.ExtraFields.CacheDebug.CacheSimilarity = &similarity
+	} else {
+		cachedResponse.ExtraFields.CacheDebug.CacheThreshold = nil
+		cachedResponse.ExtraFields.CacheDebug.CacheSimilarity = nil
 	}
+
 	cachedResponse.ExtraFields.Provider = req.Provider
 
 	*ctx = context.WithValue(*ctx, isCacheHitKey, true)
@@ -301,22 +302,20 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *context.Context, req
 				continue
 			}
 
-			// Mark chunk as cached
-			if cachedResponse.ExtraFields.RawResponse == nil {
-				cachedResponse.ExtraFields.RawResponse = make(map[string]interface{})
+			if cachedResponse.ExtraFields.CacheDebug == nil {
+				cachedResponse.ExtraFields.CacheDebug = &schemas.BifrostCacheDebug{}
 			}
-			if rawResponseMap, ok := cachedResponse.ExtraFields.RawResponse.(map[string]interface{}); ok {
-				rawResponseMap["bifrost_cached"] = true
-				rawResponseMap["bifrost_cache_key"] = result.ID
-				rawResponseMap["bifrost_cache_type"] = string(cacheType)
-				if cacheType == CacheTypeSemantic {
-					rawResponseMap["bifrost_cache_threshold"] = threshold
-					rawResponseMap["bifrost_cache_similarity"] = similarity
-				} else {
-					delete(rawResponseMap, "bifrost_cache_threshold")
-					delete(rawResponseMap, "bifrost_cache_similarity")
-				}
+			cachedResponse.ExtraFields.CacheDebug.CacheHit = true
+			cachedResponse.ExtraFields.CacheDebug.CacheHitType = string(cacheType)
+			cachedResponse.ExtraFields.CacheDebug.CacheID = result.ID
+			if cacheType == CacheTypeSemantic {
+				cachedResponse.ExtraFields.CacheDebug.CacheThreshold = &threshold
+				cachedResponse.ExtraFields.CacheDebug.CacheSimilarity = &similarity
+			} else {
+				cachedResponse.ExtraFields.CacheDebug.CacheThreshold = nil
+				cachedResponse.ExtraFields.CacheDebug.CacheSimilarity = nil
 			}
+
 			cachedResponse.ExtraFields.Provider = req.Provider
 
 			// Send chunk to stream

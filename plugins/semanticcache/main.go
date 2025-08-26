@@ -302,7 +302,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		return req, nil, nil
 	}
 
-	shortCircuit, err := plugin.performDirectSearch(ctx, req, requestType)
+	shortCircuit, err := plugin.performDirectSearch(ctx, req, requestType, cacheKey)
 	if err != nil {
 		plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error())
 		// Don't return - continue to semantic search fallback
@@ -319,7 +319,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	}
 
 	// Try semantic search as fallback
-	shortCircuit, err = plugin.performSemanticSearch(ctx, req, requestType)
+	shortCircuit, err = plugin.performSemanticSearch(ctx, req, requestType, cacheKey)
 	if err != nil {
 		return req, nil, nil
 	}
@@ -363,11 +363,7 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 	if isCacheHit != nil {
 		isCacheHitValue, ok := isCacheHit.(bool)
 		if ok && isCacheHitValue {
-			// If the cache hit is true, we should cache direct only when the cache hit type is semantic
-			cacheHitType, ok := (*ctx).Value(CacheHitTypeKey).(CacheType)
-			if ok && cacheHitType == CacheTypeDirect {
-				return res, nil, nil
-			}
+			return res, nil, nil
 		}
 	}
 

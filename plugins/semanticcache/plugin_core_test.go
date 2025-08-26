@@ -161,20 +161,23 @@ func TestSemanticSearch(t *testing.T) {
 
 	// Check if second request was served from semantic cache
 	semanticMatch := false
-	if response2.ExtraFields.RawResponse != nil {
-		if rawMap, ok := response2.ExtraFields.RawResponse.(map[string]interface{}); ok {
-			if cachedFlag, exists := rawMap["bifrost_cached"]; exists {
-				if cachedBool, ok := cachedFlag.(bool); ok && cachedBool {
-					// Check if it was a semantic match
-					if cacheType, exists := rawMap["bifrost_cache_type"]; exists {
-						if cacheTypeStr, ok := cacheType.(string); ok {
-							if cacheTypeStr == string(CacheTypeSemantic) {
-								semanticMatch = true
-								t.Log("Second request was served from semantic cache!")
-							}
-						}
-					}
+
+	if response2.ExtraFields.CacheDebug != nil {
+		if response2.ExtraFields.CacheDebug.CacheHit {
+			if response2.ExtraFields.CacheDebug.CacheHitType == string(CacheTypeSemantic) {
+				semanticMatch = true
+
+				threshold := 0.0
+				similarity := 0.0
+
+				if response2.ExtraFields.CacheDebug.CacheThreshold != nil {
+					threshold = *response2.ExtraFields.CacheDebug.CacheThreshold
 				}
+				if response2.ExtraFields.CacheDebug.CacheSimilarity != nil {
+					similarity = *response2.ExtraFields.CacheDebug.CacheSimilarity
+				}
+
+				t.Logf("✅ Second request was served from semantic cache! Cache threshold: %f, Cache similarity: %f", threshold, similarity)
 			}
 		}
 	}
@@ -248,26 +251,32 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 		t.Fatalf("Third request failed: %v", err3)
 	}
 
+	semanticMatch := false
+
 	// Check if it was served from cache and what type
-	if response3.ExtraFields.RawResponse != nil {
-		if rawMap, ok := response3.ExtraFields.RawResponse.(map[string]interface{}); ok {
-			if cachedFlag, exists := rawMap["bifrost_cached"]; exists {
-				if cachedBool, ok := cachedFlag.(bool); ok && cachedBool {
-					if cacheType, exists := rawMap["bifrost_cache_type"]; exists {
-						if cacheTypeStr, ok := cacheType.(string); ok {
-							t.Logf("Cache hit type: %s", cacheTypeStr)
-							if cacheTypeStr == string(CacheTypeSemantic) {
-								t.Log("✅ Semantic search successfully found similar request")
-							} else {
-								t.Log("ℹ️  Direct hash match occurred (requests were more similar than expected)")
-							}
-						}
-					}
+	if response3.ExtraFields.CacheDebug != nil {
+		if response3.ExtraFields.CacheDebug.CacheHit {
+			if response3.ExtraFields.CacheDebug.CacheHitType == string(CacheTypeSemantic) {
+				semanticMatch = true
+
+				threshold := 0.0
+				similarity := 0.0
+
+				if response3.ExtraFields.CacheDebug.CacheThreshold != nil {
+					threshold = *response3.ExtraFields.CacheDebug.CacheThreshold
 				}
+				if response3.ExtraFields.CacheDebug.CacheSimilarity != nil {
+					similarity = *response3.ExtraFields.CacheDebug.CacheSimilarity
+				}
+
+				t.Logf("✅ Third request was served from semantic cache! Cache threshold: %f, Cache similarity: %f", threshold, similarity)
 			}
 		}
-	} else {
-		t.Log("ℹ️  No cache hit - embeddings may not be similar enough")
+	}
+
+	if !semanticMatch {
+		t.Error("Semantic match expected but not found")
+		return
 	}
 
 	t.Log("✅ Direct vs semantic search test completed!")
