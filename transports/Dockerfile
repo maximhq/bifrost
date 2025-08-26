@@ -30,7 +30,7 @@ RUN go mod download
 # Copy source code and dependencies
 COPY transports/ ./
 
-COPY --from=ui-builder /app/out ./bifrost-http/lib/ui
+COPY --from=ui-builder /app/out ./bifrost-http/ui
 
 # Build the binary with CGO enabled and static SQLite linking
 ENV GOWORK=off

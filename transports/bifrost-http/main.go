@@ -53,6 +53,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -84,6 +85,8 @@ import (
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
+//go:embed all:ui
+var uiContent embed.FS
 
 var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
@@ -206,7 +209,7 @@ func uiHandler(ctx *fasthttp.RequestCtx) {
 	hasExtension := strings.Contains(filepath.Base(cleanPath), ".")
 
 	// Try to read the file from embedded filesystem
-	data, err := lib.UIContent.ReadFile(cleanPath)
+	data, err := uiContent.ReadFile(cleanPath)
 	if err != nil {
 
 		// If it's a static asset (has extension) and not found, return 404
@@ -219,12 +222,12 @@ func uiHandler(ctx *fasthttp.RequestCtx) {
 		// For routes without extensions (SPA routing), try {path}/index.html first
 		if !hasExtension {
 			indexPath := cleanPath + "/index.html"
-			data, err = lib.UIContent.ReadFile(indexPath)
+			data, err = uiContent.ReadFile(indexPath)
 			if err == nil {
 				cleanPath = indexPath
 			} else {
 				// If that fails, serve root index.html as fallback
-				data, err = lib.UIContent.ReadFile("ui/index.html")
+				data, err = uiContent.ReadFile("ui/index.html")
 				if err != nil {
 					ctx.SetStatusCode(fasthttp.StatusNotFound)
 					ctx.SetBodyString("404 - File not found")
