@@ -21,12 +21,12 @@ const (
 func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 	scheme := os.Getenv("WEAVIATE_SCHEME")
 	if scheme == "" {
-		scheme = "https"
+		scheme = "http"
 	}
 
 	host := os.Getenv("WEAVIATE_HOST")
 	if host == "" {
-		host = "localhost:8080"
+		host = "localhost:9000"
 	}
 
 	apiKey := os.Getenv("WEAVIATE_API_KEY")

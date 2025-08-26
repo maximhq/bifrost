@@ -2,15 +2,39 @@ services:
     # Weaviate instance for basic tests
     weaviate:
         image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+        command:
+            - --host
+            - 0.0.0.0
+            - --port
+            - '8080'
+            - --scheme
+            - http
+        environment:
+            - CLUSTER_HOSTNAME=weaviate
+            - CLUSTER_ADVERTISE_ADDR=172.38.0.12
+            - CLUSTER_GOSSIP_BIND_PORT=7946
+            - CLUSTER_DATA_BIND_PORT=7947
+            - DISABLE_TELEMETRY=true
+            - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+            - DEFAULT_VECTORIZER_MODULE=none
+            - ENABLE_MODULES=
+            - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+            - LOG_LEVEL=info
         ports:
             - "9000:8080"
+        volumes:
+            - weaviate_data:/var/lib/weaviate
         networks:
-            - weaviate_network
+            bifrost_network:
+                ipv4_address: 172.38.0.12
 
 networks:
-    weaviate_network:
+    bifrost_network:
         driver: bridge
         ipam:
             config:
                 - subnet: 172.38.0.0/16
                   gateway: 172.38.0.1
+
+volumes:
+    weaviate_data:
