@@ -250,6 +250,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: 'main'
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

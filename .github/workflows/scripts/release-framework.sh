@@ -81,6 +81,8 @@ echo "✅ Framework build validation successful"
 
 # Check if there are any changes to commit
 if ! git diff --cached --quiet; then
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   git commit -m "framework: bump core to $CORE_VERSION --skip-pipeline"
   # Push the bump so go.mod/go.sum changes are recorded on the branch
   CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"

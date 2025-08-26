@@ -90,6 +90,8 @@ cd ../..
 
 # Commit and push changes if any
 if ! git diff --cached --quiet; then
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   echo "🔧 Committing and pushing changes..."
   git commit -m "plugins/${PLUGIN_NAME}: bump core to $CORE_VERSION and framework to $FRAMEWORK_VERSION --skip-pipeline"
   git push -u origin HEAD
