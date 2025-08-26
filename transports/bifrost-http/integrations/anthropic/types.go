@@ -413,6 +413,11 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 		bifrostReq.Params.ToolChoice = toolChoice
 	}
 
+	// Apply parameter validation
+	if bifrostReq.Params != nil {
+		bifrostReq.Params = integrations.ValidateAndFilterParamsForProvider(provider, bifrostReq.Params)
+	}
+
 	return bifrostReq
 }
 

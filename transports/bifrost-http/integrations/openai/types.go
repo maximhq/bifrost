@@ -156,16 +156,17 @@ type OpenAIStreamResponse struct {
 func (r *OpenAIChatRequest) ConvertToBifrostRequest(checkProviderFromModel bool) *schemas.BifrostRequest {
 	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI, checkProviderFromModel)
 
+	// Convert parameters first
+	params := r.convertParameters()
+
 	bifrostReq := &schemas.BifrostRequest{
 		Provider: provider,
 		Model:    model,
 		Input: schemas.RequestInput{
 			ChatCompletionInput: &r.Messages,
 		},
+		Params: filterParams(provider, params),
 	}
-
-	// Map extra parameters and tool settings
-	bifrostReq.Params = r.convertParameters()
 
 	return bifrostReq
 }
@@ -200,8 +201,11 @@ func (r *OpenAISpeechRequest) ConvertToBifrostRequest(checkProviderFromModel boo
 		},
 	}
 
+	// Convert parameters first
+	params := r.convertSpeechParameters()
+
 	// Map parameters
-	bifrostReq.Params = r.convertSpeechParameters()
+	bifrostReq.Params = filterParams(provider, params)
 
 	return bifrostReq
 }
@@ -234,8 +238,11 @@ func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest(checkProviderFromMo
 		},
 	}
 
+	// Convert parameters first
+	params := r.convertTranscriptionParameters()
+
 	// Map parameters
-	bifrostReq.Params = r.convertTranscriptionParameters()
+	bifrostReq.Params = filterParams(provider, params)
 
 	return bifrostReq
 }
@@ -274,8 +281,11 @@ func (r *OpenAIEmbeddingRequest) ConvertToBifrostRequest(checkProviderFromModel 
 		},
 	}
 
+	// Convert parameters first
+	params := r.convertEmbeddingParameters()
+
 	// Map parameters
-	bifrostReq.Params = r.convertEmbeddingParameters()
+	bifrostReq.Params = filterParams(provider, params)
 
 	return bifrostReq
 }
@@ -572,4 +582,9 @@ func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 	}
 
 	return streamResp
+}
+
+func filterParams(provider schemas.ModelProvider, p *schemas.ModelParameters) *schemas.ModelParameters {
+	if p == nil { return nil }
+	return integrations.ValidateAndFilterParamsForProvider(provider, p)
 }

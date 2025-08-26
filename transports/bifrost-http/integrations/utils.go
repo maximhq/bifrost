@@ -151,6 +151,294 @@ type RouteConfig struct {
 	PostCallback           PostRequestCallback // Optional: called after request processing
 }
 
+// DefaultParameters defines the common parameters that most providers support
+var DefaultParameters = map[string]bool{
+	"max_tokens":  true,
+	"temperature": true,
+	"top_p":       true,
+	"stream":      true,
+	"tools":       true,
+	"tool_choice": true,
+}
+
+// ProviderParameterSchema defines which parameters are valid for each provider
+type ProviderParameterSchema struct {
+	ValidParams map[string]bool // Parameters that are supported by this provider
+}
+
+// ParameterValidator validates and filters parameters for specific providers
+type ParameterValidator struct {
+	schemas map[schemas.ModelProvider]ProviderParameterSchema
+}
+
+// NewParameterValidator creates a new validator with provider schemas
+func NewParameterValidator() *ParameterValidator {
+	return &ParameterValidator{
+		schemas: buildProviderSchemas(),
+	}
+}
+
+// ValidateAndFilterParams filters out invalid parameters for the target provider
+func (v *ParameterValidator) ValidateAndFilterParams(
+	provider schemas.ModelProvider,
+	params *schemas.ModelParameters,
+) *schemas.ModelParameters {
+	if params == nil {
+		return nil
+	}
+
+	schema, exists := v.schemas[provider]
+	if !exists {
+		// Unknown provider, return all params (fallback behavior)
+		return params
+	}
+
+	filteredParams := &schemas.ModelParameters{
+		ExtraParams: make(map[string]interface{}),
+	}
+
+	// Filter standard parameters
+	if params.MaxTokens != nil && schema.ValidParams["max_tokens"] {
+		filteredParams.MaxTokens = params.MaxTokens
+	}
+
+	if params.Temperature != nil && schema.ValidParams["temperature"] {
+		filteredParams.Temperature = params.Temperature
+	}
+
+	if params.TopP != nil && schema.ValidParams["top_p"] {
+		filteredParams.TopP = params.TopP
+	}
+
+	if params.TopK != nil && schema.ValidParams["top_k"] {
+		filteredParams.TopK = params.TopK
+	}
+
+	if params.PresencePenalty != nil && schema.ValidParams["presence_penalty"] {
+		filteredParams.PresencePenalty = params.PresencePenalty
+	}
+
+	if params.FrequencyPenalty != nil && schema.ValidParams["frequency_penalty"] {
+		filteredParams.FrequencyPenalty = params.FrequencyPenalty
+	}
+
+	if params.StopSequences != nil && schema.ValidParams["stop_sequences"] {
+		filteredParams.StopSequences = params.StopSequences
+	}
+
+	if params.Tools != nil && schema.ValidParams["tools"] {
+		filteredParams.Tools = params.Tools
+	}
+
+	if params.ToolChoice != nil && schema.ValidParams["tool_choice"] {
+		filteredParams.ToolChoice = params.ToolChoice
+	}
+
+	if params.User != nil && schema.ValidParams["user"] {
+		filteredParams.User = params.User
+	}
+
+	if params.EncodingFormat != nil && schema.ValidParams["encoding_format"] {
+		filteredParams.EncodingFormat = params.EncodingFormat
+	}
+
+	if params.Dimensions != nil && schema.ValidParams["dimensions"] {
+		filteredParams.Dimensions = params.Dimensions
+	}
+
+	// Parallel tool calls
+	if params.ParallelToolCalls != nil && schema.ValidParams["parallel_tool_calls"] {
+		filteredParams.ParallelToolCalls = params.ParallelToolCalls
+	}
+
+	// Filter extra parameters
+	for key, value := range params.ExtraParams {
+		if schema.ValidParams[key] {
+			filteredParams.ExtraParams[key] = value
+		}
+	}
+
+	// Check if all standard pointer fields are nil and ExtraParams is empty
+	if hasNoValidFields(filteredParams) && len(filteredParams.ExtraParams) == 0 {
+		return nil
+	}
+
+	return filteredParams
+}
+
+// hasNoValidFields checks if all standard pointer fields in ModelParameters are nil
+func hasNoValidFields(params *schemas.ModelParameters) bool {
+	return params.ToolChoice == nil &&
+		params.Tools == nil &&
+		params.Temperature == nil &&
+		params.TopP == nil &&
+		params.TopK == nil &&
+		params.MaxTokens == nil &&
+		params.StopSequences == nil &&
+		params.PresencePenalty == nil &&
+		params.FrequencyPenalty == nil &&
+		params.ParallelToolCalls == nil &&
+		params.EncodingFormat == nil &&
+		params.Dimensions == nil &&
+		params.User == nil
+}
+
+// buildProviderSchemas defines which parameters are valid for each provider
+func buildProviderSchemas() map[schemas.ModelProvider]ProviderParameterSchema {
+	// Define parameter groups to avoid repetition
+	openAIParams := map[string]bool{
+		"frequency_penalty":       true,
+		"presence_penalty":        true,
+		"n":                       true,
+		"stop":                    true,
+		"logprobs":                true,
+		"top_logprobs":            true,
+		"logit_bias":              true,
+		"seed":                    true,
+		"user":                    true,
+		"response_format":         true,
+		"parallel_tool_calls":     true,
+		"max_completion_tokens":   true,
+		"metadata":                true,
+		"modalities":              true,
+		"prediction":              true,
+		"reasoning_effort":        true,
+		"service_tier":            true,
+		"store":                   true,
+		"speed":                   true,
+		"language":                true,
+		"prompt":                  true,
+		"include":                 true,
+		"timestamp_granularities": true,
+		"encoding_format":         true,
+		"dimensions":              true,
+	}
+
+	anthropicParams := map[string]bool{
+		"stop_sequences": true,
+		"system":         true,
+		"metadata":       true,
+		"mcp_servers":    true,
+		"service_tier":   true,
+		"thinking":       true,
+		"top_k":          true,
+	}
+
+	cohereParams := map[string]bool{
+		"frequency_penalty":  true,
+		"presence_penalty":   true,
+		"k":                  true,
+		"p":                  true,
+		"truncate":           true,
+		"return_likelihoods": true,
+		"logit_bias":         true,
+		"stop_sequences":     true,
+	}
+
+	mistralParams := map[string]bool{
+		"frequency_penalty":   true,
+		"presence_penalty":    true,
+		"safe_mode":           true,
+		"n":                   true,
+		"parallel_tool_calls": true,
+		"prediction":          true,
+		"prompt_mode":         true,
+		"random_seed":         true,
+		"response_format":     true,
+		"safe_prompt":         true,
+		"top_k":               true,
+	}
+
+	groqParams := map[string]bool{
+		"n":                true,
+		"reasoning_effort": true,
+		"reasoning_format": true,
+		"service_tier":     true,
+		"stop":             true,
+	}
+
+	ollamaParams := map[string]bool{
+		"num_ctx":          true,
+		"num_gpu":          true,
+		"num_thread":       true,
+		"repeat_penalty":   true,
+		"repeat_last_n":    true,
+		"seed":             true,
+		"tfs_z":            true,
+		"mirostat":         true,
+		"mirostat_tau":     true,
+		"mirostat_eta":     true,
+		"format":           true,
+		"keep_alive":       true,
+		"low_vram":         true,
+		"main_gpu":         true,
+		"min_p":            true,
+		"num_batch":        true,
+		"num_keep":         true,
+		"num_predict":      true,
+		"numa":             true,
+		"penalize_newline": true,
+		"raw":              true,
+		"typical_p":        true,
+		"use_mlock":        true,
+		"use_mmap":         true,
+		"vocab_only":       true,
+	}
+
+	return map[schemas.ModelProvider]ProviderParameterSchema{
+		schemas.OpenAI:    {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.Azure:     {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.Anthropic: {ValidParams: mergeWithDefaults(anthropicParams)},
+		schemas.Cohere:    {ValidParams: mergeWithDefaults(cohereParams)},
+		schemas.Mistral:   {ValidParams: mergeWithDefaults(mistralParams)},
+		schemas.Groq:      {ValidParams: mergeWithDefaults(groqParams)},
+		schemas.Bedrock:   {ValidParams: DefaultParameters},
+		schemas.Vertex:    {ValidParams: DefaultParameters},
+		schemas.Ollama:    {ValidParams: mergeWithDefaults(ollamaParams)},
+		schemas.Cerebras:  {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.SGL:       {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.Parasail:  {ValidParams: mergeWithDefaults(openAIParams)},
+	}
+}
+
+// mergeWithDefaults merges provider-specific parameters with default parameters
+func mergeWithDefaults(providerParams map[string]bool) map[string]bool {
+	result := make(map[string]bool, len(DefaultParameters)+len(providerParams))
+
+	// Copy default parameters
+	for k, v := range DefaultParameters {
+		result[k] = v
+	}
+
+	// Add provider-specific parameters
+	for k, v := range providerParams {
+		result[k] = v
+	}
+
+	return result
+}
+
+// Global parameter validator instance
+var globalParamValidator = NewParameterValidator()
+
+// SetGlobalParameterValidator sets the shared ParameterValidator instance.
+// It’s primarily intended for test setup or one-time overrides.
+// Note: calling this at runtime from multiple goroutines is not safe for concurrent use.
+func SetGlobalParameterValidator(v *ParameterValidator) {
+	if v != nil {
+		globalParamValidator = v
+	}
+}
+
+// ValidateAndFilterParamsForProvider is a convenience function that uses the global validator
+// to filter parameters for a specific provider. This is the main function integrations should use.
+func ValidateAndFilterParamsForProvider(
+	provider schemas.ModelProvider,
+	params *schemas.ModelParameters,
+) *schemas.ModelParameters {
+	return globalParamValidator.ValidateAndFilterParams(provider, params)
+}
+
 // GenericRouter provides a reusable router implementation for all integrations.
 // It handles the common flow of: parse request → convert to Bifrost → execute → convert response.
 // Integration-specific logic is handled through the RouteConfig callbacks and converters.
