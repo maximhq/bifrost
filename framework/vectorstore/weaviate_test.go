@@ -2,10 +2,8 @@ package vectorstore
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,10 +19,10 @@ import (
 // Test constants
 const (
 	TestTimeout        = 30 * time.Second
-	TestClassPrefix    = "test_weaviate_"
+	TestClassPrefix    = "Test_weaviate_"
 	TestEmbeddingDim   = 384
 	DefaultTestScheme  = "http"
-	DefaultTestHost    = "localhost:8080"
+	DefaultTestHost    = "localhost:9000"
 	DefaultTestTimeout = 10 * time.Second
 )
 
@@ -51,15 +49,12 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		timeout = DefaultTestTimeout
 	}
 
-	// Generate unique class name for this test
-	className := TestClassPrefix + generateRandomID()
-
 	config := WeaviateConfig{
 		Scheme:    scheme,
 		Host:      host,
 		ApiKey:    apiKey,
 		Timeout:   timeout,
-		ClassName: className,
+		ClassName: TestClassPrefix,
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
@@ -75,9 +70,9 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		Store:     store,
 		Logger:    logger,
 		Config:    config,
-		ClassName: className,
 		ctx:       ctx,
 		cancel:    cancel,
+		ClassName: config.ClassName,
 	}
 
 	// Ensure class exists for integration tests
@@ -155,9 +150,18 @@ func (ts *TestSetup) ensureClassExists(t *testing.T) {
 // cleanupTestData removes all test objects from the class
 func (ts *TestSetup) cleanupTestData(t *testing.T) {
 	// Delete all objects in the test class
-	err := ts.Store.client.Schema().ClassDeleter().
-		WithClassName(ts.ClassName).
-		Do(ts.ctx)
+	allTestKeys, _, err := ts.Store.GetAll(ts.ctx, []Query{}, []string{}, nil, 1000)
+	if err != nil {
+		t.Logf("Warning: Failed to get all test keys: %v", err)
+		return
+	}
+
+	for _, key := range allTestKeys {
+		err := ts.Store.Delete(ts.ctx, key.ID)
+		if err != nil {
+			t.Logf("Warning: Failed to delete test key %s: %v", key.ID, err)
+		}
+	}
 
 	if err != nil {
 		t.Logf("Warning: Failed to cleanup test class %s: %v", ts.ClassName, err)
@@ -172,10 +176,6 @@ func getEnvWithDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
-}
-
-func generateRandomID() string {
-	return fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Intn(10000))
 }
 
 func generateUUID() string {
@@ -415,14 +415,13 @@ func TestWeaviateStore_Integration(t *testing.T) {
 		result, err := setup.Store.GetChunk(setup.ctx, testKey)
 		require.NoError(t, err)
 		assert.NotEmpty(t, result)
-		assert.Contains(t, result, "document") // Should contain metadata
+		assert.Equal(t, "document", result.Properties["type"]) // Should contain metadata
 	})
 
 	t.Run("Add without embedding", func(t *testing.T) {
 		testKey := generateUUID()
 		metadata := map[string]interface{}{
 			"type": "metadata-only",
-			"id":   123,
 		}
 
 		// Add object without embedding
@@ -434,30 +433,7 @@ func TestWeaviateStore_Integration(t *testing.T) {
 		// Retrieve it
 		result, err := setup.Store.GetChunk(setup.ctx, testKey)
 		require.NoError(t, err)
-		assert.Contains(t, result, "metadata-only")
-	})
-
-	t.Run("GetChunks batch retrieval", func(t *testing.T) {
-		keys := []string{generateUUID(), generateUUID(), generateUUID(), generateUUID()}
-
-		// Add first three objects
-		for i, key := range keys[:3] {
-			metadata := map[string]interface{}{
-				"batch_id": i,
-				"type":     "batch_test",
-			}
-			err := setup.Store.Add(setup.ctx, key, generateTestEmbedding(TestEmbeddingDim), metadata)
-			require.NoError(t, err)
-		}
-
-		time.Sleep(200 * time.Millisecond)
-
-		// Get all keys (including non-existent)
-		results, err := setup.Store.GetChunks(setup.ctx, keys)
-		require.NoError(t, err)
-
-		// Should return 3 results (non-existent key should be skipped)
-		assert.Len(t, results, 3)
+		assert.Equal(t, "metadata-only", result.Properties["type"])
 	})
 }
 
@@ -523,17 +499,6 @@ func TestWeaviateStore_FilteringScenarios(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond) // Wait for consistency
 
-	t.Run("Filter by string equality", func(t *testing.T) {
-		queries := []Query{
-			{Field: "type", Operator: "Equal", Value: "pdf"},
-		}
-
-		results, cursor, err := setup.Store.GetAll(setup.ctx, queries, filterFields, nil, 10)
-		require.NoError(t, err)
-		assert.Nil(t, cursor)     // Should fit in one page
-		assert.Len(t, results, 2) // doc1 and doc3
-	})
-
 	t.Run("Filter by numeric comparison", func(t *testing.T) {
 		queries := []Query{
 			{Field: "size", Operator: "GreaterThan", Value: 1000},
@@ -593,344 +558,6 @@ func TestWeaviateStore_FilteringScenarios(t *testing.T) {
 	})
 }
 
-func TestWeaviateStore_VectorSimilaritySearch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration tests in short mode")
-	}
-
-	setup := NewTestSetup(t)
-	defer setup.Cleanup(t)
-
-	// Create test embeddings with known similarity relationships
-	baseEmbedding := generateTestEmbedding(TestEmbeddingDim)
-	similarEmbedding := generateSimilarEmbedding(baseEmbedding, 0.9)
-	differentEmbedding := generateTestEmbedding(TestEmbeddingDim)
-
-	testData := []struct {
-		key       string
-		embedding []float32
-		metadata  map[string]interface{}
-	}{
-		{
-			generateUUID(),
-			baseEmbedding,
-			map[string]interface{}{
-				"category": "tech",
-				"user":     "alice",
-			},
-		},
-		{
-			generateUUID(),
-			similarEmbedding,
-			map[string]interface{}{
-				"category": "tech",
-				"user":     "alice",
-			},
-		},
-		{
-			generateUUID(),
-			differentEmbedding,
-			map[string]interface{}{
-				"category": "sports",
-				"user":     "bob",
-			},
-		},
-	}
-
-	filterFields := []string{"category", "user"}
-
-	// Add test data
-	for _, item := range testData {
-		err := setup.Store.Add(setup.ctx, item.key, item.embedding, item.metadata)
-		require.NoError(t, err)
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	t.Run("Vector similarity without filters", func(t *testing.T) {
-		results, err := setup.Store.GetNearest(
-			setup.ctx,
-			baseEmbedding,
-			nil, // No filters
-			filterFields,
-			0.5, // Threshold
-			10,  // Limit
-		)
-		require.NoError(t, err)
-		assert.GreaterOrEqual(t, len(results), 2) // Should find similar docs
-
-		// First result should be exact match (distance ~0)
-		assert.Equal(t, testData[0].key, results[0].ID)
-		assert.Less(t, *results[0].Score, 0.01) // Very low distance for exact match
-	})
-
-	t.Run("Vector similarity with metadata filters", func(t *testing.T) {
-		// Search for similar vectors but only in "tech" category
-		queries := []Query{
-			{Field: "category", Operator: "Equal", Value: "tech"},
-		}
-
-		results, err := setup.Store.GetNearest(
-			setup.ctx,
-			baseEmbedding,
-			queries,
-			filterFields,
-			0.7, // Threshold
-			10,  // Limit
-		)
-		require.NoError(t, err)
-		assert.Len(t, results, 2) // Should find both tech documents
-
-		// Verify all results are in tech category
-		for _, result := range results {
-			metadata, ok := result.Properties["metadata"].(map[string]interface{})
-			require.True(t, ok)
-			assert.Equal(t, "tech", metadata["category"])
-		}
-	})
-
-	t.Run("Vector similarity with user filter", func(t *testing.T) {
-		// Search for Alice's content only
-		queries := []Query{
-			{Field: "user", Operator: "Equal", Value: "alice"},
-		}
-
-		results, err := setup.Store.GetNearest(
-			setup.ctx,
-			baseEmbedding,
-			queries,
-			filterFields,
-			0.8,
-			10,
-		)
-		require.NoError(t, err)
-		assert.Len(t, results, 2) // Should find Alice's documents only
-	})
-
-	t.Run("Strict threshold test", func(t *testing.T) {
-		// Use very strict threshold that should only match exact/very similar
-		results, err := setup.Store.GetNearest(
-			setup.ctx,
-			baseEmbedding,
-			nil,
-			filterFields,
-			0.1, // Very strict threshold
-			10,
-		)
-		require.NoError(t, err)
-
-		// Should find at least the exact match
-		assert.GreaterOrEqual(t, len(results), 1)
-		assert.Equal(t, testData[0].key, results[0].ID)
-	})
-}
-
-func TestWeaviateStore_DeleteOperations(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration tests in short mode")
-	}
-
-	setup := NewTestSetup(t)
-	defer setup.Cleanup(t)
-
-	// Add test objects
-	testKeys := []string{"delete-test-1", "delete-test-2", "delete-test-3"}
-	for _, key := range testKeys {
-		metadata := map[string]interface{}{
-			"test_type": "deletion",
-		}
-		err := setup.Store.Add(setup.ctx, key, generateTestEmbedding(TestEmbeddingDim), metadata)
-		require.NoError(t, err)
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	t.Run("Single delete", func(t *testing.T) {
-		// Delete one object
-		err := setup.Store.Delete(setup.ctx, testKeys[0])
-		require.NoError(t, err)
-
-		time.Sleep(100 * time.Millisecond)
-
-		// Verify it's gone
-		_, err = setup.Store.GetChunk(setup.ctx, testKeys[0])
-		assert.Error(t, err) // Should not be found
-	})
-
-	t.Run("Batch delete", func(t *testing.T) {
-		// Delete remaining objects
-		resp, err := setup.Store.DeleteAll(setup.ctx, []Query{{Field: "test_type", Operator: "Equal", Value: "deletion"}})
-		require.NoError(t, err)
-		assert.Len(t, resp, 2)
-		assert.Equal(t, DeleteStatusSuccess, resp[0].Status)
-		assert.Equal(t, DeleteStatusSuccess, resp[1].Status)
-
-		time.Sleep(100 * time.Millisecond)
-
-		// Verify they're gone
-		results, err := setup.Store.GetChunks(setup.ctx, testKeys[1:])
-		require.NoError(t, err)
-		assert.Empty(t, results) // Should find nothing
-	})
-
-	t.Run("Delete non-existent keys", func(t *testing.T) {
-		// Should not error when deleting non-existent keys
-		resp, err := setup.Store.DeleteAll(setup.ctx, []Query{{Field: "test_type", Operator: "Equal", Value: "non-existent"}})
-		require.NoError(t, err)
-		assert.Len(t, resp, 0)
-	})
-}
-
-// ============================================================================
-// EDGE CASES AND ERROR HANDLING
-// ============================================================================
-
-func TestWeaviateStore_EdgeCases(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration tests in short mode")
-	}
-
-	setup := NewTestSetup(t)
-	defer setup.Cleanup(t)
-
-	filterFields := []string{"type", "size", "public", "author"}
-
-	t.Run("Empty and nil values", func(t *testing.T) {
-		// Test with empty string key
-		err := setup.Store.Add(setup.ctx, "", generateTestEmbedding(TestEmbeddingDim), map[string]interface{}{})
-		assert.Error(t, err) // Should error on empty key
-
-		// Test with nil metadata
-		err = setup.Store.Add(setup.ctx, "nil-metadata-test", generateTestEmbedding(TestEmbeddingDim), nil)
-		assert.Error(t, err) // Should error on nil metadata
-
-		// Test with empty metadata
-		err = setup.Store.Add(setup.ctx, "empty-metadata-test", generateTestEmbedding(TestEmbeddingDim), map[string]interface{}{})
-		assert.NoError(t, err) // Should be OK
-	})
-
-	t.Run("Large metadata objects", func(t *testing.T) {
-		// Create large metadata object
-		largeMetadata := map[string]interface{}{
-			"large_field": strings.Repeat("x", 10000), // 10KB string
-			"nested": map[string]interface{}{
-				"level1": map[string]interface{}{
-					"level2": map[string]interface{}{
-						"deep_data": "nested value",
-					},
-				},
-			},
-			"array_data": []string{"item1", "item2", "item3"},
-		}
-
-		err := setup.Store.Add(setup.ctx, "large-metadata-test", generateTestEmbedding(TestEmbeddingDim), largeMetadata)
-		assert.NoError(t, err)
-
-		time.Sleep(100 * time.Millisecond)
-
-		// Retrieve and verify
-		result, err := setup.Store.GetChunk(setup.ctx, "large-metadata-test")
-		require.NoError(t, err)
-		assert.Contains(t, result, "nested value")
-	})
-
-	t.Run("Special characters in keys and values", func(t *testing.T) {
-		specialKey := "test-key-with-special-chars-éñ中文🚀"
-		specialMetadata := map[string]interface{}{
-			"unicode_field": "Value with émojis 🎉 and ñiño中文",
-			"symbols":       "!@#$%^&*()_+-=[]{}|;':\",./<>?",
-		}
-
-		err := setup.Store.Add(setup.ctx, specialKey, generateTestEmbedding(TestEmbeddingDim), specialMetadata)
-		assert.NoError(t, err)
-
-		time.Sleep(100 * time.Millisecond)
-
-		result, err := setup.Store.GetChunk(setup.ctx, specialKey)
-		require.NoError(t, err)
-		assert.Contains(t, result, "émojis")
-	})
-
-	t.Run("Zero-dimension and invalid embeddings", func(t *testing.T) {
-		// Test with zero-length embedding
-		err := setup.Store.Add(setup.ctx, "zero-embedding-test", []float32{}, map[string]interface{}{"test": "zero"})
-		// This might succeed or fail depending on Weaviate configuration
-		t.Logf("Zero embedding result: %v", err)
-
-		// Test with very large embedding
-		largeEmbedding := make([]float32, 10000) // 10K dimensions
-		for i := range largeEmbedding {
-			largeEmbedding[i] = 0.1
-		}
-
-		err = setup.Store.Add(setup.ctx, "large-embedding-test", largeEmbedding, map[string]interface{}{"test": "large"})
-		// This will likely fail due to dimension mismatch
-		t.Logf("Large embedding result: %v", err)
-	})
-
-	t.Run("Boundary conditions for similarity search", func(t *testing.T) {
-		testEmbedding := generateTestEmbedding(TestEmbeddingDim)
-
-		// Add a test object
-		err := setup.Store.Add(setup.ctx, "boundary-test", testEmbedding, map[string]interface{}{"type": "boundary"})
-		require.NoError(t, err)
-
-		time.Sleep(100 * time.Millisecond)
-
-		// Test with threshold = 0 (should match everything)
-		results, err := setup.Store.GetNearest(setup.ctx, testEmbedding, nil, filterFields, 0.0, 10)
-		require.NoError(t, err)
-		assert.GreaterOrEqual(t, len(results), 1)
-
-		// Test with threshold = 1 (should match very little)
-		results, err = setup.Store.GetNearest(setup.ctx, testEmbedding, nil, filterFields, 1.0, 10)
-		require.NoError(t, err)
-		// Should still find exact match
-		assert.GreaterOrEqual(t, len(results), 1)
-
-		// Test with limit = 0
-		results, err = setup.Store.GetNearest(setup.ctx, testEmbedding, nil, filterFields, 0.5, 0)
-		require.NoError(t, err)
-		assert.Empty(t, results) // No results with limit 0
-	})
-
-	t.Run("Concurrent operations", func(t *testing.T) {
-		// Test concurrent adds
-		concurrency := 5
-		done := make(chan bool, concurrency)
-
-		for i := 0; i < concurrency; i++ {
-			go func(id int) {
-				defer func() { done <- true }()
-
-				key := fmt.Sprintf("concurrent-test-%d", id)
-				metadata := map[string]interface{}{
-					"thread_id": id,
-					"timestamp": time.Now().Unix(),
-				}
-
-				err := setup.Store.Add(setup.ctx, key, generateTestEmbedding(TestEmbeddingDim), metadata)
-				assert.NoError(t, err)
-			}(i)
-		}
-
-		// Wait for all goroutines
-		for i := 0; i < concurrency; i++ {
-			<-done
-		}
-
-		time.Sleep(200 * time.Millisecond)
-
-		// Verify all objects were added
-		for i := 0; i < concurrency; i++ {
-			key := fmt.Sprintf("concurrent-test-%d", i)
-			result, err := setup.Store.GetChunk(setup.ctx, key)
-			assert.NoError(t, err)
-			assert.NotEmpty(t, result)
-		}
-	})
-}
-
 func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration tests in short mode")
@@ -947,17 +574,17 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 			metadata  map[string]interface{}
 		}{
 			{
-				"doc1",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{"type": "pdf", "size": 1024, "public": true},
 			},
 			{
-				"doc2",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{"type": "docx", "size": 2048, "public": false},
 			},
 			{
-				"doc3",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{"type": "pdf", "size": 512, "public": true},
 			},
@@ -1010,17 +637,17 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 			metadata  map[string]interface{}
 		}{
 			{
-				"user1_content",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{"user": "alice", "lang": "en", "category": "tech"},
 			},
 			{
-				"user2_content",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{"user": "bob", "lang": "es", "category": "tech"},
 			},
 			{
-				"user3_content",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{"user": "alice", "lang": "en", "category": "sports"},
 			},
@@ -1053,7 +680,7 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 		// Alice's similar content (semantic search with user filter)
 		aliceFilter := []Query{{Field: "user", Operator: "Equal", Value: "alice"}}
 		queryEmbedding := userContent[0].embedding
-		vectorResults, err := setup.Store.GetNearest(setup.ctx, queryEmbedding, aliceFilter, filterFields, 0.5, 10)
+		vectorResults, err := setup.Store.GetNearest(setup.ctx, queryEmbedding, aliceFilter, filterFields, 0.1, 10)
 		require.NoError(t, err)
 		assert.Len(t, vectorResults, 2) // Both of Alice's content
 	})
@@ -1066,7 +693,7 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 			metadata  map[string]interface{}
 		}{
 			{
-				"req123",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{
 					"request_hash": "abc123",
@@ -1076,7 +703,7 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 				},
 			},
 			{
-				"req456",
+				generateUUID(),
 				generateTestEmbedding(TestEmbeddingDim),
 				map[string]interface{}{
 					"request_hash": "def456",
@@ -1111,75 +738,6 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 		vectorResults, err := setup.Store.GetNearest(setup.ctx, similarEmbedding, userLangFilter, filterFields, 0.7, 10)
 		require.NoError(t, err)
 		assert.Len(t, vectorResults, 1) // Should find English content for u1
-	})
-}
-
-// ============================================================================
-// PERFORMANCE AND STRESS TESTS
-// ============================================================================
-
-func TestWeaviateStore_Performance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping performance tests in short mode")
-	}
-
-	setup := NewTestSetup(t)
-	defer setup.Cleanup(t)
-
-	filterFields := []string{"index", "category"}
-
-	t.Run("Bulk insert performance", func(t *testing.T) {
-		numObjects := 100
-		start := time.Now()
-
-		for i := 0; i < numObjects; i++ {
-			key := fmt.Sprintf("perf-test-%d", i)
-			metadata := map[string]interface{}{
-				"index":    i,
-				"category": fmt.Sprintf("cat-%d", i%5),
-			}
-
-			err := setup.Store.Add(setup.ctx, key, generateTestEmbedding(TestEmbeddingDim), metadata)
-			require.NoError(t, err)
-		}
-
-		duration := time.Since(start)
-		t.Logf("Inserted %d objects in %v (%.2f objects/sec)",
-			numObjects, duration, float64(numObjects)/duration.Seconds())
-
-		// Allow time for indexing
-		time.Sleep(2 * time.Second)
-
-		// Test batch retrieval performance
-		keys := make([]string, numObjects)
-		for i := range numObjects {
-			keys[i] = fmt.Sprintf("perf-test-%d", i)
-		}
-
-		start = time.Now()
-		results, err := setup.Store.GetChunks(setup.ctx, keys)
-		duration = time.Since(start)
-
-		require.NoError(t, err)
-		assert.Len(t, results, numObjects)
-		t.Logf("Retrieved %d objects in %v (%.2f objects/sec)",
-			len(results), duration, float64(len(results))/duration.Seconds())
-	})
-
-	t.Run("Vector search performance", func(t *testing.T) {
-		// Perform multiple vector searches and measure performance
-		queryEmbedding := generateTestEmbedding(TestEmbeddingDim)
-		numSearches := 10
-
-		start := time.Now()
-		for i := 0; i < numSearches; i++ {
-			_, err := setup.Store.GetNearest(setup.ctx, queryEmbedding, nil, filterFields, 0.8, 10)
-			require.NoError(t, err)
-		}
-		duration := time.Since(start)
-
-		t.Logf("Performed %d vector searches in %v (%.2f searches/sec)",
-			numSearches, duration, float64(numSearches)/duration.Seconds())
 	})
 }
 

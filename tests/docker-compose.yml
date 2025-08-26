@@ -1,139 +1,14 @@
 services:
-    # Single Redis instance for basic tests
-    redis-single:
-        image: redis:7-alpine
-        command: redis-server --appendonly yes
+    # Weaviate instance for basic tests
+    weaviate:
+        image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
         ports:
-            - "6379:6379"
+            - "9000:8080"
         networks:
-            - redis_network
+            - weaviate_network
 
-    # Redis Cluster nodes
-    redis-1:
-        image: redis:7-alpine
-        command: >
-            redis-server
-            --cluster-enabled yes
-            --cluster-config-file nodes.conf
-            --cluster-node-timeout 5000
-            --appendonly yes
-            --port 6379
-            --cluster-announce-ip 172.38.0.11
-            --cluster-announce-port 6379
-            --cluster-announce-bus-port 16379
-        ports:
-            - 6371:6379
-            - 16371:16379
-        networks:
-            redis_network:
-                ipv4_address: 172.38.0.11
-    redis-2:
-        image: redis:7-alpine
-        command: >
-            redis-server
-            --cluster-enabled yes
-            --cluster-config-file nodes.conf
-            --cluster-node-timeout 5000
-            --appendonly yes
-            --port 6379
-            --cluster-announce-ip 172.38.0.12
-            --cluster-announce-port 6379
-            --cluster-announce-bus-port 16379
-        ports:
-            - "6372:6379"
-            - 16372:16379
-        networks:
-            redis_network:
-                ipv4_address: 172.38.0.12
-    redis-3:
-        image: redis:7-alpine
-        command: >
-            redis-server
-            --cluster-enabled yes
-            --cluster-config-file nodes.conf
-            --cluster-node-timeout 5000
-            --appendonly yes
-            --port 6379
-            --cluster-announce-ip 172.38.0.13
-            --cluster-announce-port 6379
-            --cluster-announce-bus-port 16379
-        ports:
-            - "6373:6379"
-            - 16373:16379
-        networks:
-            redis_network:
-                ipv4_address: 172.38.0.13
-    redis-4:
-        image: redis:7-alpine
-        command: >
-            redis-server
-            --cluster-enabled yes
-            --cluster-config-file nodes.conf
-            --cluster-node-timeout 5000
-            --appendonly yes
-            --port 6379
-            --cluster-announce-ip 172.38.0.14
-            --cluster-announce-port 6379
-            --cluster-announce-bus-port 16379
-        ports:
-            - "6374:6379"
-            - 16374:16379
-        networks:
-            redis_network:
-                ipv4_address: 172.38.0.14
-    redis-5:
-        image: redis:7-alpine
-        command: >
-            redis-server
-            --cluster-enabled yes
-            --cluster-config-file nodes.conf
-            --cluster-node-timeout 5000
-            --appendonly yes
-            --port 6379
-            --cluster-announce-ip 172.38.0.15
-            --cluster-announce-port 6379
-            --cluster-announce-bus-port 16379
-        ports:
-            - "6375:6379"
-            - 16375:16379
-        networks:
-            redis_network:
-                ipv4_address: 172.38.0.15
-    redis-6:
-        image: redis:7-alpine
-        command: >
-            redis-server
-            --cluster-enabled yes
-            --cluster-config-file nodes.conf
-            --cluster-node-timeout 5000
-            --appendonly yes
-            --port 6379
-            --cluster-announce-ip 172.38.0.16
-            --cluster-announce-port 6379
-            --cluster-announce-bus-port 16379
-        ports:
-            - "6376:6379"
-            - "16376:16379"
-        networks:
-            redis_network:
-                ipv4_address: 172.38.0.16
-
-    cluster-init:
-        image: redis:7-alpine
-        depends_on:
-            - redis-1
-            - redis-2
-            - redis-3
-            - redis-4
-            - redis-5
-            - redis-6
-        volumes:
-            - ./init-cluster.sh:/init-cluster.sh:ro
-        command: ["sh", "-c", "sleep 20 && sh /init-cluster.sh"]
-        networks:
-            - redis_network
 networks:
-    redis_network:
+    weaviate_network:
         driver: bridge
         ipam:
             config:

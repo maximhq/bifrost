@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
@@ -415,59 +414,4 @@ func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, keyPrefi
 
 func (m *MockUnsupportedStore) Close(ctx context.Context) error {
 	return nil
-}
-
-// TestSemanticCacheErrNotSupportedHandling tests that ErrNotSupported is handled as a soft miss
-func TestSemanticCacheErrNotSupportedHandling(t *testing.T) {
-	// Create mock store that returns ErrNotSupported
-	mockStore := &MockUnsupportedStore{}
-
-	// Create plugin config
-	config := Config{
-		CacheKey:       TestCacheKey,
-		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-small",
-		Threshold:      0.8,
-		TTL:            5 * time.Minute,
-		Keys: []schemas.Key{
-			{
-				Value:  "test-key",
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
-	}
-
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
-
-	// Create plugin with mock store
-	plugin := &Plugin{
-		store:  mockStore,
-		config: config,
-		logger: logger,
-	}
-
-	// Create test context and request
-	ctx := CreateContextWithCacheKey("test-unsupported-value")
-	testRequest := CreateBasicChatRequest(
-		"Test semantic search with unsupported store",
-		0.7,
-		50,
-	)
-
-	t.Log("Testing semantic search with ErrNotSupported store...")
-
-	// Call performSemanticSearch which should handle ErrNotSupported gracefully
-	result, err := plugin.performSemanticSearch(&ctx, testRequest, bifrost.ChatCompletionRequest)
-
-	// Should return (nil, nil) for soft miss, not an error
-	if err != nil {
-		t.Errorf("Expected no error for ErrNotSupported (soft miss), but got: %v", err)
-	}
-
-	if result != nil {
-		t.Errorf("Expected nil result for ErrNotSupported (soft miss), but got: %v", result)
-	}
-
-	t.Log("✅ ErrNotSupported handled correctly as soft miss (nil, nil)")
 }

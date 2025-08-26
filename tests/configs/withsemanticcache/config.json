@@ -2,13 +2,10 @@
   "$schema": "https://www.getbifrost.ai/schema",
   "vector_store": {
     "enabled": true,
-    "type": "redis_cluster",
+    "type": "weaviate",
     "config": {
-      "addrs": [
-        "localhost:6371",
-        "localhost:6372",
-        "localhost:6373"
-      ]
+      "scheme": "http",
+      "host": "localhost:9000"
     }
   },
   "plugins": [
@@ -16,11 +13,8 @@
       "enabled": true,
       "name": "semantic_cache",
       "config": {
-        "cache_key": "bifrost-cckey",
-        "cache_ttl_key": "bifrost-cc-ttl",        
-        "prefix": "{bifrost}",
-        "cache_by_model": true,
-        "cache_by_provider": true
+        "ttl": 300,
+        "threshold": 0.8
       }
     }
   ]

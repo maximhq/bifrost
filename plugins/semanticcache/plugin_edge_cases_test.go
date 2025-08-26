@@ -504,7 +504,7 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	setup.Config.Threshold = 0.7
+	setup.Config.Threshold = 0.8
 
 	ctx := CreateContextWithCacheKey("semantic-edge-test")
 

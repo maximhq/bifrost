@@ -40,10 +40,11 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 	}
 
 	return vectorstore.WeaviateConfig{
-		Scheme:  scheme,
-		Host:    host,
-		ApiKey:  apiKey,
-		Timeout: time.Duration(timeout) * time.Second,
+		Scheme:    scheme,
+		Host:      host,
+		ApiKey:    apiKey,
+		Timeout:   time.Duration(timeout) * time.Second,
+		ClassName: "TestWeaviateSemanticCache",
 	}
 }
 
@@ -106,8 +107,9 @@ func NewTestSetupWithConfig(t *testing.T, config Config) *TestSetup {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
 	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
-		Type:   vectorstore.VectorStoreTypeWeaviate,
-		Config: getWeaviateConfigFromEnv(),
+		Type:    vectorstore.VectorStoreTypeWeaviate,
+		Config:  getWeaviateConfigFromEnv(),
+		Enabled: true,
 	}, logger)
 	if err != nil {
 		t.Fatalf("Vector store not available or failed to connect: %v", err)
