@@ -38,6 +38,9 @@ else
   fi
 fi
 
+# Ensure we have the latest version
+git pull origin
+
 echo "🔌 Releasing plugin: $PLUGIN_NAME"
 echo "🔧 Core version: $CORE_VERSION"
 echo "🔧 Framework version: $FRAMEWORK_VERSION"

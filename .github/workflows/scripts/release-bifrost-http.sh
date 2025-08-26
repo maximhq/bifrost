@@ -16,6 +16,7 @@ TAG_NAME="transports/v${VERSION}"
 echo "🚀 Releasing bifrost-http v$VERSION..."
 
 # Get latest versions
+git pull origin
 # Ensure tags are available (CI often does shallow clones)
 git fetch --tags --force >/dev/null 2>&1 || true
 LATEST_CORE_TAG=$(git tag -l "core/v*" | sort -V | tail -1)

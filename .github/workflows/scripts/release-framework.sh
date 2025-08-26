@@ -22,6 +22,8 @@ TAG_NAME="framework/${VERSION}"
 
 echo "📦 Releasing framework $VERSION..."
 
+# Ensure we have the latest version
+git pull origin
 # Fetching all tags
 git fetch --tags >/dev/null 2>&1 || true
 
