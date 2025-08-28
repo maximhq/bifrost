@@ -37,8 +37,9 @@ type Config struct {
 	Threshold float64       `json:"threshold,omitempty"` // Cosine similarity threshold for semantic matching (default: 0.8)
 
 	// Advanced caching behavior
-	CacheByModel    *bool `json:"cache_by_model,omitempty"`    // Include model in cache key (default: true)
-	CacheByProvider *bool `json:"cache_by_provider,omitempty"` // Include provider in cache key (default: true)
+	CacheByModel        *bool `json:"cache_by_model,omitempty"`        // Include model in cache key (default: true)
+	CacheByProvider     *bool `json:"cache_by_provider,omitempty"`     // Include provider in cache key (default: true)
+	ExcludeSystemPrompt *bool `json:"exclude_system_prompt,omitempty"` // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -46,16 +47,17 @@ type Config struct {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// Define a temporary struct to avoid infinite recursion
 	type TempConfig struct {
-		CacheKey          string        `json:"cache_key"`
-		CacheTTLKey       string        `json:"cache_ttl_key"`
-		CacheThresholdKey string        `json:"cache_threshold_key"`
-		Provider          string        `json:"provider"`
-		Keys              []schemas.Key `json:"keys"`
-		EmbeddingModel    string        `json:"embedding_model,omitempty"`
-		TTL               interface{}   `json:"ttl,omitempty"`
-		Threshold         float64       `json:"threshold,omitempty"`
-		CacheByModel      *bool         `json:"cache_by_model,omitempty"`
-		CacheByProvider   *bool         `json:"cache_by_provider,omitempty"`
+		CacheKey            string        `json:"cache_key"`
+		CacheTTLKey         string        `json:"cache_ttl_key"`
+		CacheThresholdKey   string        `json:"cache_threshold_key"`
+		Provider            string        `json:"provider"`
+		Keys                []schemas.Key `json:"keys"`
+		EmbeddingModel      string        `json:"embedding_model,omitempty"`
+		TTL                 interface{}   `json:"ttl,omitempty"`
+		Threshold           float64       `json:"threshold,omitempty"`
+		CacheByModel        *bool         `json:"cache_by_model,omitempty"`
+		CacheByProvider     *bool         `json:"cache_by_provider,omitempty"`
+		ExcludeSystemPrompt *bool         `json:"exclude_system_prompt,omitempty"`
 	}
 
 	var temp TempConfig
@@ -73,7 +75,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.CacheByModel = temp.CacheByModel
 	c.CacheByProvider = temp.CacheByProvider
 	c.Threshold = temp.Threshold
-
+	c.ExcludeSystemPrompt = temp.ExcludeSystemPrompt
 	// Handle TTL field with custom parsing for VectorStore-backed cache behavior
 	if temp.TTL != nil {
 		switch v := temp.TTL.(type) {

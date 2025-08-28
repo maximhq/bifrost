@@ -111,18 +111,19 @@ cacheConfig := semanticcache.Config{
     CacheTTLKey: "request-cache-ttl",     // Optional: bifrost will look for this key in ctx for TTL override
     CacheThresholdKey: "request-cache-threshold", // Optional: bifrost will look for this key in ctx for threshold override
     
-    // Embedding model configuration
+    // Embedding model configuration (Required)
     Provider:       schemas.OpenAI,
     Keys:          []schemas.Key{{Value: "sk-..."}},
-    EmbeddingModel: "text-embedding-3-small", // Optional: defaults to provider default
+    EmbeddingModel: "text-embedding-3-small",
     
     // Cache behavior
-    TTL:       5 * time.Minute,  // Default TTL: 5 minutes
-    Threshold: 0.8,              // Similarity threshold: 0.8 (80%)
+    TTL:       5 * time.Minute,  // Time to live for cached responses (default: 5 minutes)
+    Threshold: 0.8,              // Similarity threshold for cache lookup (default: 0.8)
     
     // Advanced options
     CacheByModel:    bifrost.Ptr(true),  // Include model in cache key (default: true)
     CacheByProvider: bifrost.Ptr(true),  // Include provider in cache key (default: true)
+    ExcludeSystemPrompt: bifrost.Ptr(false), // Exclude system messages in cache key (default: false)
 }
 
 // Create plugin
@@ -137,6 +138,28 @@ bifrostConfig := schemas.BifrostConfig{
     // ... other config
 }
 ```
+
+</Tab>
+
+<Tab title="Web UI">
+
+![Semantic Cache Plugin Configuration](./images/semantic-cache-plugin-config.png)
+
+**Note**: Make sure you have a vector store setup (using `config.json`) before configuring the semantic cache plugin.
+
+1. **Navigate to Settings**
+   - Open Bifrost UI at `http://localhost:8080`
+   - Go to Settings.
+
+2. **Configure Semantic Cache Plugin**
+
+- Toggle the plugin switch to enable it, and fill in the required fields.
+
+**Required Fields:**
+- **Provider**: The provider to use for caching.
+- **Embedding Model**: The embedding model to use for caching.
+
+**Note**: Changes will need a restart of the Bifrost server to take effect, because the plugin is loaded on startup only.
 
 </Tab>
 
@@ -156,14 +179,15 @@ bifrostConfig := schemas.BifrostConfig{
         "threshold": 0.8,
         
         "cache_by_model": true,
-        "cache_by_provider": true
+        "cache_by_provider": true,
+        "exclude_system_prompt": false
       }
     }
   ]
 }
 ```
 
-**Note**: All the available keys will be taken from the provider config on initialization, so make sure to add the keys to the provider you have specified in the config. Any updates to the keys will not be reflected until next restart.
+> **Note**: All the available keys will be taken from the provider config on initialization, so make sure to add the keys to the provider you have specified in the config. Any updates to the keys will not be reflected until next restart.
 
 **TTL Format Options:**
 - Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
@@ -290,6 +314,18 @@ Use the request ID from cached responses to clear specific entries:
 
 <Tabs group="cache-clear">
 
+<Tab title="Go SDK">
+
+```go
+// Clear specific entry by request ID
+err := plugin.ClearCacheForRequestID("550e8400-e29b-41d4-a716-446655440000")
+
+// Clear all entries for a cache key  
+err := plugin.ClearCacheForKey("support-session-456")
+```
+
+</Tab>
+
 <Tab title="HTTP API">
 
 ```bash
@@ -298,18 +334,6 @@ curl -X DELETE http://localhost:8080/api/cache/clear/550e8400-e29b-41d4-a716-446
 
 # Clear all entries for a cache key
 curl -X DELETE http://localhost:8080/api/cache/clear-by-key/support-session-456
-```
-
-</Tab>
-
-<Tab title="Go SDK">
-
-```go
-// Clear specific entry by request ID
-err := plugin.ClearCacheForRequestID(nil, "550e8400-e29b-41d4-a716-446655440000")
-
-// Clear all entries for a cache key  
-err := plugin.ClearCacheForKey("support-session-456")
 ```
 
 </Tab>

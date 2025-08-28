@@ -83,7 +83,7 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, requestTy
 		Params *schemas.ModelParameters `json:"params,omitempty"`
 		Stream bool                     `json:"stream,omitempty"`
 	}{
-		Input:  req.Input,
+		Input:  *plugin.getInputForCaching(req),
 		Params: req.Params,
 		Stream: plugin.isStreamingRequest(requestType),
 	}
@@ -164,9 +164,12 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 		return *req.Input.TextCompletionInput, metadata, nil
 
 	case req.Input.ChatCompletionInput != nil:
+
+		reqInput := plugin.getInputForCaching(req)
+
 		// Serialize chat messages for embedding
 		var textParts []string
-		for _, msg := range *req.Input.ChatCompletionInput {
+		for _, msg := range *reqInput.ChatCompletionInput {
 			// Extract content as string
 			var content string
 			if msg.Content.ContentStr != nil {
@@ -313,12 +316,6 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 		accumulator.HasError = true
 	}
 
-	// Log token usage for debugging if available
-	if res != nil && res.Usage != nil && res.Usage.TotalTokens > 0 {
-		plugin.logger.Debug(fmt.Sprintf("%s Token usage in streaming chunk for request %s: %d total tokens",
-			PluginLoggerPrefix, responseID, res.Usage.TotalTokens))
-	}
-
 	if isComplete && !alreadyComplete {
 		accumulator.IsComplete = true
 		accumulator.FinalTimestamp = chunk.Timestamp
@@ -334,6 +331,39 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 	}
 
 	return nil
+}
+
+// getInputForCaching returns a sanitized copy of req.Input for hashing/embedding, removing system messages when ExcludeSystemPrompt is true
+func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.RequestInput {
+	if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && req.Input.ChatCompletionInput != nil {
+		reqInput := req.Input
+
+		originalMessages := *reqInput.ChatCompletionInput
+
+		// Fast path: if there are no system messages, return original input to avoid unnecessary allocations
+		hasSystem := false
+		for i := range originalMessages {
+			if originalMessages[i].Role == schemas.ModelChatMessageRoleSystem {
+				hasSystem = true
+				break
+			}
+		}
+		if !hasSystem {
+			return &req.Input
+		}
+
+		filteredMessages := make([]schemas.BifrostMessage, 0, len(originalMessages))
+		for _, msg := range originalMessages {
+			if msg.Role != schemas.ModelChatMessageRoleSystem {
+				filteredMessages = append(filteredMessages, msg)
+			}
+		}
+		reqInput.ChatCompletionInput = &filteredMessages
+
+		return &reqInput
+	}
+
+	return &req.Input
 }
 
 // removeField removes the first occurrence of target from the slice.
