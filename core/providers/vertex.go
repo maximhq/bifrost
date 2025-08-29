@@ -78,6 +78,8 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	}, nil
 }
 
+const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
+
 // getAuthClient returns an authenticated HTTP client for Vertex AI API requests.
 // This function implements client pooling to avoid creating and authenticating
 // clients for every request, which significantly improves performance by:
@@ -90,11 +92,7 @@ func getAuthClient(key schemas.Key) (*http.Client, error) {
 	}
 
 	authCredentials := key.VertexKeyConfig.AuthCredentials
-
-	if authCredentials == "" {
-		return nil, fmt.Errorf("auth credentials are not set")
-	}
-
+	var client *http.Client
 	// Generate cache key from credentials
 	clientKey := getClientKey(authCredentials)
 
@@ -103,13 +101,21 @@ func getAuthClient(key schemas.Key) (*http.Client, error) {
 		return value.(*http.Client), nil
 	}
 
-	// Create new authenticated client
-	conf, err := google.JWTConfigFromJSON([]byte(authCredentials), "https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create JWT config: %w", err)
+	if authCredentials == "" {
+		// When auth credentials are not explicitly set, use default credentials
+		// This will automatically detect credentials from the environment/server
+		var err error
+		client, err = google.DefaultClient(context.Background(), cloudPlatformScope)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create default client: %w", err)
+		}
+	} else {
+		conf, err := google.JWTConfigFromJSON([]byte(authCredentials), cloudPlatformScope)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create JWT config: %w", err)
+		}
+		client = conf.Client(context.Background())
 	}
-
-	client := conf.Client(context.Background())
 
 	// Store the client using LoadOrStore to handle race conditions
 	// If another goroutine stored a client while we were creating ours, use theirs
