@@ -398,6 +398,7 @@ func buildProviderSchemas() map[schemas.ModelProvider]ProviderParameterSchema {
 		schemas.Cerebras:  {ValidParams: mergeWithDefaults(openAIParams)},
 		schemas.SGL:       {ValidParams: mergeWithDefaults(openAIParams)},
 		schemas.Parasail:  {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.GenAI:     {ValidParams: mergeWithDefaults(openAIParams)},
 	}
 }
 
@@ -931,6 +932,7 @@ var ValidProviders = map[schemas.ModelProvider]bool{
 	schemas.SGL:       true,
 	schemas.Parasail:  true,
 	schemas.Cerebras:  true,
+	schemas.GenAI:     true,
 }
 
 // ParseModelString extracts provider and model from a model string.
@@ -1010,6 +1012,11 @@ func GetProviderFromModel(model string) schemas.ModelProvider {
 		return schemas.Cohere
 	}
 
+	// Google GenAI Models - Gemini and Palm family
+	if isGenAIModel(modelLower) {
+		return schemas.GenAI
+	}
+
 	// Default to OpenAI for unknown models (most LiteLLM compatible)
 	return schemas.OpenAI
 }
@@ -1084,6 +1091,15 @@ func isCohereModel(model string) bool {
 
 	return matchesAnyPattern(model, coherePatterns)
 }
+
+// isGenAIModel checks for Google GenAI model patterns
+func isGenAIModel(model string) bool {
+	genaiPatterns := []string{
+		"gemini", "palm", "bison", "gecko", "vertex/", "google/",
+	}
+
+	return matchesAnyPattern(model, genaiPatterns)
+}	
 
 // matchesAnyPattern checks if the model matches any of the given patterns
 func matchesAnyPattern(model string, patterns []string) bool {

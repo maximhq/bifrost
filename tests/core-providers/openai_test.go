@@ -20,6 +20,7 @@ func TestOpenAI(t *testing.T) {
 		Provider:  schemas.OpenAI,
 		ChatModel: "gpt-4o-mini",
 		TextModel: "", // OpenAI doesn't support text completion in newer models
+		EmbeddingModel: "text-embedding-3-small",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -36,8 +37,9 @@ func TestOpenAI(t *testing.T) {
 			ProviderSpecific:      true,
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
-			Transcription:         false,
+			Transcription:         true,
 			TranscriptionStream:   false,
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},

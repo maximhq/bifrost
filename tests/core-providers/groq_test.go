@@ -20,6 +20,7 @@ func TestGroq(t *testing.T) {
 		Provider:  schemas.Groq,
 		ChatModel: "llama-3.3-70b-versatile",
 		TextModel: "", // Groq doesn't support text completion
+		EmbeddingModel: "", // Groq doesn't support embedding
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -34,6 +35,7 @@ func TestGroq(t *testing.T) {
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			Embedding:             false,
 		},
 	}
 

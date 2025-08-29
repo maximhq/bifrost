@@ -16,6 +16,7 @@ This directory contains comprehensive tests for all Bifrost AI providers, ensuri
 - **SGLang** - OSS models
 - **Parasail** - OSS models
 - **Cerebras** - Llama, Qwen and GPT-OSS models
+- **Google GenAI** - Gemini models
 
 ## 🏃‍♂️ Running Tests
 

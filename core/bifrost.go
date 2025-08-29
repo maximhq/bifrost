@@ -713,6 +713,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return providers.NewParasailProvider(config, bifrost.logger)
 	case schemas.Cerebras:
 		return providers.NewCerebrasProvider(config, bifrost.logger)
+	case schemas.GenAI:
+		return providers.NewGenAIProvider(config, bifrost.logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}

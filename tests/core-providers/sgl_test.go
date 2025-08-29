@@ -20,6 +20,7 @@ func TestSGL(t *testing.T) {
 		Provider:  schemas.SGL,
 		ChatModel: "Qwen2.5-VL-7B-Instruct",
 		TextModel: "", // SGL doesn't support text completion
+		EmbeddingModel: "", // SGL doesn't support embedding
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -34,6 +35,7 @@ func TestSGL(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			Embedding:             false,
 		},
 	}
 

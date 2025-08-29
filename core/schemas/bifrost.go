@@ -50,6 +50,7 @@ const (
 	SGL       ModelProvider = "sgl"
 	Parasail  ModelProvider = "parasail"
 	Cerebras  ModelProvider = "cerebras"
+	GenAI     ModelProvider = "genai"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -74,6 +75,7 @@ var StandardProviders = []ModelProvider{
 	Cerebras,
 	Ollama,
 	Mistral,
+	GenAI,
 }
 
 //* Request Structs

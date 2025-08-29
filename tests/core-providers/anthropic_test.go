@@ -20,6 +20,7 @@ func TestAnthropic(t *testing.T) {
 		Provider:  schemas.Anthropic,
 		ChatModel: "claude-3-7-sonnet-20250219",
 		TextModel: "", // Anthropic doesn't support text completion
+		EmbeddingModel: "", // Anthropic doesn't support embedding
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -34,6 +35,7 @@ func TestAnthropic(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

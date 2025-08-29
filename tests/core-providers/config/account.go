@@ -35,6 +35,7 @@ type TestScenarios struct {
 	SpeechSynthesisStream bool // Streaming text-to-speech functionality
 	Transcription         bool // Speech-to-text functionality
 	TranscriptionStream   bool // Streaming speech-to-text functionality
+	Embedding             bool // Embedding functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -42,6 +43,7 @@ type ComprehensiveTestConfig struct {
 	Provider     schemas.ModelProvider
 	ChatModel    string
 	TextModel    string
+	EmbeddingModel string
 	Scenarios    TestScenarios
 	CustomParams *schemas.ModelParameters
 	Fallbacks    []schemas.Fallback
@@ -74,6 +76,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.SGL,
 		schemas.Parasail,
 		schemas.Cerebras,
+		schemas.GenAI,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -189,6 +192,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				Weight: 1.0,
 			},
 		}, nil
+	case schemas.GenAI:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("GEMINI_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -229,7 +240,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 					TextCompletion:       false,
 					ChatCompletion:       true,
 					ChatCompletionStream: true,
-					Embedding:            true,
+					Embedding:            false,
 					Speech:               false,
 					SpeechStream:         false,
 					Transcription:        false,
@@ -328,6 +339,11 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig:            schemas.DefaultNetworkConfig,
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
+	case schemas.GenAI:
+		return &schemas.ProviderConfig{
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -357,6 +373,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: true,  // OpenAI supports streaming TTS
 			Transcription:         false, // OpenAI supports STT with Whisper
 			TranscriptionStream:   false, // OpenAI supports streaming STT
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -384,6 +401,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -411,6 +429,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -438,6 +457,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -465,6 +485,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported yet
 			Transcription:         false, // Not supported yet
 			TranscriptionStream:   false, // Not supported yet
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -492,6 +513,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -518,6 +540,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -545,6 +568,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -572,6 +596,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -599,6 +624,35 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  schemas.GenAI,
+		ChatModel: "gemini-2.0-flash",
+		TextModel: "", // GenAI doesn't support text completion in newer models
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not supported
+			SimpleChat:            true,
+			ChatCompletionStream:  true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
