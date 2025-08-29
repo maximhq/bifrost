@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -8,7 +9,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestVertex(t *testing.T) {
+func TestGemini(t *testing.T) {
+	if os.Getenv("GEMINI_API_KEY") == "" {
+		t.Skip("GEMINI_API_KEY not set; skipping Gemini tests")
+	}
+
 	client, ctx, cancel, err := config.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
@@ -17,10 +22,10 @@ func TestVertex(t *testing.T) {
 	defer client.Cleanup()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.Vertex,
-		ChatModel: "google/gemini-2.0-flash-001",
-		TextModel: "", // Vertex doesn't support text completion in newer models
-		EmbeddingModel: "", // Vertex doesn't support embedding
+		Provider:  schemas.Gemini,
+		ChatModel: "gemini-2.0-flash",
+		TextModel: "", // GenAI doesn't support text completion in newer models
+		EmbeddingModel: "text-embedding-004",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -30,12 +35,12 @@ func TestVertex(t *testing.T) {
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
-			ImageURL:              true,
+			ImageURL:              false,
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
-			Embedding:             false,
+			Embedding:             true,
 		},
 	}
 

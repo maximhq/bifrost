@@ -46,6 +46,7 @@ func runAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		scenarios.RunTranscriptionAdvancedTest,
 		scenarios.RunTranscriptionStreamTest,
 		scenarios.RunTranscriptionStreamAdvancedTest,
+		scenarios.RunEmbeddingTest,
 	}
 
 	// Execute all test scenarios
@@ -80,6 +81,7 @@ func printTestSummary(t *testing.T, testConfig config.ComprehensiveTestConfig) {
 		{"SpeechSynthesisStream", testConfig.Scenarios.SpeechSynthesisStream},
 		{"Transcription", testConfig.Scenarios.Transcription},
 		{"TranscriptionStream", testConfig.Scenarios.TranscriptionStream},
+		{"Embedding", testConfig.Scenarios.Embedding && testConfig.EmbeddingModel != ""},
 	}
 
 	supported := 0

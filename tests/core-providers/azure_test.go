@@ -20,6 +20,7 @@ func TestAzure(t *testing.T) {
 		Provider:  schemas.Azure,
 		ChatModel: "gpt-4o",
 		TextModel: "", // Azure OpenAI doesn't support text completion in newer models
+		EmbeddingModel: "text-embedding-3-small",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -34,6 +35,7 @@ func TestAzure(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			Embedding:             true,
 		},
 	}
 

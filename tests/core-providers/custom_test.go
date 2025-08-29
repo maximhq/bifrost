@@ -24,6 +24,7 @@ func TestCustomProvider(t *testing.T) {
 		Provider:  config.ProviderOpenAICustom,
 		ChatModel: "llama-3.3-70b-versatile",
 		TextModel: "", // OpenAI doesn't support text completion in newer models
+		EmbeddingModel: "",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -38,6 +39,7 @@ func TestCustomProvider(t *testing.T) {
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},

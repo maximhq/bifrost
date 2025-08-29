@@ -16,6 +16,7 @@ This directory contains comprehensive tests for all Bifrost AI providers, ensuri
 - **SGLang** - OSS models
 - **Parasail** - OSS models
 - **Cerebras** - Llama, Qwen and GPT-OSS models
+- **Gemini** - Gemini models
 
 ## 🏃‍♂️ Running Tests
 
@@ -75,6 +76,9 @@ export GOOGLE_PROJECT_ID="your-project-id"
 # Mistral AI
 export MISTRAL_API_KEY="your-mistral-key"
 
+# Gemini
+export GEMINI_API_KEY="your-gemini-key"
+
 # Ollama (local installation)
 # No API key required - ensure Ollama is running locally
 # Default endpoint: http://localhost:11434
@@ -113,6 +117,9 @@ go test -v ./tests/core-providers/ -run TestVertex
 
 # Test only Mistral
 go test -v ./tests/core-providers/ -run TestMistral
+
+# Test only Gemini
+go test -v ./tests/core-providers/ -run TestGemini
 
 # Test only Ollama
 go test -v ./tests/core-providers/ -run TestOllama
@@ -174,6 +181,7 @@ go test -v ./tests/core-providers/ -run "TestOllama/SimpleChat"
 - `MultipleImages` - Multiple image processing
 - `CompleteEnd2End` - Full end-to-end test
 - `ProviderSpecific` - Provider-specific features
+- `Embedding` - Basic Embedding request
 
 ## 🧪 Test Scenarios
 

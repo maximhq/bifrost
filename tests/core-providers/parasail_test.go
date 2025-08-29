@@ -20,6 +20,7 @@ func TestParasail(t *testing.T) {
 		Provider:  schemas.Parasail,
 		ChatModel: "parasail-deepseek-r1",
 		TextModel: "", // Parasail doesn't support text completion
+		EmbeddingModel: "", // Parasail doesn't support embedding
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -34,6 +35,7 @@ func TestParasail(t *testing.T) {
 			MultipleImages:        false, // Not supported yet
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			Embedding:             false, // Not supported yet
 		},
 	}
 
