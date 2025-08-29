@@ -200,8 +200,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuErjs=
 github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
-github.com/maximhq/bifrost/core v1.1.25 h1:frGWTnaAtcNPOqA3Fq5m1s8NAP4PkccQSROz/3dDhN4=
-github.com/maximhq/bifrost/core v1.1.25/go.mod h1:tf2pFTpoM53UGXXMFYxsaUjMqnCqYDOd9glFgMJvA0c=
+github.com/maximhq/bifrost/core v1.1.26 h1:hsg1vDq3lYmKcrcr+iXYjidJ2UQzqgjO2cYDijcSScw=
+github.com/maximhq/bifrost/core v1.1.26/go.mod h1:tf2pFTpoM53UGXXMFYxsaUjMqnCqYDOd9glFgMJvA0c=
 github.com/maximhq/bifrost/framework v1.0.3 h1:OTiOne/ekxceG/uWNy7KYZK7+nW9sklxR73rroLUnWA=
 github.com/maximhq/bifrost/framework v1.0.3/go.mod h1:fkzvx1CMrhqa8ygedGwwj5r1NETXUAMfS5WDzo5YEGQ=
 github.com/maximhq/bifrost/plugins/governance v1.2.0-prerelease4 h1:TQCN/Etc0juUMtbm69gnGtI5pCnBIqRV914aaHKuaWg=
@@ -210,8 +210,8 @@ github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease4 h1:ik7hdkrjblltZXG
 github.com/maximhq/bifrost/plugins/logging v1.2.0-prerelease4/go.mod h1:2GU38H14/3Pr8AEpDmnBZ2uDl+yKJ6IcXQg33jXrjiQ=
 github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease2 h1:l6lentPTCK9fyOa0LsKfIJYmxAjpm48Sk8poHnhqc3w=
 github.com/maximhq/bifrost/plugins/maxim v1.2.0-prerelease2/go.mod h1:9XPljijGDL19UaCj+nrhDxLQ5ZwzMl6eJoGi7lZiWpo=
-github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease3 h1:hOVZ60np9Ec/c2j6GBwxQMjg52ADhQDvyQ5017/SwIw=
-github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease3/go.mod h1:5v1059G3ZmjhtsQUu6cMWksU545gc35UsVIdfoMs/9w=
+github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease4 h1:9m3VyXP6axJlcnP9LJs+CYzY4K+xexDd3AD07TQYpPk=
+github.com/maximhq/bifrost/plugins/semanticcache v1.2.0-prerelease4/go.mod h1:5v1059G3ZmjhtsQUu6cMWksU545gc35UsVIdfoMs/9w=
 github.com/maximhq/bifrost/plugins/telemetry v1.2.0-prerelease2 h1:nf1uYkcoroN8OlCSDYv/qfdEUppsp+Syw0h0PDRvQ+o=
 github.com/maximhq/bifrost/plugins/telemetry v1.2.0-prerelease2/go.mod h1:WjSBFFSGRGRN+fIjeTmAY3SAY9YQmQ0MjjEbAKDiVc4=
 github.com/maximhq/maxim-go v0.1.8 h1:LXCYwg/WLNY5rPBScki9y4/wjH7h4VEz8vPUXbyoI4g=
