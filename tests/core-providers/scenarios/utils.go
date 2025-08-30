@@ -248,6 +248,15 @@ func MergeModelParameters(base *schemas.ModelParameters, override *schemas.Model
 	if override.ParallelToolCalls != nil {
 		result.ParallelToolCalls = override.ParallelToolCalls
 	}
+	if override.EncodingFormat != nil {
+		result.EncodingFormat = override.EncodingFormat
+	}
+	if override.Dimensions != nil {
+		result.Dimensions = override.Dimensions
+	}
+	if override.User != nil {
+		result.User = override.User
+	}
 	if override.ExtraParams != nil {
 		result.ExtraParams = override.ExtraParams
 	}
@@ -272,6 +281,9 @@ func copyModelParameters(src *schemas.ModelParameters) *schemas.ModelParameters 
 		Tools:             src.Tools,
 		ToolChoice:        src.ToolChoice,
 		ParallelToolCalls: src.ParallelToolCalls,
+		EncodingFormat:    src.EncodingFormat,
+		Dimensions:        src.Dimensions,
+		User:              src.User,
 		ExtraParams:       src.ExtraParams,
 	}
 }

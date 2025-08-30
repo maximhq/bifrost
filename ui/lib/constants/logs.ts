@@ -12,6 +12,7 @@ export const KNOWN_PROVIDERS = [
 	"parasail",
 	"sgl",
 	"cerebras",
+	"gemini",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -46,6 +47,7 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
 	parasail: "Parasail",
 	sgl: "SGLang",
 	cerebras: "Cerebras",
+	gemini: "Gemini",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

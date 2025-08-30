@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Bifrost HTTP Transport API",
-    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• ollama\n• groq\n• sgl\n\nBifrost provides:\n\n**Core Features:**\n• Standardized **OpenAI Compatible** endpoints for text and chat completions\n• Built-in fallback support across providers\n• Comprehensive monitoring and logging\n• Real-time WebSocket streaming\n\n**Audio Processing:**\n• Speech synthesis (text-to-speech) with multiple voices and formats\n• Audio transcription (speech-to-text) with timing information\n• Streaming support for both speech and transcription\n• OpenAI-compatible audio endpoints\n\n**MCP Integration:**\n• Model Context Protocol (MCP) support for external tool integration\n• Dynamic MCP client management (add/remove/edit clients)\n• STDIO, HTTP, and SSE connection types\n• Automatic tool discovery and execution\n\n**Management APIs:**\n• Provider configuration management (CRUD operations)\n• System configuration hot-reloading\n• Application logs with advanced filtering\n• Dropped request monitoring\n\n**Integration Endpoints:**\n• OpenAI-compatible: `/openai/chat/completions`, `/openai/audio/speech`, `/openai/audio/transcriptions`\n• Anthropic-compatible: `/anthropic/v1/messages`\n• Google Gemini-compatible: `/genai/v1beta/models/{model}`\n• LiteLLM-compatible: `/chat/completions`",
+    "description": "A unified HTTP API for accessing multiple AI model providers:\n\n• openai\n• anthropic\n• azure\n• bedrock\n• cohere\n• vertex\n• mistral\n• gemini\n• ollama\n• groq\n• sgl\n\nBifrost provides:\n\n**Core Features:**\n• Standardized **OpenAI Compatible** endpoints for text and chat completions\n• Built-in fallback support across providers\n• Comprehensive monitoring and logging\n• Real-time WebSocket streaming\n\n**Audio Processing:**\n• Speech synthesis (text-to-speech) with multiple voices and formats\n• Audio transcription (speech-to-text) with timing information\n• Streaming support for both speech and transcription\n• OpenAI-compatible audio endpoints\n\n**MCP Integration:**\n• Model Context Protocol (MCP) support for external tool integration\n• Dynamic MCP client management (add/remove/edit clients)\n• STDIO, HTTP, and SSE connection types\n• Automatic tool discovery and execution\n\n**Management APIs:**\n• Provider configuration management (CRUD operations)\n• System configuration hot-reloading\n• Application logs with advanced filtering\n• Dropped request monitoring\n\n**Integration Endpoints:**\n• OpenAI-compatible: `/openai/chat/completions`, `/openai/audio/speech`, `/openai/audio/transcriptions`\n• Anthropic-compatible: `/anthropic/v1/messages`\n• Google Gemini-compatible: `/genai/v1beta/models/{model}`\n• LiteLLM-compatible: `/chat/completions`",
     "version": "1.1.2",
     "contact": {
       "name": "Bifrost API Support",
@@ -1883,7 +1883,8 @@
           "mistral",
           "ollama",
           "groq",
-          "sgl"
+          "sgl",
+          "gemini"
         ],
         "description": "AI model provider",
         "example": "openai"
