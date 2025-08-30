@@ -32,19 +32,20 @@ type ChannelMessage struct {
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
 	ctx                 context.Context
-	account             schemas.Account  // account interface
-	plugins             []schemas.Plugin // list of plugins
-	requestQueues       sync.Map         // provider request queues (thread-safe)
-	waitGroups          sync.Map         // wait groups for each provider (thread-safe)
-	providerMutexes     sync.Map         // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool  sync.Pool        // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool sync.Pool        // Pool for response channels, initial pool size is set in Init
-	errorChannelPool    sync.Pool        // Pool for error channels, initial pool size is set in Init
-	responseStreamPool  sync.Pool        // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool  sync.Pool        // Pool for PluginPipeline objects
-	logger              schemas.Logger   // logger instance, default logger is used if not provided
-	mcpManager          *MCPManager      // MCP integration manager (nil if MCP not configured)
-	dropExcessRequests  atomic.Bool      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	account             schemas.Account     // account interface
+	plugins             []schemas.Plugin    // list of plugins
+	requestQueues       sync.Map            // provider request queues (thread-safe)
+	waitGroups          sync.Map            // wait groups for each provider (thread-safe)
+	providerMutexes     sync.Map            // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool  sync.Pool           // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool sync.Pool           // Pool for response channels, initial pool size is set in Init
+	errorChannelPool    sync.Pool           // Pool for error channels, initial pool size is set in Init
+	responseStreamPool  sync.Pool           // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool  sync.Pool           // Pool for PluginPipeline objects
+	logger              schemas.Logger      // logger instance, default logger is used if not provided
+	mcpManager          *MCPManager         // MCP integration manager (nil if MCP not configured)
+	dropExcessRequests  atomic.Bool         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	keySelector         schemas.KeySelector // Custom key selector function
 }
 
 // PluginPipeline encapsulates the execution of plugin PreHooks and PostHooks, tracks how many plugins ran, and manages short-circuiting and error aggregation.
@@ -85,8 +86,13 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		plugins:       config.Plugins,
 		requestQueues: sync.Map{},
 		waitGroups:    sync.Map{},
+		keySelector:   config.KeySelector,
 	}
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+
+	if bifrost.keySelector == nil {
+		bifrost.keySelector = WeightedRandomKeySelector
+	}
 
 	// Initialize object pools
 	bifrost.channelMessagePool = sync.Pool{
@@ -1175,6 +1181,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				continue
 			}
+			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKey, key.ID)
 		}
 
 		// Track attempts
@@ -1516,9 +1523,19 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 		return supportedKeys[0], nil
 	}
 
+	selectedKey, err := bifrost.keySelector(ctx, supportedKeys, providerKey, model)
+	if err != nil {
+		return schemas.Key{}, err
+	}
+
+	return selectedKey, nil
+
+}
+
+func WeightedRandomKeySelector(ctx *context.Context, keys []schemas.Key, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
 	// Use a weighted random selection based on key weights
 	totalWeight := 0
-	for _, key := range supportedKeys {
+	for _, key := range keys {
 		totalWeight += int(key.Weight * 100) // Convert float to int for better performance
 	}
 
@@ -1528,7 +1545,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 
 	// Select key based on weight
 	currentWeight := 0
-	for _, key := range supportedKeys {
+	for _, key := range keys {
 		currentWeight += int(key.Weight * 100)
 		if randomValue < currentWeight {
 			return key, nil
@@ -1536,7 +1553,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 	}
 
 	// Fallback to first key if something goes wrong
-	return supportedKeys[0], nil
+	return keys[0], nil
 }
 
 // Shutdown gracefully stops all workers when triggered.
