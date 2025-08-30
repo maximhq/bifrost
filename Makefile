@@ -5,8 +5,8 @@ HOST ?= localhost
 PORT ?= 8080
 APP_DIR ?= 
 PROMETHEUS_LABELS ?=
-LOGGING_STYLE ?= json
-LOGGING_LEVEL ?= info
+LOG_STYLE ?= json
+LOG_LEVEL ?= info
 
 # Colors for output
 RED=\033[0;31m
@@ -30,8 +30,8 @@ help: ## Show this help message
 	@echo "  HOST              Server host (default: localhost)"
 	@echo "  PORT              Server port (default: 8080)"
 	@echo "  PROMETHEUS_LABELS Labels for Prometheus metrics"
-	@echo "  LOGGING_STYLE Logger output format: json|pretty (default: json)"
-	@echo "  LOGGING_LEVEL Logger level: debug|info|warn|error (default: info)"
+	@echo "  LOG_STYLE Logger output format: json|pretty (default: json)"
+	@echo "  LOG_LEVEL Logger level: debug|info|warn|error (default: info)"
 
 install-ui:
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
@@ -60,8 +60,8 @@ dev: install-ui install-air setup-workspace ## Start complete development enviro
 	@cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
 		-host "$(HOST)" \
 		-port "$(PORT)" \
-		-log-style "$(LOGGING_STYLE)" \
-		-log-level "$(LOGGING_LEVEL)" \
+		-log-style "$(LOG_STYLE)" \
+		-log-level "$(LOG_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
 		$(if $(APP_DIR),-app-dir "$(APP_DIR)")
 
@@ -82,7 +82,7 @@ docker-build: build-ui ## Build Docker image
 
 docker-run: ## Run Docker container
 	@echo "$(GREEN)Running Docker container...$(NC)"
-	@docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -v $(shell pwd):/app/data bifrost
+	@docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data  bifrost 
 
 docs: ## Prepare local docs
 	@echo "$(GREEN)Preparing local docs...$(NC)"
@@ -93,8 +93,8 @@ run: build ## Build and run bifrost-http (no hot reload)
 	@./tmp/bifrost-http \
 		-host "$(HOST)" \
 		-port "$(PORT)" \
-		-log-style "$(LOGGING_STYLE)" \
-		-log-level "$(LOGGING_LEVEL)" \
+		-log-style "$(LOG_STYLE)" \
+		-log-level "$(LOG_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
 
 clean: ## Clean build artifacts and temporary files
