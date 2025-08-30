@@ -706,6 +706,19 @@
           "type": "string",
           "description": "API key for Weaviate authentication (optional)"
         },
+        "grpc_config": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string",
+              "description": "Weaviate server host (host:port). If host is without a port number then the 80 port for insecured and 443 port for secured connections will be used."
+            },
+            "secured": {
+              "type": "boolean",
+              "description": "Secured set it to true if it's a secured connection"
+            }
+          }
+        },
         "headers": {
           "type": "object",
           "description": "Additional headers to send with requests"
