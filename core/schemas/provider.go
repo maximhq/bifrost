@@ -123,6 +123,114 @@ func (ar *AllowedRequests) IsOperationAllowed(operation Operation) bool {
 	}
 }
 
+// GetProviderCapabilities returns the capabilities for a given provider
+func GetProviderCapabilities(provider ModelProvider) AllowedRequests {
+	switch provider {
+	case OpenAI:
+		return AllowedRequests{
+			TextCompletion:       false,
+			ChatCompletion:       true,
+			ChatCompletionStream: true,
+			Embedding:            true,
+			Speech:               true,
+			SpeechStream:         true,
+			Transcription:        true,
+			TranscriptionStream:  true,
+		}
+	case Anthropic:
+		return AllowedRequests{
+			TextCompletion:       true,
+			ChatCompletion:       true,
+			ChatCompletionStream: true,
+			Embedding:            false,
+			Speech:               false,
+			SpeechStream:         false,
+			Transcription:        false,
+			TranscriptionStream:  false,
+		}
+	case Cohere:
+		return AllowedRequests{
+			TextCompletion:       false,
+			ChatCompletion:       true,
+			ChatCompletionStream: true,
+			Embedding:            true,
+			Speech:               false,
+			SpeechStream:         false,
+			Transcription:        false,
+			TranscriptionStream:  false,
+		}
+	case Bedrock:
+		return AllowedRequests{
+			TextCompletion:       true,
+			ChatCompletion:       true,
+			ChatCompletionStream: true,
+			Embedding:            true,
+			Speech:               false,
+			SpeechStream:         false,
+			Transcription:        false,
+			TranscriptionStream:  false,
+		}
+	case Gemini:
+		return AllowedRequests{
+			TextCompletion:       false,
+			ChatCompletion:       true,
+			ChatCompletionStream: true,
+			Embedding:            true,
+			Speech:               true,
+			SpeechStream:         true,
+			Transcription:        true,
+			TranscriptionStream:  true,
+		}
+	default:
+		 // Unknown providers: safest default is no capabilities; upstream validation should reject these.
+		return AllowedRequests{}
+	}
+}
+
+// GetDefaultAllowedRequestsForProvider returns a default AllowedRequests based on provider capabilities
+// This ensures that when no explicit restrictions are set, operations are limited to what the provider supports
+func GetDefaultAllowedRequestsForProvider(baseProvider ModelProvider) *AllowedRequests {
+	capabilities := GetProviderCapabilities(baseProvider)
+	return &capabilities
+}
+
+// ValidateAllowedRequests checks if the allowed requests are valid for the given base provider
+// and silently sets any unsupported operations to false instead of returning an error
+func ValidateAllowedRequests(allowedRequests *AllowedRequests, baseProvider ModelProvider) {
+	if allowedRequests == nil {
+		// nil means all operations allowed, which is always valid
+		return
+	}
+
+	capabilities := GetProviderCapabilities(baseProvider)
+
+	// Silently set unsupported operations to false instead of returning an error
+	if allowedRequests.TextCompletion && !capabilities.TextCompletion {
+		allowedRequests.TextCompletion = false
+	}
+	if allowedRequests.ChatCompletion && !capabilities.ChatCompletion {
+		allowedRequests.ChatCompletion = false
+	}
+	if allowedRequests.ChatCompletionStream && !capabilities.ChatCompletionStream {
+		allowedRequests.ChatCompletionStream = false
+	}
+	if allowedRequests.Embedding && !capabilities.Embedding {
+		allowedRequests.Embedding = false
+	}
+	if allowedRequests.Speech && !capabilities.Speech {
+		allowedRequests.Speech = false
+	}
+	if allowedRequests.SpeechStream && !capabilities.SpeechStream {
+		allowedRequests.SpeechStream = false
+	}
+	if allowedRequests.Transcription && !capabilities.Transcription {
+		allowedRequests.Transcription = false
+	}
+	if allowedRequests.TranscriptionStream && !capabilities.TranscriptionStream {
+		allowedRequests.TranscriptionStream = false
+	}
+}
+
 type CustomProviderConfig struct {
 	CustomProviderKey string           `json:"-"`                  // Custom provider key, internally set by Bifrost
 	BaseProviderType  ModelProvider    `json:"base_provider_type"` // Base provider type
@@ -131,8 +239,13 @@ type CustomProviderConfig struct {
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
 func (cpc *CustomProviderConfig) IsOperationAllowed(operation Operation) bool {
-	if cpc == nil || cpc.AllowedRequests == nil {
-		return true // Default to allowed if no restrictions
+	if cpc == nil {
+		return true // Default to allowed if no custom provider config
+	}
+	if cpc.AllowedRequests == nil {
+		// Use provider capabilities as default when no explicit restrictions are set
+		defaultAllowedRequests := GetDefaultAllowedRequestsForProvider(cpc.BaseProviderType)
+		return defaultAllowedRequests.IsOperationAllowed(operation)
 	}
 	return cpc.AllowedRequests.IsOperationAllowed(operation)
 }

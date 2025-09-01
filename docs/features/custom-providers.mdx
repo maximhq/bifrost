@@ -109,6 +109,73 @@ curl --location 'http://localhost:8080/api/providers' \
 
 </Tab>
 
+<Tab title="Using Go SDK">
+
+```go
+type MyAccount struct{}
+
+const OpenAICustom = schemas.ModelProvider("openai-custom")
+
+func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+    return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, OpenAICustom}, nil
+}
+
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.OpenAI:
+        return []schemas.Key{{
+            Value:  os.Getenv("OPENAI_API_KEY"),
+            Models: []string{},
+            Weight: 1.0,
+        }}, nil
+    case schemas.Anthropic:
+        return []schemas.Key{{
+            Value:  os.Getenv("ANTHROPIC_API_KEY"),
+            Models: []string{},
+            Weight: 1.0,
+        }}, nil
+    case OpenAICustom:
+        return []schemas.Key{{
+            Value:  os.Getenv("PROVIDER_API_KEY"),
+            Models: []string{},
+            Weight: 1.0,
+        }}, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    switch provider {
+        case OpenAICustom:
+            // Return config with base provider and allowed requests
+            return &schemas.ProviderConfig{
+                    NetworkConfig:            schemas.DefaultNetworkConfig,
+                    ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+                    BaseProviderType: schemas.OpenAI,
+                    AllowedRequests: &schemas.AllowedRequests{
+                        TextCompletion:       false,
+                        ChatCompletion:       true,
+                        ChatCompletionStream: true,
+                        Embedding:            true,
+                        Speech:               false,
+                        SpeechStream:         false,
+                        Transcription:        false,
+                        TranscriptionStream:  false,
+                    },
+            }, nil
+        default: 
+            // Return default config for other providers
+            return &schemas.ProviderConfig{
+                    NetworkConfig:            schemas.DefaultNetworkConfig,
+                    ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+            }, nil     
+    }
+}
+```
+
+
+</Tab>
+
 </Tabs>
 
 ## Configuration Options
