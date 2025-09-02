@@ -3,6 +3,8 @@ package jsonparser
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,9 @@ const (
 	PluginName                = "streaming-json-parser"
 	EnableStreamingJSONParser = "enable-streaming-json-parser"
 )
+
+// JSONMarkdownRegex is the compiled regex pattern for detecting JSON in markdown code blocks
+var JSONMarkdownRegex = regexp.MustCompile("`{1,3}(?:json)?\\s*([\\s\\S]*?)(?:`{1,3}|$)")
 
 type Usage string
 
@@ -124,7 +129,16 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 						accumulated := p.accumulateContent(requestID, content)
 
 						// Process the accumulated content to make it valid JSON
-						fixedContent := p.parsePartialJSON(accumulated)
+						// First try markdown parsing, then fall back to partial JSON parsing
+						var fixedContent string
+						var parseErr error
+
+						// Try markdown parsing first
+						fixedContent, parseErr = p.parseJSONMarkdown(accumulated)
+						if parseErr != nil {
+							// Fall back to partial JSON parsing
+							fixedContent = p.parsePartialJSON(accumulated)
+						}
 
 						if !p.isValidJSON(fixedContent) {
 							err = &schemas.BifrostError{
@@ -433,4 +447,38 @@ func (p *JsonParserPlugin) StopCleanup() {
 	p.stopOnce.Do(func() {
 		close(p.stopCleanup)
 	})
+}
+
+// parseJSONMarkdown parses a JSON string from a Markdown string
+// It automatically detects and extracts JSON content from markdown code blocks
+// If no markdown is detected, it treats the entire string as JSON
+func (p *JsonParserPlugin) parseJSONMarkdown(jsonString string) (string, error) {
+	// Try to find JSON string within triple backticks
+	match := JSONMarkdownRegex.FindStringSubmatch(jsonString)
+	var jsonStr string
+	if match == nil {
+		// If no match found, assume the entire string is a JSON string
+		jsonStr = jsonString
+	} else {
+		// Use the content within the backticks
+		jsonStr = match[1]
+	}
+	// Parse the extracted JSON string
+	return p.parseJSONString(jsonStr)
+}
+
+// parseJSONString processes a JSON string, handling special characters and partial JSON
+func (p *JsonParserPlugin) parseJSONString(jsonStr string) (string, error) {
+	// Strip whitespace, newlines, and backticks from the start and end
+	jsonStr = strings.Trim(jsonStr, " \n\r\t`")
+
+	// Parse the JSON string using the existing partial JSON parser
+	parsed := p.parsePartialJSON(jsonStr)
+
+	// Validate the result
+	if !p.isValidJSON(parsed) {
+		return "", fmt.Errorf("failed to parse JSON after markdown processing")
+	}
+
+	return parsed, nil
 }
