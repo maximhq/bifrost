@@ -2,12 +2,10 @@ package vectorstore
 
 import (
 	"context"
-	"math/rand"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -161,36 +159,6 @@ func (ts *TestSetup) cleanupTestData(t *testing.T) {
 	}
 
 	t.Logf("Cleaned up test class: %s", TestClassName)
-}
-
-// Helper functions
-func getEnvWithDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func generateUUID() string {
-	return uuid.New().String()
-}
-
-func generateTestEmbedding(dim int) []float32 {
-	embedding := make([]float32, dim)
-	for i := range embedding {
-		embedding[i] = rand.Float32()*2 - 1 // Random values between -1 and 1
-	}
-	return embedding
-}
-
-func generateSimilarEmbedding(original []float32, similarity float32) []float32 {
-	similar := make([]float32, len(original))
-	for i := range similar {
-		// Add small random noise to create similar but not identical embedding
-		noise := (rand.Float32()*2 - 1) * (1 - similarity) * 0.1
-		similar[i] = original[i] + noise
-	}
-	return similar
 }
 
 // ============================================================================
@@ -769,4 +737,78 @@ func TestVectorStoreFactory_Weaviate(t *testing.T) {
 	weaviateStore, ok := store.(*WeaviateStore)
 	assert.True(t, ok)
 	assert.NotNil(t, weaviateStore)
+}
+
+func TestWeaviateStore_NamespaceDimensionHandling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	testClassName := "TestDimensionHandling"
+
+	t.Run("Recreate class with different dimension should not crash", func(t *testing.T) {
+		properties := map[string]VectorStoreProperties{
+			"type": {DataType: VectorStorePropertyTypeString},
+			"test": {DataType: VectorStorePropertyTypeString},
+		}
+
+		// Step 1: Create class with dimension 512
+		err := setup.Store.CreateNamespace(setup.ctx, testClassName, 512, properties)
+		require.NoError(t, err)
+
+		// Add a document with 512-dimensional embedding
+		testKey512 := generateUUID()
+		embedding512 := generateTestEmbedding(512)
+		metadata := map[string]interface{}{
+			"type": "test_doc",
+			"test": "dimension_512",
+		}
+
+		err = setup.Store.Add(setup.ctx, testClassName, testKey512, embedding512, metadata)
+		require.NoError(t, err)
+
+		// Verify it was added
+		result, err := setup.Store.GetChunk(setup.ctx, testClassName, testKey512)
+		require.NoError(t, err)
+		assert.Equal(t, "dimension_512", result.Properties["test"])
+
+		// Step 2: Delete the class/namespace
+		err = setup.Store.DeleteNamespace(setup.ctx, testClassName)
+		require.NoError(t, err)
+
+		// Step 3: Create class with same name but different dimension - should not crash
+		err = setup.Store.CreateNamespace(setup.ctx, testClassName, 1024, properties)
+		require.NoError(t, err)
+
+		// Add a document with 1024-dimensional embedding
+		testKey1024 := generateUUID()
+		embedding1024 := generateTestEmbedding(1024)
+		metadata1024 := map[string]interface{}{
+			"type": "test_doc",
+			"test": "dimension_1024",
+		}
+
+		err = setup.Store.Add(setup.ctx, testClassName, testKey1024, embedding1024, metadata1024)
+		require.NoError(t, err)
+
+		// Verify new document exists
+		result, err = setup.Store.GetChunk(setup.ctx, testClassName, testKey1024)
+		require.NoError(t, err)
+		assert.Equal(t, "dimension_1024", result.Properties["test"])
+
+		// Verify vector search works with new dimension
+		vectorResults, err := setup.Store.GetNearest(setup.ctx, testClassName, embedding1024, nil, []string{"type", "test"}, 0.8, 10)
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, len(vectorResults), 1)
+		assert.NotNil(t, vectorResults[0].Score)
+
+		// Cleanup
+		err = setup.Store.DeleteNamespace(setup.ctx, testClassName)
+		if err != nil {
+			t.Logf("Warning: Failed to cleanup class: %v", err)
+		}
+	})
 }

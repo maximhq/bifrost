@@ -18,6 +18,7 @@ const defaultCacheConfig: CacheConfig = {
 	provider: "openai" as ModelProviderName,
 	keys: [],
 	embedding_model: "text-embedding-3-small",
+	dimension: 0,
 	ttl_seconds: 300,
 	threshold: 0.8,
 	conversation_history_threshold: 3,
@@ -276,6 +277,16 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											step="0.01"
 											value={cacheConfig.threshold}
 											onChange={(e) => debouncedUpdateCacheConfig({ threshold: parseFloat(e.target.value) || 0.8 })}
+										/>
+									</div>
+									<div className="space-y-2">
+										<Label htmlFor="dimension">Dimension</Label>
+										<Input
+											id="dimension"
+											type="number"
+											min="0"
+											value={cacheConfig.dimension}
+											onChange={(e) => debouncedUpdateCacheConfig({ dimension: parseInt(e.target.value) || 0 })}
 										/>
 									</div>
 								</div>

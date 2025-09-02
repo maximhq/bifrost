@@ -448,7 +448,7 @@ func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schema
 	return store, nil
 }
 
-func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, properties map[string]VectorStoreProperties) error {
+func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, dimension int, properties map[string]VectorStoreProperties) error {
 	// Check if class exists
 	exists, err := s.client.Schema().ClassExistenceChecker().
 		WithClassName(className).
@@ -489,6 +489,12 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, p
 		Properties:      weaviateProperties,
 		VectorIndexType: "hnsw",
 		Vectorizer:      "none", // We provide our own vectors
+	}
+
+	if dimension > 0 {
+		classSchema.VectorIndexConfig = map[string]interface{}{
+			"vectorDimensions": dimension,
+		}
 	}
 
 	err = s.client.Schema().ClassCreator().

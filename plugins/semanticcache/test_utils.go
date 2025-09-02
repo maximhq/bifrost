@@ -42,6 +42,42 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 	}
 }
 
+// getRedisConfigFromEnv retrieves Redis configuration from environment variables
+func getRedisConfigFromEnv() vectorstore.RedisConfig {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	username := os.Getenv("REDIS_USERNAME")
+	password := os.Getenv("REDIS_PASSWORD")
+	db := os.Getenv("REDIS_DB")
+	if db == "" {
+		db = "0"
+	}
+	dbInt, err := strconv.Atoi(db)
+	if err != nil {
+		dbInt = 0
+	}
+
+	timeoutStr := os.Getenv("REDIS_TIMEOUT")
+	if timeoutStr == "" {
+		timeoutStr = "10s"
+	}
+	timeout, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		timeout = 10 * time.Second
+	}
+
+
+	return vectorstore.RedisConfig{
+		Addr:           addr,
+		Username:       username,
+		Password:       password,
+		DB:             dbInt,
+		ContextTimeout: timeout,
+	}
+}
+
 // BaseAccount implements the schemas.Account interface for testing purposes.
 type BaseAccount struct{}
 
@@ -83,7 +119,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 
 	return NewTestSetupWithConfig(t, Config{
 		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-large",
+		EmbeddingModel: "text-embedding-3-small",
 		Threshold:      0.8,
 		Keys: []schemas.Key{
 			{
@@ -147,7 +183,7 @@ func NewRedisClusterTestSetup(t *testing.T) *TestSetup {
 
 	config := Config{
 		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-large",
+		EmbeddingModel: "text-embedding-3-small",
 		Threshold:      0.8,
 		Keys: []schemas.Key{
 			{
@@ -350,7 +386,7 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 
 	config := Config{
 		Provider:                     schemas.OpenAI,
-		EmbeddingModel:               "text-embedding-3-large",
+		EmbeddingModel:               "text-embedding-3-small",
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 		Keys: []schemas.Key{
@@ -373,7 +409,7 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 
 	config := Config{
 		Provider:            schemas.OpenAI,
-		EmbeddingModel:      "text-embedding-3-large",
+		EmbeddingModel:      "text-embedding-3-small",
 		Threshold:           0.8,
 		ExcludeSystemPrompt: &excludeSystem,
 		Keys: []schemas.Key{
@@ -396,7 +432,7 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 
 	config := Config{
 		Provider:                     schemas.OpenAI,
-		EmbeddingModel:               "text-embedding-3-large",
+		EmbeddingModel:               "text-embedding-3-small",
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 		ExcludeSystemPrompt:          &excludeSystem,

@@ -151,13 +151,7 @@
             "pages" : [
               "architecture/framework/what-is-framework",
               "architecture/framework/pricing",
-              {
-                "group" : "Vector Store",
-                "icon": "diagram-project",
-                "pages" : [
-                  "architecture/framework/vector-store/weaviate"
-                ]
-              }
+              "architecture/framework/vector-store"
             ]
           }
         ]

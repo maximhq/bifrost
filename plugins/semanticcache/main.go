@@ -29,8 +29,10 @@ type Config struct {
 	EmbeddingModel string                `json:"embedding_model,omitempty"` // Model to use for generating embeddings (optional)
 
 	// Plugin behavior settings
-	TTL       time.Duration `json:"ttl,omitempty"`       // Time-to-live for cached responses (default: 5min)
-	Threshold float64       `json:"threshold,omitempty"` // Cosine similarity threshold for semantic matching (default: 0.8)
+	TTL                  time.Duration `json:"ttl,omitempty"`                    // Time-to-live for cached responses (default: 5min)
+	Threshold            float64       `json:"threshold,omitempty"`              // Cosine similarity threshold for semantic matching (default: 0.8)
+	VectorStoreNamespace string        `json:"vector_store_namespace,omitempty"` // Namespace for vector store (optional)
+	Dimension            int             `json:"dimension"`                        // Dimension for vector store
 
 	// Advanced caching behavior
 	ConversationHistoryThreshold int   `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
@@ -47,8 +49,10 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		Provider                     string        `json:"provider"`
 		Keys                         []schemas.Key `json:"keys"`
 		EmbeddingModel               string        `json:"embedding_model,omitempty"`
+		Dimension                    int           `json:"dimension"`
 		TTL                          interface{}   `json:"ttl,omitempty"`
 		Threshold                    float64       `json:"threshold,omitempty"`
+		VectorStoreNamespace         string        `json:"vector_store_namespace,omitempty"`
 		ConversationHistoryThreshold int           `json:"conversation_history_threshold,omitempty"`
 		CacheByModel                 *bool         `json:"cache_by_model,omitempty"`
 		CacheByProvider              *bool         `json:"cache_by_provider,omitempty"`
@@ -64,8 +68,10 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.Provider = schemas.ModelProvider(temp.Provider)
 	c.Keys = temp.Keys
 	c.EmbeddingModel = temp.EmbeddingModel
+	c.Dimension = temp.Dimension
 	c.CacheByModel = temp.CacheByModel
 	c.CacheByProvider = temp.CacheByProvider
+	c.VectorStoreNamespace = temp.VectorStoreNamespace
 	c.ConversationHistoryThreshold = temp.ConversationHistoryThreshold
 	c.Threshold = temp.Threshold
 	c.ExcludeSystemPrompt = temp.ExcludeSystemPrompt
@@ -136,9 +142,10 @@ type Plugin struct {
 // Plugin constants
 const (
 	PluginName                          string        = "semantic_cache"
-	VectorStoreClassName                string        = "BifrostSemanticCachePlugin"
+	DefaultVectorStoreNamespace         string        = "BifrostSemanticCachePlugin"
 	PluginLoggerPrefix                  string        = "[Semantic Cache]"
 	CacheConnectionTimeout              time.Duration = 5 * time.Second
+	CreateNamespaceTimeout              time.Duration = 30 * time.Second
 	CacheSetTimeout                     time.Duration = 30 * time.Second
 	DefaultCacheTTL                     time.Duration = 5 * time.Minute
 	DefaultCacheThreshold               float64       = 0.8
@@ -254,6 +261,10 @@ const (
 //   - error: Any error that occurred during plugin initialization
 func Init(ctx context.Context, config Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.Plugin, error) {
 	// Set plugin-specific defaults
+	if config.VectorStoreNamespace == "" {
+		logger.Debug(PluginLoggerPrefix + " Vector store namespace is not set, using default of " + DefaultVectorStoreNamespace)
+		config.VectorStoreNamespace = DefaultVectorStoreNamespace
+	}
 	if config.TTL == 0 {
 		logger.Debug(PluginLoggerPrefix + " TTL is not set, using default of 5 minutes")
 		config.TTL = DefaultCacheTTL
@@ -298,7 +309,9 @@ func Init(ctx context.Context, config Config, logger schemas.Logger, store vecto
 		plugin.client = bifrost
 	}
 
-	if err := store.CreateNamespace(ctx, VectorStoreClassName, VectorStoreProperties); err != nil {
+	createCtx, cancel := context.WithTimeout(ctx, CreateNamespaceTimeout)
+	defer cancel()
+	if err := store.CreateNamespace(createCtx, config.VectorStoreNamespace, config.Dimension, VectorStoreProperties); err != nil {
 		return nil, fmt.Errorf("failed to create namespace for semantic cache: %w", err)
 	}
 
@@ -607,7 +620,7 @@ func (plugin *Plugin) Cleanup() error {
 		},
 	}
 
-	results, err := plugin.store.DeleteAll(ctx, VectorStoreClassName, queries)
+	results, err := plugin.store.DeleteAll(ctx, plugin.config.VectorStoreNamespace, queries)
 	if err != nil {
 		return fmt.Errorf("failed to delete cache entries: %w", err)
 	}
@@ -619,7 +632,7 @@ func (plugin *Plugin) Cleanup() error {
 	}
 	plugin.logger.Info(fmt.Sprintf("%s Cleanup completed - deleted all cache entries", PluginLoggerPrefix))
 
-	if err := plugin.store.DeleteNamespace(ctx, VectorStoreClassName); err != nil {
+	if err := plugin.store.DeleteNamespace(ctx, plugin.config.VectorStoreNamespace); err != nil {
 		return fmt.Errorf("failed to delete namespace: %w", err)
 	}
 
@@ -651,7 +664,9 @@ func (plugin *Plugin) ClearCacheForKey(cacheKey string) error {
 		},
 	}
 
-	results, err := plugin.store.DeleteAll(context.Background(), VectorStoreClassName, queries)
+	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
+	defer cancel()
+	results, err := plugin.store.DeleteAll(ctx, plugin.config.VectorStoreNamespace, queries)
 	if err != nil {
 		plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache entries for key '%s': %v", PluginLoggerPrefix, cacheKey, err))
 		return err
@@ -678,7 +693,9 @@ func (plugin *Plugin) ClearCacheForKey(cacheKey string) error {
 //   - error: Any error that occurred during cache key deletion
 func (plugin *Plugin) ClearCacheForRequestID(requestID string) error {
 	// With the unified VectorStore interface, we delete the single entry by its UUID
-	if err := plugin.store.Delete(context.Background(), VectorStoreClassName, requestID); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
+	defer cancel()
+	if err := plugin.store.Delete(ctx, plugin.config.VectorStoreNamespace, requestID); err != nil {
 		plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache entry: %v", PluginLoggerPrefix, err))
 		return err
 	}

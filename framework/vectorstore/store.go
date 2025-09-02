@@ -13,6 +13,7 @@ type VectorStoreType string
 
 const (
 	VectorStoreTypeWeaviate VectorStoreType = "weaviate"
+	VectorStoreTypeRedis    VectorStoreType = "redis"
 )
 
 // Query represents a query to the vector store.
@@ -75,7 +76,7 @@ const (
 
 // VectorStore represents the interface for the vector store.
 type VectorStore interface {
-	CreateNamespace(ctx context.Context, namespace string, properties map[string]VectorStoreProperties) error
+	CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error
 	DeleteNamespace(ctx context.Context, namespace string) error
 	GetChunk(ctx context.Context, namespace string, id string) (SearchResult, error)
 	GetChunks(ctx context.Context, namespace string, ids []string) ([]SearchResult, error)
@@ -120,6 +121,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal weaviate config: %w", err)
 		}
 		c.Config = weaviateConfig
+	case VectorStoreTypeRedis:
+		var redisConfig RedisConfig
+		if err := json.Unmarshal(temp.Config, &redisConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal redis config: %w", err)
+		}
+		c.Config = redisConfig
 	default:
 		return fmt.Errorf("unknown vector store type: %s", temp.Type)
 	}
@@ -147,6 +154,15 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return nil, fmt.Errorf("invalid weaviate config")
 		}
 		return newWeaviateStore(ctx, &weaviateConfig, logger)
+	case VectorStoreTypeRedis:
+		if config.Config == nil {
+			return nil, fmt.Errorf("redis config is required")
+		}
+		redisConfig, ok := config.Config.(RedisConfig)
+		if !ok {
+			return nil, fmt.Errorf("invalid redis config")
+		}
+		return newRedisStore(ctx, redisConfig, logger)
 	}
 	return nil, fmt.Errorf("invalid vector store type: %s", config.Type)
 }

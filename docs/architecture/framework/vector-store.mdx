@@ -1,0 +1,506 @@
+---
+title: "Vector Store"
+description: "Vector database implementations for semantic search, embeddings storage, and AI-powered features in Bifrost."
+icon: "diagram-project"
+---
+
+## Overview
+
+The VectorStore is a core component of Bifrost's framework package that provides a unified interface for vector database operations. It enables plugins to store embeddings, perform similarity searches, and build AI-powered features like semantic caching, content recommendations, and knowledge retrieval.
+
+**Key Capabilities:**
+- **Vector Similarity Search**: Find semantically similar content using embeddings
+- **Namespace Management**: Organize data into separate collections with custom schemas
+- **Flexible Filtering**: Query data with complex filters and pagination
+- **Multiple Backends**: Support for Weaviate and Redis vector stores
+- **High Performance**: Optimized for production workloads
+- **Scalable Storage**: Handle millions of vectors with efficient indexing
+
+## Supported Vector Stores
+
+Bifrost currently supports two vector store implementations:
+
+- **[Weaviate](#weaviate)**: Production-ready vector database with gRPC support and advanced querying
+- **[Redis](#redis)**: High-performance in-memory vector store using RediSearch
+
+## VectorStore Interface Usage
+
+### Creating Namespaces
+Create collections (namespaces) with custom schemas:
+
+```go
+// Define properties for your data
+properties := map[string]vectorstore.VectorStoreProperties{
+    "content": {
+        DataType:    vectorstore.VectorStorePropertyTypeString,
+        Description: "The main content text",
+    },
+    "category": {
+        DataType:    vectorstore.VectorStorePropertyTypeString,
+        Description: "Content category",
+    },
+    "tags": {
+        DataType:    vectorstore.VectorStorePropertyTypeStringArray,
+        Description: "Content tags",
+    },
+}
+
+// Create namespace
+err := store.CreateNamespace(ctx, "my_content", 1536, properties)
+if err != nil {
+    log.Fatal("Failed to create namespace:", err)
+}
+```
+
+### Storing Data with Embeddings
+Add data with vector embeddings for similarity search:
+
+```go
+// Your embedding data (typically from an embedding model)
+embedding := []float32{0.1, 0.2, 0.3 } // example 3-dimensional vector
+
+// Metadata associated with this vector
+metadata := map[string]interface{}{
+    "content":  "This is my content text",
+    "category": "documentation",
+    "tags":     []string{"guide", "tutorial"},
+}
+
+// Store in vector database
+err := store.Add(ctx, "my_content", "unique-id-123", embedding, metadata)
+if err != nil {
+    log.Fatal("Failed to add data:", err)
+}
+```
+
+### Similarity Search
+Find similar content using vector similarity:
+
+```go
+// Query embedding (from user query)
+queryEmbedding := []float32{0.15, 0.25, 0.35, ...}
+
+// Optional filters
+filters := []vectorstore.Query{
+    {
+        Field:    "category",
+        Operator: vectorstore.QueryOperatorEqual,
+        Value:    "documentation",
+    },
+}
+
+// Perform similarity search
+results, err := store.GetNearest(
+    ctx,
+    "my_content",        // namespace
+    queryEmbedding,      // query vector
+    filters,             // optional filters
+    []string{"content", "category"}, // fields to return
+    0.7,                 // similarity threshold (0-1)
+    10,                  // limit
+)
+
+for _, result := range results {
+    fmt.Printf("Score: %.3f, Content: %s\n", *result.Score, result.Properties["content"])
+}
+```
+
+### Data Retrieval and Management
+Query and manage stored data:
+
+```go
+// Get specific item by ID
+item, err := store.GetChunk(ctx, "my_content", "unique-id-123")
+if err != nil {
+    log.Fatal("Failed to get item:", err)
+}
+
+// Get all items with filtering and pagination
+allResults, cursor, err := store.GetAll(
+    ctx,
+    "my_content",
+    []vectorstore.Query{
+        {Field: "category", Operator: vectorstore.QueryOperatorEqual, Value: "documentation"},
+    },
+    []string{"content", "tags"}, // select fields
+    nil,  // cursor for pagination
+    50,   // limit
+)
+
+// Delete items
+err = store.Delete(ctx, "my_content", "unique-id-123")
+```
+
+## Weaviate
+
+Weaviate is a production-ready vector database solution that provides advanced querying capabilities, gRPC support for high performance, and flexible schema management for production deployments.
+
+### Key Features
+
+- **gRPC Support**: Enhanced performance with gRPC connections
+- **Advanced Filtering**: Complex query operations with multiple conditions
+- **Schema Management**: Flexible schema definition for different data types
+- **Cloud & Self-Hosted**: Support for both Weaviate Cloud and self-hosted deployments
+- **Scalable Storage**: Handle millions of vectors with efficient indexing
+
+### Setup & Installation
+
+**Weaviate Cloud:**
+- Sign up at [cloud.weaviate.io](https://cloud.weaviate.io)
+- Create a new cluster
+- Get your API key and cluster URL
+
+**Local Weaviate:**
+```bash
+# Using Docker
+docker run -d \
+  --name weaviate \
+  -p 8080:8080 \
+  -e QUERY_DEFAULTS_LIMIT=25 \
+  -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED='true' \
+  -e PERSISTENCE_DATA_PATH='/var/lib/weaviate' \
+  semitechnologies/weaviate:latest
+```
+
+### Configuration Options
+
+<Tabs group="weaviate-config">
+
+<Tab title="Go SDK">
+
+```go
+// Configure Weaviate vector store
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeWeaviate,
+    Config: vectorstore.WeaviateConfig{
+        Scheme: "http",           // "http" for local, "https" for cloud
+        Host:   "localhost:8080", // Your Weaviate host
+        ApiKey: "your-weaviate-api-key", // Required for Weaviate Cloud; optional for local/self-hosted
+
+        // Enable gRPC for improved performance (optional)
+        GrpcConfig: &vectorstore.WeaviateGrpcConfig{
+            Host:    "localhost:50051", // gRPC port
+            Secured: false,             // true for TLS
+        },
+    },
+}
+
+// Create vector store
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+if err != nil {
+    log.Fatal("Failed to create vector store:", err)
+}
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+**Local Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "http",
+      "host": "localhost:8080"
+    }
+  }
+}
+```
+
+**Cloud Setup with gRPC:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "https",
+      "host": "your-weaviate-host",
+      "api_key": "your-weaviate-api-key",
+      "grpc_config": {
+        "host": "your-weaviate-grpc-host",
+        "secured": true
+      }
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+gRPC host should include the port. If no port is specified, port 80 is used for insecured connections and port 443 for secured connections.
+</Note>
+
+### Advanced Features
+
+**gRPC Performance Optimization:**
+Enable gRPC for better performance in production:
+
+```go
+vectorConfig := &vectorstore.Config{
+    Type: vectorstore.VectorStoreTypeWeaviate,
+    Config: vectorstore.WeaviateConfig{
+        Scheme: "https",
+        Host:   "your-weaviate-host",
+        ApiKey: "your-api-key",
+        
+        // Enable gRPC for better performance
+        GrpcConfig: &vectorstore.WeaviateGrpcConfig{
+            Host:    "your-weaviate-grpc-host:443",
+            Secured: true,
+        },
+    },
+}
+```
+
+### Production Considerations
+
+<Info>
+**Performance**: For production environments, consider using gRPC configuration for better performance and enable appropriate authentication mechanisms for your Weaviate deployment.
+</Info>
+
+<Warning>
+**Authentication**: Always use API keys for Weaviate Cloud deployments and configure proper authentication for self-hosted instances in production.
+</Warning>
+
+---
+
+## Redis
+
+Redis provides high-performance in-memory vector storage using RediSearch, ideal for applications requiring sub-millisecond response times and fast semantic search capabilities.
+
+### Key Features
+
+- **High Performance**: Sub-millisecond cache retrieval with Redis's in-memory storage
+- **Cost Effective**: Open-source solution with no licensing costs
+- **HNSW Algorithm**: Fast vector similarity search with excellent recall rates
+- **Connection Pooling**: Advanced connection management for high-throughput applications
+- **TTL Support**: Automatic expiration of cached entries
+- **Streaming Support**: Full streaming response caching with proper chunk ordering
+- **Flexible Filtering**: Advanced metadata filtering with exact string matching
+
+### Setup & Installation
+
+**Redis Cloud:**
+- Sign up at [cloud.redis.io](https://cloud.redis.io)
+- Create a new database with RediSearch module enabled
+- Get your connection details
+
+**Local Redis with RediSearch:**
+```bash
+# Using Docker with Redis Stack (includes RediSearch)
+docker run -d --name redis-stack -p 6379:6379 redis/redis-stack:latest
+```
+
+### Configuration Options
+
+<Tabs group="redis-config">
+
+<Tab title="Go SDK">
+
+```go
+// Configure Redis vector store
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeRedis,
+    Config: vectorstore.RedisConfig{
+        Addr:     "localhost:6379",        // Redis server address - REQUIRED
+        Username: "",                      // Optional: Redis username
+        Password: "",                      // Optional: Redis password
+        DB:       0,                       // Optional: Redis database number (default: 0)
+        
+        // Optional: Connection pool settings
+        PoolSize:        10,               // Maximum socket connections
+        MaxActiveConns:  10,               // Maximum active connections
+        MinIdleConns:    5,                // Minimum idle connections
+        MaxIdleConns:    10,               // Maximum idle connections
+        
+        // Optional: Timeout settings
+        DialTimeout:     5 * time.Second,  // Connection timeout
+        ReadTimeout:     3 * time.Second,  // Read timeout
+        WriteTimeout:    3 * time.Second,  // Write timeout
+        ContextTimeout:  10 * time.Second, // Operation timeout
+    },
+}
+
+// Create vector store
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+if err != nil {
+    log.Fatal("Failed to create vector store:", err)
+}
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "localhost:6379",
+      "username": "",
+      "password": "",
+      "db": 0,
+      "pool_size": 10,
+      "max_active_conns": 10,
+      "min_idle_conns": 5,
+      "max_idle_conns": 10,
+      "dial_timeout": "5s",
+      "read_timeout": "3s",
+      "write_timeout": "3s",
+      "context_timeout": "10s"
+    }
+  }
+}
+```
+
+**For Redis Cloud:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "your-redis-host:port",
+      "username": "your-username",
+      "password": "your-password",
+      "db": 0,
+      "context_timeout": "10s"
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### Redis-Specific Features
+
+**Vector Search Algorithm:**
+Redis uses the **HNSW (Hierarchical Navigable Small World)** algorithm for vector similarity search, which provides:
+
+- **Fast Search**: O(log N) search complexity
+- **High Accuracy**: Excellent recall rates for similarity search
+- **Memory Efficient**: Optimized for in-memory operations
+- **Cosine Similarity**: Uses cosine distance metric for semantic similarity
+
+**Connection Pool Management:**
+Redis provides extensive connection pool configuration:
+
+```go
+config := vectorstore.RedisConfig{
+    Addr:            "localhost:6379",
+    PoolSize:        20,                    // Max socket connections
+    MaxActiveConns:  20,                    // Max active connections
+    MinIdleConns:    5,                     // Min idle connections
+    MaxIdleConns:    10,                    // Max idle connections
+    ConnMaxLifetime: 30 * time.Minute,      // Connection lifetime
+    ConnMaxIdleTime: 5 * time.Minute,       // Idle connection timeout
+    DialTimeout:     5 * time.Second,       // Connection timeout
+    ReadTimeout:     3 * time.Second,       // Read timeout
+    WriteTimeout:    3 * time.Second,       // Write timeout
+    ContextTimeout:  10 * time.Second,      // Operation timeout
+}
+```
+
+### Performance Optimization
+
+**Connection Pool Tuning:**
+For high-throughput applications, tune the connection pool settings:
+
+```json
+{
+  "vector_store": {
+    "config": {
+      "pool_size": 50,           // Increase for high concurrency
+      "max_active_conns": 50,    // Match pool_size
+      "min_idle_conns": 10,      // Keep connections warm
+      "max_idle_conns": 20,      // Allow some idle connections
+      "conn_max_lifetime": "1h", // Refresh connections periodically
+      "conn_max_idle_time": "10m" // Close idle connections
+    }
+  }
+}
+```
+
+**Memory Optimization:**
+- **TTL**: Use appropriate TTL values to prevent memory bloat
+- **Namespace Cleanup**: Regularly clean up unused namespaces
+
+**Batch Operations:**
+Redis supports efficient batch operations:
+
+```go
+// Batch retrieval
+results, err := store.GetChunks(ctx, namespace, []string{"id1", "id2", "id3"})
+
+// Batch deletion
+deleteResults, err := store.DeleteAll(ctx, namespace, queries)
+```
+
+### Production Considerations
+
+<Info>
+**RediSearch Module Required**: Redis integration requires the RediSearch module to be enabled on your Redis instance. This module provides the vector search capabilities needed for semantic caching.
+</Info>
+
+<Warning>
+**Production Considerations**: 
+- Use Redis AUTH for production deployments
+- Configure appropriate connection timeouts
+- Monitor memory usage and set appropriate TTL values
+</Warning>
+
+---
+
+## Use Cases
+
+### [Semantic Caching](../../../features/semantic-caching)
+Build intelligent caching systems that understand query intent rather than just exact matches.
+
+**Applications:**
+- Customer support systems with FAQ matching
+- Code completion and documentation search  
+- Content management with semantic deduplication
+
+### Knowledge Base & Search
+Create intelligent search systems that understand user queries contextually.
+
+**Applications:**
+- Document search and retrieval systems
+- Product recommendation engines
+- Research paper and knowledge discovery platforms
+
+### Content Classification
+Automatically categorize and tag content based on semantic similarity.
+
+**Applications:**
+- Email classification and routing
+- Content moderation and filtering
+- News article categorization and clustering
+
+### Recommendation Systems
+Build personalized recommendation engines using vector similarity.
+
+**Applications:**
+- Product recommendations based on user preferences
+- Content suggestions for media platforms
+- Similar document or article recommendations
+
+## Related Documentation
+
+| Topic | Documentation | Description |
+|-------|---------------|-------------|
+| **Framework Overview** | [What is Framework](../what-is-framework) | Understanding the framework package and VectorStore interface |
+| **Semantic Caching** | [Semantic Caching](../../../features/semantic-caching) | Using VectorStore for AI response caching |

@@ -224,6 +224,7 @@ export interface CacheConfig {
 	provider: ModelProviderName;
 	keys: ModelProviderKey[];
 	embedding_model: string;
+	dimension: number;
 	ttl_seconds: number;
 	threshold: number;
 	conversation_history_threshold?: number;

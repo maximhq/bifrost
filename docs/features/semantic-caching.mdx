@@ -111,6 +111,7 @@ cacheConfig := semanticcache.Config{
     Provider:       schemas.OpenAI,
     Keys:          []schemas.Key{{Value: "sk-..."}},
     EmbeddingModel: "text-embedding-3-small",
+    Dimension:     1536,
     
     // Cache behavior
     TTL:       5 * time.Minute,  // Time to live for cached responses (default: 5 minutes)

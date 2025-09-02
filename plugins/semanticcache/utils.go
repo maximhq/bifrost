@@ -305,7 +305,7 @@ func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, 
 	metadata["stream_chunks"] = []string{}
 
 	// Store unified entry using new VectorStore interface
-	if err := plugin.store.Add(ctx, VectorStoreClassName, responseID, embedding, metadata); err != nil {
+	if err := plugin.store.Add(ctx, plugin.config.VectorStoreNamespace, responseID, embedding, metadata); err != nil {
 		return fmt.Errorf("failed to store unified cache entry: %w", err)
 	}
 
