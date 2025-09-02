@@ -1,0 +1,346 @@
+---
+title: "Redis"
+description: "Native Redis integration with RediSearch for semantic caching and vector similarity search in Bifrost."
+icon: "R"
+---
+
+## Overview
+
+Bifrost provides native support for Redis as a vector store backend using RediSearch with vector search capabilities, enabling powerful semantic caching through vector similarity search. This integration leverages Redis's high-performance in-memory storage combined with RediSearch's vector search features to provide fast, scalable semantic caching.
+
+**Key Benefits:**
+- **High Performance**: Sub-millisecond cache retrieval with Redis's in-memory storage
+- **Cost Effective**: Open-source solution with no licensing costs
+- **Semantic Intelligence**: Find cached responses for semantically similar requests using HNSW algorithm
+- **Flexible Filtering**: Advanced metadata filtering with exact string matching
+- **TTL Support**: Automatic expiration of cached entries
+- **Streaming Support**: Full streaming response caching with proper chunk ordering
+
+## Quick Start
+
+### 1. Set Up Redis with RediSearch
+
+**Redis Cloud:**
+- Sign up at [cloud.redis.io](https://cloud.redis.io)
+- Create a new database with RediSearch module enabled
+- Get your connection details
+
+**Local Redis:**
+```bash
+# Using Docker
+docker run -d --name redis-stack -p 6379:6379 redis/redis-stack:latest
+```
+
+### 2. Configure Vector Store
+
+<Tabs group="vector-store-setup">
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "context"
+    "github.com/maximhq/bifrost/framework/vectorstore"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Configure Redis vector store
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeRedis,
+    Config: vectorstore.RedisConfig{
+        Addr:     "localhost:6379",        // Redis server address - REQUIRED
+        Username: "",                      // Optional: Redis username
+        Password: "",                      // Optional: Redis password
+        DB:       0,                       // Optional: Redis database number (default: 0)
+        
+        // Optional: Connection pool settings
+        PoolSize:        10,               // Maximum socket connections
+        MaxActiveConns:  10,               // Maximum active connections
+        MinIdleConns:    5,                // Minimum idle connections
+        MaxIdleConns:    10,               // Maximum idle connections
+        
+        // Optional: Timeout settings
+        DialTimeout:     5 * time.Second,  // Connection timeout
+        ReadTimeout:     3 * time.Second,  // Read timeout
+        WriteTimeout:    3 * time.Second,  // Write timeout
+        ContextTimeout:  10 * time.Second, // Operation timeout
+        
+        // Optional: Vector search settings
+        Dimension: 1536,                   // Embedding dimension (default: 1536)
+    },
+}
+
+// Create vector store
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+if err != nil {
+    log.Fatal("Failed to create vector store:", err)
+}
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "localhost:6379",
+      "username": "",
+      "password": "",
+      "db": 0,
+      "pool_size": 10,
+      "max_active_conns": 10,
+      "min_idle_conns": 5,
+      "max_idle_conns": 10,
+      "dial_timeout": "5s",
+      "read_timeout": "3s",
+      "write_timeout": "3s",
+      "context_timeout": "10s",
+      "dimension": 1536
+    }
+  }
+}
+```
+
+**For Redis Cloud:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "your-redis-host:port",
+      "username": "your-username",
+      "password": "your-password",
+      "db": 0,
+      "context_timeout": "10s",
+      "dimension": 1536
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 3. Configure Semantic Cache Plugin
+
+<Tabs group="cache-config">
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "github.com/maximhq/bifrost/plugins/semanticcache"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Configure semantic cache plugin with Redis backend
+cacheConfig := semanticcache.Config{
+    CacheKey:    "request-cache-key",     // Required: context key for cache triggering
+    CacheTTLKey: "request-cache-ttl",     // Optional: context key for TTL override
+    CacheThresholdKey: "request-cache-threshold", // Optional: context key for threshold override
+    
+    // Embedding model configuration (Required)
+    Provider:       schemas.OpenAI,
+    Keys:          []schemas.Key{{Value: "sk-..."}},
+    EmbeddingModel: "text-embedding-3-small",
+    
+    // Cache behavior
+    TTL:       5 * time.Minute,  // Time to live for cached responses
+    Threshold: 0.8,              // Similarity threshold for cache lookup
+    
+    // Advanced options
+    CacheByModel:    bifrost.Ptr(true),  // Include model in cache key
+    CacheByProvider: bifrost.Ptr(true),  // Include provider in cache key
+    ExcludeSystemPrompt: bifrost.Ptr(false), // Exclude system messages in cache key
+}
+
+// Create plugin with vector store
+plugin, err := semanticcache.Init(context.Background(), cacheConfig, logger, store)
+if err != nil {
+    log.Fatal("Failed to create semantic cache plugin:", err)
+}
+
+// Add to Bifrost config
+bifrostConfig := schemas.BifrostConfig{
+    Plugins: []schemas.Plugin{plugin},
+    // ... other config
+}
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "semantic_cache",
+      "config": {        
+        "provider": "openai",
+        "embedding_model": "text-embedding-3-small",
+        
+        "ttl": "5m",
+        "threshold": 0.8,
+        
+        "cache_by_model": true,
+        "cache_by_provider": true,
+        "exclude_system_prompt": false
+      }
+    }
+  ]
+}
+```
+
+> **Note**: All the available keys will be taken from the provider config on initialization, so make sure to add the keys to the provider you have specified in the config. Any updates to the keys will not be reflected until next restart.
+
+**TTL Format Options:**
+- Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
+- Numeric seconds: `300` (5 minutes), `3600` (1 hour)
+
+</Tab>
+
+</Tabs>
+
+## Redis-Specific Features
+
+### Vector Search Algorithm
+
+Redis uses the **HNSW (Hierarchical Navigable Small World)** algorithm for vector similarity search, which provides:
+
+- **Fast Search**: O(log N) search complexity
+- **High Accuracy**: Excellent recall rates for similarity search
+- **Memory Efficient**: Optimized for in-memory operations
+- **Cosine Similarity**: Uses cosine distance metric for semantic similarity
+
+### Metadata Filtering
+
+Redis supports advanced metadata filtering with exact string matching:
+
+```go
+// Example: Filter by document type and status
+queries := []vectorstore.Query{
+    {Field: "type", Operator: vectorstore.QueryOperatorEqual, Value: "pdf"},
+    {Field: "status", Operator: vectorstore.QueryOperatorEqual, Value: "published"},
+}
+
+results, err := store.GetNearest(ctx, namespace, embedding, queries, nil, 0.8, 10)
+```
+
+### Connection Pool Management
+
+Redis provides extensive connection pool configuration:
+
+```go
+config := vectorstore.RedisConfig{
+    Addr:            "localhost:6379",
+    PoolSize:        20,                    // Max socket connections
+    MaxActiveConns:  20,                    // Max active connections
+    MinIdleConns:    5,                     // Min idle connections
+    MaxIdleConns:    10,                    // Max idle connections
+    ConnMaxLifetime: 30 * time.Minute,      // Connection lifetime
+    ConnMaxIdleTime: 5 * time.Minute,       // Idle connection timeout
+    DialTimeout:     5 * time.Second,       // Connection timeout
+    ReadTimeout:     3 * time.Second,       // Read timeout
+    WriteTimeout:    3 * time.Second,       // Write timeout
+    ContextTimeout:  10 * time.Second,      // Operation timeout
+}
+```
+
+## Performance Optimization
+
+### Connection Pool Tuning
+
+For high-throughput applications, tune the connection pool settings:
+
+```json
+{
+  "vector_store": {
+    "config": {
+      "pool_size": 50,           // Increase for high concurrency
+      "max_active_conns": 50,    // Match pool_size
+      "min_idle_conns": 10,      // Keep connections warm
+      "max_idle_conns": 20,      // Allow some idle connections
+      "conn_max_lifetime": "1h", // Refresh connections periodically
+      "conn_max_idle_time": "10m" // Close idle connections
+    }
+  }
+}
+```
+
+### Memory Optimization
+
+- **Dimension**: Set the correct embedding dimension (default: 1536 for OpenAI)
+- **TTL**: Use appropriate TTL values to prevent memory bloat
+- **Namespace Cleanup**: Regularly clean up unused namespaces
+
+### Batch Operations
+
+Redis supports efficient batch operations:
+
+```go
+// Batch retrieval
+results, err := store.GetChunks(ctx, namespace, []string{"id1", "id2", "id3"})
+
+// Batch deletion
+deleteResults, err := store.DeleteAll(ctx, namespace, queries)
+```
+
+## Related Documentation
+
+For detailed information about semantic caching functionality, refer to the following sections in the [Semantic Caching](../../../features/semantic-caching) documentation:
+
+| Topic | Section | Description |
+|-------|---------|-------------|
+| **Cache Triggering** | [Cache Triggering](../../../features/semantic-caching#cache-triggering) | How to enable caching with cache keys in Go SDK and HTTP API |
+| **Per-Request Overrides** | [Per-Request Overrides](../../../features/semantic-caching#per-request-overrides) | Override TTL and similarity threshold per request |
+| **Cache Management** | [Cache Management](../../../features/semantic-caching#cache-management) | Clear cache entries and manage cached responses |
+| **Cache Metadata** | [Cache Metadata](../../../features/semantic-caching#cache-management) | Understand cache hit information and debug data |
+
+---
+
+## Use Cases
+
+### Customer Support
+Cache responses for common questions like "How do I reset my password?" or "What are your business hours?" - semantically similar variations get instant responses.
+
+**Example:**
+- **Original Query**: "How do I reset my password?"
+- **Similar Queries**: "I forgot my password", "Password reset help", "Can't log in, need new password"
+- **Result**: All get the same cached response instantly
+
+### Content Generation
+Cache blog post outlines, product descriptions, or marketing copy for similar topics, reducing costs for content teams.
+
+**Example:**
+- **Original Query**: "Write a blog post about machine learning basics"
+- **Similar Queries**: "ML fundamentals blog post", "Introduction to machine learning article", "AI basics blog outline"
+- **Result**: Cached content structure with minor variations
+
+### Data Analysis
+Cache responses for similar analytical queries about datasets, dashboards, or reports, speeding up business intelligence workflows.
+
+**Example:**
+- **Original Query**: "Show me Q3 sales performance by region"
+- **Similar Queries**: "Q3 regional sales data", "Third quarter sales by region", "Regional Q3 performance metrics"
+- **Result**: Same cached analysis with consistent formatting
+
+---
+
+<Info>
+**RediSearch Module Required**: Redis integration requires the RediSearch module to be enabled on your Redis instance. This module provides the vector search capabilities needed for semantic caching.
+</Info>
+
+<Warning>
+**Production Considerations**: 
+- Use Redis AUTH for production deployments
+- Configure appropriate connection timeouts
+</Warning>

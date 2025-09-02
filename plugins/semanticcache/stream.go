@@ -120,7 +120,7 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 	finalMetadata["stream_chunks"] = streamResponses
 
 	// Store complete unified entry using original requestID - this is the final .Add() call
-	if err := plugin.store.Add(ctx, VectorStoreClassName, requestID, accumulator.Embedding, finalMetadata); err != nil {
+	if err := plugin.store.Add(ctx, plugin.config.VectorStoreNamespace, requestID, accumulator.Embedding, finalMetadata); err != nil {
 		return fmt.Errorf("failed to store complete streaming cache entry: %w", err)
 	}
 
