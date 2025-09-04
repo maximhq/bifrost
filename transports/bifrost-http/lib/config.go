@@ -1372,6 +1372,10 @@ func IsRedacted(key string) bool {
 		return true
 	}
 
+	if len(key) <= 8 {
+		return strings.Contains(key, "***")
+	}
+
 	// Check for exact redaction pattern: 4 chars + 24 asterisks + 4 chars
 	if len(key) == 32 {
 		middle := key[4:28]
