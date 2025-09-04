@@ -1850,6 +1850,26 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 	if !bifrost.IsSupportedBaseProvider(cpc.BaseProviderType) {
 		return fmt.Errorf("custom provider validation failed: unsupported base_provider_type: %s", cpc.BaseProviderType)
 	}
+
+	// Validate allowed requests against base provider capabilities
+	if cpc.AllowedRequests != nil {
+		schemas.ValidateAllowedRequests(cpc.AllowedRequests, cpc.BaseProviderType)
+	} else {
+		// Set default allowed requests based on provider capabilities when nil
+		// This ensures the auto-disable feature works even when no explicit restrictions are set
+		caps := schemas.GetProviderCapabilities(cpc.BaseProviderType)
+		cpc.AllowedRequests = &schemas.AllowedRequests{
+			TextCompletion:       caps.TextCompletion,
+			ChatCompletion:       caps.ChatCompletion,
+			ChatCompletionStream: caps.ChatCompletionStream,
+			Embedding:            caps.Embedding,
+			Speech:               caps.Speech,
+			SpeechStream:         caps.SpeechStream,
+			Transcription:        caps.Transcription,
+			TranscriptionStream:  caps.TranscriptionStream,
+		}
+	}
+
 	return nil
 }
 
@@ -1882,7 +1902,8 @@ func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.Provider
 			provider, existingCPC.BaseProviderType, newCPC.BaseProviderType)
 	}
 
-	return nil
+	// Validate the new config (including AllowedRequests sanitization)
+	return ValidateCustomProvider(newConfig, provider)
 }
 
 func (s *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConfig) error {
