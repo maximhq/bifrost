@@ -16,13 +16,13 @@ func extractHeadersFromContext(ctx context.Context) map[string]string {
 	headers := make(map[string]string)
 
 	// Extract governance headers using lib.ContextKey
-	if teamID := getStringFromContext(ctx, "x-bf-team"); teamID != "" {
+	if teamID := getStringFromContext(ctx, ContextKey("x-bf-team")); teamID != "" {
 		headers["x-bf-team"] = teamID
 	}
-	if userID := getStringFromContext(ctx, "x-bf-user"); userID != "" {
+	if userID := getStringFromContext(ctx, ContextKey("x-bf-user")); userID != "" {
 		headers["x-bf-user"] = userID
 	}
-	if customerID := getStringFromContext(ctx, "x-bf-customer"); customerID != "" {
+	if customerID := getStringFromContext(ctx, ContextKey("x-bf-customer")); customerID != "" {
 		headers["x-bf-customer"] = customerID
 	}
 
@@ -30,7 +30,7 @@ func extractHeadersFromContext(ctx context.Context) map[string]string {
 }
 
 // getStringFromContext safely extracts a string value from context
-func getStringFromContext(ctx context.Context, key string) string {
+func getStringFromContext(ctx context.Context, key any) string {
 	if value := ctx.Value(key); value != nil {
 		if str, ok := value.(string); ok {
 			return str

@@ -100,7 +100,7 @@ func (p *GovernancePlugin) GetName() string {
 func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	// Extract governance headers and virtual key using utility functions
 	headers := extractHeadersFromContext(*ctx)
-	virtualKey := getStringFromContext(*ctx, "x-bf-vk")
+	virtualKey := getStringFromContext(*ctx, ContextKey("x-bf-vk"))
 	requestID := getStringFromContext(*ctx, "request-id")
 
 	if virtualKey == "" {
@@ -214,7 +214,7 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 	// Extract governance information
 	headers := extractHeadersFromContext(*ctx)
-	virtualKey := getStringFromContext(*ctx, "x-bf-vk")
+	virtualKey := getStringFromContext(*ctx, ContextKey("x-bf-vk"))
 	requestID := getStringFromContext(*ctx, "request-id")
 
 	// Skip if no virtual key
