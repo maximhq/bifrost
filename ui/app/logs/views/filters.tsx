@@ -6,7 +6,7 @@ import { PROVIDERS, REQUEST_TYPE_LABELS, REQUEST_TYPES, STATUSES } from "@/lib/c
 import { useGetAvailableModelsQuery } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { Check, Search } from "lucide-react";
+import { Check, FilterIcon, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface LogFiltersProps {
@@ -112,6 +112,7 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 			<Popover open={open} onOpenChange={setOpen}>
 				<PopoverTrigger asChild>
 					<Button variant="outline" size="sm" className="h-9">
+						<FilterIcon className="h-4 w-4" />
 						Filters
 						{getSelectedCount() > 0 && (
 							<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">

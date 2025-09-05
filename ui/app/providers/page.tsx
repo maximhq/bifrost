@@ -1,13 +1,13 @@
 "use client";
 
-import ProvidersList from "@/app/providers/views/providers-list";
+import ConfiguredKeys from "@/app/providers/views/providerList";
 import FullPageLoader from "@/components/full-page-loader";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useGetProvidersQuery } from "@/lib/store";
 import { useEffect } from "react";
 
 export default function Providers() {
-	const { data, error, isLoading, refetch } = useGetProvidersQuery();
+	const { data, error, isLoading } = useGetProvidersQuery();
 
 	const { toast } = useToast();
 
@@ -27,7 +27,7 @@ export default function Providers() {
 
 	return (
 		<div>
-			<ProvidersList providers={data?.providers || []} onRefresh={() => refetch()} />
+			<ConfiguredKeys providers={data?.providers || []} />
 		</div>
 	);
 }

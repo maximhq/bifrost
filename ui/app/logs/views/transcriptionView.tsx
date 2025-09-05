@@ -1,9 +1,8 @@
-import React from "react";
-import { BifrostTranscribe, TranscriptionInput } from "@/lib/types/logs";
-import { FileAudio, Clock, Mic } from "lucide-react";
-import { CodeEditor } from "./code-editor";
 import { Badge } from "@/components/ui/badge";
-import AudioPlayer from "./audio-player";
+import { BifrostTranscribe, TranscriptionInput } from "@/lib/types/logs";
+import { Clock, FileAudio, Mic } from "lucide-react";
+import AudioPlayer from "./audioPlayer";
+import { CodeEditor } from "./codeEditor";
 
 interface TranscriptionViewProps {
 	transcriptionInput?: TranscriptionInput;

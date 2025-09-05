@@ -147,7 +147,7 @@ export function LogsDataTable({
 				</div>
 
 				<div className="flex items-center gap-2">
-					<Button variant="outline" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1}>
+					<Button variant="ghost" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1}>
 						<ChevronLeft className="size-3" />
 					</Button>
 
@@ -157,7 +157,7 @@ export function LogsDataTable({
 						<span>of {totalPages}</span>
 					</div>
 
-					<Button variant="outline" size="sm" onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages}>
+					<Button variant="ghost" size="sm" onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages}>
 						<ChevronRight className="size-3" />
 					</Button>
 				</div>
