@@ -34,12 +34,18 @@ func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib
 // RegisterRoutes registers the configuration-related routes.
 // It adds the `PUT /api/config` endpoint.
 func (h *ConfigHandler) RegisterRoutes(r *router.Router) {
-	r.GET("/api/config", h.GetConfig)
-	r.PUT("/api/config", h.handleUpdateConfig)
+	r.GET("/api/config", h.getConfig)
+	r.PUT("/api/config", h.updateConfig)
+	r.GET("/api/version", h.getVersion)
 }
 
-// GetConfig handles GET /config - Get the current configuration
-func (h *ConfigHandler) GetConfig(ctx *fasthttp.RequestCtx) {
+// getVersion handles GET /api/version - Get the current version
+func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {
+	SendJSON(ctx, version, h.logger)
+}
+
+// getConfig handles GET /config - Get the current configuration
+func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 
 	var mapConfig = make(map[string]any)
 
@@ -68,10 +74,10 @@ func (h *ConfigHandler) GetConfig(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, mapConfig, h.logger)
 }
 
-// handleUpdateConfig updates the core configuration settings.
+// updateConfig updates the core configuration settings.
 // Currently, it supports hot-reloading of the `drop_excess_requests` setting.
 // Note that settings like `prometheus_labels` cannot be changed at runtime.
-func (h *ConfigHandler) handleUpdateConfig(ctx *fasthttp.RequestCtx) {
+func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Config store not initialized", h.logger)
 		return

@@ -1,10 +1,10 @@
 "use client";
 
-import FullPageLoader from "@/components/full-page-loader";
-import NotAvailableBanner from "@/components/not-available-banner";
-import ProgressProvider from "@/components/progress-bar";
+import FullPageLoader from "@/components/fullPageLoader";
+import NotAvailableBanner from "@/components/notAvailableBanner";
+import ProgressProvider from "@/components/progressBar";
 import Sidebar from "@/components/sidebar";
-import { ThemeProvider } from "@/components/theme-provider";
+import { ThemeProvider } from "@/components/themeProvider";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery } from "@/lib/store";

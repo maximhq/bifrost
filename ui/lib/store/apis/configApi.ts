@@ -12,6 +12,13 @@ export const configApi = baseApi.injectEndpoints({
 			providesTags: ["Config"],
 		}),
 
+		// Get version information
+		getVersion: builder.query<string, void>({
+			query: () => ({
+				url: "/version",
+			}),
+		}),
+
 		// Update core configuration
 		updateCoreConfig: builder.mutation<null, CoreConfig>({
 			query: (data) => ({
@@ -24,4 +31,4 @@ export const configApi = baseApi.injectEndpoints({
 	}),
 });
 
-export const { useGetCoreConfigQuery, useUpdateCoreConfigMutation, useLazyGetCoreConfigQuery } = configApi;
+export const { useGetVersionQuery, useGetCoreConfigQuery, useUpdateCoreConfigMutation, useLazyGetCoreConfigQuery } = configApi;

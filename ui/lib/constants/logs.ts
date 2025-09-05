@@ -1,5 +1,5 @@
 // Known provider names array - centralized definition
-export const KNOWN_PROVIDERS = [
+export const KnownProvidersNames = [
 	"openai",
 	"anthropic",
 	"azure",
@@ -16,13 +16,13 @@ export const KNOWN_PROVIDERS = [
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
-export type Provider = (typeof KNOWN_PROVIDERS)[number];
+export type ProviderName = (typeof KnownProvidersNames)[number];
 
-export const PROVIDERS: readonly Provider[] = KNOWN_PROVIDERS;
+export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 
-export const STATUSES = ["success", "error", "processing", "cancelled"] as const;
+export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
-export const REQUEST_TYPES = [
+export const RequestTypes = [
 	"chat.completion",
 	"text.completion",
 	"embedding",
@@ -34,7 +34,7 @@ export const REQUEST_TYPES = [
 	"audio.transcription.chunk",
 ] as const;
 
-export const PROVIDER_LABELS: Record<Provider, string> = {
+export const ProviderLabels: Record<ProviderName, string> = {
 	openai: "OpenAI",
 	anthropic: "Anthropic",
 	azure: "Azure OpenAI",
@@ -53,22 +53,22 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
 // Helper function to get provider label, supporting custom providers
 export const getProviderLabel = (provider: string): string => {
 	// Use hasOwnProperty for safe lookup without checking prototype chain
-	if (Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, provider.toLowerCase().trim() as Provider)) {
-		return PROVIDER_LABELS[provider.toLowerCase().trim() as Provider];
+	if (Object.prototype.hasOwnProperty.call(ProviderLabels, provider.toLowerCase().trim() as ProviderName)) {
+		return ProviderLabels[provider.toLowerCase().trim() as ProviderName];
 	}
 
 	// For custom providers, return the original provider name as is
 	return provider;
 };
 
-export const STATUS_COLORS = {
+export const StatusColors = {
 	success: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",
 	processing: "bg-blue-100 text-blue-800",
 	cancelled: "bg-gray-100 text-gray-800",
 } as const;
 
-export const REQUEST_TYPE_LABELS = {
+export const RequestTypeLabels = {
 	"chat.completion": "Chat",
 	"text.completion": "Text",
 	embedding: "Embedding",
@@ -80,7 +80,7 @@ export const REQUEST_TYPE_LABELS = {
 	"audio.transcription.chunk": "Transcription Stream",
 } as const;
 
-export const REQUEST_TYPE_COLORS = {
+export const RequestTypeColors = {
 	"chat.completion": "bg-blue-100 text-blue-800",
 	"text.completion": "bg-green-100 text-green-800",
 	embedding: "bg-red-100 text-red-800",
@@ -92,4 +92,4 @@ export const REQUEST_TYPE_COLORS = {
 	"audio.transcription.chunk": "bg-lime-100 text-lime-800",
 } as const;
 
-export type Status = (typeof STATUSES)[number];
+export type Status = (typeof Statuses)[number];

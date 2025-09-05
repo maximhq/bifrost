@@ -36,12 +36,13 @@ COPY --from=ui-builder /app/out ./bifrost-http/ui
 
 # Build the binary with CGO enabled and static SQLite linking
 ENV GOWORK=off
+ARG VERSION=unknown
 RUN go build \
-        -ldflags="-w -s -extldflags '-static'" \
-        -a -trimpath \
-        -tags "sqlite_static" \
-        -o /app/main \
-        ./bifrost-http
+    -ldflags="-w -s -extldflags '-static' -X main.Version=${VERSION}" \
+    -a -trimpath \
+    -tags "sqlite_static" \
+    -o /app/main \
+    ./bifrost-http
 
 # Compress binary with upx
 RUN upx --best --lzma /app/main

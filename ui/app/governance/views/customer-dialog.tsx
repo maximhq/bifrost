@@ -1,12 +1,12 @@
 "use client";
 
-import FormFooter from "@/components/form-footer";
+import FormFooter from "@/components/formFooter";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import NumberAndSelect from "@/components/ui/number-and-select";
+import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { resetDurationOptions } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store";
 import { CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";

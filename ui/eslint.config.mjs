@@ -1,4 +1,5 @@
 import { fixupConfigRules } from "@eslint/compat";
+import eslintPluginImport from "eslint-plugin-import";
 import { FlatCompat } from "@eslint/eslintrc";
 import js from "@eslint/js";
 import typescriptEslintEslintPlugin from "@typescript-eslint/eslint-plugin";
@@ -8,21 +9,22 @@ import eslintPluginUnusedImports from "eslint-plugin-unused-imports";
 import path from "path";
 import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const FILENAME = fileURLToPath(import.meta.url);
+const DIRNAME = path.dirname(FILENAME);
 
 const compat = new FlatCompat({
-	baseDirectory: __dirname,
+	baseDirectory: DIRNAME,
 	recommendedConfig: js.configs.recommended,
 });
 
-export default [
+const eslintConfig = [
 	...fixupConfigRules(compat.extends("next/core-web-vitals", "next", "prettier")),
 	{
 		plugins: {
 			prettier: eslintPluginPrettier,
 			"@typescript-eslint": typescriptEslintEslintPlugin,
 			"unused-imports": eslintPluginUnusedImports,
+			import: eslintPluginImport,
 		},
 	},
 	{
@@ -31,7 +33,7 @@ export default [
 			parserOptions: {
 				ecmaVersion: "latest",
 				sourceType: "module",
-				tsconfigRootDir: __dirname,
+				tsconfigRootDir: DIRNAME,
 			},
 		},
 	},
@@ -50,9 +52,13 @@ export default [
 			"import/no-extraneous-dependencies": "off",
 			"import/no-named-as-default": "off",
 			"react/react-in-jsx-scope": "off",
-			"linebreak-style": "error",
 			"unused-imports/no-unused-imports": "error",
-			"prettier/prettier": ["error"],
+			"prettier/prettier": [
+				"error",
+				{
+					endOfLine: "lf",
+				},
+			],
 			"@typescript-eslint/ban-ts-comment": ["off"],
 			"@typescript-eslint/no-explicit-any": ["warn"],
 			// "@typescript-eslint/no-floating-promises": "error",
@@ -82,3 +88,5 @@ export default [
 		},
 	},
 ];
+
+export default eslintConfig;

@@ -1,7 +1,7 @@
 "use client";
 
 import PluginsForm from "@/app/config/views/plugins-form";
-import FullPageLoader from "@/components/full-page-loader";
+import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";

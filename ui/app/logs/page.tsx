@@ -1,10 +1,10 @@
 "use client";
 
 import { createColumns } from "@/app/logs/views/columns";
-import { EmptyState } from "@/app/logs/views/empty-state";
-import { LogDetailSheet } from "@/app/logs/views/log-detail-sheet";
-import { LogsDataTable } from "@/app/logs/views/logs-table";
-import FullPageLoader from "@/components/full-page-loader";
+import { EmptyState } from "@/app/logs/views/emptyState";
+import { LogDetailSheet } from "@/app/logs/views/logDetailsSheet";
+import { LogsDataTable } from "@/app/logs/views/logsTable";
+import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { useWebSocket } from "@/hooks/useWebSocket";

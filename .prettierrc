@@ -20,5 +20,6 @@
     "tailwindFunctions": [
         "cn",
         "classNames"
-    ]
+    ],
+    "endOfLine": "lf"
 }

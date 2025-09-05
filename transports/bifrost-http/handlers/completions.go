@@ -304,35 +304,35 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router) {
 	// Completion endpoints
-	r.POST("/v1/text/completions", h.TextCompletion)
-	r.POST("/v1/chat/completions", h.ChatCompletion)
-	r.POST("/v1/embeddings", h.Embeddings)
-	r.POST("/v1/audio/speech", h.SpeechCompletion)
-	r.POST("/v1/audio/transcriptions", h.TranscriptionCompletion)
+	r.POST("/v1/text/completions", h.textCompletion)
+	r.POST("/v1/chat/completions", h.chatCompletion)
+	r.POST("/v1/embeddings", h.embeddings)
+	r.POST("/v1/audio/speech", h.speechCompletion)
+	r.POST("/v1/audio/transcriptions", h.transcriptionCompletion)
 }
 
-// TextCompletion handles POST /v1/text/completions - Process text completion requests
-func (h *CompletionHandler) TextCompletion(ctx *fasthttp.RequestCtx) {
+// textCompletion handles POST /v1/text/completions - Process text completion requests
+func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeText)
 }
 
-// ChatCompletion handles POST /v1/chat/completions - Process chat completion requests
-func (h *CompletionHandler) ChatCompletion(ctx *fasthttp.RequestCtx) {
+// chatCompletion handles POST /v1/chat/completions - Process chat completion requests
+func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeChat)
 }
 
-// Embeddings handles POST /v1/embeddings - Process embeddings requests
-func (h *CompletionHandler) Embeddings(ctx *fasthttp.RequestCtx) {
+// embeddings handles POST /v1/embeddings - Process embeddings requests
+func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeEmbeddings)
 }
 
-// SpeechCompletion handles POST /v1/audio/speech - Process speech completion requests
-func (h *CompletionHandler) SpeechCompletion(ctx *fasthttp.RequestCtx) {
+// speechCompletion handles POST /v1/audio/speech - Process speech completion requests
+func (h *CompletionHandler) speechCompletion(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeSpeech)
 }
 
-// TranscriptionCompletion handles POST /v1/audio/transcriptions - Process transcription requests
-func (h *CompletionHandler) TranscriptionCompletion(ctx *fasthttp.RequestCtx) {
+// transcriptionCompletion handles POST /v1/audio/transcriptions - Process transcription requests
+func (h *CompletionHandler) transcriptionCompletion(ctx *fasthttp.RequestCtx) {
 	// Parse multipart form
 	form, err := ctx.MultipartForm()
 	if err != nil {
