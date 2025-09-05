@@ -128,7 +128,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *context.Context, evaluationRequest
 		}
 
 		if len(includeOnlyKeys) > 0 {
-			*ctx = context.WithValue(*ctx, "bf-governance-include-only-keys", includeOnlyKeys)
+			*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-include-only-keys"), includeOnlyKeys)
 		}
 	}
 
