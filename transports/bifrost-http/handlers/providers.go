@@ -461,24 +461,21 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 		if updateKey, exists := updates[oldRawKey.ID]; exists {
 			mergedKey := updateKey
 
-			// Handle redacted values
+			// Handle redacted values - only preserve old value if new value is redacted AND it's the same as old redacted value
 			if lib.IsRedacted(updateKey.Value) &&
-				(!strings.HasPrefix(updateKey.Value, "env.") ||
-					!strings.EqualFold(updateKey.Value, oldRedactedKeys[i].Value)) {
+				strings.EqualFold(updateKey.Value, oldRedactedKeys[i].Value) {
 				mergedKey.Value = oldRawKey.Value
 			}
 
 			// Handle Azure config redacted values
 			if updateKey.AzureKeyConfig != nil && oldRedactedKeys[i].AzureKeyConfig != nil {
 				if lib.IsRedacted(updateKey.AzureKeyConfig.Endpoint) &&
-					(!strings.HasPrefix(updateKey.AzureKeyConfig.Endpoint, "env.") ||
-						!strings.EqualFold(updateKey.AzureKeyConfig.Endpoint, oldRedactedKeys[i].AzureKeyConfig.Endpoint)) {
+					strings.EqualFold(updateKey.AzureKeyConfig.Endpoint, oldRedactedKeys[i].AzureKeyConfig.Endpoint) {
 					mergedKey.AzureKeyConfig.Endpoint = oldRawKey.AzureKeyConfig.Endpoint
 				}
 				if updateKey.AzureKeyConfig.APIVersion != nil {
 					if lib.IsRedacted(*updateKey.AzureKeyConfig.APIVersion) &&
-						(!strings.HasPrefix(*updateKey.AzureKeyConfig.APIVersion, "env.") ||
-							!strings.EqualFold(*updateKey.AzureKeyConfig.APIVersion, *oldRedactedKeys[i].AzureKeyConfig.APIVersion)) {
+						strings.EqualFold(*updateKey.AzureKeyConfig.APIVersion, *oldRedactedKeys[i].AzureKeyConfig.APIVersion) {
 						mergedKey.AzureKeyConfig.APIVersion = oldRawKey.AzureKeyConfig.APIVersion
 					}
 				}
@@ -487,18 +484,15 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 			// Handle Vertex config redacted values
 			if updateKey.VertexKeyConfig != nil && oldRedactedKeys[i].VertexKeyConfig != nil {
 				if lib.IsRedacted(updateKey.VertexKeyConfig.ProjectID) &&
-					(!strings.HasPrefix(updateKey.VertexKeyConfig.ProjectID, "env.") ||
-						!strings.EqualFold(updateKey.VertexKeyConfig.ProjectID, oldRedactedKeys[i].VertexKeyConfig.ProjectID)) {
+					strings.EqualFold(updateKey.VertexKeyConfig.ProjectID, oldRedactedKeys[i].VertexKeyConfig.ProjectID) {
 					mergedKey.VertexKeyConfig.ProjectID = oldRawKey.VertexKeyConfig.ProjectID
 				}
 				if lib.IsRedacted(updateKey.VertexKeyConfig.Region) &&
-					(!strings.HasPrefix(updateKey.VertexKeyConfig.Region, "env.") ||
-						!strings.EqualFold(updateKey.VertexKeyConfig.Region, oldRedactedKeys[i].VertexKeyConfig.Region)) {
+					strings.EqualFold(updateKey.VertexKeyConfig.Region, oldRedactedKeys[i].VertexKeyConfig.Region) {
 					mergedKey.VertexKeyConfig.Region = oldRawKey.VertexKeyConfig.Region
 				}
 				if lib.IsRedacted(updateKey.VertexKeyConfig.AuthCredentials) &&
-					(!strings.HasPrefix(updateKey.VertexKeyConfig.AuthCredentials, "env.") ||
-						!strings.EqualFold(updateKey.VertexKeyConfig.AuthCredentials, oldRedactedKeys[i].VertexKeyConfig.AuthCredentials)) {
+					strings.EqualFold(updateKey.VertexKeyConfig.AuthCredentials, oldRedactedKeys[i].VertexKeyConfig.AuthCredentials) {
 					mergedKey.VertexKeyConfig.AuthCredentials = oldRawKey.VertexKeyConfig.AuthCredentials
 				}
 			}
@@ -506,19 +500,16 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 			// Handle Bedrock config redacted values
 			if updateKey.BedrockKeyConfig != nil && oldRedactedKeys[i].BedrockKeyConfig != nil {
 				if lib.IsRedacted(updateKey.BedrockKeyConfig.AccessKey) &&
-					(!strings.HasPrefix(updateKey.BedrockKeyConfig.AccessKey, "env.") ||
-						!strings.EqualFold(updateKey.BedrockKeyConfig.AccessKey, oldRedactedKeys[i].BedrockKeyConfig.AccessKey)) {
+					strings.EqualFold(updateKey.BedrockKeyConfig.AccessKey, oldRedactedKeys[i].BedrockKeyConfig.AccessKey) {
 					mergedKey.BedrockKeyConfig.AccessKey = oldRawKey.BedrockKeyConfig.AccessKey
 				}
 				if lib.IsRedacted(updateKey.BedrockKeyConfig.SecretKey) &&
-					(!strings.HasPrefix(updateKey.BedrockKeyConfig.SecretKey, "env.") ||
-						!strings.EqualFold(updateKey.BedrockKeyConfig.SecretKey, oldRedactedKeys[i].BedrockKeyConfig.SecretKey)) {
+					strings.EqualFold(updateKey.BedrockKeyConfig.SecretKey, oldRedactedKeys[i].BedrockKeyConfig.SecretKey) {
 					mergedKey.BedrockKeyConfig.SecretKey = oldRawKey.BedrockKeyConfig.SecretKey
 				}
 				if updateKey.BedrockKeyConfig.SessionToken != nil {
 					if lib.IsRedacted(*updateKey.BedrockKeyConfig.SessionToken) &&
-						(!strings.HasPrefix(*updateKey.BedrockKeyConfig.SessionToken, "env.") ||
-							!strings.EqualFold(*updateKey.BedrockKeyConfig.SessionToken, *oldRedactedKeys[i].BedrockKeyConfig.SessionToken)) {
+						strings.EqualFold(*updateKey.BedrockKeyConfig.SessionToken, *oldRedactedKeys[i].BedrockKeyConfig.SessionToken) {
 						mergedKey.BedrockKeyConfig.SessionToken = oldRawKey.BedrockKeyConfig.SessionToken
 					}
 				}

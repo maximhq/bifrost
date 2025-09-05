@@ -911,8 +911,8 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 				EnvVar:     envVar,
 				Provider:   provider,
 				KeyType:    "api_key",
-				ConfigPath: fmt.Sprintf("providers.%s.keys[%s]", provider, key.ID),
-				KeyID:      key.ID,
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s]", provider, config.Keys[i].ID),
+				KeyID:      config.Keys[i].ID,
 			})
 		}
 
@@ -944,7 +944,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 	s.Providers[provider] = config
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.UpdateProvidersConfig(s.Providers); err != nil {
+		if err := s.ConfigStore.AddProvider(provider, config, s.EnvKeys); err != nil {
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
 		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
@@ -1010,8 +1010,8 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 				EnvVar:     envVar,
 				Provider:   provider,
 				KeyType:    "api_key",
-				ConfigPath: fmt.Sprintf("providers.%s.keys[%s]", provider, key.ID),
-				KeyID:      key.ID,
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s]", provider, config.Keys[i].ID),
+				KeyID:      config.Keys[i].ID,
 			})
 		}
 
@@ -1043,7 +1043,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 	s.Providers[provider] = config
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.UpdateProvidersConfig(s.Providers); err != nil {
+		if err := s.ConfigStore.UpdateProvider(provider, config, s.EnvKeys); err != nil {
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
 		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
@@ -1068,7 +1068,7 @@ func (s *Config) RemoveProvider(provider schemas.ModelProvider) error {
 	s.cleanupEnvKeys(provider, "", nil)
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.UpdateProvidersConfig(s.Providers); err != nil {
+		if err := s.ConfigStore.DeleteProvider(provider); err != nil {
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
 	}

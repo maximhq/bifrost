@@ -19,6 +19,9 @@ type ConfigStore interface {
 
 	// Provider config CRUD
 	UpdateProvidersConfig(providers map[schemas.ModelProvider]ProviderConfig) error
+	AddProvider(provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
+	UpdateProvider(provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
+	DeleteProvider(provider schemas.ModelProvider) error
 	GetProvidersConfig() (map[schemas.ModelProvider]ProviderConfig, error)
 
 	// MCP config CRUD

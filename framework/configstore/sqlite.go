@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -14,6 +15,18 @@ import (
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
 )
+
+// processEnvValue processes a value that might be an environment variable reference
+func processEnvValue(value string) (string, error) {
+	if strings.HasPrefix(value, "env.") {
+		envKey := strings.TrimPrefix(value, "env.")
+		if envValue := os.Getenv(envKey); envValue != "" {
+			return envValue, nil
+		}
+		return "", fmt.Errorf("environment variable %s not found", envKey)
+	}
+	return value, nil
+}
 
 // SQLiteConfig represents the configuration for a SQLite database.
 type SQLiteConfig struct {
@@ -161,6 +174,294 @@ func (s *SQLiteConfigStore) UpdateProvidersConfig(providers map[schemas.ModelPro
 	})
 }
 
+// UpdateProviderById updates a single provider configuration in the database without deleting/recreating.
+func (s *SQLiteConfigStore) UpdateProvider(provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Find the existing provider
+		var dbProvider TableProvider
+		if err := tx.Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		// Create a copy of the config to avoid modifying the original
+		configCopy := config
+		// Substitute environment variables back to their original form
+		s.substituteEnvVars(&configCopy, provider, envKeys)
+
+		// Update provider fields
+		dbProvider.NetworkConfig = configCopy.NetworkConfig
+		dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
+		dbProvider.ProxyConfig = configCopy.ProxyConfig
+		dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
+		dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
+
+		// Save the updated provider
+		if err := tx.Save(&dbProvider).Error; err != nil {
+			return err
+		}
+
+		// Get existing keys for this provider
+		var existingKeys []TableKey
+		if err := tx.Where("provider_id = ?", dbProvider.ID).Find(&existingKeys).Error; err != nil {
+			return err
+		}
+
+		// Create a map of existing keys by KeyID for quick lookup
+		existingKeysMap := make(map[string]TableKey)
+		for _, key := range existingKeys {
+			existingKeysMap[key.KeyID] = key
+		}
+
+		// Process each key in the new config
+		for _, key := range configCopy.Keys {
+			dbKey := TableKey{
+				Provider:         dbProvider.Name,
+				ProviderID:       dbProvider.ID,
+				KeyID:            key.ID,
+				Value:            key.Value,
+				Models:           key.Models,
+				Weight:           key.Weight,
+				AzureKeyConfig:   key.AzureKeyConfig,
+				VertexKeyConfig:  key.VertexKeyConfig,
+				BedrockKeyConfig: key.BedrockKeyConfig,
+			}
+
+			// Handle Azure config
+			if key.AzureKeyConfig != nil {
+				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
+			}
+
+			// Handle Vertex config
+			if key.VertexKeyConfig != nil {
+				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+				dbKey.VertexRegion = &key.VertexKeyConfig.Region
+				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			}
+
+			// Handle Bedrock config
+			if key.BedrockKeyConfig != nil {
+				dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+				dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+			}
+
+			// Check if this key already exists
+			if existingKey, exists := existingKeysMap[key.ID]; exists {
+				// Update existing key - preserve the database ID
+				dbKey.ID = existingKey.ID
+				if err := tx.Save(&dbKey).Error; err != nil {
+					return err
+				}
+				// Remove from map to track which keys are still in use
+				delete(existingKeysMap, key.ID)
+			} else {
+				// Create new key
+				if err := tx.Create(&dbKey).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		// Delete keys that are no longer in the new config
+		for _, keyToDelete := range existingKeysMap {
+			if err := tx.Delete(&keyToDelete).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// substituteEnvVars replaces resolved environment variable values with their original env.VAR_NAME references
+func (s *SQLiteConfigStore) substituteEnvVars(config *ProviderConfig, provider schemas.ModelProvider, envKeys map[string][]EnvKeyInfo) {
+	// Create a map for quick lookup of env vars by provider and key ID
+	envVarMap := make(map[string]string) // key: "provider.keyID.field" -> env var name
+
+	for envVar, keyInfos := range envKeys {
+		for _, keyInfo := range keyInfos {
+			if keyInfo.Provider == provider {
+				// For API keys
+				if keyInfo.KeyType == "api_key" {
+					envVarMap[fmt.Sprintf("%s.%s.value", provider, keyInfo.KeyID)] = envVar
+				}
+				// For Azure config
+				if keyInfo.KeyType == "azure_config" {
+					field := strings.TrimPrefix(keyInfo.ConfigPath, fmt.Sprintf("providers.%s.keys[%s].azure_key_config.", provider, keyInfo.KeyID))
+					envVarMap[fmt.Sprintf("%s.%s.azure.%s", provider, keyInfo.KeyID, field)] = envVar
+				}
+				// For Vertex config
+				if keyInfo.KeyType == "vertex_config" {
+					field := strings.TrimPrefix(keyInfo.ConfigPath, fmt.Sprintf("providers.%s.keys[%s].vertex_key_config.", provider, keyInfo.KeyID))
+					envVarMap[fmt.Sprintf("%s.%s.vertex.%s", provider, keyInfo.KeyID, field)] = envVar
+				}
+				// For Bedrock config
+				if keyInfo.KeyType == "bedrock_config" {
+					field := strings.TrimPrefix(keyInfo.ConfigPath, fmt.Sprintf("providers.%s.keys[%s].bedrock_key_config.", provider, keyInfo.KeyID))
+					envVarMap[fmt.Sprintf("%s.%s.bedrock.%s", provider, keyInfo.KeyID, field)] = envVar
+				}
+			}
+		}
+	}
+
+	// Substitute values in keys
+	for i, key := range config.Keys {
+		keyPrefix := fmt.Sprintf("%s.%s", provider, key.ID)
+
+		// Substitute API key value
+		if envVar, exists := envVarMap[fmt.Sprintf("%s.value", keyPrefix)]; exists {
+			config.Keys[i].Value = fmt.Sprintf("env.%s", envVar)
+		}
+
+		// Substitute Azure config
+		if key.AzureKeyConfig != nil {
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.azure.endpoint", keyPrefix)]; exists {
+				config.Keys[i].AzureKeyConfig.Endpoint = fmt.Sprintf("env.%s", envVar)
+			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.azure.api_version", keyPrefix)]; exists {
+				apiVersion := fmt.Sprintf("env.%s", envVar)
+				config.Keys[i].AzureKeyConfig.APIVersion = &apiVersion
+			}
+		}
+
+		// Substitute Vertex config
+		if key.VertexKeyConfig != nil {
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.vertex.project_id", keyPrefix)]; exists {
+				config.Keys[i].VertexKeyConfig.ProjectID = fmt.Sprintf("env.%s", envVar)
+			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.vertex.region", keyPrefix)]; exists {
+				config.Keys[i].VertexKeyConfig.Region = fmt.Sprintf("env.%s", envVar)
+			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.vertex.auth_credentials", keyPrefix)]; exists {
+				config.Keys[i].VertexKeyConfig.AuthCredentials = fmt.Sprintf("env.%s", envVar)
+			}
+		}
+
+		// Substitute Bedrock config
+		if key.BedrockKeyConfig != nil {
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.bedrock.access_key", keyPrefix)]; exists {
+				config.Keys[i].BedrockKeyConfig.AccessKey = fmt.Sprintf("env.%s", envVar)
+			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.bedrock.secret_key", keyPrefix)]; exists {
+				config.Keys[i].BedrockKeyConfig.SecretKey = fmt.Sprintf("env.%s", envVar)
+			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.bedrock.session_token", keyPrefix)]; exists {
+				config.Keys[i].BedrockKeyConfig.SessionToken = &[]string{fmt.Sprintf("env.%s", envVar)}[0]
+			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.bedrock.region", keyPrefix)]; exists {
+				config.Keys[i].BedrockKeyConfig.Region = &[]string{fmt.Sprintf("env.%s", envVar)}[0]
+			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.bedrock.arn", keyPrefix)]; exists {
+				config.Keys[i].BedrockKeyConfig.ARN = &[]string{fmt.Sprintf("env.%s", envVar)}[0]
+			}
+		}
+	}
+}
+
+// AddProvider creates a new provider configuration in the database.
+func (s *SQLiteConfigStore) AddProvider(provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Check if provider already exists
+		var existingProvider TableProvider
+		if err := tx.Where("name = ?", string(provider)).First(&existingProvider).Error; err == nil {
+			return fmt.Errorf("provider %s already exists", provider)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		// Create a copy of the config to avoid modifying the original
+		configCopy := config
+		// Substitute environment variables back to their original form
+		s.substituteEnvVars(&configCopy, provider, envKeys)
+
+		// Create new provider
+		dbProvider := TableProvider{
+			Name:                     string(provider),
+			NetworkConfig:            configCopy.NetworkConfig,
+			ConcurrencyAndBufferSize: configCopy.ConcurrencyAndBufferSize,
+			ProxyConfig:              configCopy.ProxyConfig,
+			SendBackRawResponse:      configCopy.SendBackRawResponse,
+			CustomProviderConfig:     configCopy.CustomProviderConfig,
+		}
+
+		// Create the provider
+		if err := tx.Create(&dbProvider).Error; err != nil {
+			return err
+		}
+
+		// Create keys for this provider
+		for _, key := range configCopy.Keys {
+			dbKey := TableKey{
+				Provider:         dbProvider.Name,
+				ProviderID:       dbProvider.ID,
+				KeyID:            key.ID,
+				Value:            key.Value,
+				Models:           key.Models,
+				Weight:           key.Weight,
+				AzureKeyConfig:   key.AzureKeyConfig,
+				VertexKeyConfig:  key.VertexKeyConfig,
+				BedrockKeyConfig: key.BedrockKeyConfig,
+			}
+
+			// Handle Azure config
+			if key.AzureKeyConfig != nil {
+				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
+			}
+
+			// Handle Vertex config
+			if key.VertexKeyConfig != nil {
+				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+				dbKey.VertexRegion = &key.VertexKeyConfig.Region
+				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			}
+
+			// Handle Bedrock config
+			if key.BedrockKeyConfig != nil {
+				dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+				dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+			}
+
+			// Create the key
+			if err := tx.Create(&dbKey).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// DeleteProvider deletes a single provider and all its associated keys from the database.
+func (s *SQLiteConfigStore) DeleteProvider(provider schemas.ModelProvider) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Find the existing provider
+		var dbProvider TableProvider
+		if err := tx.Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		// Delete the provider (keys will be deleted due to CASCADE constraint)
+		if err := tx.Delete(&dbProvider).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
 // GetProvidersConfig retrieves the provider configuration from the database.
 func (s *SQLiteConfigStore) GetProvidersConfig() (map[schemas.ModelProvider]ProviderConfig, error) {
 	var dbProviders []TableProvider
@@ -180,14 +481,70 @@ func (s *SQLiteConfigStore) GetProvidersConfig() (map[schemas.ModelProvider]Prov
 		// Convert database keys to schemas.Key
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
+			// Process main key value
+			processedValue, err := processEnvValue(dbKey.Value)
+			if err != nil {
+				// If env var not found, keep the original value
+				processedValue = dbKey.Value
+			}
+
+			// Process Azure config if present
+			azureConfig := dbKey.AzureKeyConfig
+			if azureConfig != nil {
+				azureConfigCopy := *azureConfig
+				if processedEndpoint, err := processEnvValue(azureConfig.Endpoint); err == nil {
+					azureConfigCopy.Endpoint = processedEndpoint
+				}
+				if azureConfig.APIVersion != nil {
+					if processedAPIVersion, err := processEnvValue(*azureConfig.APIVersion); err == nil {
+						azureConfigCopy.APIVersion = &processedAPIVersion
+					}
+				}
+				azureConfig = &azureConfigCopy
+			}
+
+			// Process Vertex config if present
+			vertexConfig := dbKey.VertexKeyConfig
+			if vertexConfig != nil {
+				vertexConfigCopy := *vertexConfig
+				if processedProjectID, err := processEnvValue(vertexConfig.ProjectID); err == nil {
+					vertexConfigCopy.ProjectID = processedProjectID
+				}
+				if processedRegion, err := processEnvValue(vertexConfig.Region); err == nil {
+					vertexConfigCopy.Region = processedRegion
+				}
+				if processedAuthCredentials, err := processEnvValue(vertexConfig.AuthCredentials); err == nil {
+					vertexConfigCopy.AuthCredentials = processedAuthCredentials
+				}
+				vertexConfig = &vertexConfigCopy
+			}
+
+			// Process Bedrock config if present
+			bedrockConfig := dbKey.BedrockKeyConfig
+			if bedrockConfig != nil {
+				bedrockConfigCopy := *bedrockConfig
+				if processedAccessKey, err := processEnvValue(bedrockConfig.AccessKey); err == nil {
+					bedrockConfigCopy.AccessKey = processedAccessKey
+				}
+				if processedSecretKey, err := processEnvValue(bedrockConfig.SecretKey); err == nil {
+					bedrockConfigCopy.SecretKey = processedSecretKey
+				}
+				if bedrockConfig.SessionToken != nil {
+					if processedSessionToken, err := processEnvValue(*bedrockConfig.SessionToken); err == nil {
+						bedrockConfigCopy.SessionToken = &processedSessionToken
+					}
+				}
+				bedrockConfig = &bedrockConfigCopy
+			}
+
 			keys[i] = schemas.Key{
 				ID:               dbKey.KeyID,
-				Value:            dbKey.Value,
+				Value:            processedValue,
 				Models:           dbKey.Models,
 				Weight:           dbKey.Weight,
-				AzureKeyConfig:   dbKey.AzureKeyConfig,
-				VertexKeyConfig:  dbKey.VertexKeyConfig,
-				BedrockKeyConfig: dbKey.BedrockKeyConfig,
+				AzureKeyConfig:   azureConfig,
+				VertexKeyConfig:  vertexConfig,
+				BedrockKeyConfig: bedrockConfig,
 			}
 		}
 		providerConfig := ProviderConfig{
