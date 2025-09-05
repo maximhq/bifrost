@@ -62,6 +62,12 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 	if filters.EndTime != nil {
 		baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
 	}
+	if filters.Tokens != nil {
+		baseQuery = baseQuery.Where("total_tokens >= ?", *filters.Tokens)
+	}
+	if filters.Cost != nil {
+		baseQuery = baseQuery.Where("cost >= ?", *filters.Cost)
+	}
 	if filters.MinLatency != nil {
 		baseQuery = baseQuery.Where("latency >= ?", *filters.MinLatency)
 	}
@@ -112,10 +118,11 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 			var result struct {
 				AvgLatency  sql.NullFloat64 `json:"avg_latency"`
 				TotalTokens sql.NullInt64   `json:"total_tokens"`
+				TotalCost   sql.NullFloat64 `json:"total_cost"`
 			}
 
 			statsQuery := baseQuery.Session(&gorm.Session{})
-			if err := statsQuery.Select("AVG(latency) as avg_latency, SUM(total_tokens) as total_tokens").Scan(&result).Error; err != nil {
+			if err := statsQuery.Select("AVG(latency) as avg_latency, SUM(total_tokens) as total_tokens, SUM(cost) as total_cost").Scan(&result).Error; err != nil {
 				return nil, err
 			}
 
@@ -124,6 +131,9 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 			}
 			if result.TotalTokens.Valid {
 				stats.TotalTokens = result.TotalTokens.Int64
+			}
+			if result.TotalCost.Valid {
+				stats.TotalCost = result.TotalCost.Float64
 			}
 		}
 	}
@@ -142,6 +152,8 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 		orderClause = "latency " + direction
 	case "tokens":
 		orderClause = "total_tokens " + direction
+	case "cost":
+		orderClause = "cost " + direction
 	default:
 		orderClause = "timestamp " + direction
 	}

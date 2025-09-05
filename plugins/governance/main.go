@@ -208,6 +208,7 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	var model string
 	var requestType schemas.RequestType
 	var cost float64
+	var isFinalChunk bool
 
 	if providerValue := (*ctx).Value(schemas.BifrostContextKeyRequestProvider); providerValue != nil {
 		if p, ok := providerValue.(schemas.ModelProvider); ok {
@@ -227,6 +228,13 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	if costValue := (*ctx).Value(pricingCostContextKey); costValue != nil {
 		if c, ok := costValue.(float64); ok {
 			cost = c
+		}
+	}
+	if isFinalChunkValue := (*ctx).Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunkValue != nil {
+		if f, ok := isFinalChunkValue.(bool); ok {
+			isFinalChunk = f
+		} else {
+			isFinalChunk = false
 		}
 	}
 
@@ -259,7 +267,7 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		customerID = &customerIDValue
 	}
 
-	go p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, teamID, customerID, isCacheRead, isBatch, cost)
+	go p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, teamID, customerID, isCacheRead, isBatch, cost, isFinalChunk)
 
 	return result, err, nil
 }
@@ -273,13 +281,12 @@ func (p *GovernancePlugin) Cleanup() error {
 	return nil
 }
 
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, teamID, customerID *string, isCacheRead, isBatch bool, cost float64) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, teamID, customerID *string, isCacheRead, isBatch bool, cost float64, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
-	isFinalChunk := isFinalChunk(result)
 	hasUsageData := hasUsageData(result)
 
 	// Extract usage information from response (including speech and transcribe)

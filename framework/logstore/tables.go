@@ -15,6 +15,7 @@ const (
 	SortByTimestamp SortBy = "timestamp"
 	SortByLatency   SortBy = "latency"
 	SortByTokens    SortBy = "tokens"
+	SortByCost      SortBy = "cost"
 )
 
 type SortOrder string
@@ -24,7 +25,6 @@ const (
 	SortDesc SortOrder = "desc"
 )
 
-
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
 	Providers     []string   `json:"providers,omitempty"`
@@ -33,6 +33,8 @@ type SearchFilters struct {
 	Objects       []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
 	StartTime     *time.Time `json:"start_time,omitempty"`
 	EndTime       *time.Time `json:"end_time,omitempty"`
+	Tokens        *int       `json:"tokens,omitempty"`
+	Cost          *float64   `json:"cost,omitempty"`
 	MinLatency    *float64   `json:"min_latency,omitempty"`
 	MaxLatency    *float64   `json:"max_latency,omitempty"`
 	MinTokens     *int       `json:"min_tokens,omitempty"`
@@ -60,6 +62,7 @@ type SearchStats struct {
 	SuccessRate    float64 `json:"success_rate"`    // Percentage of successful requests
 	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
 	TotalTokens    int64   `json:"total_tokens"`    // Total tokens used
+	TotalCost      float64 `json:"total_cost"`      // Total cost in dollars
 }
 
 // Log represents a complete log entry for a request/response cycle
@@ -82,6 +85,7 @@ type Log struct {
 	TranscriptionOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
 	Latency             *float64  `json:"latency,omitempty"`
 	TokenUsage          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
+	Cost                *float64  `json:"cost,omitempty"`                                // Cost in dollars
 	Status              string    `gorm:"type:varchar(50);index;not null" json:"status"` // "processing", "success", or "error"
 	ErrorDetails        string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
 	Stream              bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response

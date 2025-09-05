@@ -110,6 +110,11 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, tim
 		}
 	}
 
+	// Handle cost from pricing plugin
+	if data.Cost != nil {
+		updates["cost"] = *data.Cost
+	}
+
 	if data.ErrorDetails != nil {
 		tempEntry.ErrorDetailsParsed = data.ErrorDetails
 		if err := tempEntry.SerializeFields(); err != nil {
@@ -198,6 +203,11 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 			updates["completion_tokens"] = data.TokenUsage.CompletionTokens
 			updates["total_tokens"] = data.TokenUsage.TotalTokens
 		}
+	}
+
+	// Handle cost from pricing plugin
+	if data.Cost != nil {
+		updates["cost"] = *data.Cost
 	}
 
 	// Handle finish reason - if present, mark as complete

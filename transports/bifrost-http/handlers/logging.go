@@ -86,6 +86,11 @@ func (h *LoggingHandler) GetLogs(ctx *fasthttp.RequestCtx) {
 			filters.MaxTokens = &val
 		}
 	}
+	if cost := string(ctx.QueryArgs().Peek("cost")); cost != "" {
+		if val, err := strconv.ParseFloat(cost, 64); err == nil {
+			filters.Cost = &val
+		}
+	}
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -120,7 +125,7 @@ func (h *LoggingHandler) GetLogs(ctx *fasthttp.RequestCtx) {
 	// Sort parameters
 	pagination.SortBy = "timestamp" // Default sort field
 	if sortBy := string(ctx.QueryArgs().Peek("sort_by")); sortBy != "" {
-		if sortBy == "timestamp" || sortBy == "latency" || sortBy == "tokens" {
+		if sortBy == "timestamp" || sortBy == "latency" || sortBy == "tokens" || sortBy == "cost" {
 			pagination.SortBy = sortBy
 		}
 	}

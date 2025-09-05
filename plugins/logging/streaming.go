@@ -183,6 +183,14 @@ func (p *LoggerPlugin) processAccumulatedChunks(requestID string) error {
 		}
 	}
 
+	// Update cost from final chunk if available
+	if len(accumulator.Chunks) > 0 {
+		lastChunk := accumulator.Chunks[len(accumulator.Chunks)-1]
+		if lastChunk.Cost != nil {
+			updates["cost"] = *lastChunk.Cost
+		}
+	}
+
 	// Update object field from accumulator (stored once for the entire stream)
 	if accumulator.Object != "" {
 		updates["object_type"] = accumulator.Object
@@ -324,6 +332,13 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 		// Extract token usage
 		if result.Usage != nil && result.Usage.TotalTokens > 0 {
 			chunk.TokenUsage = result.Usage
+		}
+	}
+
+	// Extract cost from context (set by pricing plugin)
+	if costValue := (*ctx).Value(PricingCostContextKey); costValue != nil {
+		if cost, ok := costValue.(float64); ok && cost > 0 {
+			chunk.Cost = &cost
 		}
 	}
 

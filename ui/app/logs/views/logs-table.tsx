@@ -7,6 +7,7 @@ import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } f
 import { ChevronLeft, ChevronRight, RefreshCw, X } from "lucide-react";
 import { useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
+
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
 	data: LogEntry[];
@@ -41,7 +42,7 @@ export function LogsDataTable({
 			const { id, desc } = newSorting[0];
 			onPaginationChange({
 				...pagination,
-				sort_by: id as "timestamp" | "latency" | "token_usage.total_tokens",
+				sort_by: id as "timestamp" | "latency" | "token_usage.total_tokens" | "cost",
 				order: desc ? "desc" : "asc",
 			});
 		}

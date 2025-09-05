@@ -78,12 +78,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 	bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("request-id"), requestID)
 
 	// Then process other headers
-	ctx.Request.Header.VisitAll(func(key, value []byte) {
+	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 
 		if strings.HasPrefix(keyStr, "x-bf-prom-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-prom-")
-			bifrostCtx = context.WithValue(bifrostCtx, telemetry.PrometheusContextKey(labelName), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, telemetry.ContextKey(labelName), string(value))
 		}
 
 		if strings.HasPrefix(keyStr, "x-bf-maxim-") {
@@ -107,7 +107,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 
 			if labelName == "include-clients" || labelName == "exclude-clients" || labelName == "include-tools" || labelName == "exclude-tools" {
 				bifrostCtx = context.WithValue(bifrostCtx, ContextKey("mcp-"+labelName), string(value))
-				return
+				return true
 			}
 		}
 
@@ -170,6 +170,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheNoStoreKey, true)
 			}
 		}
+
+		return true
 	})
 
 	if allowDirectKeys {

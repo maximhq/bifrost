@@ -90,7 +90,7 @@ func (p *JsonParserPlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 // PostHook processes streaming responses by accumulating chunks and making accumulated content valid JSON
 func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Check if plugin should run based on usage type
-	if !p.shouldRun(result, ctx) {
+	if !p.shouldRun(ctx) {
 		return result, err, nil
 	}
 
@@ -148,8 +148,11 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	}
 
 	// If this is the final chunk, cleanup the accumulated content for this request
-	if p.isFinalChunk(result) {
-		p.ClearRequestState(requestID)
+	if streamEndIndicatorValue := (*ctx).Value(schemas.BifrostContextKeyStreamEndIndicator); streamEndIndicatorValue != nil {
+		isFinalChunk, ok := streamEndIndicatorValue.(bool)
+		if ok && isFinalChunk {
+			p.ClearRequestState(requestID)
+		}
 	}
 
 	return result, err, nil
@@ -198,15 +201,11 @@ func (p *JsonParserPlugin) accumulateContent(requestID, newContent string) strin
 }
 
 // shouldRun determines if the plugin should process the request based on usage type
-func (p *JsonParserPlugin) shouldRun(result *schemas.BifrostResponse, ctx *context.Context) bool {
-	// Don't run on speech or transcription requests
-	if result != nil {
-		if result.Speech != nil {
-			return false
-		}
-		if result.Transcribe != nil {
-			return false
-		}
+func (p *JsonParserPlugin) shouldRun(ctx *context.Context) bool {
+	// Run only for chat completion stream requests
+	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
+	if !ok || requestType != schemas.ChatCompletionStreamRequest {
+		return false
 	}
 
 	switch p.usage {
@@ -378,24 +377,6 @@ func (p *JsonParserPlugin) progressiveTruncation(original string, completed []by
 
 	// Fallback to original
 	return original
-}
-
-// isFinalChunk checks if this is the final chunk of a streaming response
-func (p *JsonParserPlugin) isFinalChunk(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check for finish reason in streaming choices
-	if len(result.Choices) > 0 {
-		for _, choice := range result.Choices {
-			if choice.BifrostStreamResponseChoice != nil && choice.FinishReason != nil {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 // startCleanupGoroutine starts a goroutine that periodically cleans up old accumulated content

@@ -238,6 +238,7 @@ export interface LogEntry {
 	tool_calls?: ToolCall[];
 	latency?: number;
 	token_usage?: LLMUsage;
+	cost?: number;
 	status: string; // "success" or "error"
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
@@ -261,7 +262,7 @@ export interface LogFilters {
 export interface Pagination {
 	limit: number;
 	offset: number;
-	sort_by: "timestamp" | "latency" | "token_usage.total_tokens";
+	sort_by: "timestamp" | "latency" | "token_usage.total_tokens" | "cost";
 	order: "asc" | "desc";
 }
 
@@ -270,6 +271,7 @@ export interface LogStats {
 	success_rate: number;
 	average_latency: number;
 	total_tokens: number;
+	total_cost: number;
 }
 
 export interface LogsResponse {
