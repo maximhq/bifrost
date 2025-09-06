@@ -10,7 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { getErrorMessage, useLazyGetLogsQuery } from "@/lib/store";
 import type { BifrostMessage, ContentBlock, LogEntry, LogFilters, LogStats, MessageContent, Pagination } from "@/lib/types/logs";
-import { AlertCircle, BarChart, CheckCircle, Clock, Hash } from "lucide-react";
+import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export default function LogsPage() {
@@ -156,6 +156,11 @@ export default function LogsPage() {
 						// Update total tokens
 						if (log.token_usage) {
 							newStats.total_tokens += log.token_usage.total_tokens;
+						}
+
+						// Update total cost
+						if (log.cost) {
+							newStats.total_cost += log.cost;
 						}
 
 						return newStats;
@@ -321,6 +326,11 @@ export default function LogsPage() {
 				value: stats?.total_tokens.toLocaleString() || "-",
 				icon: <Hash className="size-4" />,
 			},
+			{
+				title: "Total Cost",
+				value: `$${stats?.total_cost.toFixed(4) || "-"}`,
+				icon: <DollarSign className="size-4" />,
+			},
 		],
 		[stats],
 	);
@@ -337,7 +347,7 @@ export default function LogsPage() {
 				<div className="space-y-6">
 					<div className="space-y-6">
 						{/* Quick Stats */}
-						<div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-5">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">

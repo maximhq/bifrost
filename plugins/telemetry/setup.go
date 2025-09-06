@@ -43,7 +43,7 @@ func InitPrometheusMetrics(labels []string) {
 	customLabels = labels
 
 	httpDefaultLabels := []string{"path", "method", "status"}
-	bifrostDefaultLabels := []string{"target", "method"}
+	bifrostDefaultLabels := []string{"provider", "model", "method", "cost"}
 
 	httpRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -133,13 +133,14 @@ func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 	}
 
 	// Collect custom prometheus headers
-	ctx.Request.Header.VisitAll(func(key, value []byte) {
+	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		if strings.HasPrefix(keyStr, "x-bf-prom-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-prom-")
 			labelValues[labelName] = string(value)
 			ctx.SetUserValue(keyStr, string(value))
 		}
+		return true
 	})
 
 	return labelValues

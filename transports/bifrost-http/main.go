@@ -74,6 +74,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/pricing"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
@@ -342,7 +343,11 @@ func main() {
 	telemetry.InitPrometheusMetrics(config.ClientConfig.PrometheusLabels)
 	logger.Debug("prometheus Go/Process collectors registered.")
 
-	promPlugin := telemetry.NewPrometheusPlugin()
+	promPlugin := telemetry.Init()
+	pricingPlugin, err := pricing.Init(config.ConfigStore, logger)
+	if err != nil {
+		logger.Error("failed to initialize pricing plugin: %v", err)
+	}
 
 	var loggingPlugin *logging.LoggerPlugin
 	var loggingHandler *handlers.LoggingHandler
@@ -436,7 +441,7 @@ func main() {
 		}
 	}
 
-	loadedPlugins = append(loadedPlugins, promPlugin)
+	loadedPlugins = append(loadedPlugins, promPlugin, pricingPlugin)
 
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
 		Account:            account,

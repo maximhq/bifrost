@@ -33,14 +33,16 @@ const (
 
 // Context keys for logging optimization
 const (
-	DroppedCreateContextKey ContextKey = "bifrost-logging-dropped"
-	CreatedTimestampKey     ContextKey = "bifrost-logging-created-timestamp"
+	DroppedCreateContextKey ContextKey                = "bifrost-logging-dropped"
+	CreatedTimestampKey     ContextKey                = "bifrost-logging-created-timestamp"
+	PricingCostContextKey   schemas.BifrostContextKey = "bf-pricing-cost"
 )
 
 // UpdateLogData contains data for log entry updates
 type UpdateLogData struct {
 	Status              string
 	TokenUsage          *schemas.LLMUsage
+	Cost                *float64 // Cost in dollars from pricing plugin
 	OutputMessage       *schemas.BifrostMessage
 	EmbeddingOutput     *[]schemas.BifrostEmbedding
 	ToolCalls           *[]schemas.ToolCall
@@ -57,6 +59,7 @@ type StreamUpdateData struct {
 	Model               string // May be different from request
 	Object              string // May be different from request
 	TokenUsage          *schemas.LLMUsage
+	Cost                *float64                    // Cost in dollars from pricing plugin
 	Delta               *schemas.BifrostStreamDelta // The actual streaming delta
 	FinishReason        *string                     // If the stream is finished
 	TranscriptionOutput *schemas.BifrostTranscribe  // For transcription stream responses
@@ -93,6 +96,7 @@ type StreamChunk struct {
 	Delta        *schemas.BifrostStreamDelta // The actual delta content
 	FinishReason *string                     // If this is the final chunk
 	TokenUsage   *schemas.LLMUsage           // Token usage if available
+	Cost         *float64                    // Cost in dollars from pricing plugin
 	ErrorDetails *schemas.BifrostError       // Error if any
 }
 
@@ -261,8 +265,14 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		return req, nil, nil
 	}
 
+	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
+	if !ok {
+		p.logger.Error("request type not found in context")
+		return req, nil, nil
+	}
+
 	// Prepare initial log data
-	objectType := p.determineObjectType(req.Input)
+	objectType := p.determineObjectType(requestType)
 	inputHistory := p.extractInputHistory(req.Input)
 
 	initialData := &InitialLogData{
@@ -413,6 +423,13 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			}
 		}
 
+		// Extract cost from context (set by pricing plugin) for streaming
+		if costValue := (*ctx).Value(PricingCostContextKey); costValue != nil {
+			if cost, ok := costValue.(float64); ok && cost > 0 {
+				streamUpdateData.Cost = &cost
+			}
+		}
+
 		logMsg.StreamUpdateData = streamUpdateData
 	} else {
 		// Handle regular response
@@ -496,24 +513,24 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			}
 		}
 
+		// Extract cost from context (set by pricing plugin)
+		if costValue := (*ctx).Value(PricingCostContextKey); costValue != nil {
+			if cost, ok := costValue.(float64); ok && cost > 0 {
+				updateData.Cost = &cost
+			}
+		}
+
 		logMsg.UpdateData = updateData
 	}
 
-	// Calculate isFinalChunks
 	var isFinalChunk bool
+
 	if logMsg.StreamUpdateData != nil {
-		isFinalChunk = logMsg.StreamUpdateData.FinishReason != nil
-
-		// Check speech streaming completion
-		if !isFinalChunk && result != nil && result.Speech != nil &&
-			result.Speech.BifrostSpeechStreamResponse != nil && result.Speech.Usage != nil {
-			isFinalChunk = true
-		}
-
-		// Check transcription streaming completion
-		if !isFinalChunk && result != nil && result.Transcribe != nil &&
-			result.Transcribe.BifrostTranscribeStreamResponse != nil && result.Transcribe.Usage != nil {
-			isFinalChunk = true
+		// If this is the final chunk, cleanup the accumulated content for this request
+		if streamEndIndicatorValue := (*ctx).Value(schemas.BifrostContextKeyStreamEndIndicator); streamEndIndicatorValue != nil {
+			if streamEnded, ok := streamEndIndicatorValue.(bool); ok && streamEnded {
+				isFinalChunk = true
+			}
 		}
 	}
 
@@ -588,21 +605,24 @@ func (p *LoggerPlugin) Cleanup() error {
 // Helper methods
 
 // determineObjectType determines the object type from request input
-func (p *LoggerPlugin) determineObjectType(input schemas.RequestInput) string {
-	if input.ChatCompletionInput != nil {
-		return "chat.completion"
-	}
-	if input.TextCompletionInput != nil {
+func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) string {
+	switch requestType {
+	case schemas.TextCompletionRequest:
 		return "text.completion"
-	}
-	if input.EmbeddingInput != nil {
+	case schemas.ChatCompletionRequest:
+		return "chat.completion"
+	case schemas.ChatCompletionStreamRequest:
+		return "chat.completion.chunk"
+	case schemas.EmbeddingRequest:
 		return "list"
-	}
-	if input.SpeechInput != nil {
-		return "speech"
-	}
-	if input.TranscriptionInput != nil {
-		return "transcription"
+	case schemas.SpeechRequest:
+		return "audio.speech"
+	case schemas.SpeechStreamRequest:
+		return "audio.speech.chunk"
+	case schemas.TranscriptionRequest:
+		return "audio.transcription"
+	case schemas.TranscriptionStreamRequest:
+		return "audio.transcription.chunk"
 	}
 	return "unknown"
 }

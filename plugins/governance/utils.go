@@ -37,34 +37,6 @@ func getStringFromContext(ctx context.Context, key any) string {
 	return ""
 }
 
-// isFinalChunk checks if this is the final chunk of a streaming response
-func isFinalChunk(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check for finish reason in streaming choices
-	if len(result.Choices) > 0 {
-		for _, choice := range result.Choices {
-			if choice.BifrostStreamResponseChoice != nil && choice.FinishReason != nil {
-				return true
-			}
-		}
-	}
-
-	// Check for usage data in speech response (indicates completion)
-	if result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil && result.Speech.Usage != nil {
-		return true
-	}
-
-	// Check for usage data in transcribe response (indicates completion)
-	if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil && result.Transcribe.Usage != nil {
-		return true
-	}
-
-	return false
-}
-
 // hasUsageData checks if the response contains actual usage information
 func hasUsageData(result *schemas.BifrostResponse) bool {
 	if result == nil {

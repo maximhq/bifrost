@@ -9,6 +9,7 @@ import (
 	"log"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -17,14 +18,13 @@ const (
 	PluginName = "bifrost-http-telemetry"
 )
 
-// Define context key type for storing start time
-type contextKey string
+// ContextKey is a custom type for prometheus context keys to prevent collisions
+type ContextKey string
 
-// PrometheusContextKey is a custom type for prometheus context keys to prevent collisions
-type PrometheusContextKey string
-
-const startTimeKey contextKey = "startTime"
-const methodKey contextKey = "method"
+const (
+	startTimeKey          ContextKey                = "bf-prom-start-time"
+	pricingCostContextKey schemas.BifrostContextKey = "bf-pricing-cost"
+)
 
 // PrometheusPlugin implements the schemas.Plugin interface for Prometheus metrics.
 // It tracks metrics for upstream provider requests, including:
@@ -38,7 +38,7 @@ type PrometheusPlugin struct {
 }
 
 // NewPrometheusPlugin creates a new PrometheusPlugin with initialized metrics.
-func NewPrometheusPlugin() *PrometheusPlugin {
+func Init() *PrometheusPlugin {
 	return &PrometheusPlugin{
 		UpstreamRequestsTotal: bifrostUpstreamRequestsTotal,
 		UpstreamLatency:       bifrostUpstreamLatencySeconds,
@@ -55,18 +55,6 @@ func (p *PrometheusPlugin) GetName() string {
 func (p *PrometheusPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	*ctx = context.WithValue(*ctx, startTimeKey, time.Now())
 
-	if req.Input.ChatCompletionInput != nil {
-		*ctx = context.WithValue(*ctx, methodKey, "chat")
-	} else if req.Input.TextCompletionInput != nil {
-		*ctx = context.WithValue(*ctx, methodKey, "text")
-	} else if req.Input.EmbeddingInput != nil {
-		*ctx = context.WithValue(*ctx, methodKey, "embedding")
-	} else if req.Input.SpeechInput != nil {
-		*ctx = context.WithValue(*ctx, methodKey, "speech")
-	} else if req.Input.TranscriptionInput != nil {
-		*ctx = context.WithValue(*ctx, methodKey, "transcription")
-	}
-
 	return req, nil, nil
 }
 
@@ -79,27 +67,61 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		return result, bifrostErr, nil
 	}
 
+	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
+	if !ok {
+		log.Println("Warning: request type not found in context for Prometheus PostHook")
+		return result, bifrostErr, nil
+	}
+
+	if bifrost.IsStreamRequestType(requestType) {
+		if streamEndIndicatorValue := (*ctx).Value(schemas.BifrostContextKeyStreamEndIndicator); streamEndIndicatorValue != nil {
+			isFinalChunk, ok := streamEndIndicatorValue.(bool)
+			if !ok || !isFinalChunk {
+				return result, bifrostErr, nil
+			}
+		}
+	}
+
 	startTime, ok := (*ctx).Value(startTimeKey).(time.Time)
 	if !ok {
 		log.Println("Warning: startTime not found in context for Prometheus PostHook")
 		return result, bifrostErr, nil
 	}
 
-	method, ok := (*ctx).Value(methodKey).(string)
+	provider, ok := (*ctx).Value(schemas.BifrostContextKeyRequestProvider).(schemas.ModelProvider)
+	if !ok {
+		log.Println("Warning: provider not found in context for Prometheus PostHook")
+		return result, bifrostErr, nil
+	}
+
+	model, ok := (*ctx).Value(schemas.BifrostContextKeyRequestModel).(string)
+	if !ok {
+		log.Println("Warning: model not found in context for Prometheus PostHook")
+		return result, bifrostErr, nil
+	}
+
+	method, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
 	if !ok {
 		log.Println("Warning: method not found in context for Prometheus PostHook")
 		return result, bifrostErr, nil
 	}
 
+	price, ok := (*ctx).Value(pricingCostContextKey).(float64)
+	if !ok {
+		price = 0
+	}
+
 	// Collect prometheus labels from context
 	labelValues := map[string]string{
-		"target": fmt.Sprintf("%s/%s", result.ExtraFields.Provider, result.Model),
-		"method": method,
+		"provider": string(provider),
+		"model":    model,
+		"method":   string(method),
+		"cost":     fmt.Sprintf("%f", price),
 	}
 
 	// Get all prometheus labels from context
 	for _, key := range customLabels {
-		if value := (*ctx).Value(PrometheusContextKey(key)); value != nil {
+		if value := (*ctx).Value(ContextKey(key)); value != nil {
 			if strValue, ok := value.(string); ok {
 				labelValues[key] = strValue
 			}
@@ -107,7 +129,7 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	}
 
 	// Get label values in the correct order
-	promLabelValues := getPrometheusLabelValues(append([]string{"target", "method"}, customLabels...), labelValues)
+	promLabelValues := getPrometheusLabelValues(append([]string{"provider", "model", "method", "cost"}, customLabels...), labelValues)
 
 	duration := time.Since(startTime).Seconds()
 	p.UpstreamLatency.WithLabelValues(promLabelValues...).Observe(duration)

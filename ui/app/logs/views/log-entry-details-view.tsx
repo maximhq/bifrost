@@ -32,7 +32,7 @@ export default function LogEntryDetailsView(props: Props) {
 					</div>
 				)}
 				<div
-					className={cn("text-md flex text-xs font-medium whitespace-nowrap transition-transform delay-75", {
+					className={cn("text-md flex text-xs font-medium overflow-ellipsis transition-transform delay-75", {
 						"w-full flex-col items-center gap-2": orientation === "horizontal",
 						"flex-row items-start gap-2": orientation === "vertical",
 						[`${props.valueClassName}`]: props.valueClassName !== undefined,

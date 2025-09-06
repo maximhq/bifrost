@@ -49,7 +49,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 	{
 		accessorKey: "model",
 		header: "Model",
-		cell: ({ row }) => <div className="max-w-[240px] truncate font-mono text-xs font-normal">{row.original.model}</div>,
+		cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-xs font-normal">{row.original.model}</div>,
 	},
 	{
 		accessorKey: "latency",
@@ -87,7 +87,27 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 			);
 		},
 	},
+	{
+		accessorKey: "cost",
+		header: ({ column }) => (
+			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+				Cost
+				<ArrowUpDown className="ml-2 h-4 w-4" />
+			</Button>
+		),
+		cell: ({ row }) => {
+			const tokenUsage = row.original.token_usage;
+			if (!tokenUsage) {
+				return <div className="pl-4 font-mono text-xs">N/A</div>;
+			}
 
+			return (
+				<div className="pl-4 text-xs">
+					<div className="font-mono">{row.original.cost?.toFixed(4)}</div>
+				</div>
+			);
+		},
+	},
 	{
 		accessorKey: "status",
 		header: "Status",
