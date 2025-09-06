@@ -17,13 +17,10 @@ const PluginName = "governance"
 type contextKey string
 
 const (
-	governanceRejectedContextKey        contextKey = "bf-governance-rejected"
-	governanceProviderContextKey        contextKey = "bf-governance-provider"
-	governanceModelContextKey           contextKey = "bf-governance-model"
-	governanceRequestTypeContextKey     contextKey = "bf-governance-request-type"
-	governanceIsCacheReadContextKey     contextKey = "bf-governance-is-cache-read"
-	governanceIsBatchContextKey         contextKey = "bf-governance-is-batch"
-	governanceIncludeOnlyKeysContextKey contextKey = "bf-governance-include-only-keys"
+	governanceRejectedContextKey    contextKey                = "bf-governance-rejected"
+	governanceIsCacheReadContextKey contextKey                = "bf-governance-is-cache-read"
+	governanceIsBatchContextKey     contextKey                = "bf-governance-is-batch"
+	pricingCostContextKey           schemas.BifrostContextKey = "bf-pricing-cost"
 )
 
 // Config is the configuration for the governance plugin
@@ -34,10 +31,9 @@ type Config struct {
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
 type GovernancePlugin struct {
 	// Core components with clear separation of concerns
-	store          *GovernanceStore // Pure data access layer
-	resolver       *BudgetResolver  // Pure decision engine for hierarchical governance
-	tracker        *UsageTracker    // Business logic owner (updates, resets, persistence)
-	pricingManager *PricingManager  // Pricing data management and cost calculations
+	store    *GovernanceStore // Pure data access layer
+	resolver *BudgetResolver  // Pure decision engine for hierarchical governance
+	tracker  *UsageTracker    // Business logic owner (updates, resets, persistence)
 
 	// Dependencies
 	configStore configstore.ConfigStore
@@ -64,13 +60,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store conf
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(governanceStore, resolver, store, logger)
 
-	// 4. Pricing Manager (manages model pricing data and cost calculations)
-	pricingManager, err := NewPricingManager(store, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize pricing manager: %w", err)
-	}
-
-	// 5. Perform startup reset check for any expired limits from downtime
+	// 4. Perform startup reset check for any expired limits from downtime
 	if store != nil {
 		if err := tracker.PerformStartupResets(); err != nil {
 			logger.Warn("startup reset failed: %v", err)
@@ -79,13 +69,12 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store conf
 	}
 
 	plugin := &GovernancePlugin{
-		store:          governanceStore,
-		resolver:       resolver,
-		tracker:        tracker,
-		pricingManager: pricingManager,
-		configStore:    store,
-		logger:         logger,
-		isVkMandatory:  config.IsVkMandatory,
+		store:         governanceStore,
+		resolver:      resolver,
+		tracker:       tracker,
+		configStore:   store,
+		logger:        logger,
+		isVkMandatory: config.IsVkMandatory,
 	}
 
 	return plugin, nil
@@ -122,18 +111,10 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	// Extract provider and model from request
 	provider := req.Provider
 	model := req.Model
-	requestType := getRequestType(req)
-
-	// Detect cache and batch operations
-	isCacheRead := isCacheReadRequest(req, headers)
-	isBatch := isBatchRequest(req)
 
 	// Store original request provider/model and operation flags in context for PostHook
-	*ctx = context.WithValue(*ctx, governanceProviderContextKey, provider)
-	*ctx = context.WithValue(*ctx, governanceModelContextKey, model)
-	*ctx = context.WithValue(*ctx, governanceRequestTypeContextKey, requestType)
-	*ctx = context.WithValue(*ctx, governanceIsCacheReadContextKey, isCacheRead)
-	*ctx = context.WithValue(*ctx, governanceIsBatchContextKey, isBatch)
+	*ctx = context.WithValue(*ctx, schemas.BifrostContextKeyRequestProvider, provider)
+	*ctx = context.WithValue(*ctx, schemas.BifrostContextKeyRequestModel, model)
 
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
@@ -225,21 +206,27 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	// Extract provider and model from stored context values (set in PreHook)
 	var provider schemas.ModelProvider
 	var model string
-	var requestType string
+	var requestType schemas.RequestType
+	var cost float64
 
-	if providerValue := (*ctx).Value(governanceProviderContextKey); providerValue != nil {
+	if providerValue := (*ctx).Value(schemas.BifrostContextKeyRequestProvider); providerValue != nil {
 		if p, ok := providerValue.(schemas.ModelProvider); ok {
 			provider = p
 		}
 	}
-	if modelValue := (*ctx).Value(governanceModelContextKey); modelValue != nil {
+	if modelValue := (*ctx).Value(schemas.BifrostContextKeyRequestModel); modelValue != nil {
 		if m, ok := modelValue.(string); ok {
 			model = m
 		}
 	}
-	if requestTypeValue := (*ctx).Value(governanceRequestTypeContextKey); requestTypeValue != nil {
-		if r, ok := requestTypeValue.(string); ok {
+	if requestTypeValue := (*ctx).Value(schemas.BifrostContextKeyRequestType); requestTypeValue != nil {
+		if r, ok := requestTypeValue.(schemas.RequestType); ok {
 			requestType = r
+		}
+	}
+	if costValue := (*ctx).Value(pricingCostContextKey); costValue != nil {
+		if c, ok := costValue.(float64); ok {
+			cost = c
 		}
 	}
 
@@ -272,7 +259,7 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		customerID = &customerIDValue
 	}
 
-	go p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, teamID, customerID, isCacheRead, isBatch)
+	go p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, teamID, customerID, isCacheRead, isBatch, cost)
 
 	return result, err, nil
 }
@@ -283,154 +270,30 @@ func (p *GovernancePlugin) Cleanup() error {
 		return err
 	}
 
-	p.pricingManager.Cleanup()
-
 	return nil
 }
 
-// isStreamingResponse checks if the response is a streaming delta
-func (p *GovernancePlugin) isStreamingResponse(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check for streaming choices
-	if len(result.Choices) > 0 {
-		for _, choice := range result.Choices {
-			if choice.BifrostStreamResponseChoice != nil {
-				return true
-			}
-		}
-	}
-
-	// Check for streaming speech output
-	if result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil {
-		return true
-	}
-
-	// Check for streaming transcription output
-	if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil {
-		return true
-	}
-
-	return false
-}
-
-// isFinalChunk checks if this is the final chunk of a streaming response
-func (p *GovernancePlugin) isFinalChunk(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check for finish reason in streaming choices
-	if len(result.Choices) > 0 {
-		for _, choice := range result.Choices {
-			if choice.BifrostStreamResponseChoice != nil && choice.FinishReason != nil {
-				return true
-			}
-		}
-	}
-
-	// Check for usage data in speech response (indicates completion)
-	if result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil && result.Speech.Usage != nil {
-		return true
-	}
-
-	// Check for usage data in transcribe response (indicates completion)
-	if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil && result.Transcribe.Usage != nil {
-		return true
-	}
-
-	return false
-}
-
-// hasUsageData checks if the response contains actual usage information
-func (p *GovernancePlugin) hasUsageData(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check main usage field
-	if result.Usage != nil {
-		return true
-	}
-
-	// Check speech usage
-	if result.Speech != nil && result.Speech.Usage != nil {
-		return true
-	}
-
-	// Check transcribe usage
-	if result.Transcribe != nil && result.Transcribe.Usage != nil {
-		return true
-	}
-
-	return false
-}
-
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model, requestType, virtualKey, requestID string, teamID, customerID *string, isCacheRead, isBatch bool) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, teamID, customerID *string, isCacheRead, isBatch bool, cost float64) {
 	// Determine if request was successful
 	success := (result != nil)
 
 	// Streaming detection
-	isStreaming := p.isStreamingResponse(result)
-	isFinalChunk := p.isFinalChunk(result)
-	hasUsageData := p.hasUsageData(result)
+	isStreaming := bifrost.IsStreamRequestType(requestType)
+	isFinalChunk := isFinalChunk(result)
+	hasUsageData := hasUsageData(result)
 
 	// Extract usage information from response (including speech and transcribe)
 	var tokensUsed int64
-	var usage *schemas.LLMUsage
-	var audioSeconds *int
-	var audioTokenDetails *schemas.AudioTokenDetails
 
 	if result != nil {
-		// Check main usage field
 		if result.Usage != nil {
-			usage = result.Usage
 			tokensUsed = int64(result.Usage.TotalTokens)
 		} else if result.Speech != nil && result.Speech.Usage != nil {
-			// For speech synthesis, create LLMUsage from AudioLLMUsage
 			tokensUsed = int64(result.Speech.Usage.TotalTokens)
-			usage = &schemas.LLMUsage{
-				PromptTokens:     result.Speech.Usage.InputTokens,
-				CompletionTokens: 0, // Speech doesn't have completion tokens
-				TotalTokens:      result.Speech.Usage.TotalTokens,
-			}
-
-			// Extract audio token details if available
-			if result.Speech.Usage.InputTokensDetails != nil {
-				audioTokenDetails = result.Speech.Usage.InputTokensDetails
-			}
 		} else if result.Transcribe != nil && result.Transcribe.Usage != nil && result.Transcribe.Usage.TotalTokens != nil {
-			// For transcription, create LLMUsage from TranscriptionUsage
 			tokensUsed = int64(*result.Transcribe.Usage.TotalTokens)
-			inputTokens := 0
-			outputTokens := 0
-			if result.Transcribe.Usage.InputTokens != nil {
-				inputTokens = *result.Transcribe.Usage.InputTokens
-			}
-			if result.Transcribe.Usage.OutputTokens != nil {
-				outputTokens = *result.Transcribe.Usage.OutputTokens
-			}
-			usage = &schemas.LLMUsage{
-				PromptTokens:     inputTokens,
-				CompletionTokens: outputTokens,
-				TotalTokens:      int(*result.Transcribe.Usage.TotalTokens),
-			}
-
-			// Extract audio duration if available (for duration-based pricing)
-			if result.Transcribe.Usage.Seconds != nil {
-				audioSeconds = result.Transcribe.Usage.Seconds
-			}
-
-			// Extract audio token details if available
-			if result.Transcribe.Usage.InputTokenDetails != nil {
-				audioTokenDetails = result.Transcribe.Usage.InputTokenDetails
-			}
 		}
 	}
-
-	cost := p.pricingManager.calculateCostForUsage(string(provider), model, usage, requestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
 
 	// Create usage update for tracker (business logic)
 	usageUpdate := &UsageUpdate{
@@ -451,8 +314,6 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 	// Queue usage update asynchronously using tracker
 	p.tracker.UpdateUsage(usageUpdate)
 }
-
-// Public Methods exposed for handlers
 
 // GetGovernanceStore returns the governance store
 func (p *GovernancePlugin) GetGovernanceStore() *GovernanceStore {

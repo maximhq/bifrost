@@ -857,9 +857,6 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 		ctx = bifrost.ctx
 	}
 
-	// Add request type to context
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, requestType)
-
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, requestType)
 
@@ -909,9 +906,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 		ctx = bifrost.ctx
 	}
 
-	// Add request type to context
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, requestType)
-
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryStreamRequest(req, ctx, requestType)
 
@@ -953,6 +947,9 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
+
+	// Attach context keys to the context
+	ctx = attachContextKeys(ctx, req, requestType)
 
 	// Add MCP tools to request if MCP is configured and requested
 	if requestType != schemas.EmbeddingRequest &&
@@ -1041,6 +1038,9 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
+
+	// Attach context keys to the context
+	ctx = attachContextKeys(ctx, req, requestType)
 
 	// Add MCP tools to request if MCP is configured and requested
 	if requestType != schemas.SpeechStreamRequest && requestType != schemas.TranscriptionStreamRequest && bifrost.mcpManager != nil {
@@ -1181,7 +1181,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
 		var postHookRunner schemas.PostHookRunner
-		if isStreamRequestType(req.Type) {
+		if IsStreamRequestType(req.Type) {
 			pipeline := bifrost.getPluginPipeline()
 			defer bifrost.releasePluginPipeline(pipeline)
 
@@ -1208,7 +1208,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			bifrost.logger.Debug("attempting request for provider %s", provider.GetProviderKey())
 
 			// Attempt the request
-			if isStreamRequestType(req.Type) {
+			if IsStreamRequestType(req.Type) {
 				stream, bifrostError = handleProviderStreamRequest(provider, &req, key, postHookRunner, req.Type)
 				if bifrostError != nil && !bifrostError.IsBifrostError {
 					break // Don't retry client errors
@@ -1248,7 +1248,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
 			}
 		} else {
-			if isStreamRequestType(req.Type) {
+			if IsStreamRequestType(req.Type) {
 				// Send stream with context awareness to prevent deadlock
 				select {
 				case req.ResponseStream <- stream:
@@ -1424,7 +1424,7 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType sc
 	msg.Type = reqType
 
 	// Conditionally allocate ResponseStream for streaming requests only
-	if isStreamRequestType(reqType) {
+	if IsStreamRequestType(reqType) {
 		responseStreamChan := bifrost.responseStreamPool.Get().(chan chan *schemas.BifrostStream)
 		// Clear any previous values to avoid leaking between requests
 		select {

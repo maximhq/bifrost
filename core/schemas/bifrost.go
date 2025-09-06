@@ -101,6 +101,8 @@ const (
 	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
 	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
 	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
+	BifrostContextKeyRequestProvider    BifrostContextKey = "bifrost-request-provider"
+	BifrostContextKeyRequestModel       BifrostContextKey = "bifrost-request-model"
 )
 
 //* Request Structs

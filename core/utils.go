@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand"
 	"time"
@@ -37,6 +38,14 @@ func MarshalToStringPtr(v any) (*string, error) {
 	return &data, nil
 }
 
+func attachContextKeys(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) context.Context {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, requestType)
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestProvider, req.Provider)
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestModel, req.Model)
+
+	return ctx
+}
+
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
 // Some providers like Ollama and SGL are keyless and don't require API keys.
 func providerRequiresKey(providerKey schemas.ModelProvider) bool {
@@ -47,11 +56,6 @@ func providerRequiresKey(providerKey schemas.ModelProvider) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs..
 func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock
-}
-
-// isStreamRequestType returns true if the given request type is a stream request.
-func isStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -146,4 +150,9 @@ var standardProvidersSet = func() map[schemas.ModelProvider]struct{} {
 func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	_, ok := standardProvidersSet[providerKey]
 	return ok
+}
+
+// IsStreamRequestType returns true if the given request type is a stream request.
+func IsStreamRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest
 }
