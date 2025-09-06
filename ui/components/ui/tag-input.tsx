@@ -46,7 +46,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(({ cla
 	};
 
 	return (
-		<div className={cn("border-input flex flex-wrap items-center gap-2 rounded-md border p-2", className)}>
+		<div className={cn("border-input flex flex-wrap items-center gap-2 rounded-sm border", className)}>
 			{value.map((tag) => (
 				<Badge key={tag} variant="secondary" className="flex items-center gap-1">
 					{tag}

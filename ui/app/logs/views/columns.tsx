@@ -19,7 +19,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		),
 		cell: ({ row }) => {
 			const timestamp = row.original.timestamp;
-			return <div className="font-mono text-xs">{new Date(timestamp).toLocaleString()}</div>;
+			return <div className="font-mono text-sm">{new Date(timestamp).toISOString()}</div>;
 		},
 	},
 	{
@@ -27,7 +27,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		header: "Type",
 		cell: ({ row }) => {
 			return (
-				<Badge variant="outline" className={`${REQUEST_TYPE_COLORS[row.original.object as keyof typeof REQUEST_TYPE_COLORS]} text-xs`}>
+				<Badge variant="outline" className={`${REQUEST_TYPE_COLORS[row.original.object as keyof typeof REQUEST_TYPE_COLORS]} text-sm`}>
 					{REQUEST_TYPE_LABELS[row.original.object as keyof typeof REQUEST_TYPE_LABELS]}
 				</Badge>
 			);
@@ -39,7 +39,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		cell: ({ row }) => {
 			const provider = row.original.provider as Provider;
 			return (
-				<Badge variant="secondary" className={`font-mono uppercase`}>
+				<Badge variant="secondary" className={`font-mono text-sm uppercase`}>
 					<RenderProviderIcon provider={provider as ProviderIconType} size="sm" />
 					{provider}
 				</Badge>
@@ -49,7 +49,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 	{
 		accessorKey: "model",
 		header: "Model",
-		cell: ({ row }) => <div className="max-w-[240px] truncate font-mono text-xs font-normal">{row.original.model}</div>,
+		cell: ({ row }) => <div className="max-w-[240px] truncate font-mono text-sm font-normal">{row.original.model}</div>,
 	},
 	{
 		accessorKey: "latency",
@@ -61,7 +61,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		),
 		cell: ({ row }) => {
 			const latency = row.original.latency;
-			return <div className="pl-4 font-mono text-xs">{latency ? `${latency.toLocaleString()}ms` : "N/A"}</div>;
+			return <div className="pl-4 font-mono text-sm">{latency ? `${latency.toLocaleString()}ms` : "N/A"}</div>;
 		},
 	},
 	{
@@ -75,11 +75,11 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		cell: ({ row }) => {
 			const tokenUsage = row.original.token_usage;
 			if (!tokenUsage) {
-				return <div className="pl-4 font-mono text-xs">N/A</div>;
+				return <div className="pl-4 font-mono text-sm">N/A</div>;
 			}
 
 			return (
-				<div className="pl-4 text-xs">
+				<div className="pl-4 text-sm">
 					<div className="font-mono">
 						{tokenUsage.total_tokens.toLocaleString()} ({tokenUsage.prompt_tokens}+{tokenUsage.completion_tokens})
 					</div>
@@ -94,7 +94,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		cell: ({ row }) => {
 			const status = row.original.status as Status;
 			return (
-				<Badge variant="secondary" className={`${STATUS_COLORS[status] ?? ""} font-mono`}>
+				<Badge variant="secondary" className={`${STATUS_COLORS[status] ?? ""} font-mono text-xs uppercase`}>
 					{status}
 				</Badge>
 			);

@@ -9,11 +9,11 @@ import { REQUEST_TYPE_COLORS, REQUEST_TYPE_LABELS, Status, STATUS_COLORS } from 
 import { LogEntry } from "@/lib/types/logs";
 import { DollarSign, FileText, Info, Timer } from "lucide-react";
 import moment from "moment";
-import { CodeEditor } from "./code-editor";
-import LogEntryDetailsView from "./log-entry-details-view";
-import LogMessageView from "./log-message-view";
-import SpeechView from "./speech-view";
-import TranscriptionView from "./transcription-view";
+import { CodeEditor } from "./codeEditor";
+import LogEntryDetailsView from "./logEntryDetailsView";
+import LogMessageView from "./logMessageView";
+import SpeechView from "./speechView";
+import TranscriptionView from "./transcriptionView";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;

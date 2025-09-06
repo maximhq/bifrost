@@ -1,8 +1,17 @@
 "use client";
 
-import { closeConfigureDialog, useAppDispatch, useAppSelector, useGetProvidersQuery } from "@/lib/store";
+import {
+	Breadcrumb,
+	BreadcrumbItem,
+	BreadcrumbLink,
+	BreadcrumbList,
+	BreadcrumbPage,
+	BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { ProviderSidebar } from "./provider-sidebar";
+
+import { closeConfigureDialog, setSelectedProvider, useAppDispatch, useAppSelector, useGetProvidersQuery } from "@/lib/store";
 import { useRouter } from "next/navigation";
-import ProviderForm from "./provider-form";
 
 export default function ConfigurePage() {
 	const router = useRouter();
@@ -23,13 +32,29 @@ export default function ConfigurePage() {
 
 	return (
 		<div className="container mx-auto py-8">
-			<ProviderForm
-				provider={selectedProvider}
-				allProviders={providersData?.providers || []}
-				existingProviders={providersData?.providers?.map((p) => p.name) || []}
-				onSave={handleSave}
-				onCancel={handleCancel}
-			/>
+			<div className="-mt-6 flex w-full flex-col gap-6">
+				<Breadcrumb>
+					<BreadcrumbList>
+						<BreadcrumbItem>
+							<BreadcrumbLink href="/providers">Providers</BreadcrumbLink>
+						</BreadcrumbItem>
+						<BreadcrumbSeparator />
+						<BreadcrumbItem>
+							<BreadcrumbPage>Configure provider</BreadcrumbPage>
+						</BreadcrumbItem>
+					</BreadcrumbList>
+				</Breadcrumb>
+				<div className="flex gap-4">
+					<ProviderSidebar
+						selectedProvider={selectedProvider?.name || ""}
+						allProviders={providersData?.providers || []}
+						onProviderSelect={(provider, providerName) => {
+							dispatch(setSelectedProvider(provider));
+						}}
+						onCreateCustomProvider={() => {}}
+					/>
+				</div>
+			</div>
 		</div>
 	);
 }
