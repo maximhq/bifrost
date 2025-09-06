@@ -116,7 +116,7 @@ func makeRequestWithDirectKey() {
         Value:  "sk-direct-api-key",
         Weight: 1.0,
     }
-    ctx = context.WithValue(ctx, schemas.BifrostContextKey, directKey)
+    ctx = context.WithValue(ctx, schemas.BifrostContextKeyDirectKey, directKey)
     
     response, err := client.ChatCompletion(ctx, &schemas.BifrostRequest{
         Provider: schemas.OpenAI,
@@ -212,7 +212,7 @@ For cloud providers with deployment-based routing, Bifrost validates deployment 
 For scenarios requiring explicit key control, Bifrost supports bypassing the entire key management system:
 
 **Go SDK Context Override:**
-Pass a key directly in the request context using `schemas.BifrostContextKey`. This completely bypasses provider key lookup and selection.
+Pass a key directly in the request context using `schemas.BifrostContextKeyDirectKey`. This completely bypasses provider key lookup and selection.
 
 **Gateway Header-based Keys:**
 Send API keys in `Authorization` (Bearer) or `x-api-key` headers. Requires `allow_direct_keys` setting to be enabled.

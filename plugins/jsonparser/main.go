@@ -165,7 +165,7 @@ func (p *JsonParserPlugin) getRequestID(ctx *context.Context, result *schemas.Bi
 
 	// Try to get from context if not available in result
 	if ctx != nil {
-		if requestID, ok := (*ctx).Value(bifrost.BifrostContextKey("request-id")).(string); ok && requestID != "" {
+		if requestID, ok := (*ctx).Value(schemas.BifrostContextKey("request-id")).(string); ok && requestID != "" {
 			return requestID
 		}
 	}

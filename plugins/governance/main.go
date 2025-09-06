@@ -101,7 +101,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	// Extract governance headers and virtual key using utility functions
 	headers := extractHeadersFromContext(*ctx)
 	virtualKey := getStringFromContext(*ctx, ContextKey("x-bf-vk"))
-	requestID := getStringFromContext(*ctx, bifrost.BifrostContextKey("request-id"))
+	requestID := getStringFromContext(*ctx, schemas.BifrostContextKey("request-id"))
 
 	if virtualKey == "" {
 		if p.isVkMandatory != nil && *p.isVkMandatory {
@@ -215,7 +215,7 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	// Extract governance information
 	headers := extractHeadersFromContext(*ctx)
 	virtualKey := getStringFromContext(*ctx, ContextKey("x-bf-vk"))
-	requestID := getStringFromContext(*ctx, bifrost.BifrostContextKey("request-id"))
+	requestID := getStringFromContext(*ctx, schemas.BifrostContextKey("request-id"))
 
 	// Skip if no virtual key
 	if virtualKey == "" {

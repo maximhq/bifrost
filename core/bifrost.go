@@ -17,20 +17,6 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// RequestType represents the type of request being made to a provider.
-type RequestType string
-
-const (
-	TextCompletionRequest       RequestType = "text_completion"
-	ChatCompletionRequest       RequestType = "chat_completion"
-	ChatCompletionStreamRequest RequestType = "chat_completion_stream"
-	EmbeddingRequest            RequestType = "embedding"
-	SpeechRequest               RequestType = "speech"
-	SpeechStreamRequest         RequestType = "speech_stream"
-	TranscriptionRequest        RequestType = "transcription"
-	TranscriptionStreamRequest  RequestType = "transcription_stream"
-)
-
 // ChannelMessage represents a message passed through the request channel.
 // It contains the request, response and error channels, and the request type.
 type ChannelMessage struct {
@@ -39,7 +25,7 @@ type ChannelMessage struct {
 	Response       chan *schemas.BifrostResponse
 	ResponseStream chan chan *schemas.BifrostStream
 	Err            chan schemas.BifrostError
-	Type           RequestType
+	Type           schemas.RequestType
 }
 
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
@@ -81,12 +67,6 @@ var retryableStatusCodes = map[int]bool{
 	504: true, // Gateway Timeout
 	429: true, // Too Many Requests
 }
-
-// BifrostContextKey is a type for context keys used in Bifrost.
-type BifrostContextKey string
-
-// BifrostContextKeyRequestType is a context key for the request type.
-const BifrostContextKeyRequestType BifrostContextKey = "bifrost-request-type"
 
 // INITIALIZATION
 
@@ -212,7 +192,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, TextCompletionRequest)
+	return bifrost.handleRequest(ctx, req, schemas.TextCompletionRequest)
 }
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
@@ -226,7 +206,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, ChatCompletionRequest)
+	return bifrost.handleRequest(ctx, req, schemas.ChatCompletionRequest)
 }
 
 // ChatCompletionStreamRequest sends a chat completion stream request to the specified provider.
@@ -240,7 +220,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *sc
 		}
 	}
 
-	return bifrost.handleStreamRequest(ctx, req, ChatCompletionStreamRequest)
+	return bifrost.handleStreamRequest(ctx, req, schemas.ChatCompletionStreamRequest)
 }
 
 // EmbeddingRequest sends an embedding request to the specified provider.
@@ -254,7 +234,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, EmbeddingRequest)
+	return bifrost.handleRequest(ctx, req, schemas.EmbeddingRequest)
 }
 
 // SpeechRequest sends a speech request to the specified provider.
@@ -268,7 +248,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostR
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, SpeechRequest)
+	return bifrost.handleRequest(ctx, req, schemas.SpeechRequest)
 }
 
 // SpeechStreamRequest sends a speech stream request to the specified provider.
@@ -282,7 +262,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.Bi
 		}
 	}
 
-	return bifrost.handleStreamRequest(ctx, req, SpeechStreamRequest)
+	return bifrost.handleStreamRequest(ctx, req, schemas.SpeechStreamRequest)
 }
 
 // TranscriptionRequest sends a transcription request to the specified provider.
@@ -296,7 +276,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.B
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, TranscriptionRequest)
+	return bifrost.handleRequest(ctx, req, schemas.TranscriptionRequest)
 }
 
 // TranscriptionStreamRequest sends a transcription stream request to the specified provider.
@@ -310,7 +290,7 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *sch
 		}
 	}
 
-	return bifrost.handleStreamRequest(ctx, req, TranscriptionStreamRequest)
+	return bifrost.handleStreamRequest(ctx, req, schemas.TranscriptionStreamRequest)
 }
 
 // UpdateProviderConcurrency dynamically updates the queue size and concurrency for an existing provider.
@@ -866,7 +846,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all non-streaming public API methods.
-func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest, requestType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if err := validateRequest(req); err != nil {
 		err.Provider = req.Provider
 		return nil, err
@@ -878,7 +858,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	}
 
 	// Add request type to context
-	ctx = context.WithValue(ctx, BifrostContextKeyRequestType, requestType)
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, requestType)
 
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, requestType)
@@ -918,7 +898,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all streaming public API methods.
-func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.BifrostRequest, requestType RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if err := validateRequest(req); err != nil {
 		err.Provider = req.Provider
 		return nil, err
@@ -930,7 +910,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 	}
 
 	// Add request type to context
-	ctx = context.WithValue(ctx, BifrostContextKeyRequestType, requestType)
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, requestType)
 
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryStreamRequest(req, ctx, requestType)
@@ -968,14 +948,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
-func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context, requestType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context, requestType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	queue, err := bifrost.getProviderQueue(req.Provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
 
 	// Add MCP tools to request if MCP is configured and requested
-	if requestType != EmbeddingRequest && requestType != SpeechRequest && bifrost.mcpManager != nil {
+	if requestType != schemas.EmbeddingRequest &&
+		requestType != schemas.SpeechRequest &&
+		requestType != schemas.TranscriptionRequest &&
+		bifrost.mcpManager != nil {
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
@@ -1053,14 +1036,14 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 
 // tryStreamRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
-func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx context.Context, requestType RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx context.Context, requestType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	queue, err := bifrost.getProviderQueue(req.Provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
 
 	// Add MCP tools to request if MCP is configured and requested
-	if requestType != SpeechStreamRequest && requestType != TranscriptionStreamRequest && bifrost.mcpManager != nil {
+	if requestType != schemas.SpeechStreamRequest && requestType != schemas.TranscriptionStreamRequest && bifrost.mcpManager != nil {
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
@@ -1297,17 +1280,17 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
-func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, reqType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, reqType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	switch reqType {
-	case TextCompletionRequest:
+	case schemas.TextCompletionRequest:
 		return provider.TextCompletion(req.Context, req.Model, key, *req.Input.TextCompletionInput, req.Params)
-	case ChatCompletionRequest:
+	case schemas.ChatCompletionRequest:
 		return provider.ChatCompletion(req.Context, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
-	case EmbeddingRequest:
+	case schemas.EmbeddingRequest:
 		return provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
-	case SpeechRequest:
+	case schemas.SpeechRequest:
 		return provider.Speech(req.Context, req.Model, key, req.Input.SpeechInput, req.Params)
-	case TranscriptionRequest:
+	case schemas.TranscriptionRequest:
 		return provider.Transcription(req.Context, req.Model, key, req.Input.TranscriptionInput, req.Params)
 	default:
 		return nil, &schemas.BifrostError{
@@ -1320,13 +1303,13 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 }
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
-func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, reqType RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, reqType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	switch reqType {
-	case ChatCompletionStreamRequest:
+	case schemas.ChatCompletionStreamRequest:
 		return provider.ChatCompletionStream(req.Context, postHookRunner, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
-	case SpeechStreamRequest:
+	case schemas.SpeechStreamRequest:
 		return provider.SpeechStream(req.Context, postHookRunner, req.Model, key, req.Input.SpeechInput, req.Params)
-	case TranscriptionStreamRequest:
+	case schemas.TranscriptionStreamRequest:
 		return provider.TranscriptionStream(req.Context, postHookRunner, req.Model, key, req.Input.TranscriptionInput, req.Params)
 	default:
 		return nil, &schemas.BifrostError{
@@ -1418,7 +1401,7 @@ func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 
 // getChannelMessage gets a ChannelMessage from the pool and configures it with the request.
 // It also gets response and error channels from their respective pools.
-func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType RequestType) *ChannelMessage {
+func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType schemas.RequestType) *ChannelMessage {
 	// Get channels from pool
 	responseChan := bifrost.responseChannelPool.Get().(chan *schemas.BifrostResponse)
 	errorChan := bifrost.errorChannelPool.Get().(chan schemas.BifrostError)
@@ -1482,7 +1465,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) (schemas.Key, error) {
 	// Check if key has been set in the context explicitly
 	if ctx != nil {
-		key, ok := (*ctx).Value(schemas.BifrostContextKey).(schemas.Key)
+		key, ok := (*ctx).Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 		if ok {
 			return key, nil
 		}

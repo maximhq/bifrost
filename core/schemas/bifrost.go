@@ -79,6 +79,30 @@ var StandardProviders = []ModelProvider{
 	Vertex,
 }
 
+// RequestType represents the type of request being made to a provider.
+type RequestType string
+
+const (
+	TextCompletionRequest       RequestType = "text_completion"
+	ChatCompletionRequest       RequestType = "chat_completion"
+	ChatCompletionStreamRequest RequestType = "chat_completion_stream"
+	EmbeddingRequest            RequestType = "embedding"
+	SpeechRequest               RequestType = "speech"
+	SpeechStreamRequest         RequestType = "speech_stream"
+	TranscriptionRequest        RequestType = "transcription"
+	TranscriptionStreamRequest  RequestType = "transcription_stream"
+)
+
+// BifrostContextKey is a type for context keys used in Bifrost.
+type BifrostContextKey string
+
+// BifrostContextKeyRequestType is a context key for the request type.
+const (
+	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
+	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
+	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
+)
+
 //* Request Structs
 
 // RequestInput represents the input for a model request, which can be either
@@ -164,7 +188,7 @@ type TranscriptionInput struct {
 	Language       *string `json:"language,omitempty"`
 	Prompt         *string `json:"prompt,omitempty"`
 	ResponseFormat *string `json:"response_format,omitempty"` // Default is "json"
-	Format     *string `json:"file_format,omitempty"`// Type of file, not required in openai, but required in gemini
+	Format         *string `json:"file_format,omitempty"`     // Type of file, not required in openai, but required in gemini
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
@@ -369,17 +393,16 @@ func (mc *MessageContent) UnmarshalJSON(data []byte) error {
 type ContentBlockType string
 
 const (
-	ContentBlockTypeText  ContentBlockType = "text"
-	ContentBlockTypeImage ContentBlockType = "image_url"
+	ContentBlockTypeText       ContentBlockType = "text"
+	ContentBlockTypeImage      ContentBlockType = "image_url"
 	ContentBlockTypeInputAudio ContentBlockType = "input_audio"
 )
 
 type ContentBlock struct {
-	Type     ContentBlockType `json:"type"`
-	Text     *string          `json:"text,omitempty"`
-	ImageURL *ImageURLStruct  `json:"image_url,omitempty"`
-	InputAudio *InputAudioStruct  `json:"input_audio,omitempty"`
-
+	Type       ContentBlockType  `json:"type"`
+	Text       *string           `json:"text,omitempty"`
+	ImageURL   *ImageURLStruct   `json:"image_url,omitempty"`
+	InputAudio *InputAudioStruct `json:"input_audio,omitempty"`
 }
 
 // ToolMessage represents a message from a tool
@@ -405,7 +428,7 @@ type ImageURLStruct struct {
 // Data carries the audio payload as a string (e.g., data URL or provider-accepted encoded content).
 // Format is optional (e.g., "wav", "mp3"); when nil, providers may attempt auto-detection.
 type InputAudioStruct struct {
-	Data string `json:"data"`
+	Data   string  `json:"data"`
 	Format *string `json:"format,omitempty"`
 }
 

@@ -79,7 +79,7 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 				key.AzureKeyConfig.APIVersion = &apiVersionStr
 			}
 
-			ctx.SetUserValue(string(schemas.BifrostContextKey), key)
+			ctx.SetUserValue(string(schemas.BifrostContextKeyDirectKey), key)
 
 			return nil
 		}

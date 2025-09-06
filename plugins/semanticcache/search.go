@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
-func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType bifrost.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
 	// Generate hash for the request
 	hash, err := plugin.generateRequestHash(req, requestType)
 	if err != nil {
@@ -80,7 +79,7 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 }
 
 // performSemanticSearch performs semantic similarity search and returns matching response if found.
-func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType bifrost.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
 	// Extract text and metadata for embedding
 	text, paramsHash, err := plugin.extractTextForEmbedding(req, requestType)
 	if err != nil {

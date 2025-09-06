@@ -76,7 +76,7 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 // Returns:
 //   - string: Hexadecimal representation of the xxhash
 //   - error: Any error that occurred during request normalization or hashing
-func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, requestType bifrost.RequestType) (string, error) {
+func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, requestType schemas.RequestType) (string, error) {
 	// Create a hash input structure that includes both input and parameters
 	hashInput := struct {
 		Input  schemas.RequestInput     `json:"input"`
@@ -101,7 +101,7 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, requestTy
 
 // extractTextForEmbedding extracts meaningful text from different input types for embedding generation.
 // Returns the text to embed and metadata for storage.
-func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, requestType bifrost.RequestType) (string, string, error) {
+func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, requestType schemas.RequestType) (string, string, error) {
 	metadata := map[string]interface{}{}
 
 	attachments := []string{}
@@ -258,10 +258,10 @@ func getMetadataHash(metadata map[string]interface{}) (string, error) {
 }
 
 // isStreamingRequest checks if the request is a streaming request
-func (plugin *Plugin) isStreamingRequest(requestType bifrost.RequestType) bool {
-	return requestType == bifrost.ChatCompletionStreamRequest ||
-		requestType == bifrost.SpeechStreamRequest ||
-		requestType == bifrost.TranscriptionStreamRequest
+func (plugin *Plugin) isStreamingRequest(requestType schemas.RequestType) bool {
+	return requestType == schemas.ChatCompletionStreamRequest ||
+		requestType == schemas.SpeechStreamRequest ||
+		requestType == schemas.TranscriptionStreamRequest
 }
 
 // buildUnifiedMetadata constructs the unified metadata structure for VectorEntry

@@ -435,6 +435,9 @@ func handleOpenAIStreaming(
 
 		scanner := bufio.NewScanner(resp.Body)
 		chunkIndex := -1
+		usage := &schemas.LLMUsage{}
+
+		var finishReason *string
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -475,17 +478,14 @@ func handleOpenAIStreaming(
 
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
-				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
+				bifrostErr, err := parseOpenAIErrorForStreamDataLine(jsonData)
 				if err != nil {
 					logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
 					continue
 				}
-
-				select {
-				case responseChan <- errorStream:
-				case <-ctx.Done():
-				}
-				return // Stop processing on error
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+				return
 			}
 
 			// Parse into bifrost response
@@ -497,14 +497,8 @@ func handleOpenAIStreaming(
 
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if len(response.Choices) == 0 && response.Usage != nil {
-				// This is a usage information chunk at the end of stream
-				if params != nil {
-					response.ExtraFields.Params = *params
-				}
-				response.ExtraFields.Provider = providerName
-				response.ExtraFields.ChunkIndex = chunkIndex
-
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
+				// Collect usage information and send at the end of the stream
+				usage = response.Usage
 				continue
 			}
 
@@ -513,19 +507,11 @@ func handleOpenAIStreaming(
 				continue
 			}
 
-			// Handle finish reason in the final chunk
+			// Handle finish reason, usually in the final chunk
 			choice := response.Choices[0]
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
-				// This is the final chunk with finish reason
-				if params != nil {
-					response.ExtraFields.Params = *params
-				}
-				response.ExtraFields.Provider = providerName
-				response.ExtraFields.ChunkIndex = chunkIndex
-
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
-
-				// End stream processing after finish reason
+				// Collect finish reason and send at the end of the stream
+				finishReason = choice.FinishReason
 				continue
 			}
 
@@ -540,6 +526,28 @@ func handleOpenAIStreaming(
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 			}
 		}
+
+		chunkIndex++
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+
+		// Send usage information and finish reason at the end of the stream
+		response := &schemas.BifrostResponse{
+			Object: "chat.completion.chunk",
+			Usage:  usage,
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:   providerName,
+				ChunkIndex: chunkIndex,
+			},
+		}
+		if params != nil {
+			response.ExtraFields.Params = *params
+		}
+		processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
@@ -751,17 +759,14 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
-				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
+				bifrostErr, err := parseOpenAIErrorForStreamDataLine(jsonData)
 				if err != nil {
 					provider.logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
 					continue
 				}
-
-				select {
-				case responseChan <- errorStream:
-				case <-ctx.Done():
-				}
-				return // Stop processing on error
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+				return
 			}
 
 			// Parse into bifrost response
@@ -780,11 +785,17 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				Provider: providerName,
 			}
 
-			if params != nil {
-				response.ExtraFields.Params = *params
-			}
-
 			response.ExtraFields.ChunkIndex = chunkIndex
+
+			if speechResponse.Usage != nil {
+				if params != nil {
+					response.ExtraFields.Params = *params
+				}
+
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
+				return
+			}
 
 			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}
@@ -985,17 +996,14 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
-				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
+				bifrostErr, err := parseOpenAIErrorForStreamDataLine(jsonData)
 				if err != nil {
 					provider.logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
 					continue
 				}
-
-				select {
-				case responseChan <- errorStream:
-				case <-ctx.Done():
-				}
-				return // Stop processing on error
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+				return
 			}
 
 			var response schemas.BifrostResponse
@@ -1013,11 +1021,17 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				Provider: providerName,
 			}
 
-			if params != nil {
-				response.ExtraFields.Params = *params
-			}
-
 			response.ExtraFields.ChunkIndex = chunkIndex
+
+			if transcriptionResponse.Usage != nil {
+				if params != nil {
+					response.ExtraFields.Params = *params
+				}
+
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
+				return
+			}
 
 			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}
@@ -1161,31 +1175,29 @@ func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
 	return bifrostErr
 }
 
-func parseOpenAIErrorForStreamDataLine(jsonData string) (*schemas.BifrostStream, error) {
+func parseOpenAIErrorForStreamDataLine(jsonData string) (*schemas.BifrostError, error) {
 	var openAIError schemas.BifrostError
 	if err := sonic.Unmarshal([]byte(jsonData), &openAIError); err != nil {
 		return nil, err
 	}
 
 	// Send error through channel
-	errorStream := &schemas.BifrostStream{
-		BifrostError: &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Type:    openAIError.Error.Type,
-				Code:    openAIError.Error.Code,
-				Message: openAIError.Error.Message,
-				Param:   openAIError.Error.Param,
-			},
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: schemas.ErrorField{
+			Type:    openAIError.Error.Type,
+			Code:    openAIError.Error.Code,
+			Message: openAIError.Error.Message,
+			Param:   openAIError.Error.Param,
 		},
 	}
 
 	if openAIError.EventID != nil {
-		errorStream.BifrostError.EventID = openAIError.EventID
+		bifrostErr.EventID = openAIError.EventID
 	}
 	if openAIError.Error.EventID != nil {
-		errorStream.BifrostError.Error.EventID = openAIError.Error.EventID
+		bifrostErr.Error.EventID = openAIError.Error.EventID
 	}
 
-	return errorStream, nil
+	return bifrostErr, nil
 }

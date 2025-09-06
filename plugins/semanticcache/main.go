@@ -349,7 +349,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	*ctx = context.WithValue(*ctx, requestModelKey, req.Model)
 	*ctx = context.WithValue(*ctx, requestProviderKey, req.Provider)
 
-	requestType, ok := (*ctx).Value(bifrost.BifrostContextKeyRequestType).(bifrost.RequestType)
+	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
 	if !ok {
 		return req, nil, nil
 	}
@@ -445,7 +445,7 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 	}
 
 	// Get the request type from context
-	requestType, ok := (*ctx).Value(bifrost.BifrostContextKeyRequestType).(bifrost.RequestType)
+	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
 	if !ok {
 		return res, nil, nil
 	}
@@ -483,7 +483,7 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 	}
 
 	// Get embedding from context if available and needed
-	if shouldStoreEmbeddings && requestType != bifrost.EmbeddingRequest && requestType != bifrost.TranscriptionRequest {
+	if shouldStoreEmbeddings && requestType != schemas.EmbeddingRequest && requestType != schemas.TranscriptionRequest {
 		embeddingValue := (*ctx).Value(requestEmbeddingKey)
 		if embeddingValue != nil {
 			embedding, ok = embeddingValue.([]float32)

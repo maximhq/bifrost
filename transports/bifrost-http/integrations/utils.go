@@ -611,10 +611,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Execute the request through Bifrost
 		bifrostCtx := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys())
 
-		if ctx.UserValue(string(schemas.BifrostContextKey)) != nil {
-			key, ok := ctx.UserValue(string(schemas.BifrostContextKey)).(schemas.Key)
+		if ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)) != nil {
+			key, ok := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)).(schemas.Key)
 			if ok {
-				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKey, key)
+				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
 			}
 		}
 

@@ -50,8 +50,8 @@ func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 }
 
 // isStreamRequestType returns true if the given request type is a stream request.
-func isStreamRequestType(reqType RequestType) bool {
-	return reqType == ChatCompletionStreamRequest || reqType == SpeechStreamRequest || reqType == TranscriptionStreamRequest
+func isStreamRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.

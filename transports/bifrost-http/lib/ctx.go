@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
@@ -76,7 +75,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 	if requestID == "" {
 		requestID = uuid.New().String()
 	}
-	bifrostCtx = context.WithValue(bifrostCtx, bifrost.BifrostContextKey("request-id"), requestID)
+	bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("request-id"), requestID)
 
 	// Then process other headers
 	ctx.Request.Header.VisitAll(func(key, value []byte) {
@@ -208,7 +207,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 				Models: []string{}, // Empty models list - will be validated by provider
 				Weight: 1.0,        // Default weight
 			}
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey, key)
+			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
 

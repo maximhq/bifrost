@@ -739,6 +739,34 @@ func processAndSendResponse(
 	}
 }
 
+// processAndSendBifrostError handles post-hook processing and sends the bifrost error to the channel.
+// This utility reduces code duplication across streaming implementations by encapsulating
+// the common pattern of running post hooks, handling errors, and sending responses with
+// proper context cancellation handling.
+func processAndSendBifrostError(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	bifrostErr *schemas.BifrostError,
+	responseChan chan *schemas.BifrostStream,
+	logger schemas.Logger,
+) {
+	// Send scanner error through channel
+	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostErr)
+
+	if handleStreamControlSkip(logger, processedError) {
+		return
+	}
+
+	errorResponse := &schemas.BifrostStream{
+		BifrostResponse: processedResponse,
+		BifrostError:    processedError,
+	}
+	select {
+	case responseChan <- errorResponse:
+	case <-ctx.Done():
+	}
+}
+
 // processAndSendError handles post-hook processing and sends the error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with

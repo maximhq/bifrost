@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 )
@@ -255,7 +254,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	}
 
 	// Extract request ID from context
-	requestID, ok := (*ctx).Value(bifrost.BifrostContextKey("request-id")).(string)
+	requestID, ok := (*ctx).Value(schemas.BifrostContextKey("request-id")).(string)
 	if !ok || requestID == "" {
 		// Log error but don't fail the request
 		p.logger.Error("request-id not found in context or is empty")
@@ -337,7 +336,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	}
 
 	// Extract request ID from context
-	requestID, ok := (*ctx).Value(bifrost.BifrostContextKey("request-id")).(string)
+	requestID, ok := (*ctx).Value(schemas.BifrostContextKey("request-id")).(string)
 	if !ok || requestID == "" {
 		// Log error but don't fail the request
 		p.logger.Error("request-id not found in context or is empty")
@@ -345,13 +344,13 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	}
 
 	// Check if this is a streaming response
-	requestType, ok := (*ctx).Value(bifrost.BifrostContextKeyRequestType).(bifrost.RequestType)
+	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
 	if !ok {
 		p.logger.Error("request type missing/invalid in PostHook for request %s", requestID)
 		return result, err, nil
 	}
-	isAudioStreaming := requestType == bifrost.SpeechStreamRequest || requestType == bifrost.TranscriptionStreamRequest
-	isChatStreaming := requestType == bifrost.ChatCompletionStreamRequest
+	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
+	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest
 
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
