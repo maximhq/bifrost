@@ -8,3 +8,4 @@ export * from "./logsApi";
 export * from "./mcpApi";
 export * from "./providersApi";
 export * from "./pluginsApi";
+export * from './dbConfig'

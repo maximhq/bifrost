@@ -137,6 +137,27 @@ export interface UpdateProviderRequest {
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
+// Define DB configs
+export interface SqliteConfig {
+	type: "sqlite";
+	config: {
+		path: string;
+	};
+}
+
+export interface PostgresConfig {
+	type: "postgres";
+	config: {
+		host: string;
+		port: number;
+		user: string;
+		password: string;
+		dbName: string;
+		sslMode:string
+	};
+}
+// Union type
+export type DatabaseConfig = SqliteConfig | PostgresConfig;
 
 // BifrostErrorResponse matching Go's schemas.BifrostError
 export interface BifrostErrorResponse {
@@ -170,6 +191,7 @@ export interface CoreConfig {
 	enforce_governance_header: boolean;
 	allow_direct_keys: boolean;
 	allowed_origins: string[];
+	config_store: DatabaseConfig
 }
 
 // Semantic cache configuration types

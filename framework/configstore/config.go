@@ -8,9 +8,10 @@ import (
 // ConfigStoreType represents the type of config store.
 type ConfigStoreType string
 
-// ConfigStoreTypeSQLite is the type of config store for SQLite.
+// Supported config store types.
 const (
-	ConfigStoreTypeSQLite ConfigStoreType = "sqlite"
+	ConfigStoreTypeSQLite   ConfigStoreType = "sqlite"
+	ConfigStoreTypePostgres ConfigStoreType = "postgres"
 )
 
 // Config represents the configuration for the config store.
@@ -18,6 +19,21 @@ type Config struct {
 	Enabled bool            `json:"enabled"`
 	Type    ConfigStoreType `json:"type"`
 	Config  any             `json:"config"`
+}
+
+// SQLiteConfig represents configuration for SQLite.
+type SQLiteConfig struct {
+	Path string `json:"path"` // File path to the SQLite database
+}
+
+// PostgresConfig represents configuration for Postgres.
+type PostgresConfig struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	DBName   string `json:"dbName"`
+	SSLMode  string `json:"sslMode"`
 }
 
 // UnmarshalJSON unmarshals the config from JSON.
@@ -51,6 +67,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal sqlite config: %w", err)
 		}
 		c.Config = &sqliteConfig
+
+	case ConfigStoreTypePostgres:
+		var pgConfig PostgresConfig
+		if err := json.Unmarshal(temp.Config, &pgConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal postgres config: %w", err)
+		}
+		c.Config = &pgConfig
 
 	default:
 		return fmt.Errorf("unknown config store type: %s", temp.Type)

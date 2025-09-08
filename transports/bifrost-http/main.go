@@ -86,7 +86,6 @@ import (
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
-//go:embed all:ui
 var uiContent embed.FS
 
 var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
@@ -466,6 +465,7 @@ func main() {
 	integrationHandler := handlers.NewIntegrationHandler(client, config)
 	configHandler := handlers.NewConfigHandler(client, logger, config)
 	pluginsHandler := handlers.NewPluginsHandler(config.ConfigStore, logger)
+	dbHandler := handlers.NewDbHandler(client, logger, config)
 
 	var cacheHandler *handlers.CacheHandler
 	for _, plugin := range loadedPlugins {
@@ -491,6 +491,8 @@ func main() {
 	integrationHandler.RegisterRoutes(r)
 	configHandler.RegisterRoutes(r)
 	pluginsHandler.RegisterRoutes(r)
+	dbHandler.RegisterRoutes(r)
+
 	if cacheHandler != nil {
 		cacheHandler.RegisterRoutes(r)
 	}

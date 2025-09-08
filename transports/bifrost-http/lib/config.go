@@ -110,11 +110,11 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 //   - Automatic database persistence for all changes
 //   - Support for provider-specific key configurations (Azure, Vertex, Bedrock)
 type Config struct {
-	mu     sync.RWMutex
-	muMCP  sync.RWMutex
-	client *bifrost.Bifrost
-
-	configPath string
+	mu         sync.RWMutex
+	muMCP      sync.RWMutex
+	client     *bifrost.Bifrost
+	DbType     string
+	ConfigPath string
 
 	// Stores
 	ConfigStore configstore.ConfigStore
@@ -166,7 +166,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	logsDBPath := filepath.Join(configDirPath, "logs.db")
 
 	config := &Config{
-		configPath: configFilePath,
+		ConfigPath: configFilePath,
 		EnvKeys:    make(map[string][]configstore.EnvKeyInfo),
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 	}
@@ -185,6 +185,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					Path: configDBPath,
 				},
 			}, logger)
+			config.DbType = "sqlite"
+			config.ConfigPath = configDBPath
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize config store: %w", err)
 			}
@@ -592,7 +594,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 // GetRawConfigString returns the raw configuration string.
 func (s *Config) GetRawConfigString() string {
-	data, err := os.ReadFile(s.configPath)
+	data, err := os.ReadFile(s.ConfigPath)
 	if err != nil {
 		return "{}"
 	}
