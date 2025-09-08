@@ -509,14 +509,16 @@ func handleOpenAIStreaming(
 
 			// Handle finish reason, usually in the final chunk
 			choice := response.Choices[0]
-			if choice.FinishReason != nil && *choice.FinishReason != "" {
-				// Collect finish reason and send at the end of the stream
+			hasFinishReason := choice.FinishReason != nil && *choice.FinishReason != ""
+			hasDeltaContent := choice.BifrostStreamResponseChoice != nil && (choice.BifrostStreamResponseChoice.Delta.Content != nil || len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0)
+
+			if hasFinishReason {
+				// Collect finish reason for the end of the stream
 				finishReason = choice.FinishReason
-				continue
 			}
 
-			// Handle regular content chunks
-			if choice.BifrostStreamResponseChoice != nil && (choice.BifrostStreamResponseChoice.Delta.Content != nil || len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0) {
+			// Handle content chunks
+			if hasDeltaContent {
 				if params != nil {
 					response.ExtraFields.Params = *params
 				}
@@ -524,6 +526,11 @@ func handleOpenAIStreaming(
 				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
+			}
+
+			// If chunk has only finish reason (no delta content), skip to next iteration
+			if hasFinishReason && !hasDeltaContent {
+				continue
 			}
 		}
 
