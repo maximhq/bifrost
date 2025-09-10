@@ -17,7 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tag-input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { DEFAULT_ALLOWED_REQUESTS, DEFAULT_NETWORK_CONFIG, DEFAULT_PERFORMANCE_CONFIG } from "@/lib/constants/config";
+import { DEFAULT_NETWORK_CONFIG, DEFAULT_PERFORMANCE_CONFIG, getProviderDefaultAllowedRequests } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { PROVIDER_LABELS, PROVIDERS as Providers } from "@/lib/constants/logs";
 import { getErrorMessage, useCreateProviderMutation, useUpdateProviderMutation } from "@/lib/store";
@@ -111,11 +111,12 @@ const createInitialState = (provider?: ProviderResponse | null, defaultProvider?
 
 	// Check if this is a custom provider
 	const isCustomProvider = provider && !Providers.includes(provider.name as any);
+	const baseProviderType = provider?.custom_provider_config?.base_provider_type || "";
 
 	return {
 		selectedProvider: providerName,
 		customProviderName: isCustomProvider ? provider.name : "",
-		baseProviderType: provider?.custom_provider_config?.base_provider_type || "",
+		baseProviderType,
 		keys: isNewProvider && keysRequired ? [createDefaultKey()] : !isNewProvider && keysRequired && provider?.keys ? provider.keys : [],
 		networkConfig: provider?.network_config || DEFAULT_NETWORK_CONFIG,
 		performanceConfig: provider?.concurrency_and_buffer_size || DEFAULT_PERFORMANCE_CONFIG,
@@ -126,7 +127,7 @@ const createInitialState = (provider?: ProviderResponse | null, defaultProvider?
 			password: "",
 		},
 		sendBackRawResponse: provider?.send_back_raw_response || false,
-		allowedRequests: provider?.custom_provider_config?.allowed_requests || DEFAULT_ALLOWED_REQUESTS,
+		allowedRequests: provider?.custom_provider_config?.allowed_requests || getProviderDefaultAllowedRequests(baseProviderType),
 	};
 };
 
@@ -188,6 +189,18 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 
 	const isCustomProvider =
 		selectedProvider === "custom" || !!customProviderName || !!baseProviderType || !Providers.includes(selectedProvider as any);
+
+	// Update allowed requests when base provider type changes for custom providers
+	useEffect(() => {
+		if (baseProviderType && isCustomProvider && !isEditingExisting) {
+			const newAllowedRequests = getProviderDefaultAllowedRequests(baseProviderType);
+			setFormData((prev) => ({
+				...prev,
+				allowedRequests: newAllowedRequests,
+				isDirty: true,
+			}));
+		}
+	}, [baseProviderType, isCustomProvider, isEditingExisting]);
 
 	const performanceValid =
 		performanceConfig.concurrency > 0 && performanceConfig.buffer_size > 0 && performanceConfig.concurrency < performanceConfig.buffer_size;
@@ -410,10 +423,15 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 						/^[a-z0-9_-]+$/,
 						"Custom provider name must be lowercase alphanumeric and may include ‘-’ or ‘_’ (no spaces)",
 					),
-					Validator.custom(
-						!allProviders.some((p) => p.name === customProviderName.trim() && p.name !== (provider?.name || "")),
-						"A provider with this name already exists",
-					),
+					// Only check for duplicate names when creating new providers, not when updating existing ones
+					...(provider
+						? []
+						: [
+								Validator.custom(
+									!allProviders.some((p) => p.name === customProviderName.trim()),
+									"A provider with this name already exists",
+								),
+							]),
 					Validator.required(baseProviderType, "Base provider type is required for custom providers"),
 					Validator.custom(
 						!Providers.includes(customProviderName.trim() as any),
@@ -646,7 +664,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 			password: "",
 		},
 		sendBackRawResponse: false,
-		allowedRequests: DEFAULT_ALLOWED_REQUESTS,
+		allowedRequests: getProviderDefaultAllowedRequests("openai"),
 	});
 
 	const [selectedTab, setSelectedTab] = useState(tabs[0]?.id || "api-keys");
@@ -844,7 +862,10 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 										{/* Allowed Requests Configuration */}
 										<div className="space-y-2">
 											<div className="text-sm font-medium">Allowed Request Types</div>
-											<p className="text-muted-foreground text-xs">Select which request types this custom provider can handle</p>
+											<p className="text-muted-foreground text-xs">
+												Select which request types this custom provider can handle. Automatically disabled for features not supported by the
+												underlying provider.
+											</p>
 
 											<div className="grid grid-cols-2 gap-4">
 												<div className="space-y-3">
@@ -854,6 +875,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.text_completion}
 															onCheckedChange={(checked) => updateAllowedRequest("text_completion", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").text_completion}
 														/>
 													</div>
 													<div className="flex items-center justify-between">
@@ -862,6 +884,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.chat_completion}
 															onCheckedChange={(checked) => updateAllowedRequest("chat_completion", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").chat_completion}
 														/>
 													</div>
 													<div className="flex items-center justify-between">
@@ -870,6 +893,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.chat_completion_stream}
 															onCheckedChange={(checked) => updateAllowedRequest("chat_completion_stream", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").chat_completion_stream}
 														/>
 													</div>
 													<div className="flex items-center justify-between">
@@ -878,6 +902,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.embedding}
 															onCheckedChange={(checked) => updateAllowedRequest("embedding", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").embedding}
 														/>
 													</div>
 												</div>
@@ -888,6 +913,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.speech}
 															onCheckedChange={(checked) => updateAllowedRequest("speech", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").speech}
 														/>
 													</div>
 													<div className="flex items-center justify-between">
@@ -896,6 +922,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.speech_stream}
 															onCheckedChange={(checked) => updateAllowedRequest("speech_stream", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").speech_stream}
 														/>
 													</div>
 													<div className="flex items-center justify-between">
@@ -904,6 +931,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.transcription}
 															onCheckedChange={(checked) => updateAllowedRequest("transcription", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").transcription}
 														/>
 													</div>
 													<div className="flex items-center justify-between">
@@ -912,6 +940,7 @@ export default function ProviderForm({ provider, onSave, onCancel, existingProvi
 															size="md"
 															checked={allowedRequests.transcription_stream}
 															onCheckedChange={(checked) => updateAllowedRequest("transcription_stream", checked)}
+															disabled={!getProviderDefaultAllowedRequests(baseProviderType || "openai").transcription_stream}
 														/>
 													</div>
 												</div>

@@ -156,7 +156,7 @@ export default function ProvidersList({ providers, onRefresh }: ProvidersListPro
 														)}
 													</Button>
 												</AlertDialogTrigger>
-												<AlertDialogContent onClick={(e) => e.stopPropagation()}>
+												<AlertDialogContent className="bg-secondary" onClick={(e) => e.stopPropagation()}>
 													<AlertDialogHeader>
 														<AlertDialogTitle>Delete Provider</AlertDialogTitle>
 														<AlertDialogDescription>

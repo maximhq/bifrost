@@ -29,3 +29,73 @@ export const DEFAULT_ALLOWED_REQUESTS = {
 	transcription: true,
 	transcription_stream: true,
 } as const satisfies Required<AllowedRequests>;
+
+// Define the default allowed requests for each provider type
+// This is based on the actual capabilities of each provider
+export const PROVIDER_DEFAULT_ALLOWED_REQUESTS: Record<string, AllowedRequests> = {
+	// OpenAI
+	openai: {
+		text_completion: false,
+		chat_completion: true,
+		chat_completion_stream: true,
+		embedding: true,
+		speech: true,
+		speech_stream: true,
+		transcription: true,
+		transcription_stream: true,
+	},
+
+	// Anthropic
+	anthropic: {
+		text_completion: true,
+		chat_completion: true,
+		chat_completion_stream: true,
+		embedding: false,
+		speech: false,
+		speech_stream: false,
+		transcription: false,
+		transcription_stream: false,
+	},
+
+	// Cohere
+	cohere: {
+		text_completion: false,
+		chat_completion: true,
+		chat_completion_stream: true,
+		embedding: true,
+		speech: false,
+		speech_stream: false,
+		transcription: false,
+		transcription_stream: false,
+	},
+
+	// AWS Bedrock
+	bedrock: {
+		text_completion: true,
+		chat_completion: true,
+		chat_completion_stream: true,
+		embedding: true,
+		speech: false,
+		speech_stream: false,
+		transcription: false,
+		transcription_stream: false,
+	},
+
+	// Gemini
+	gemini: {
+		text_completion: false,
+		chat_completion: true,
+		chat_completion_stream: true,
+		embedding: true,
+		speech: true,
+		speech_stream: true,
+		transcription: true,
+		transcription_stream: true,
+	},
+};
+
+// Helper function to get default allowed requests for a provider
+export const getProviderDefaultAllowedRequests = (providerName: string): AllowedRequests => {
+	const normalizedName = providerName.toLowerCase().trim();
+	return PROVIDER_DEFAULT_ALLOWED_REQUESTS[normalizedName] ?? (DEFAULT_ALLOWED_REQUESTS as AllowedRequests);
+};

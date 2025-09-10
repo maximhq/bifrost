@@ -161,23 +161,6 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 	// baseProvider tracks the effective base provider type for validations/keys
 	baseProvider := req.Provider
 	if req.CustomProviderConfig != nil {
-		// custom provider key should not be same as standard provider names
-		if bifrost.IsStandardProvider(baseProvider) {
-			SendError(ctx, fasthttp.StatusBadRequest, "Custom provider cannot be same as a standard provider", h.logger)
-			return
-		}
-
-		if req.CustomProviderConfig.BaseProviderType == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "BaseProviderType is required when CustomProviderConfig is provided", h.logger)
-			return
-		}
-
-		// check if base provider is a supported base provider
-		if !bifrost.IsSupportedBaseProvider(req.CustomProviderConfig.BaseProviderType) {
-			SendError(ctx, fasthttp.StatusBadRequest, "BaseProviderType must be a standard provider", h.logger)
-			return
-		}
-
 		// CustomProviderKey is internally set by Bifrost, no validation needed
 		baseProvider = req.CustomProviderConfig.BaseProviderType
 	}
@@ -217,6 +200,14 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 		ConcurrencyAndBufferSize: req.ConcurrencyAndBufferSize,
 		SendBackRawResponse:      req.SendBackRawResponse != nil && *req.SendBackRawResponse,
 		CustomProviderConfig:     req.CustomProviderConfig,
+	}
+
+	// Validate custom provider configuration (including AllowedRequests sanitization)
+	if req.CustomProviderConfig != nil {
+		if err := lib.ValidateCustomProvider(config, req.Provider); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err), h.logger)
+			return
+		}
 	}
 
 	// Add provider to store (env vars will be processed by store)
