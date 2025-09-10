@@ -79,6 +79,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Parasail,
 		schemas.Cerebras,
 		schemas.Gemini,
+		schemas.OpenRouter,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -199,6 +200,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("GEMINI_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.OpenRouter:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("OPENROUTER_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -343,6 +352,16 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
 	case schemas.Gemini:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
@@ -666,6 +685,34 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         true,
 			TranscriptionStream:   true,
 			Embedding:             true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  schemas.OpenRouter,
+		ChatModel: "openai/gpt-4o",
+		TextModel: "google/gemini-2.5-flash",
+		Scenarios: TestScenarios{
+			TextCompletion:        true,
+			SimpleChat:            true,
+			ChatCompletionStream:  true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			ProviderSpecific:      true,
+			SpeechSynthesis:       false,
+			SpeechSynthesisStream: false,
+			Transcription:         false,
+			TranscriptionStream:   false,
+			Embedding:             false, 
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

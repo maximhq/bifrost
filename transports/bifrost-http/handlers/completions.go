@@ -347,14 +347,11 @@ func (h *CompletionHandler) TranscriptionCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	modelParts := strings.SplitN(modelValues[0], "/", 2)
-	if len(modelParts) < 2 {
-		SendError(ctx, fasthttp.StatusBadRequest, "Model must be in the format of 'provider/model'", h.logger)
+	provider, modelName, err := ParseModel(modelValues[0])
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Model must be in the format of 'provider/model': %v", err), h.logger)
 		return
 	}
-
-	provider := modelParts[0]
-	modelName := modelParts[1]
 
 	// Extract file (required)
 	fileHeaders := form.File["file"]
@@ -454,25 +451,26 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		return
 	}
 
-	model := strings.SplitN(req.Model, "/", 2)
-	if len(model) < 2 {
-		SendError(ctx, fasthttp.StatusBadRequest, "Model must be in the format of 'provider/model'", h.logger)
+	provider, modelName, err := ParseModel(req.Model)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Model must be in the format of 'provider/model': %v", err), h.logger)
 		return
 	}
 
-	provider := model[0]
-	modelName := model[1]
-
 	fallbacks := make([]schemas.Fallback, len(req.Fallbacks))
 	for i, fallback := range req.Fallbacks {
-		fallbackModel := strings.Split(fallback, "/")
-		if len(fallbackModel) != 2 {
+		fallbackProvider, fallbackModelName, err := ParseModel(fallback)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Fallback must be in the format of 'provider/model': %v", err), h.logger)
+			return
+		}
+		if fallbackProvider == "" || fallbackModelName == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "Fallback must be in the format of 'provider/model'", h.logger)
 			return
 		}
 		fallbacks[i] = schemas.Fallback{
-			Provider: schemas.ModelProvider(fallbackModel[0]),
-			Model:    fallbackModel[1],
+			Provider: schemas.ModelProvider(fallbackProvider),
+			Model:    fallbackModelName,
 		}
 	}
 

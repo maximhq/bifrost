@@ -13,6 +13,7 @@ export const KNOWN_PROVIDERS = [
 	"sgl",
 	"cerebras",
 	"gemini",
+	"openrouter",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -48,6 +49,7 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
 	sgl: "SGLang",
 	cerebras: "Cerebras",
 	gemini: "Gemini",
+	openrouter: "OpenRouter",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

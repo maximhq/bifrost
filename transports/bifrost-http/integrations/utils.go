@@ -423,20 +423,35 @@ func buildProviderSchemas() map[schemas.ModelProvider]ProviderParameterSchema {
 	geminiParams["top_k"] = true
 	geminiParams["stop_sequences"] = true
 
+	openRouterSpecificParams := map[string]bool{
+		"transforms": true,
+		"models":     true,
+		"route":      true,
+		"provider":   true,
+		"prediction": true, // Reduce latency by providing the model with a predicted output
+		"top_a":      true, // Range: [0, 1]
+		"min_p":      true, // Range: [0, 1]
+	}
+	openRouterParams := mergeWithDefaults(openAIParams)
+	for k, v := range openRouterSpecificParams {
+		openRouterParams[k] = v
+	}
+
 	return map[schemas.ModelProvider]ProviderParameterSchema{
-		schemas.OpenAI:    {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Azure:     {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Anthropic: {ValidParams: mergeWithDefaults(anthropicParams)},
-		schemas.Cohere:    {ValidParams: mergeWithDefaults(cohereParams)},
-		schemas.Mistral:   {ValidParams: mergeWithDefaults(mistralParams)},
-		schemas.Groq:      {ValidParams: mergeWithDefaults(groqParams)},
-		schemas.Bedrock:   {ValidParams: bedrockParams},
-		schemas.Vertex:    {ValidParams: vertexParams},
-		schemas.Ollama:    {ValidParams: mergeWithDefaults(ollamaParams)},
-		schemas.Cerebras:  {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.SGL:       {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Parasail:  {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Gemini:    {ValidParams: geminiParams},
+		schemas.OpenAI:     {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.Azure:      {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.Anthropic:  {ValidParams: mergeWithDefaults(anthropicParams)},
+		schemas.Cohere:     {ValidParams: mergeWithDefaults(cohereParams)},
+		schemas.Mistral:    {ValidParams: mergeWithDefaults(mistralParams)},
+		schemas.Groq:       {ValidParams: mergeWithDefaults(groqParams)},
+		schemas.Bedrock:    {ValidParams: bedrockParams},
+		schemas.Vertex:     {ValidParams: vertexParams},
+		schemas.Ollama:     {ValidParams: mergeWithDefaults(ollamaParams)},
+		schemas.Cerebras:   {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.SGL:        {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.Parasail:   {ValidParams: mergeWithDefaults(openAIParams)},
+		schemas.Gemini:     {ValidParams: geminiParams},
+		schemas.OpenRouter: {ValidParams: openRouterParams},
 	}
 }
 
@@ -958,26 +973,25 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter Err
 
 // ValidProviders is a pre-computed map for efficient O(1) provider validation.
 var ValidProviders = map[schemas.ModelProvider]bool{
-	schemas.OpenAI:    true,
-	schemas.Azure:     true,
-	schemas.Anthropic: true,
-	schemas.Bedrock:   true,
-	schemas.Cohere:    true,
-	schemas.Vertex:    true,
-	schemas.Mistral:   true,
-	schemas.Ollama:    true,
-	schemas.Groq:      true,
-	schemas.SGL:       true,
-	schemas.Parasail:  true,
-	schemas.Cerebras:  true,
-	schemas.Gemini:    true,
+	schemas.OpenAI:     true,
+	schemas.Azure:      true,
+	schemas.Anthropic:  true,
+	schemas.Bedrock:    true,
+	schemas.Cohere:     true,
+	schemas.Vertex:     true,
+	schemas.Mistral:    true,
+	schemas.Ollama:     true,
+	schemas.Groq:       true,
+	schemas.SGL:        true,
+	schemas.Parasail:   true,
+	schemas.Cerebras:   true,
+	schemas.Gemini:     true,
+	schemas.OpenRouter: true,
 }
 
 // ParseModelString extracts provider and model from a model string.
 // For model strings like "anthropic/claude", it returns ("anthropic", "claude").
 // For model strings like "claude", it returns ("", "claude").
-// If the extracted provider is not valid, it treats the whole string as a model name.
-// If checkProviderFromModel is true, model will be used to check for the corresponding provider.
 func ParseModelString(model string, defaultProvider schemas.ModelProvider, checkProviderFromModel bool) (schemas.ModelProvider, string) {
 	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
 	if strings.Contains(model, "/") {
@@ -986,18 +1000,13 @@ func ParseModelString(model string, defaultProvider schemas.ModelProvider, check
 			extractedProvider := parts[0]
 			extractedModel := parts[1]
 
-			// Validate that the extracted provider is actually a valid provider
-			if ValidProviders[schemas.ModelProvider(extractedProvider)] {
-				return schemas.ModelProvider(extractedProvider), extractedModel
-			}
-			// If extracted provider is not valid, treat the whole string as model name
-			// This prevents corrupting model names that happen to contain "/"
+			return schemas.ModelProvider(extractedProvider), extractedModel
 		}
 	}
 
 	//TODO add model wise check for provider
 
-	// No provider prefix found or invalid provider, return empty provider and the original model
+	// No provider prefix found, return empty provider and the original model
 	return defaultProvider, model
 }
 

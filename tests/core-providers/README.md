@@ -17,6 +17,7 @@ This directory contains comprehensive tests for all Bifrost AI providers, ensuri
 - **Parasail** - OSS models
 - **Cerebras** - Llama, Qwen and GPT-OSS models
 - **Gemini** - Gemini models
+- **OpenRouter** - Models supported by OpenRouter
 
 ## 🏃‍♂️ Running Tests
 

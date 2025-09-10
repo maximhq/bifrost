@@ -89,3 +89,24 @@ func isLocalhostOrigin(origin string) bool {
 		strings.HasPrefix(origin, "http://0.0.0.0:") ||
 		strings.HasPrefix(origin, "https://127.0.0.1:")
 }
+
+// ParseModel parses a model string in the format "provider/model" or "provider/nested/model"
+// Returns the provider and full model name after the first slash
+func ParseModel(model string) (string, string, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", "", fmt.Errorf("model cannot be empty")
+	}
+
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("model must be in the format 'provider/model'")
+	}
+
+	provider := strings.TrimSpace(parts[0])
+	name := strings.TrimSpace(parts[1])
+	if provider == "" || name == "" {
+		return "", "", fmt.Errorf("model must be in the format 'provider/model' with non-empty provider and model")
+	}
+	return provider, name, nil
+}

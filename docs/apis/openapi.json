@@ -1884,6 +1884,7 @@
           "ollama",
           "gemini",
           "groq",
+          "openrouter",
           "sgl",
           "parasail",
           "cerebras"

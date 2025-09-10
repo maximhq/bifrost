@@ -51,6 +51,7 @@ const (
 	Parasail  ModelProvider = "parasail"
 	Cerebras  ModelProvider = "cerebras"
 	Gemini    ModelProvider = "gemini"
+	OpenRouter ModelProvider = "openrouter"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -77,6 +78,7 @@ var StandardProviders = []ModelProvider{
 	Parasail,
 	SGL,
 	Vertex,
+	OpenRouter,
 }
 
 // RequestType represents the type of request being made to a provider.

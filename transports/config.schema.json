@@ -97,6 +97,12 @@
         "groq": {
           "$ref": "#/$defs/provider"
         },
+        "gemini": {
+          "$ref": "#/$defs/provider"
+        },
+        "openrouter": {
+          "$ref": "#/$defs/provider"
+        },
         "sgl": {
           "$ref": "#/$defs/provider"
         },

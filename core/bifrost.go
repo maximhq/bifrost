@@ -696,6 +696,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return providers.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.Gemini:
 		return providers.NewGeminiProvider(config, bifrost.logger), nil
+	case schemas.OpenRouter:
+		return providers.NewOpenRouterProvider(config, bifrost.logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
