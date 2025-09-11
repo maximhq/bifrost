@@ -118,8 +118,8 @@ func TestToolVariations(t *testing.T) {
 			MaxTokens:   bifrost.Ptr(100),
 			Tools: &[]schemas.Tool{
 				{
-					Type: "function",
-					Function: schemas.Function{
+					Type: bifrost.Ptr("function"),
+					Function: &schemas.Function{
 						Name:        "get_weather",
 						Description: "Get the current weather",
 						Parameters: schemas.FunctionParameters{
@@ -156,8 +156,8 @@ func TestToolVariations(t *testing.T) {
 			MaxTokens:   bifrost.Ptr(100),
 			Tools: &[]schemas.Tool{
 				{
-					Type: "function",
-					Function: schemas.Function{
+					Type: bifrost.Ptr("function"),
+					Function: &schemas.Function{
 						Name:        "get_current_weather", // Different name
 						Description: "Get current weather information",
 						Parameters: schemas.FunctionParameters{

@@ -798,8 +798,8 @@ func (m *MCPManager) shouldSkipToolForRequest(toolName string, ctx context.Conte
 // convertMCPToolToBifrostSchema converts an MCP tool definition to Bifrost format.
 func (m *MCPManager) convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.Tool {
 	return schemas.Tool{
-		Type: "function",
-		Function: schemas.Function{
+		Type: Ptr("function"),
+		Function: &schemas.Function{
 			Name:        mcpTool.Name,
 			Description: mcpTool.Description,
 			Parameters: schemas.FunctionParameters{

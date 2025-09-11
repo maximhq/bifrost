@@ -97,11 +97,11 @@ func (provider *SGLProvider) TextCompletion(ctx context.Context, model string, k
 
 // ChatCompletion performs a chat completion request to the SGL API.
 func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 	}, preparedParams)
 
 	jsonBody, err := sonic.Marshal(requestBody)
@@ -185,11 +185,11 @@ func (provider *SGLProvider) Embedding(ctx context.Context, model string, key sc
 // Uses SGL's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 		"stream":   true,
 	}, preparedParams)
 
@@ -206,7 +206,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 	}
 
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",

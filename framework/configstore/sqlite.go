@@ -125,9 +125,15 @@ func (s *SQLiteConfigStore) UpdateProvidersConfig(providers map[schemas.ModelPro
 					Value:            key.Value,
 					Models:           key.Models,
 					Weight:           key.Weight,
+					OpenAIKeyConfig:  key.OpenAIKeyConfig,
 					AzureKeyConfig:   key.AzureKeyConfig,
 					VertexKeyConfig:  key.VertexKeyConfig,
 					BedrockKeyConfig: key.BedrockKeyConfig,
+				}
+
+				// Handle OpenAI config
+				if key.OpenAIKeyConfig != nil {
+					dbKey.OpenAIUseResponsesAPI = &key.OpenAIKeyConfig.UseResponsesAPI
 				}
 
 				// Handle Azure config
@@ -235,9 +241,15 @@ func (s *SQLiteConfigStore) UpdateProvider(provider schemas.ModelProvider, confi
 				Value:            key.Value,
 				Models:           key.Models,
 				Weight:           key.Weight,
+				OpenAIKeyConfig:  key.OpenAIKeyConfig,
 				AzureKeyConfig:   key.AzureKeyConfig,
 				VertexKeyConfig:  key.VertexKeyConfig,
 				BedrockKeyConfig: key.BedrockKeyConfig,
+			}
+
+			// Handle OpenAI config
+			if key.OpenAIKeyConfig != nil {
+				dbKey.OpenAIUseResponsesAPI = &key.OpenAIKeyConfig.UseResponsesAPI
 			}
 
 			// Handle Azure config
@@ -333,9 +345,15 @@ func (s *SQLiteConfigStore) AddProvider(provider schemas.ModelProvider, config P
 				Value:            key.Value,
 				Models:           key.Models,
 				Weight:           key.Weight,
+				OpenAIKeyConfig:  key.OpenAIKeyConfig,
 				AzureKeyConfig:   key.AzureKeyConfig,
 				VertexKeyConfig:  key.VertexKeyConfig,
 				BedrockKeyConfig: key.BedrockKeyConfig,
+			}
+
+			// Handle OpenAI config
+			if key.OpenAIKeyConfig != nil {
+				dbKey.OpenAIUseResponsesAPI = &key.OpenAIKeyConfig.UseResponsesAPI
 			}
 
 			// Handle Azure config
@@ -481,6 +499,7 @@ func (s *SQLiteConfigStore) GetProvidersConfig() (map[schemas.ModelProvider]Prov
 				Value:            processedValue,
 				Models:           dbKey.Models,
 				Weight:           dbKey.Weight,
+				OpenAIKeyConfig:  dbKey.OpenAIKeyConfig,
 				AzureKeyConfig:   azureConfig,
 				VertexKeyConfig:  vertexConfig,
 				BedrockKeyConfig: bedrockConfig,

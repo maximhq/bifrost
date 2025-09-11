@@ -429,8 +429,8 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 			if len(tool.FunctionDeclarations) > 0 {
 				for _, fn := range tool.FunctionDeclarations {
 					bifrostTool := schemas.Tool{
-						Type: "function",
-						Function: schemas.Function{
+						Type: bifrost.Ptr("function"),
+						Function: &schemas.Function{
 							Name:        fn.Name,
 							Description: fn.Description,
 						},

@@ -226,11 +226,11 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model stri
 
 // ChatCompletion performs a chat completion request to the Cerebras API.
 func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 	}, preparedParams)
 
 	jsonBody, err := sonic.Marshal(requestBody)
@@ -307,11 +307,11 @@ func (provider *CerebrasProvider) Embedding(ctx context.Context, model string, k
 // Uses Cerebras's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 		"stream":   true,
 	}, preparedParams)
 
@@ -325,7 +325,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 	headers["Authorization"] = "Bearer " + key.Value
 
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",

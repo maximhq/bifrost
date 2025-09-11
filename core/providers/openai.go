@@ -112,12 +112,25 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 
 	providerName := provider.GetProviderKey()
 
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	useResponsesAPI := key.OpenAIKeyConfig != nil && key.OpenAIKeyConfig.UseResponsesAPI
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	var requestBody map[string]interface{}
+
+	messages = schemas.NormalizeMessagesMux(useResponsesAPI, messages)
+
+	if useResponsesAPI {
+		formattedMessages, preparedParams := prepareOpenAIResponsesRequest(messages, params)
+		requestBody = mergeConfig(map[string]interface{}{
+			"model": model,
+			"input": formattedMessages,
+		}, preparedParams)
+	} else {
+		sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+		requestBody = mergeConfig(map[string]interface{}{
+			"model":    model,
+			"messages": sanitizedMessages,
+		}, preparedParams)
+	}
 
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
@@ -133,7 +146,14 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	// Set any extra headers from network config
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
+	var url string
+	if useResponsesAPI {
+		url = provider.networkConfig.BaseURL + "/v1/responses"
+	} else {
+		url = provider.networkConfig.BaseURL + "/v1/chat/completions"
+	}
+
+	req.SetRequestURI(url)
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
@@ -165,6 +185,10 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 		return nil, bifrostErr
 	}
 
+	if useResponsesAPI {
+		response.Mux(!useResponsesAPI)
+	}
+
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
@@ -182,49 +206,105 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 // prepareOpenAIChatRequest formats messages for the OpenAI API.
 // It handles both text and image content in messages.
 // Returns a slice of formatted messages and any additional parameters.
-func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
-	// Format messages for OpenAI API
-	var formattedMessages []map[string]interface{}
-	for _, msg := range messages {
-		if msg.Role == schemas.ModelChatMessageRoleAssistant {
-			assistantMessage := map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
-			}
-			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-				assistantMessage["tool_calls"] = *msg.AssistantMessage.ToolCalls
-			}
-			formattedMessages = append(formattedMessages, assistantMessage)
-		} else {
-			message := map[string]interface{}{
-				"role": msg.Role,
-			}
-
-			if msg.Content.ContentStr != nil {
-				message["content"] = *msg.Content.ContentStr
-			} else if msg.Content.ContentBlocks != nil {
-				contentBlocks := *msg.Content.ContentBlocks
-				for i := range contentBlocks {
-					if contentBlocks[i].Type == schemas.ContentBlockTypeImage && contentBlocks[i].ImageURL != nil {
-						sanitizedURL, _ := SanitizeImageURL(contentBlocks[i].ImageURL.URL)
-						contentBlocks[i].ImageURL.URL = sanitizedURL
-					}
+// sanitizeBifrostMessages performs in-place image URL sanitization for any content blocks
+// with type image_url in the provided Bifrost messages and returns the sanitized slice.
+func sanitizeBifrostMessages(messages []schemas.BifrostMessage) []schemas.BifrostMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	for mi := range messages {
+		content := &messages[mi].Content
+		if content.ContentBlocks == nil {
+			continue
+		}
+		blocks := *content.ContentBlocks
+		for bi := range blocks {
+			if blocks[bi].Type == schemas.ContentBlockTypeImage && blocks[bi].ImageURL != nil {
+				if sanitizedURL, _ := SanitizeImageURL(blocks[bi].ImageURL.URL); sanitizedURL != "" {
+					blocks[bi].ImageURL.URL = sanitizedURL
 				}
-
-				message["content"] = contentBlocks
 			}
+		}
+		*content.ContentBlocks = blocks
+	}
+	return messages
+}
 
-			if msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
-				message["tool_call_id"] = *msg.ToolMessage.ToolCallID
+func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]schemas.BifrostMessage, map[string]interface{}) {
+	// Sanitize any image URLs in Bifrost messages and return them directly
+	sanitized := sanitizeBifrostMessages(messages)
+	preparedParams := prepareParams(params)
+	return sanitized, preparedParams
+}
+
+// prepareOpenAIResponsesRequest formats messages for the OpenAI Responses API.
+// It sanitizes images, normalizes messages into Responses-style items, and returns input items plus params.
+func prepareOpenAIResponsesRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]map[string]interface{}, map[string]interface{}) {
+	// Sanitize and normalize into Responses API shape (fan-out of tool_calls, types set)
+	messages = sanitizeBifrostMessages(messages)
+	normalized := schemas.NormalizeMessagesMux(true, messages)
+
+	var inputItems []map[string]interface{}
+	for _, m := range normalized {
+		// Determine item type
+		var itemType string
+		if m.ResponsesAPIExtendedBifrostMessage != nil && m.ResponsesAPIExtendedBifrostMessage.Type != nil {
+			itemType = *m.ResponsesAPIExtendedBifrostMessage.Type
+		}
+
+		switch itemType {
+		case "function_call":
+			// Assistant wants to call a function
+			name := ""
+			if m.ToolMessage != nil && m.ToolMessage.ResponsesAPIExtendedToolMessage != nil && m.ToolMessage.ResponsesAPIExtendedToolMessage.Name != nil {
+				name = *m.ToolMessage.ResponsesAPIExtendedToolMessage.Name
 			}
+			args := ""
+			if m.AssistantMessage != nil && m.AssistantMessage.ResponsesAPIExtendedAssistantMessage != nil && m.AssistantMessage.ResponsesAPIExtendedAssistantMessage.FunctionToolCall != nil {
+				args = m.AssistantMessage.ResponsesAPIExtendedAssistantMessage.FunctionToolCall.Arguments
+			}
+			item := map[string]interface{}{
+				"type":      "function_call",
+				"name":      name,
+				"arguments": args,
+			}
+			inputItems = append(inputItems, item)
 
-			formattedMessages = append(formattedMessages, message)
+		case "function_call_output":
+			// Tool output payload
+			callID := ""
+			if m.ToolMessage != nil && m.ToolMessage.ResponsesAPIExtendedToolMessage != nil && m.ToolMessage.ResponsesAPIExtendedToolMessage.CallID != nil {
+				callID = *m.ToolMessage.ResponsesAPIExtendedToolMessage.CallID
+			}
+			output := ""
+			if m.ResponsesAPIExtendedToolMessage != nil && m.ResponsesAPIExtendedToolMessage.FunctionToolCallOutput != nil {
+				output = m.ResponsesAPIExtendedToolMessage.FunctionToolCallOutput.Output
+			} else if m.Content.ContentStr != nil {
+				output = *m.Content.ContentStr
+			}
+			item := map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": callID,
+				"output":  output,
+			}
+			inputItems = append(inputItems, item)
+
+		default:
+			// Treat as message (user/assistant/system)
+			message := map[string]interface{}{
+				"role": m.Role,
+			}
+			if m.Content.ContentStr != nil {
+				message["content"] = *m.Content.ContentStr
+			} else if m.Content.ContentBlocks != nil {
+				message["content"] = *m.Content.ContentBlocks
+			}
+			inputItems = append(inputItems, message)
 		}
 	}
 
 	preparedParams := prepareParams(params)
-
-	return formattedMessages, preparedParams
+	return inputItems, preparedParams
 }
 
 // Embedding generates embeddings for the given input text(s).
@@ -280,6 +360,8 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 	)
 }
 
+// handleOpenAIEmbeddingRequest handles embedding requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same embedding request format.
 func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, url string, requestBody map[string]interface{}, key schemas.Key, params *schemas.ModelParameters, extraHeaders map[string]string, providerName schemas.ModelProvider, sendBackRawResponse bool, logger schemas.Logger) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
@@ -353,6 +435,9 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		"model":    model,
 		"messages": formattedMessages,
 		"stream":   true,
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
 	}, preparedParams)
 
 	// Prepare OpenAI headers
@@ -366,7 +451,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 	providerName := provider.GetProviderKey()
 
 	// Use shared streaming logic
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -380,9 +465,9 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 	)
 }
 
-// performOpenAICompatibleStreaming handles streaming for OpenAI-compatible APIs (OpenAI, Azure).
+// handleOpenAIChatCompletionStreaming handles streaming for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE format.
-func handleOpenAIStreaming(
+func handleOpenAIChatCompletionStreaming(
 	ctx context.Context,
 	httpClient *http.Client,
 	url string,
@@ -438,6 +523,7 @@ func handleOpenAIStreaming(
 		usage := &schemas.LLMUsage{}
 
 		var finishReason *string
+		var messageID string
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -517,6 +603,10 @@ func handleOpenAIStreaming(
 			if choice.BifrostStreamResponseChoice != nil && (choice.BifrostStreamResponseChoice.Delta.Content != nil || len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0) {
 				chunkIndex++
 
+				if messageID == "" {
+					messageID = response.ID
+				}
+
 				response.ExtraFields.Provider = providerName
 				response.ExtraFields.ChunkIndex = chunkIndex
 
@@ -529,7 +619,7 @@ func handleOpenAIStreaming(
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
 		} else {
-			response := createBifrostChatCompletionChunkResponse(usage, finishReason, chunkIndex, params, providerName)
+			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerName)
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()

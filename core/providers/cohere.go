@@ -539,7 +539,7 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 			requestBody["tool_choice"] = *params.ToolChoice.ToolChoiceStr
 		} else if params.ToolChoice.ToolChoiceStruct != nil {
 			requestBody["tool_choice"] = map[string]interface{}{
-				"type": strings.ToUpper(string(params.ToolChoice.ToolChoiceStruct.Type)),
+				"type": strings.ToUpper(string(*params.ToolChoice.ToolChoiceStruct.Type)),
 			}
 		}
 	}

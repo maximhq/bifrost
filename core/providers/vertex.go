@@ -143,19 +143,21 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 	}
 
 	// Format messages for Vertex API
-	var formattedMessages []map[string]interface{}
-	var preparedParams map[string]interface{}
+	var requestBody map[string]interface{}
 
 	if strings.Contains(model, "claude") {
-		formattedMessages, preparedParams = prepareAnthropicChatRequest(messages, params)
+		formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
+		requestBody = mergeConfig(map[string]interface{}{
+			"model":    model,
+			"messages": formattedMessages,
+		}, preparedParams)
 	} else {
-		formattedMessages, preparedParams = prepareOpenAIChatRequest(messages, params)
+		formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+		requestBody = mergeConfig(map[string]interface{}{
+			"model":    model,
+			"messages": formattedMessages,
+		}, preparedParams)
 	}
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
 
 	if strings.Contains(model, "claude") {
 		if _, exists := requestBody["anthropic_version"]; !exists {
@@ -555,7 +557,7 @@ func (provider *VertexProvider) convertVertexEmbeddingResponse(vertexResponse ma
 				embeddingFloat32 = append(embeddingFloat32, float32(f64))
 			}
 		}
-		
+
 		// Create embedding object
 		embedding := schemas.BifrostEmbedding{
 			Object: "embedding",
@@ -683,7 +685,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		}
 
 		// Use shared OpenAI streaming logic
-		return handleOpenAIStreaming(
+		return handleOpenAIChatCompletionStreaming(
 			ctx,
 			client,
 			url,

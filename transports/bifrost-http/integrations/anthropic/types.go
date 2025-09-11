@@ -376,8 +376,8 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 			}
 
 			tools = append(tools, schemas.Tool{
-				Type: "function",
-				Function: schemas.Function{
+				Type: bifrost.Ptr("function"),
+				Function: &schemas.Function{
 					Name:        tool.Name,
 					Description: tool.Description,
 					Parameters:  params,
@@ -397,16 +397,16 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 		}
 		toolChoice := &schemas.ToolChoice{
 			ToolChoiceStruct: &schemas.ToolChoiceStruct{
-				Type: func() schemas.ToolChoiceType {
+				Type: func() *schemas.ToolChoiceType {
 					if r.ToolChoice.Type == "tool" {
-						return schemas.ToolChoiceTypeFunction
+						return bifrost.Ptr(schemas.ToolChoiceTypeFunction)
 					}
-					return schemas.ToolChoiceType(r.ToolChoice.Type)
+					return bifrost.Ptr(schemas.ToolChoiceType(r.ToolChoice.Type))
 				}(),
 			},
 		}
 		if r.ToolChoice.Type == "tool" && r.ToolChoice.Name != "" {
-			toolChoice.ToolChoiceStruct.Function = schemas.ToolChoiceFunction{
+			toolChoice.ToolChoiceStruct.Function = &schemas.ToolChoiceFunction{
 				Name: r.ToolChoice.Name,
 			}
 		}

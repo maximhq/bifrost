@@ -939,7 +939,7 @@ func (provider *BedrockProvider) prepareToolChoice(params *schemas.ModelParamete
 			}
 			// Note: "none" is not supported by AWS Bedrock for these models
 		} else if params.ToolChoice.ToolChoiceStruct != nil {
-			if (params.ToolChoice.ToolChoiceStruct.Type == schemas.ToolChoiceTypeFunction || params.ToolChoice.ToolChoiceStruct.Type == "tool") &&
+			if (*params.ToolChoice.ToolChoiceStruct.Type == schemas.ToolChoiceTypeFunction || *params.ToolChoice.ToolChoiceStruct.Type == "tool") &&
 				params.ToolChoice.ToolChoiceStruct.Function.Name != "" {
 
 				return &BedrockToolChoice{
@@ -1531,7 +1531,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		}
 
 		// Send final response
-		response := createBifrostChatCompletionChunkResponse(usage, finishReason, chunkIndex, params, providerName)
+		response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerName)
 		handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 	}()
 

@@ -804,6 +804,7 @@ func processAndSendError(
 }
 
 func createBifrostChatCompletionChunkResponse(
+	id string,
 	usage *schemas.LLMUsage,
 	finishReason *string,
 	currentChunkIndex int,
@@ -811,6 +812,7 @@ func createBifrostChatCompletionChunkResponse(
 	providerName schemas.ModelProvider,
 ) *schemas.BifrostResponse {
 	response := &schemas.BifrostResponse{
+		ID:     id,
 		Object: "chat.completion.chunk",
 		Usage:  usage,
 		Choices: []schemas.BifrostResponseChoice{

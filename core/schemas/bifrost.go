@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas/apis/openai"
 )
 
 const (
@@ -38,19 +39,19 @@ const (
 type ModelProvider string
 
 const (
-	OpenAI    ModelProvider = "openai"
-	Azure     ModelProvider = "azure"
-	Anthropic ModelProvider = "anthropic"
-	Bedrock   ModelProvider = "bedrock"
-	Cohere    ModelProvider = "cohere"
-	Vertex    ModelProvider = "vertex"
-	Mistral   ModelProvider = "mistral"
-	Ollama    ModelProvider = "ollama"
-	Groq      ModelProvider = "groq"
-	SGL       ModelProvider = "sgl"
-	Parasail  ModelProvider = "parasail"
-	Cerebras  ModelProvider = "cerebras"
-	Gemini    ModelProvider = "gemini"
+	OpenAI     ModelProvider = "openai"
+	Azure      ModelProvider = "azure"
+	Anthropic  ModelProvider = "anthropic"
+	Bedrock    ModelProvider = "bedrock"
+	Cohere     ModelProvider = "cohere"
+	Vertex     ModelProvider = "vertex"
+	Mistral    ModelProvider = "mistral"
+	Ollama     ModelProvider = "ollama"
+	Groq       ModelProvider = "groq"
+	SGL        ModelProvider = "sgl"
+	Parasail   ModelProvider = "parasail"
+	Cerebras   ModelProvider = "cerebras"
+	Gemini     ModelProvider = "gemini"
 	OpenRouter ModelProvider = "openrouter"
 )
 
@@ -223,22 +224,59 @@ type Fallback struct {
 // your request to the model. Bifrost follows a standard set of parameters which
 // mapped to the provider's parameters.
 type ModelParameters struct {
-	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
-	Tools             *[]Tool     `json:"tools,omitempty"`               // Tools to use
-	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
-	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
-	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
-	MaxTokens         *int        `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
-	StopSequences     *[]string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
-	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
-	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
-	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
-	EncodingFormat    *string     `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
-	Dimensions        *int        `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
-	User              *string     `json:"user,omitempty"`                // User identifier for tracking
+	ToolChoice        *ToolChoice         `json:"tool_choice,omitempty"`         // Whether to call a tool
+	Tools             *[]Tool             `json:"tools,omitempty"`               // Tools to use
+	Temperature       *float64            `json:"temperature,omitempty"`         // Controls randomness in the output
+	TopP              *float64            `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
+	TopK              *int                `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
+	MaxTokens         *int                `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
+	StopSequences     *[]string           `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	PresencePenalty   *float64            `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
+	FrequencyPenalty  *float64            `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
+	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
+	EncodingFormat    *string             `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
+	Dimensions        *int                `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
+	User              *string             `json:"user,omitempty"`                // User identifier for tracking
+	LogitBias         *map[string]float64 `json:"logit_bias,omitempty"`          // Bias for logit values
+	LogProbs          *int                `json:"logprobs,omitempty"`            // Number of logprobs to return
+	Metadata          *map[string]any     `json:"metadata,omitempty"`            // Metadata to be returned with the response
+	N                 *int                `json:"n,omitempty"`                   // Number of responses to generate
+	ReasoningEffort   *string             `json:"reasoning_effort,omitempty"`    // "minimal" | "low" | "medium" | "high"
+	ResponseFormat    *string             `json:"response_format,omitempty"`     // Format for the response
+	Verbosity         *string             `json:"verbosity,omitempty"`           // "low" | "medium" | "high"
+	StreamOptions     *StreamOptions      `json:"stream_options,omitempty"`
+	TopLogProbs       *int                `json:"top_logprobs,omitempty"`
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
+}
+
+type StreamOptions struct {
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
+	IncludeUsage       *bool `json:"include_usage,omitempty"` // Bifrost marks this as true by default
+}
+
+// Text configuration options
+
+type TextConfig struct {
+	Format    *TextConfigFormat `json:"format,omitempty"`    // An object specifying the format that the model must output
+	Verbosity *string           `json:"verbosity,omitempty"` // "low" | "medium" | "high" or null
+}
+
+// TextFormat specifies the format that the model must output
+type TextConfigFormat struct {
+	Type       string          `json:"type"`                  // "text" | "json_schema" | "json_object"
+	JSONSchema *JSONSchemaSpec `json:"json_schema,omitempty"` // when type == "json_schema"
+}
+
+// JSONSchemaSpec represents a JSON schema specification
+type JSONSchemaSpec struct {
+	Name        string         `json:"name"`
+	Schema      map[string]any `json:"schema"` // JSON Schema (subset)
+	Type        string         `json:"type"`   // always "json_schema"
+	Description *string        `json:"description,omitempty"`
+	Strict      *bool          `json:"strict,omitempty"`
 }
 
 // FunctionParameters represents the parameters for a function definition.
@@ -259,9 +297,11 @@ type Function struct {
 
 // Tool represents a tool that can be used with the model.
 type Tool struct {
-	ID       *string  `json:"id,omitempty"` // Optional tool identifier
-	Type     string   `json:"type"`         // Type of the tool
-	Function Function `json:"function"`     // Function definition
+	ID       *string   `json:"id,omitempty"` // Optional tool identifier
+	Type     *string   `json:"type"`         // Type of the tool
+	Function *Function `json:"function"`     // Function definition
+
+	*openai.ResponsesAPIExtendedTool
 }
 
 // Combined tool choices for all providers, make sure to check the provider's
@@ -288,8 +328,49 @@ type ToolChoiceFunction struct {
 
 // ToolChoiceStruct represents a specific tool choice.
 type ToolChoiceStruct struct {
-	Type     ToolChoiceType     `json:"type"`               // Type of tool choice
-	Function ToolChoiceFunction `json:"function,omitempty"` // Function to call if type is ToolChoiceTypeFunction
+	Type     *ToolChoiceType     `json:"type"`               // Type of tool choice
+	Function *ToolChoiceFunction `json:"function,omitempty"` // Function to call if type is ToolChoiceTypeFunction
+
+	// Responses API parameters
+	*openai.ResponsesAPIExtendedToolChoice
+}
+
+// ToolChoiceAllowedTools - Constrains the tools available to the model to a pre-defined set
+type ToolChoiceAllowedTools struct {
+	Type  string                     `json:"type"` // always "allowed_tools"
+	Mode  string                     `json:"mode"` // "auto" | "required"
+	Tools []ToolChoiceAllowedToolDef `json:"tools"`
+}
+
+// ToolChoiceAllowedToolDef - Definition of an allowed tool
+type ToolChoiceAllowedToolDef struct {
+	Type        string  `json:"type"`                   // "function" | "mcp" | "image_generation"
+	Name        *string `json:"name,omitempty"`         // for function tools
+	ServerLabel *string `json:"server_label,omitempty"` // for MCP tools
+}
+
+// ToolChoiceHostedTool - Indicates the model should use a built-in tool
+type ToolChoiceHostedTool struct {
+	Type string `json:"type"` // "file_search" | "web_search_preview" | "computer_use_preview" | "code_interpreter" | "image_generation"
+}
+
+// ToolChoiceFunctionTool - Force the model to call a specific function
+type ToolChoiceFunctionTool struct {
+	Type string `json:"type"` // always "function"
+	Name string `json:"name"` // The name of the function to call
+}
+
+// ToolChoiceMCPTool - Force the model to call a specific tool on a remote MCP server
+type ToolChoiceMCPTool struct {
+	Type        string  `json:"type"`           // always "mcp"
+	ServerLabel string  `json:"server_label"`   // The label of the MCP server to use
+	Name        *string `json:"name,omitempty"` // The name of the tool to call on the server
+}
+
+// ToolChoiceCustomTool - Force the model to call a specific custom tool
+type ToolChoiceCustomTool struct {
+	Type string `json:"type"` // always "custom"
+	Name string `json:"name"` // The name of the custom tool to call
 }
 
 // ToolChoice represents how a tool should be chosen for a request. (either a string or a struct)
@@ -330,12 +411,8 @@ func (tc *ToolChoice) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct struct of ToolChoiceStruct
 	var toolChoiceStruct ToolChoiceStruct
 	if err := sonic.Unmarshal(data, &toolChoiceStruct); err == nil {
-		// Validate the Type field is not empty and is a valid value
-		if toolChoiceStruct.Type == "" {
-			return fmt.Errorf("tool_choice struct has empty type field")
-		}
-
 		tc.ToolChoiceStruct = &toolChoiceStruct
+
 		return nil
 	}
 
@@ -351,6 +428,8 @@ type BifrostMessage struct {
 	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
 	*ToolMessage
 	*AssistantMessage
+
+	*openai.ResponsesAPIExtendedBifrostMessage
 }
 
 type MessageContent struct {
@@ -410,11 +489,18 @@ type ContentBlock struct {
 	Text       *string           `json:"text,omitempty"`
 	ImageURL   *ImageURLStruct   `json:"image_url,omitempty"`
 	InputAudio *InputAudioStruct `json:"input_audio,omitempty"`
+	File       *InputFile        `json:"file,omitempty"`
+
+	// Responses API parameters
+	*openai.InputMessageContentBlockImage
+	*openai.InputMessageContentBlockFile
 }
 
 // ToolMessage represents a message from a tool
 type ToolMessage struct {
 	ToolCallID *string `json:"tool_call_id,omitempty"`
+
+	*openai.ResponsesAPIExtendedToolMessage
 }
 
 // AssistantMessage represents a message from an assistant
@@ -423,6 +509,8 @@ type AssistantMessage struct {
 	Annotations []Annotation `json:"annotations,omitempty"`
 	ToolCalls   *[]ToolCall  `json:"tool_calls,omitempty"`
 	Thought     *string      `json:"thought,omitempty"`
+
+	*openai.ResponsesAPIExtendedAssistantMessage
 }
 
 // ImageContent represents image data in a message.
@@ -437,6 +525,12 @@ type ImageURLStruct struct {
 type InputAudioStruct struct {
 	Data   string  `json:"data"`
 	Format *string `json:"format,omitempty"`
+}
+
+type InputFile struct {
+	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data
+	FileID   *string `json:"file_id,omitempty"`   // Reference to uploaded file
+	Filename *string `json:"filename,omitempty"`  // Name of the file
 }
 
 //* Response Structs
@@ -455,6 +549,11 @@ type BifrostResponse struct {
 	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
 	Usage             *LLMUsage                  `json:"usage,omitempty"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+
+	// Responses API parameters
+	*openai.ResponseAPIExtendedResponse
+	Instructions *[]BifrostMessage `json:"instructions,omitempty"`
+	Output       *[]BifrostMessage `json:"output,omitempty"`
 }
 
 // LLMUsage represents token usage information
@@ -464,6 +563,8 @@ type LLMUsage struct {
 	TotalTokens             int                      `json:"total_tokens"`
 	TokenDetails            *TokenDetails            `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+
+	*openai.ResponsesAPIExtendedResponseUsage
 }
 
 type AudioLLMUsage struct {
@@ -559,6 +660,8 @@ type Citation struct {
 type Annotation struct {
 	Type     string   `json:"type"`
 	Citation Citation `json:"url_citation"`
+
+	*openai.ResponsesAPIExtendedOutputMessageTextAnnotation
 }
 
 type BifrostEmbedding struct {

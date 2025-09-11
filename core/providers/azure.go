@@ -294,12 +294,12 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	// Merge additional parameters
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 	}, preparedParams)
 
 	responseBody, err := provider.completeRequest(ctx, requestBody, "chat/completions", key, model)
@@ -390,7 +390,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 // Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	if key.AzureKeyConfig == nil {
 		return nil, newConfigurationError("azure key config not set", schemas.Azure)
@@ -399,7 +399,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 	// Merge additional parameters and set stream to true
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 		"stream":   true,
 	}, preparedParams)
 
@@ -441,7 +441,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 	}
 
 	// Use shared streaming logic from OpenAI
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		fullURL,

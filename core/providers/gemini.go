@@ -139,11 +139,11 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 
 	providerName := provider.GetProviderKey()
 
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 	}, preparedParams)
 
 	jsonBody, err := sonic.Marshal(requestBody)
@@ -231,11 +231,11 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	providerName := provider.GetProviderKey()
 
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	sanitizedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
 
 	requestBody := mergeConfig(map[string]interface{}{
 		"model":    model,
-		"messages": formattedMessages,
+		"messages": sanitizedMessages,
 		"stream":   true,
 	}, preparedParams)
 
@@ -248,7 +248,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 	}
 
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/openai/chat/completions",
@@ -868,7 +868,7 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 			// Transform Bifrost tools to Gemini format
 			var geminiTools []map[string]interface{}
 			for _, tool := range *params.Tools {
-				if tool.Type == "function" {
+				if *tool.Type == "function" {
 					geminiTool := map[string]interface{}{
 						"functionDeclarations": []map[string]interface{}{
 							{
@@ -907,7 +907,7 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 							functionCallingConfig["mode"] = "AUTO"
 						}
 					} else if params.ToolChoice.ToolChoiceStruct != nil {
-						switch params.ToolChoice.ToolChoiceStruct.Type {
+						switch *params.ToolChoice.ToolChoiceStruct.Type {
 						case schemas.ToolChoiceTypeNone:
 							functionCallingConfig["mode"] = "NONE"
 						case schemas.ToolChoiceTypeAuto:
@@ -980,8 +980,8 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 		}
 	case []schemas.BifrostMessage:
 		// Chat completion request
-		formattedMessages, _ := prepareOpenAIChatRequest(v, params)
-		requestBody["contents"] = formattedMessages
+		sanitizedMessages, _ := prepareOpenAIChatRequest(v, params)
+		requestBody["contents"] = sanitizedMessages
 	}
 
 	return requestBody
