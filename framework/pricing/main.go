@@ -84,7 +84,7 @@ func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingM
 		if err := pm.syncPricing(); err != nil {
 			return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 		}
-		
+
 	} else {
 		// Load pricing data from config memory
 		if err := pm.loadPricingIntoMemory(); err != nil {
@@ -100,8 +100,8 @@ func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingM
 	return pm, nil
 }
 
-func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType) float64 {
-	if result == nil || provider == "" || model == "" || requestType == "" {
+func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse) float64 {
+	if result == nil {
 		return 0.0
 	}
 
@@ -157,14 +157,14 @@ func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse, provide
 
 	cost := 0.0
 	if usage != nil || audioSeconds != nil || audioTokenDetails != nil {
-		cost = pm.CalculateCostFromUsage(string(provider), model, usage, requestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
+		cost = pm.CalculateCostFromUsage(string(result.ExtraFields.Provider), result.ExtraFields.ModelRequested, usage, result.ExtraFields.RequestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
 	}
 
 	return cost
 }
 
-func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType) float64 {
-	if result == nil || provider == "" || model == "" || requestType == "" {
+func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostResponse) float64 {
+	if result == nil {
 		return 0.0
 	}
 	cacheDebug := result.ExtraFields.CacheDebug
@@ -183,7 +183,7 @@ func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostRes
 			// Don't over-bill cache hits if fields are missing.
 			return 0
 		} else {
-			baseCost := pm.CalculateCost(result, provider, model, requestType)
+			baseCost := pm.CalculateCost(result)
 			var semanticCacheCost float64
 			if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
 				semanticCacheCost = pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.LLMUsage{
@@ -197,7 +197,7 @@ func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostRes
 		}
 	}
 
-	return pm.CalculateCost(result, provider, model, requestType)
+	return pm.CalculateCost(result)
 }
 
 func (pm *PricingManager) Cleanup() error {
@@ -332,12 +332,22 @@ func (pm *PricingManager) getPricing(model, provider string, requestType schemas
 
 	pricing, ok := pm.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
 	if !ok {
+		// Lookup in vertex if gemini not found
 		if provider == string(schemas.Gemini) {
 			pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
 			if ok {
 				return &pricing, true
 			}
 		}
+
+		// Lookup in chat if responses not found
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+			pricing, ok = pm.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			if ok {
+				return &pricing, true
+			}
+		}
+
 		return nil, false
 	}
 	return &pricing, true

@@ -5,21 +5,16 @@ import (
 )
 
 // ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI format
-func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *VertexEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *VertexEmbeddingRequest {
+	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 
-	embeddingInput := bifrostReq.Input.EmbeddingInput
-	texts := embeddingInput.Texts
-
-	// Handle single text input
-	if len(texts) == 0 && embeddingInput.Text != nil {
-		texts = []string{*embeddingInput.Text}
-	}
-
-	if len(texts) == 0 {
-		return nil
+	var texts []string
+	if bifrostReq.Input.Text != nil {
+		texts = []string{*bifrostReq.Input.Text}
+	} else {
+		texts = bifrostReq.Input.Texts
 	}
 
 	// Create instances for each text
@@ -30,12 +25,12 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *VertexEmbeddi
 		}
 
 		// Add optional task_type and title from params
-		if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
-			if taskTypeStr, exists := bifrostReq.Params.ExtraParams["task_type"].(string); exists {
-				instance.TaskType = &taskTypeStr
+		if bifrostReq.Params != nil {
+			if taskTypeStr, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["task_type"]); ok {
+				instance.TaskType = taskTypeStr
 			}
-			if title, exists := bifrostReq.Params.ExtraParams["title"].(string); exists {
-				instance.Title = &title
+			if title, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["title"]); ok {
+				instance.Title = title
 			}
 		}
 
@@ -54,7 +49,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *VertexEmbeddi
 		// Set autoTruncate (defaults to true)
 		autoTruncate := true
 		if bifrostReq.Params.ExtraParams != nil {
-			if autoTruncateVal, exists := bifrostReq.Params.ExtraParams["autoTruncate"].(bool); exists {
+			if autoTruncateVal, ok := schemas.SafeExtractBool(bifrostReq.Params.ExtraParams["autoTruncate"]); ok {
 				autoTruncate = autoTruncateVal
 			}
 		}
@@ -119,7 +114,8 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 		Data:   embeddings,
 		Usage:  usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Vertex,
+			RequestType: schemas.EmbeddingRequest,
+			Provider:    schemas.Vertex,
 		},
 	}
 

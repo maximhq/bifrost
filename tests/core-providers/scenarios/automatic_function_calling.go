@@ -19,7 +19,7 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 	}
 
 	t.Run("AutomaticFunctionCalling", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateBasicChatMessage("Get the current time in UTC timezone"),
 		}
 

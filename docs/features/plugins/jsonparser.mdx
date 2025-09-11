@@ -208,16 +208,16 @@ func main() {
     if err != nil {
         panic(err)
     }
-    defer client.Cleanup()
+    defer client.Shutdown()
 
     // Request structured JSON response  
     request := &schemas.BifrostRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
-        Messages: []schemas.BifrostMessage{
+        Messages: []schemas.ChatMessage{
             {
-                Role: schemas.ModelChatMessageRoleUser,
-                Content: schemas.MessageContent{
+                Role: schemas.ChatMessageRoleUser,
+                Content: schemas.ChatMessageContent{
                     ContentStr: bifrost.Ptr("Return user profile as JSON: {\"name\": \"John Doe\", \"email\": \"john@example.com\"}"),
                 },
             },

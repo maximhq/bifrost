@@ -37,9 +37,16 @@ type BedrockConverseRequest struct {
 	RequestMetadata                   *map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
 }
 
+type BedrockMessageRole string
+
+const (
+	BedrockMessageRoleUser      BedrockMessageRole = "user"
+	BedrockMessageRoleAssistant BedrockMessageRole = "assistant"
+)
+
 // BedrockMessage represents a message in the conversation
 type BedrockMessage struct {
-	Role    string                `json:"role"`    // Required: "user" or "assistant"
+	Role    BedrockMessageRole    `json:"role"`    // Required: "user" or "assistant"
 	Content []BedrockContentBlock `json:"content"` // Required: Array of content blocks
 }
 
@@ -68,6 +75,9 @@ type BedrockContentBlock struct {
 
 	// Guard content (for guardrails)
 	GuardContent *BedrockGuardContent `json:"guardContent,omitempty"`
+
+	// For Tool Call Result content
+	JSON interface{} `json:"json,omitempty"`
 }
 
 // BedrockImageSource represents image content
@@ -102,24 +112,9 @@ type BedrockToolUse struct {
 
 // BedrockToolResult represents the result of a tool use
 type BedrockToolResult struct {
-	ToolUseID string                     `json:"toolUseId"`        // Required: ID of the tool use this result corresponds to
-	Content   []BedrockToolResultContent `json:"content"`          // Required: Content of the tool result
-	Status    *string                    `json:"status,omitempty"` // Optional: Status of tool execution ("success" or "error")
-}
-
-// BedrockToolResultContent represents content within a tool result
-type BedrockToolResultContent struct {
-	// Text content
-	Text *string `json:"text,omitempty"`
-
-	// Image content
-	Image *BedrockImageSource `json:"image,omitempty"`
-
-	// Document content
-	Document *BedrockDocumentSource `json:"document,omitempty"`
-
-	// JSON content
-	JSON interface{} `json:"json,omitempty"`
+	ToolUseID string                `json:"toolUseId"`        // Required: ID of the tool use this result corresponds to
+	Content   []BedrockContentBlock `json:"content"`          // Required: Content of the tool result
+	Status    *string               `json:"status,omitempty"` // Optional: Status of tool execution ("success" or "error")
 }
 
 // BedrockGuardContent represents guard content for guardrails
@@ -419,4 +414,19 @@ type BedrockMetadataEvent struct {
 	Usage   *BedrockTokenUsage      `json:"usage,omitempty"`   // Token usage information
 	Metrics *BedrockConverseMetrics `json:"metrics,omitempty"` // Performance metrics
 	Trace   *BedrockConverseTrace   `json:"trace,omitempty"`   // Trace information
+}
+
+// ==================== EMBEDDING TYPES ====================
+
+// BedrockTitanEmbeddingRequest represents a Bedrock Titan embedding request
+type BedrockTitanEmbeddingRequest struct {
+	InputText string `json:"inputText"` // Required: Text to embed
+	// Note: Titan models have fixed dimensions and don't support the dimensions parameter
+	// ExtraParams can be used for any additional model-specific parameters
+}
+
+// BedrockTitanEmbeddingResponse represents a Bedrock Titan embedding response
+type BedrockTitanEmbeddingResponse struct {
+	Embedding           []float32 `json:"embedding"`           // The embedding vector
+	InputTextTokenCount int       `json:"inputTextTokenCount"` // Number of tokens in input
 }

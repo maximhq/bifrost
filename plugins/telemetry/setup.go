@@ -136,7 +136,7 @@ func InitPrometheusMetrics(labels []string) {
 			Name: "bifrost_error_requests_total",
 			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
 		},
-		append(bifrostDefaultLabels, labels...),
+		append(append(bifrostDefaultLabels, "reason"), labels...),
 	)
 
 	bifrostInputTokensTotal = promauto.NewCounterVec(

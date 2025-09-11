@@ -22,7 +22,7 @@ func RunProviderSpecificTest(t *testing.T, client *bifrost.Bifrost, ctx context.
 	t.Run("ProviderSpecific", func(t *testing.T) {
 		// This would contain provider-specific tests
 		// For now, we'll do a basic functionality test
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateBasicChatMessage("Test provider-specific functionality. What makes you unique?"),
 		}
 

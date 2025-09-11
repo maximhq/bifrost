@@ -81,23 +81,20 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 	}
 	defer client.Shutdown()
 
-	// Make a test chat completion request with streaming enabled
+	// Make a test responses request with streaming enabled
 	// Request JSON output to test the parser
-	request := &schemas.BifrostRequest{
+	request := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: "user",
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Return a JSON object with name, age, and city fields. Example: {\"name\": \"John\", \"age\": 30, \"city\": \"New York\"}"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Return a JSON object with name, age, and city fields. Example: {\"name\": \"John\", \"age\": 30, \"city\": \"New York\"}"),
 				},
 			},
 		},
-		Params: &schemas.ModelParameters{
-
+		Params: &schemas.ChatParameters{
 			ExtraParams: map[string]any{
 				"stream": true,
 				"response_format": map[string]any{
@@ -128,11 +125,13 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 			}
 
 			if streamResponse.BifrostResponse != nil {
-				for _, choice := range streamResponse.BifrostResponse.Choices {
-					if choice.BifrostStreamResponseChoice != nil && choice.BifrostStreamResponseChoice.Delta.Content != nil {
-						content := *choice.BifrostStreamResponseChoice.Delta.Content
-						if content != "" {
-							t.Logf("Chunk %d: %s", responseCount, content)
+				if streamResponse.BifrostResponse.ResponsesResponse != nil {
+					for _, outputMsg := range streamResponse.BifrostResponse.ResponsesResponse.Output {
+						if outputMsg.Content != nil && outputMsg.Content.ContentStr != nil {
+							content := *outputMsg.Content.ContentStr
+							if content != "" {
+								t.Logf("Chunk %d: %s", responseCount, content)
+							}
 						}
 					}
 				}
@@ -183,20 +182,18 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 	defer client.Shutdown()
 
 	// Test request with plugin enabled via context
-	request := &schemas.BifrostRequest{
+	request := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: "user",
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Return a JSON object with name and age fields."),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Return a JSON object with name and age fields."),
 				},
 			},
 		},
-		Params: &schemas.ModelParameters{
+		Params: &schemas.ChatParameters{
 			ExtraParams: map[string]any{
 				"stream": true,
 				"response_format": map[string]any{

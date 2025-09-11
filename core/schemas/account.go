@@ -10,9 +10,16 @@ type Key struct {
 	Value            string            `json:"value"`                        // The actual API key value
 	Models           []string          `json:"models"`                       // List of models this key can access
 	Weight           float64           `json:"weight"`                       // Weight for load balancing between multiple keys
+	OpenAIKeyConfig  *OpenAIKeyConfig  `json:"openai_key_config,omitempty"`  // OpenAI-specific key configuration
 	AzureKeyConfig   *AzureKeyConfig   `json:"azure_key_config,omitempty"`   // Azure-specific key configuration
 	VertexKeyConfig  *VertexKeyConfig  `json:"vertex_key_config,omitempty"`  // Vertex-specific key configuration
 	BedrockKeyConfig *BedrockKeyConfig `json:"bedrock_key_config,omitempty"` // AWS Bedrock-specific key configuration
+}
+
+// OpenAIKeyConfig represents the OpenAI-specific configuration.
+// It contains OpenAI-specific settings required for which endpoint to use. (chat completion or responses api)
+type OpenAIKeyConfig struct {
+	UseResponsesAPI bool `json:"use_responses_api,omitempty"`
 }
 
 // AzureKeyConfig represents the Azure-specific configuration.

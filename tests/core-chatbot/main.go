@@ -30,7 +30,7 @@ type ChatbotConfig struct {
 
 // ChatSession manages the conversation state
 type ChatSession struct {
-	history      []schemas.BifrostMessage
+	history      []schemas.ChatMessage
 	client       *bifrost.Bifrost
 	config       ChatbotConfig
 	systemPrompt string
@@ -280,7 +280,7 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 	}
 
 	session := &ChatSession{
-		history: make([]schemas.BifrostMessage, 0),
+		history: make([]schemas.ChatMessage, 0),
 		client:  client,
 		config:  config,
 		account: account,
@@ -290,9 +290,9 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 
 	// Add system message to history
 	if session.systemPrompt != "" {
-		session.history = append(session.history, schemas.BifrostMessage{
+		session.history = append(session.history, schemas.ChatMessage{
 			Role: schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{
+			Content: schemas.ChatMessageContent{
 				ContentStr: &session.systemPrompt,
 			},
 		})
@@ -457,9 +457,9 @@ func (s *ChatSession) showCurrentConfig() {
 
 // AddUserMessage adds a user message to the conversation history
 func (s *ChatSession) AddUserMessage(message string) {
-	userMessage := schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
+	userMessage := schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
 			ContentStr: &message,
 		},
 	}
@@ -540,7 +540,7 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 }
 
 // handleToolCalls handles tool execution using the new Bifrost MCP integration
-func (s *ChatSession) handleToolCalls(assistantMessage schemas.BifrostMessage) (string, error) {
+func (s *ChatSession) handleToolCalls(assistantMessage schemas.ChatMessage) (string, error) {
 	toolCalls := *assistantMessage.ToolCalls
 
 	// Display tools to user for approval
@@ -568,7 +568,7 @@ func (s *ChatSession) handleToolCalls(assistantMessage schemas.BifrostMessage) (
 	fmt.Println("✅ Executing tools...")
 
 	// Execute each tool using Bifrost's ExecuteMCPTool method
-	toolResults := make([]schemas.BifrostMessage, 0)
+	toolResults := make([]schemas.ChatMessage, 0)
 	for _, toolCall := range toolCalls {
 		// Start loading animation for this tool
 		stopChan, wg := startLoader()
@@ -582,9 +582,9 @@ func (s *ChatSession) handleToolCalls(assistantMessage schemas.BifrostMessage) (
 		if err != nil {
 			fmt.Printf("❌ Error executing tool %s: %v\n", *toolCall.Function.Name, err)
 			// Create error message for this tool
-			errorResult := schemas.BifrostMessage{
+			errorResult := schemas.ChatMessage{
 				Role: schemas.ModelChatMessageRoleTool,
-				Content: schemas.MessageContent{
+				Content: schemas.ChatMessageContent{
 					ContentStr: stringPtr(fmt.Sprintf("Error executing tool: %v", err)),
 				},
 				ToolMessage: &schemas.ToolMessage{
@@ -622,9 +622,9 @@ func (s *ChatSession) handleToolCalls(assistantMessage schemas.BifrostMessage) (
 // synthesizeToolResults sends the conversation with tool results back to LLM for synthesis
 func (s *ChatSession) synthesizeToolResults() (string, error) {
 	// Add synthesis prompt
-	synthesisPrompt := schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
+	synthesisPrompt := schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
 			ContentStr: stringPtr("Please provide a comprehensive response based on the tool results above."),
 		},
 	}
@@ -907,7 +907,7 @@ func main() {
 		case "/clear":
 			// Keep system prompt but clear conversation history
 			systemPrompt := session.history[0] // Assuming first message is system
-			session.history = []schemas.BifrostMessage{systemPrompt}
+			session.history = []schemas.ChatMessage{systemPrompt}
 			fmt.Println("🧹 Conversation history cleared!")
 			continue
 		case "/config":

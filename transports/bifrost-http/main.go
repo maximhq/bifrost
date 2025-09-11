@@ -2,7 +2,7 @@
 // for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
 //
 // The HTTP service provides the following main endpoints:
-//   - /v1/text/completions: For text completion requests
+//   - /v1/completions: For text completion requests
 //   - /v1/chat/completions: For chat completion requests
 //   - /v1/mcp/tool/execute: For MCP tool execution requests
 //   - /providers/*: For provider configuration management
@@ -330,7 +330,7 @@ func getDefaultConfigDir(appDir string) string {
 // 5. Starts the HTTP server on the specified host and port
 //
 // The server exposes the following endpoints:
-//   - POST /v1/text/completions: For text completion requests
+//   - POST /v1/completions: For text completion requests
 //   - POST /v1/chat/completions: For chat completion requests
 //   - GET /metrics: For Prometheus metrics
 func main() {
@@ -411,7 +411,7 @@ func main() {
 	// Eventually same flow will be used for third party plugins
 	for _, plugin := range config.Plugins {
 		if !plugin.Enabled {
- 			logger.Debug("plugin %s is disabled, skipping initialization", plugin.Name)
+			logger.Debug("plugin %s is disabled, skipping initialization", plugin.Name)
 			continue
 		}
 		switch strings.ToLower(plugin.Name) {

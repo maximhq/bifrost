@@ -1,9 +1,11 @@
 package schemas
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -60,371 +62,6 @@ func mapFinishReasonToAnthropic(finishReason string) string {
 	}
 }
 
-// ParameterSet represents a set of valid parameters using a map for O(1) lookup
-type ParameterSet map[string]bool
-
-// Marker to allowe all params
-const AllowAllParams = "*"
-
-// Pre-defined parameter groups (initialized once at startup)
-var (
-
-	allowAllParams = ParameterSet{
-		AllowAllParams: true,
-	}
-	// Core parameters supported by most providers
-	coreParams = ParameterSet{
-		"max_tokens":  true,
-		"temperature": true,
-		"top_p":       true,
-		"stream":      true,
-		"tools":       true,
-		"tool_choice": true,
-	}
-
-	// Extended parameter groups
-	openAIParams = ParameterSet{
-		"frequency_penalty":       true,
-		"presence_penalty":        true,
-		"n":                       true,
-		"stop":                    true,
-		"logprobs":                true,
-		"top_logprobs":            true,
-		"logit_bias":              true,
-		"seed":                    true,
-		"user":                    true,
-		"response_format":         true,
-		"parallel_tool_calls":     true,
-		"max_completion_tokens":   true,
-		"metadata":                true,
-		"modalities":              true,
-		"prediction":              true,
-		"reasoning_effort":        true,
-		"service_tier":            true,
-		"store":                   true,
-		"speed":                   true,
-		"language":                true,
-		"prompt":                  true,
-		"include":                 true,
-		"timestamp_granularities": true,
-		"encoding_format":         true,
-		"dimensions":              true,
-		"stream_options":          true,
-	}
-
-	anthropicParams = ParameterSet{
-		"stop_sequences": true,
-		"system":         true,
-		"metadata":       true,
-		"mcp_servers":    true,
-		"service_tier":   true,
-		"thinking":       true,
-		"top_k":          true,
-	}
-
-	cohereParams = ParameterSet{
-		"frequency_penalty":  true,
-		"presence_penalty":   true,
-		"k":                  true,
-		"p":                  true,
-		"truncate":           true,
-		"return_likelihoods": true,
-		"logit_bias":         true,
-		"stop_sequences":     true,
-	}
-
-	mistralParams = ParameterSet{
-		"frequency_penalty":   true,
-		"presence_penalty":    true,
-		"safe_mode":           true,
-		"n":                   true,
-		"parallel_tool_calls": true,
-		"prediction":          true,
-		"prompt_mode":         true,
-		"random_seed":         true,
-		"response_format":     true,
-		"safe_prompt":         true,
-		"top_k":               true,
-	}
-
-	groqParams = ParameterSet{
-		"n":                true,
-		"reasoning_effort": true,
-		"reasoning_format": true,
-		"service_tier":     true,
-		"stop":             true,
-	}
-
-	ollamaParams = ParameterSet{
-		"num_ctx":          true,
-		"num_gpu":          true,
-		"num_thread":       true,
-		"repeat_penalty":   true,
-		"repeat_last_n":    true,
-		"seed":             true,
-		"tfs_z":            true,
-		"mirostat":         true,
-		"mirostat_tau":     true,
-		"mirostat_eta":     true,
-		"format":           true,
-		"keep_alive":       true,
-		"low_vram":         true,
-		"main_gpu":         true,
-		"min_p":            true,
-		"num_batch":        true,
-		"num_keep":         true,
-		"num_predict":      true,
-		"numa":             true,
-		"penalize_newline": true,
-		"raw":              true,
-		"typical_p":        true,
-		"use_mlock":        true,
-		"use_mmap":         true,
-		"vocab_only":       true,
-	}
-
-	openRouterParams = ParameterSet{
-		"transforms": true,
-		"models":     true,
-		"route":      true,
-		"provider":   true,
-		"prediction": true,
-		"top_a":      true,
-		"min_p":      true,
-	}
-
-	vertexParams = ParameterSet{
-		"task_type":            true,
-		"title":                true,
-		"autoTruncate":         true,
-		"outputDimensionality": true,
-	}
-
-	bedrockParams = ParameterSet{
-		"max_tokens_to_sample": true,
-		"toolConfig":           true,
-		"input_type":           true,
-	}
-)
-
-// ParameterValidator provides fast parameter validation and filtering
-type ParameterValidator struct {
-	providerSchemas map[ModelProvider]ParameterSet
-}
-
-// NewParameterValidator creates a validator with pre-computed provider schemas
-func NewParameterValidator() *ParameterValidator {
-	return &ParameterValidator{
-		providerSchemas: buildProviderSchemas(),
-	}
-}
-
-// FilterParameters filters parameters for a provider using manual field checks (no reflection)
-func (v *ParameterValidator) FilterParameters(provider ModelProvider, params *ModelParameters) *ModelParameters {
-	if params == nil {
-		return nil
-	}
-
-	schema, exists := v.providerSchemas[provider]
-	if !exists {
-		return params // Unknown provider, return all params
-	}
-
-	filtered := &ModelParameters{
-		ExtraParams: make(map[string]interface{}),
-	}
-
-	// Return all params if the provider allows all params
-	if schema[AllowAllParams] {
-		return params
-	}
-
-	// Manual field filtering - fast and memory efficient
-	v.filterStandardFields(schema, params, filtered)
-	v.filterExtraParams(schema, params, filtered)
-
-	// Return nil if no valid parameters
-	if v.isEmpty(filtered) {
-		return nil
-	}
-
-	return filtered
-}
-
-// filterStandardFields manually filters each field - faster than reflection
-func (v *ParameterValidator) filterStandardFields(schema ParameterSet, source, target *ModelParameters) {
-	if source.MaxTokens != nil && schema["max_tokens"] {
-		target.MaxTokens = source.MaxTokens
-	}
-	if source.Temperature != nil && schema["temperature"] {
-		target.Temperature = source.Temperature
-	}
-	if source.TopP != nil && schema["top_p"] {
-		target.TopP = source.TopP
-	}
-	if source.TopK != nil && schema["top_k"] {
-		target.TopK = source.TopK
-	}
-	if source.PresencePenalty != nil && schema["presence_penalty"] {
-		target.PresencePenalty = source.PresencePenalty
-	}
-	if source.FrequencyPenalty != nil && schema["frequency_penalty"] {
-		target.FrequencyPenalty = source.FrequencyPenalty
-	}
-	if source.StopSequences != nil && schema["stop_sequences"] {
-		target.StopSequences = source.StopSequences
-	}
-	if source.Tools != nil && schema["tools"] {
-		target.Tools = source.Tools
-	}
-	if source.ToolChoice != nil && schema["tool_choice"] {
-		target.ToolChoice = source.ToolChoice
-	}
-	if source.User != nil && schema["user"] {
-		target.User = source.User
-	}
-	if source.EncodingFormat != nil && schema["encoding_format"] {
-		target.EncodingFormat = source.EncodingFormat
-	}
-	if source.Dimensions != nil && schema["dimensions"] {
-		target.Dimensions = source.Dimensions
-	}
-	if source.ParallelToolCalls != nil && schema["parallel_tool_calls"] {
-		target.ParallelToolCalls = source.ParallelToolCalls
-	}
-	if source.N != nil && schema["n"] {
-		target.N = source.N
-	}
-	if source.Stop != nil && schema["stop"] {
-		target.Stop = source.Stop
-	}
-	if source.MaxCompletionTokens != nil && schema["max_completion_tokens"] {
-		target.MaxCompletionTokens = source.MaxCompletionTokens
-	}
-	if source.ReasoningEffort != nil && schema["reasoning_effort"] {
-		target.ReasoningEffort = source.ReasoningEffort
-	}
-	if source.StreamOptions != nil && schema["stream_options"] {
-		target.StreamOptions = source.StreamOptions
-	}
-	if source.Stream != nil && schema["stream"] {
-		target.Stream = source.Stream
-	}
-	if source.LogProbs != nil && schema["logprobs"] {
-		target.LogProbs = source.LogProbs
-	}
-	if source.TopLogProbs != nil && schema["top_logprobs"] {
-		target.TopLogProbs = source.TopLogProbs
-	}
-	if source.ResponseFormat != nil && schema["response_format"] {
-		target.ResponseFormat = source.ResponseFormat
-	}
-	if source.Seed != nil && schema["seed"] {
-		target.Seed = source.Seed
-	}
-	if source.LogitBias != nil && schema["logit_bias"] {
-		target.LogitBias = source.LogitBias
-	}
-}
-
-// filterExtraParams filters the ExtraParams map
-func (v *ParameterValidator) filterExtraParams(schema ParameterSet, source, target *ModelParameters) {
-	if source.ExtraParams == nil {
-		return
-	}
-
-	for key, value := range source.ExtraParams {
-		if schema[key] {
-			target.ExtraParams[key] = value
-		}
-	}
-}
-
-// isEmpty checks if all fields are nil/empty - manual check is faster
-func (v *ParameterValidator) isEmpty(params *ModelParameters) bool {
-	return params.MaxTokens == nil &&
-		params.Temperature == nil &&
-		params.TopP == nil &&
-		params.TopK == nil &&
-		params.PresencePenalty == nil &&
-		params.FrequencyPenalty == nil &&
-		params.StopSequences == nil &&
-		params.Tools == nil &&
-		params.ToolChoice == nil &&
-		params.User == nil &&
-		params.EncodingFormat == nil &&
-		params.Dimensions == nil &&
-		params.ParallelToolCalls == nil &&
-		len(params.ExtraParams) == 0
-}
-
-// IsValidParameter checks if a parameter is valid for a provider (O(1) lookup)
-func (v *ParameterValidator) IsValidParameter(provider ModelProvider, paramName string) bool {
-	schema, exists := v.providerSchemas[provider]
-	if !exists {
-		return false
-	}
-	return schema[paramName]
-}
-
-// GetSupportedParameters returns all supported parameters for a provider
-func (v *ParameterValidator) GetSupportedParameters(provider ModelProvider) []string {
-	schema, exists := v.providerSchemas[provider]
-	if !exists {
-		return nil
-	}
-
-	params := make([]string, 0, len(schema))
-	for param := range schema {
-		params = append(params, param)
-	}
-	return params
-}
-
-// Helper function to merge parameter sets
-func mergeParameterSets(sets ...ParameterSet) ParameterSet {
-	totalSize := 0
-	for _, set := range sets {
-		totalSize += len(set)
-	}
-
-	result := make(ParameterSet, totalSize)
-	for _, set := range sets {
-		for param := range set {
-			result[param] = true
-		}
-	}
-	return result
-}
-
-// buildProviderSchemas creates provider-specific parameter schemas
-func buildProviderSchemas() map[ModelProvider]ParameterSet {
-	return map[ModelProvider]ParameterSet{
-		OpenAI:     mergeParameterSets(coreParams, openAIParams),
-		Azure:      mergeParameterSets(coreParams, openAIParams),
-		Anthropic:  mergeParameterSets(coreParams, anthropicParams),
-		Cohere:     mergeParameterSets(coreParams, cohereParams),
-		Mistral:    mergeParameterSets(coreParams, mistralParams),
-		Groq:       mergeParameterSets(coreParams, groqParams),
-		Bedrock:    mergeParameterSets(coreParams, anthropicParams, mistralParams, bedrockParams),
-		Vertex:     mergeParameterSets(coreParams, openAIParams, anthropicParams, vertexParams),
-		Ollama:     mergeParameterSets(coreParams, ollamaParams),
-		Cerebras:   mergeParameterSets(coreParams, openAIParams),
-		SGL:        mergeParameterSets(coreParams, openAIParams),
-		Parasail:   mergeParameterSets(coreParams, openAIParams),
-		Gemini:     mergeParameterSets(coreParams, openAIParams, ParameterSet{"top_k": true, "stop_sequences": true}),
-		OpenRouter: allowAllParams,
-	}
-}
-
-// Global validator instance
-var globalValidator = NewParameterValidator()
-
-// Public API functions using the global validator
-func ValidateAndFilterParamsForProvider(provider ModelProvider, params *ModelParameters) *ModelParameters {
-	return globalValidator.FilterParameters(provider, params)
-}
-
 //* IMAGE UTILS *//
 
 // dataURIRegex is a precompiled regex for matching data URI format patterns.
@@ -445,6 +82,21 @@ var fileExtensionToMediaType = map[string]string{
 	".webp": "image/webp",
 	".svg":  "image/svg+xml",
 	".bmp":  "image/bmp",
+}
+
+// ImageContentType represents the type of image content
+type ImageContentType string
+
+const (
+	ImageContentTypeBase64 ImageContentType = "base64"
+	ImageContentTypeURL    ImageContentType = "url"
+)
+
+// URLTypeInfo contains extracted information about a URL
+type URLTypeInfo struct {
+	Type                 ImageContentType
+	MediaType            *string
+	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
 // SanitizeImageURL sanitizes and validates an image URL.
@@ -603,4 +255,277 @@ func isLikelyBase64(s string) bool {
 
 	// Check if it contains only base64 characters using pre-compiled regex
 	return base64Regex.MatchString(cleanData)
+}
+
+// Helper function to convert interface{} to JSON string
+func JsonifyInput(input interface{}) string {
+	if input == nil {
+		return "{}"
+	}
+	jsonBytes, err := json.Marshal(input)
+	if err != nil {
+		return "{}"
+	}
+	return string(jsonBytes)
+}
+
+//* SAFE EXTRACTION UTILITIES *//
+
+// SafeExtractString safely extracts a string value from an interface{} with type checking
+func SafeExtractString(value interface{}) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case *string:
+		if v != nil {
+			return *v, true
+		}
+		return "", false
+	case json.Number:
+		return string(v), true
+	default:
+		return "", false
+	}
+}
+
+// SafeExtractInt safely extracts an int value from an interface{} with type checking
+func SafeExtractInt(value interface{}) (int, bool) {
+	if value == nil {
+		return 0, false
+	}
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case uint:
+		return int(v), true
+	case uint8:
+		return int(v), true
+	case uint16:
+		return int(v), true
+	case uint32:
+		return int(v), true
+	case uint64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		if intVal, err := v.Int64(); err == nil {
+			return int(intVal), true
+		}
+		return 0, false
+	case string:
+		if intVal, err := strconv.Atoi(v); err == nil {
+			return intVal, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// SafeExtractFloat64 safely extracts a float64 value from an interface{} with type checking
+func SafeExtractFloat64(value interface{}) (float64, bool) {
+	if value == nil {
+		return 0, false
+	}
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case json.Number:
+		if floatVal, err := v.Float64(); err == nil {
+			return floatVal, true
+		}
+		return 0, false
+	case string:
+		if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
+			return floatVal, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// SafeExtractBool safely extracts a bool value from an interface{} with type checking
+func SafeExtractBool(value interface{}) (bool, bool) {
+	if value == nil {
+		return false, false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case *bool:
+		if v != nil {
+			return *v, true
+		}
+		return false, false
+	case string:
+		if boolVal, err := strconv.ParseBool(v); err == nil {
+			return boolVal, true
+		}
+		return false, false
+	case int:
+		return v != 0, true
+	case int8:
+		return v != 0, true
+	case int16:
+		return v != 0, true
+	case int32:
+		return v != 0, true
+	case int64:
+		return v != 0, true
+	case uint:
+		return v != 0, true
+	case uint8:
+		return v != 0, true
+	case uint16:
+		return v != 0, true
+	case uint32:
+		return v != 0, true
+	case uint64:
+		return v != 0, true
+	case float32:
+		return v != 0, true
+	case float64:
+		return v != 0, true
+	default:
+		return false, false
+	}
+}
+
+// SafeExtractStringSlice safely extracts a []string value from an interface{} with type checking
+func SafeExtractStringSlice(value interface{}) ([]string, bool) {
+	if value == nil {
+		return nil, false
+	}
+	switch v := value.(type) {
+	case []string:
+		return v, true
+	case []interface{}:
+		var result []string
+		for _, item := range v {
+			if str, ok := SafeExtractString(item); ok {
+				result = append(result, str)
+			} else {
+				return nil, false // If any item is not a string, fail
+			}
+		}
+		return result, true
+	case []*string:
+		var result []string
+		for _, item := range v {
+			if item != nil {
+				result = append(result, *item)
+			}
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+// SafeExtractStringPointer safely extracts a *string value from an interface{} with type checking
+func SafeExtractStringPointer(value interface{}) (*string, bool) {
+	if value == nil {
+		return nil, false
+	}
+	switch v := value.(type) {
+	case *string:
+		return v, true
+	case string:
+		return &v, true
+	case json.Number:
+		str := string(v)
+		return &str, true
+	default:
+		return nil, false
+	}
+}
+
+// SafeExtractIntPointer safely extracts an *int value from an interface{} with type checking
+func SafeExtractIntPointer(value interface{}) (*int, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if intVal, ok := SafeExtractInt(value); ok {
+		return &intVal, true
+	}
+	return nil, false
+}
+
+// SafeExtractFloat64Pointer safely extracts a *float64 value from an interface{} with type checking
+func SafeExtractFloat64Pointer(value interface{}) (*float64, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if floatVal, ok := SafeExtractFloat64(value); ok {
+		return &floatVal, true
+	}
+	return nil, false
+}
+
+// SafeExtractBoolPointer safely extracts a *bool value from an interface{} with type checking
+func SafeExtractBoolPointer(value interface{}) (*bool, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if boolVal, ok := SafeExtractBool(value); ok {
+		return &boolVal, true
+	}
+	return nil, false
+}
+
+// SafeExtractStringSlicePointer safely extracts a *[]string value from an interface{} with type checking
+func SafeExtractStringSlicePointer(value interface{}) (*[]string, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if sliceVal, ok := SafeExtractStringSlice(value); ok {
+		return &sliceVal, true
+	}
+	return nil, false
+}
+
+// SafeExtractFromMap safely extracts a value from a map[string]interface{} with type checking
+func SafeExtractFromMap(m map[string]interface{}, key string) (interface{}, bool) {
+	if m == nil {
+		return nil, false
+	}
+	value, exists := m[key]
+	return value, exists
 }

@@ -27,7 +27,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			Provider: testConfig.Provider,
 			Model:    testConfig.ChatModel,
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{userMessage1},
+				ChatCompletionInput: &[]schemas.ChatMessage{userMessage1},
 			},
 			Params: MergeModelParameters(&schemas.ModelParameters{
 				Tools:     &[]schemas.Tool{WeatherToolDefinition},
@@ -44,7 +44,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		t.Logf("✅ First response: %s", GetResultContent(response1))
 
 		// If tool was called, simulate result and continue conversation
-		var conversationHistory []schemas.BifrostMessage
+		var conversationHistory []schemas.ChatMessage
 		conversationHistory = append(conversationHistory, userMessage1)
 
 		// Add all choice messages to conversation history

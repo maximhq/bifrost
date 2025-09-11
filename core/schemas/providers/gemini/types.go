@@ -52,24 +52,29 @@ const (
 )
 
 type GeminiGenerationRequest struct {
-	Model              string                     `json:"model,omitempty"`    // Model field for explicit model specification
-	Contents           []CustomContent            `json:"contents,omitempty"` // For chat completion requests
-	Requests           []GeminiEmbeddingRequest         `json:"requests,omitempty"` // For batch embedding requests
-	SystemInstruction  *CustomContent             `json:"systemInstruction,omitempty"`
-	GenerationConfig   GenerationConfig `json:"generationConfig,omitempty"`
-	SafetySettings     []SafetySetting  `json:"safetySettings,omitempty"`
-	Tools              []Tool           `json:"tools,omitempty"`
-	ToolConfig         ToolConfig       `json:"toolConfig,omitempty"`
-	Labels             map[string]string          `json:"labels,omitempty"`
-	CachedContent      string                     `json:"cachedContent,omitempty"`
-	ResponseModalities []string                   `json:"responseModalities,omitempty"`
-	Stream             bool                       `json:"-"` // Internal field to track streaming requests
-	IsEmbedding        bool                       `json:"-"` // Internal field to track if this is an embedding request
+	Model              string                   `json:"model,omitempty"`    // Model field for explicit model specification
+	Contents           []CustomContent          `json:"contents,omitempty"` // For chat completion requests
+	Requests           []GeminiEmbeddingRequest `json:"requests,omitempty"` // For batch embedding requests
+	SystemInstruction  *CustomContent           `json:"systemInstruction,omitempty"`
+	GenerationConfig   GenerationConfig         `json:"generationConfig,omitempty"`
+	SafetySettings     []SafetySetting          `json:"safetySettings,omitempty"`
+	Tools              []Tool                   `json:"tools,omitempty"`
+	ToolConfig         ToolConfig               `json:"toolConfig,omitempty"`
+	Labels             map[string]string        `json:"labels,omitempty"`
+	CachedContent      string                   `json:"cachedContent,omitempty"`
+	ResponseModalities []string                 `json:"responseModalities,omitempty"`
+	Stream             bool                     `json:"-"` // Internal field to track streaming requests
+	IsEmbedding        bool                     `json:"-"` // Internal field to track if this is an embedding request
 
 	// Embedding-specific parameters
 	TaskType             *string `json:"taskType,omitempty"`
 	Title                *string `json:"title,omitempty"`
 	OutputDimensionality *int    `json:"outputDimensionality,omitempty"`
+}
+
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *GeminiGenerationRequest) IsStreamingRequested() bool {
+	return r.Stream
 }
 
 // Safety settings.
@@ -115,7 +120,6 @@ const (
 	// else the predicted function call will be any one of the provided "function_declarations".
 	FunctionCallingConfigModeValidated FunctionCallingConfigMode = "VALIDATED"
 )
-
 
 // An object that represents a latitude/longitude pair.
 // This is expressed as a pair of doubles to represent degrees latitude and
@@ -199,7 +203,6 @@ const (
 	// conversation between the user and the model.
 	BehaviorNonBlocking Behavior = "NON_BLOCKING"
 )
-
 
 // Represents a time interval, encoded as a start time (inclusive) and an end time (exclusive).
 // The start time must be less than or equal to the end time.
@@ -464,7 +467,6 @@ const (
 	APISpecElasticSearch APISpec = "ELASTIC_SEARCH"
 )
 
-
 // Define data stores within engine to filter on in a search call and configurations
 // for those data stores. For more information, see https://cloud.google.com/generative-ai-app-builder/docs/reference/rpc/google.cloud.discoveryengine.v1#datastorespec
 type VertexAISearchDataStoreSpec struct {
@@ -518,7 +520,7 @@ type RAGRetrievalConfigHybridSearch struct {
 	// results. The range is [0, 1], while 0 means sparse vector search only and 1 means
 	// dense vector search only. The default value is 0.5 which balances sparse and dense
 	// vector search equally.
-	Alpha *float32 `json:"alpha,omitempty"`
+	Alpha *float64 `json:"alpha,omitempty"`
 }
 
 // Config for LlmRanker.
@@ -624,7 +626,6 @@ type Tool struct {
 	CodeExecution *ToolCodeExecution `json:"codeExecution,omitempty"`
 }
 
-
 // Generation config. You can find API default values and more details at https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#generationconfig
 // and https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/content-generation-parameters.
 type GenerationConfig struct {
@@ -638,7 +639,7 @@ type GenerationConfig struct {
 	// Optional. If enabled, the model will detect emotions and adapt its responses accordingly.
 	EnableAffectiveDialog *bool `json:"enableAffectiveDialog,omitempty"`
 	// Optional. Frequency penalties.
-	FrequencyPenalty *float32 `json:"frequencyPenalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequencyPenalty,omitempty"`
 	// Optional. Logit probabilities.
 	Logprobs *int32 `json:"logprobs,omitempty"`
 	// Optional. The maximum number of output tokens to generate per message. If empty,
@@ -647,7 +648,7 @@ type GenerationConfig struct {
 	// Optional. If specified, the media resolution specified will be used.
 	MediaResolution string `json:"mediaResolution,omitempty"`
 	// Optional. Positive penalties.
-	PresencePenalty *float32 `json:"presencePenalty,omitempty"`
+	PresencePenalty *float64 `json:"presencePenalty,omitempty"`
 	// Optional. Output schema of the generated response. This is an alternative to `response_schema`
 	// that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must
 	// be omitted, but `response_mime_type` is required. While the full JSON Schema may
@@ -685,14 +686,14 @@ type GenerationConfig struct {
 	// Optional. Stop sequences.
 	StopSequences []string `json:"stopSequences,omitempty"`
 	// Optional. Controls the randomness of predictions.
-	Temperature *float32 `json:"temperature,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
 	// Optional. Config for thinking features. An error will be returned if this field is
 	// set for models that don't support thinking.
 	ThinkingConfig *GenerationConfigThinkingConfig `json:"thinkingConfig,omitempty"`
 	// Optional. If specified, top-k sampling will be used.
-	TopK *float32 `json:"topK,omitempty"`
+	TopK *int `json:"topK,omitempty"`
 	// Optional. If specified, nucleus sampling will be used.
-	TopP *float32 `json:"topP,omitempty"`
+	TopP *float64 `json:"topP,omitempty"`
 }
 
 // Config for model selection.
@@ -917,14 +918,14 @@ func (b *CustomBlob) UnmarshalJSON(data []byte) error {
 // CustomPart handles Google GenAI Part with custom Blob unmarshalling
 type CustomPart struct {
 	VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
-	Thought             bool                           `json:"thought,omitempty"`
+	Thought             bool                 `json:"thought,omitempty"`
 	CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
 	ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
 	FileData            *FileData            `json:"fileData,omitempty"`
 	FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
 	FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
-	InlineData          *CustomBlob                    `json:"inlineData,omitempty"`
-	Text                string                         `json:"text,omitempty"`
+	InlineData          *CustomBlob          `json:"inlineData,omitempty"`
+	Text                string               `json:"text,omitempty"`
 }
 
 // ToGenAIPart converts CustomPart to Part
@@ -950,7 +951,6 @@ func (p *CustomPart) ToGenAIPart() *Part {
 	return part
 }
 
-
 // Contains the multi-part content of a message.
 type Content struct {
 	// Optional. List of parts that constitute a single message. Each part may have
@@ -960,7 +960,7 @@ type Content struct {
 	// 'model'. Useful to set for multi-turn conversations, otherwise can be
 	// empty. If role is not specified, SDK will determine the role.
 	Role string `json:"role,omitempty"`
-}	
+}
 
 // CustomContent handles Google GenAI Content with custom Part unmarshalling
 type CustomContent struct {
@@ -1118,7 +1118,6 @@ type FunctionResponse struct {
 	Response map[string]any `json:"response,omitempty"`
 }
 
-
 // ==================== RESPONSE TYPES ====================
 // GeminiEmbeddingResponse represents a Google GenAI embedding response
 type GeminiEmbeddingResponse struct {
@@ -1187,7 +1186,6 @@ type SafetyRating struct {
 	SeverityScore float32 `json:"severityScore,omitempty"`
 }
 
-
 // Context for a single URL retrieval.
 type URLMetadata struct {
 	// Optional. The URL retrieved by the tool.
@@ -1201,7 +1199,6 @@ type URLContextMetadata struct {
 	// Optional. List of URL context.
 	URLMetadata []*URLMetadata `json:"urlMetadata,omitempty"`
 }
-
 
 // A response candidate generated from the model.
 type Candidate struct {

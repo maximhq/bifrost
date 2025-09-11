@@ -30,7 +30,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
-				return geminiReq.ToBifrostRequest(), nil
+				return &schemas.BifrostRequest{
+					ChatRequest: geminiReq.ToBifrostRequest(),
+				}, nil
 			}
 			return nil, errors.New("invalid request type")
 		},

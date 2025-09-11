@@ -22,7 +22,8 @@ func TestOpenAI(t *testing.T) {
 		TextModel:            "", // OpenAI doesn't support text completion in newer models
 		EmbeddingModel:       "text-embedding-3-small",
 		TranscriptionModel:   "whisper-1",
-		SpeechSynthesisModel: "tts-1",
+		SpeechSynthesisModel: "gpt-4o-mini-tts",
+		ReasoningModel:       "gpt-5",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

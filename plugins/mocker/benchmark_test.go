@@ -37,16 +37,14 @@ func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	req := &schemas.BifrostRequest{
+	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, benchmark test"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, benchmark test"),
 				},
 			},
 		},
@@ -57,8 +55,16 @@ func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// Convert to BifrostRequest for PreHook compatibility
+	bifrostReq := &schemas.BifrostRequest{
+		Provider:    req.Provider,
+		Model:       req.Model,
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: req,
+	}
+
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(&ctx, req)
+		_, _, _ = plugin.PreHook(&ctx, bifrostReq)
 	}
 }
 
@@ -90,16 +96,14 @@ func BenchmarkMockerPlugin_PreHook_RegexRule(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	req := &schemas.BifrostRequest{
+	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, this should match the regex pattern"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, this should match the regex pattern"),
 				},
 			},
 		},
@@ -110,8 +114,16 @@ func BenchmarkMockerPlugin_PreHook_RegexRule(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// Convert to BifrostRequest for PreHook compatibility
+	bifrostReq := &schemas.BifrostRequest{
+		Provider:    req.Provider,
+		Model:       req.Model,
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: req,
+	}
+
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(&ctx, req)
+		_, _, _ = plugin.PreHook(&ctx, bifrostReq)
 	}
 }
 
@@ -165,16 +177,14 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	req := &schemas.BifrostRequest{
+	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Test message"),
 				},
 			},
 		},
@@ -185,8 +195,16 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// Convert to BifrostRequest for PreHook compatibility
+	bifrostReq := &schemas.BifrostRequest{
+		Provider:    req.Provider,
+		Model:       req.Model,
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: req,
+	}
+
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(&ctx, req)
+		_, _, _ = plugin.PreHook(&ctx, bifrostReq)
 	}
 }
 
@@ -219,16 +237,14 @@ func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	req := &schemas.BifrostRequest{
+	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI, // Different from rule condition
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Test message"),
 				},
 			},
 		},
@@ -239,8 +255,16 @@ func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// Convert to BifrostRequest for PreHook compatibility
+	bifrostReq := &schemas.BifrostRequest{
+		Provider:    req.Provider,
+		Model:       req.Model,
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: req,
+	}
+
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(&ctx, req)
+		_, _, _ = plugin.PreHook(&ctx, bifrostReq)
 	}
 }
 
@@ -270,16 +294,14 @@ func BenchmarkMockerPlugin_PreHook_Template(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	req := &schemas.BifrostRequest{
+	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Test message"),
 				},
 			},
 		},
@@ -290,7 +312,15 @@ func BenchmarkMockerPlugin_PreHook_Template(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// Convert to BifrostRequest for PreHook compatibility
+	bifrostReq := &schemas.BifrostRequest{
+		Provider:    req.Provider,
+		Model:       req.Model,
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: req,
+	}
+
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(&ctx, req)
+		_, _, _ = plugin.PreHook(&ctx, bifrostReq)
 	}
 }
