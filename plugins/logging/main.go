@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,9 +45,9 @@ type UpdateLogData struct {
 	Status              string
 	TokenUsage          *schemas.LLMUsage
 	Cost                *float64 // Cost in dollars from pricing plugin
-	OutputMessage       *schemas.BifrostMessage
+	OutputMessage       *schemas.ChatMessage
 	EmbeddingOutput     *[]schemas.BifrostEmbedding
-	ToolCalls           *[]schemas.ToolCall
+	ToolCalls           *[]schemas.ChatAssistantMessageToolCall
 	ErrorDetails        *schemas.BifrostError
 	Model               string                     // May be different from request
 	Object              string                     // May be different from request
@@ -82,11 +83,11 @@ type InitialLogData struct {
 	Provider           string
 	Model              string
 	Object             string
-	InputHistory       []schemas.BifrostMessage
+	InputHistory       []schemas.ChatMessage
 	Params             *schemas.ModelParameters
 	SpeechInput        *schemas.SpeechInput
 	TranscriptionInput *schemas.TranscriptionInput
-	Tools              *[]schemas.Tool
+	Tools              *[]schemas.ChatTool
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -294,7 +295,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	}
 
 	if req.Params != nil && req.Params.Tools != nil {
-		initialData.Tools = req.Params.Tools
+		initialData.Tools = &req.Params.Tools.ChatTools
 	}
 
 	// Store created timestamp in context for latency calculation optimization
@@ -468,23 +469,37 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				updateData.Object = result.Object
 			}
 
-			// Token usage
-			if result.Usage != nil && result.Usage.TotalTokens > 0 {
-				updateData.TokenUsage = result.Usage
+			// Token usage - handle both regular usage and responses API usage
+			if result.Usage != nil {
+				// For responses API, TotalTokens might not be set, but we can calculate it
+				if result.Usage.TotalTokens > 0 {
+					updateData.TokenUsage = result.Usage
+				} else if result.Usage.ResponsesAPIExtendedResponseUsage != nil {
+					// For responses API, calculate total from input + output tokens
+					totalTokens := result.Usage.ResponsesAPIExtendedResponseUsage.InputTokens +
+						result.Usage.ResponsesAPIExtendedResponseUsage.OutputTokens
+					if totalTokens > 0 {
+						// Create a copy of usage with calculated total
+						usageCopy := *result.Usage
+						usageCopy.TotalTokens = totalTokens
+						updateData.TokenUsage = &usageCopy
+					}
+				}
 			}
 
-			// Output message and tool calls
-			if len(result.Choices) > 0 {
+			// Output message and tool calls - handle both chat completions and responses API
+			// Check if this is a chat completions response (has ChatCompletionsExtendedResponse)
+			if result != nil && len(result.Choices) > 0 {
 				choice := result.Choices[0]
 
-				// Check if this is a non-stream response choice
+				// Check if this is a non-stream response choice (chat completions)
 				if choice.BifrostNonStreamResponseChoice != nil {
 					updateData.OutputMessage = &choice.BifrostNonStreamResponseChoice.Message
 
 					// Extract tool calls if present
-					if choice.BifrostNonStreamResponseChoice.Message.AssistantMessage != nil &&
-						choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls != nil {
-						updateData.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls
+					if choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
+						choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
+						updateData.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
 					}
 				}
 			}
@@ -636,20 +651,35 @@ func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) stri
 }
 
 // extractInputHistory extracts input history from request input
-func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas.BifrostMessage {
+func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas.ChatMessage {
 	if input.ChatCompletionInput != nil {
 		return *input.ChatCompletionInput
 	}
 	if input.TextCompletionInput != nil {
-		// Convert text completion to message format
-		return []schemas.BifrostMessage{
+		var text string
+		if input.TextCompletionInput.Prompt != nil {
+			text = *input.TextCompletionInput.Prompt
+		} else {
+			var stringBuilder strings.Builder
+			for _, prompt := range input.TextCompletionInput.PromptArray {
+				stringBuilder.WriteString(prompt)
+			}
+			text = stringBuilder.String()
+		}
+
+		var stringBuilder strings.Builder
+		for _, prompt := range input.TextCompletionInput.PromptArray {
+			stringBuilder.WriteString(prompt)
+		}
+		return []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
-					ContentStr: input.TextCompletionInput,
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: &text,
 				},
 			},
 		}
+
 	}
 	if input.EmbeddingInput != nil {
 		texts := input.EmbeddingInput.Texts
@@ -658,21 +688,21 @@ func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas
 			texts = []string{*input.EmbeddingInput.Text}
 		}
 
-		contentBlocks := make([]schemas.ContentBlock, len(texts))
+		contentBlocks := make([]schemas.ChatContentBlock, len(texts))
 		for i, text := range texts {
-			contentBlocks[i] = schemas.ContentBlock{
-				Type: schemas.ContentBlockTypeText,
+			contentBlocks[i] = schemas.ChatContentBlock{
+				Type: schemas.ChatContentBlockTypeText,
 				Text: &text,
 			}
 		}
-		return []schemas.BifrostMessage{
+		return []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentBlocks: &contentBlocks,
 				},
 			},
 		}
 	}
-	return []schemas.BifrostMessage{}
+	return []schemas.ChatMessage{}
 }

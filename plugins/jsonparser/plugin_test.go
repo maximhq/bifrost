@@ -87,10 +87,10 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Return a JSON object with name, age, and city fields. Example: {\"name\": \"John\", \"age\": 30, \"city\": \"New York\"}"),
 					},
 				},
@@ -187,10 +187,10 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Return a JSON object with name and age fields."),
 					},
 				},

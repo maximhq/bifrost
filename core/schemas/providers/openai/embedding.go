@@ -6,7 +6,7 @@ import (
 )
 
 // ToBifrostRequest converts an OpenAI embedding request to Bifrost format
-func (r *OpenAIEmbeddingRequest) ToBifrostRequest() *schemas.BifrostRequest {
+func (r *OpenAIEmbeddingRequest) ToBifrostRequest() *schemas.BifrostEmbeddingRequest {
 	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
 
 	// Create embedding input
@@ -39,12 +39,10 @@ func (r *OpenAIEmbeddingRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		}
 	}
 
-	bifrostReq := &schemas.BifrostRequest{
+	bifrostReq := &schemas.BifrostEmbeddingRequest{
 		Provider: provider,
 		Model:    model,
-		Input: schemas.RequestInput{
-			EmbeddingInput: embeddingInput,
-		},
+		Input:    *embeddingInput,
 	}
 
 	// Convert parameters first
@@ -56,25 +54,9 @@ func (r *OpenAIEmbeddingRequest) ToBifrostRequest() *schemas.BifrostRequest {
 	return bifrostReq
 }
 
-// ToOpenAIEmbeddingResponse converts a Bifrost embedding response to OpenAI format
-func ToOpenAIEmbeddingResponse(bifrostResp *schemas.BifrostResponse) *OpenAIEmbeddingResponse {
-	if bifrostResp == nil || bifrostResp.Data == nil {
-		return nil
-	}
-
-	return &OpenAIEmbeddingResponse{
-		Object:            "list",
-		Data:              bifrostResp.Data,
-		Model:             bifrostResp.Model,
-		Usage:             bifrostResp.Usage,
-		ServiceTier:       bifrostResp.ServiceTier,
-		SystemFingerprint: bifrostResp.SystemFingerprint,
-	}
-}
-
 // ToOpenAIEmbeddingRequest converts a Bifrost embedding request to OpenAI format
-func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *OpenAIEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *OpenAIEmbeddingRequest {
+	if bifrostReq == nil {
 		return nil
 	}
 
@@ -82,14 +64,13 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *OpenAIEmbeddi
 
 	openaiReq := &OpenAIEmbeddingRequest{
 		Model: bifrostReq.Model,
-		Input: *bifrostReq.Input.EmbeddingInput,
+		Input: bifrostReq.Input,
 	}
 
 	// Map parameters
 	if params != nil {
 		openaiReq.EncodingFormat = params.EncodingFormat
 		openaiReq.Dimensions = params.Dimensions
-		openaiReq.User = params.User
 	}
 
 	return openaiReq

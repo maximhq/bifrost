@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -18,8 +17,6 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
-
-	"maps"
 )
 
 // ContextKey is a custom type for context keys to prevent key collisions in the context.
@@ -44,53 +41,6 @@ func mergeConfig(defaultConfig map[string]interface{}, customParams map[string]i
 	}
 
 	return merged
-}
-
-// prepareParams converts ModelParameters into a flat map of parameters.
-// It handles both standard fields and extra parameters, using reflection to process
-// the struct fields and their JSON tags.
-// Returns a map containing all parameters ready for use in API requests.
-func prepareParams(params *schemas.ModelParameters) map[string]interface{} {
-	flatParams := make(map[string]interface{})
-
-	// Return empty map if params is nil
-	if params == nil {
-		return flatParams
-	}
-
-	// Use reflection to get the type and value of params
-	val := reflect.ValueOf(params).Elem()
-	typ := val.Type()
-
-	// Iterate through all fields
-	for i := range val.NumField() {
-		field := val.Field(i)
-		fieldType := typ.Field(i)
-
-		// Skip the ExtraParams field as it's handled separately
-		if fieldType.Name == "ExtraParams" {
-			continue
-		}
-
-		// Get the JSON tag name
-		jsonTag := fieldType.Tag.Get("json")
-		if jsonTag == "" || jsonTag == "-" {
-			continue
-		}
-
-		// Strip out ,omitempty and others from the tag
-		jsonTag = strings.Split(jsonTag, ",")[0]
-
-		// Handle pointer fields
-		if field.Kind() == reflect.Ptr && !field.IsNil() {
-			flatParams[jsonTag] = field.Elem().Interface()
-		}
-	}
-
-	// Handle ExtraParams
-	maps.Copy(flatParams, params.ExtraParams)
-
-	return flatParams
 }
 
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
@@ -320,28 +270,6 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 	return nil, nil
 }
 
-// getRoleFromMessage extracts and validates the role from a message map.
-func getRoleFromMessage(msg map[string]interface{}) (schemas.ModelChatMessageRole, bool) {
-	roleVal, exists := msg["role"]
-	if !exists {
-		return "", false // Role key doesn't exist
-	}
-
-	// Try direct assertion to ModelChatMessageRole
-	roleAsModelType, ok := roleVal.(schemas.ModelChatMessageRole)
-	if ok {
-		return roleAsModelType, true
-	}
-
-	// Try assertion to string and then convert
-	roleAsString, okStr := roleVal.(string)
-	if okStr {
-		return schemas.ModelChatMessageRole(roleAsString), true
-	}
-
-	return "", false // Role is of an unexpected or invalid type
-}
-
 // Ptr creates a pointer to any value.
 // This is a helper function for creating pointers to values.
 func Ptr[T any](v T) *T {
@@ -421,7 +349,7 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 // Behavior:
 // - If no gating is configured (config == nil or AllowedRequests == nil), the operation is allowed.
 // - If gating is configured, returns an error when the operation is not explicitly allowed.
-func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.Operation) *schemas.BifrostError {
+func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.RequestType) *schemas.BifrostError {
 	// No gating configured => allowed
 	if config == nil || config.AllowedRequests == nil {
 		return nil
@@ -589,14 +517,13 @@ func createBifrostChatCompletionChunkResponse(
 	usage *schemas.LLMUsage,
 	finishReason *string,
 	currentChunkIndex int,
-	params *schemas.ModelParameters,
 	providerName schemas.ModelProvider,
 ) *schemas.BifrostResponse {
 	response := &schemas.BifrostResponse{
 		ID:     id,
 		Object: "chat.completion.chunk",
 		Usage:  usage,
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				FinishReason: finishReason,
 				BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
@@ -608,9 +535,6 @@ func createBifrostChatCompletionChunkResponse(
 			Provider:   providerName,
 			ChunkIndex: currentChunkIndex + 1,
 		},
-	}
-	if params != nil {
-		response.ExtraFields.Params = *params
 	}
 	return response
 }

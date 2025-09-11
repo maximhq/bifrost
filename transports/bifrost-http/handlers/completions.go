@@ -39,13 +39,12 @@ func NewCompletionHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore
 }
 
 // Known fields for CompletionRequest
-var completionRequestKnownFields = map[string]bool{
+var modelParamsKnownFields = map[string]bool{
 	"model":               true,
 	"messages":            true,
 	"text":                true,
 	"fallbacks":           true,
 	"stream":              true,
-	"input":               true,
 	"voice":               true,
 	"instructions":        true,
 	"response_format":     true,
@@ -65,51 +64,53 @@ var completionRequestKnownFields = map[string]bool{
 	"user":                true,
 }
 
-// CompletionRequest represents a request for either text or chat completion
-type CompletionRequest struct {
-	Model     string                   `json:"model"`     // Model to use in "provider/model" format
-	Messages  []schemas.BifrostMessage `json:"messages"`  // Chat messages (for chat completion)
-	Text      string                   `json:"text"`      // Text input (for text completion)
-	Fallbacks []string                 `json:"fallbacks"` // Fallback providers and models in "provider/model" format
-	Stream    *bool                    `json:"stream"`    // Whether to stream the response
+type BifrostParams struct {
+	Model        string   `json:"model"`                   // Model to use in "provider/model" format
+	Fallbacks    []string `json:"fallbacks"`               // Fallback providers and models in "provider/model" format
+	Stream       *bool    `json:"stream"`                  // Whether to stream the response
+	StreamFormat *string  `json:"stream_format,omitempty"` // For speech
 
-	// Speech inputs
-	Input          schemas.EmbeddingInput   `json:"input"` // string can be used for voice input as well
-	Voice          schemas.SpeechVoiceInput `json:"voice"`
-	Instructions   string                   `json:"instructions"`
-	ResponseFormat string                   `json:"response_format"`
-	StreamFormat   *string                  `json:"stream_format,omitempty"`
-
-	ToolChoice        *schemas.ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
-	Tools             *[]schemas.Tool     `json:"tools,omitempty"`               // Tools to use
-	Temperature       *float64            `json:"temperature,omitempty"`         // Controls randomness in the output
-	TopP              *float64            `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
-	TopK              *int                `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
-	MaxTokens         *int                `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
-	StopSequences     *[]string           `json:"stop_sequences,omitempty"`      // Sequences that stop generation
-	PresencePenalty   *float64            `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
-	FrequencyPenalty  *float64            `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
-	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
-	EncodingFormat    *string             `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
-	Dimensions        *int                `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
-	User              *string             `json:"user,omitempty"`                // User identifier for tracking
-
-	// Dynamic parameters that can be provider-specific, they are directly
-	// added to the request as is.
-	ExtraParams map[string]interface{} `json:"-"`
+	*schemas.ModelParameters
 }
 
-func (cr *CompletionRequest) UnmarshalJSON(data []byte) error {
-	// Use type alias to avoid infinite recursion
-	type Alias CompletionRequest
-	aux := (*Alias)(cr)
+type TextRequest struct {
+	Text schemas.TextCompletionInput `json:"text"`
+	BifrostParams
+}
 
-	// First unmarshal known fields
-	if err := sonic.Unmarshal(data, aux); err != nil {
-		return err
+type ChatRequest struct {
+	Messages []schemas.ChatMessage `json:"messages"`
+	BifrostParams
+}
+
+type ResponsesRequest struct {
+	Input []schemas.ResponsesMessage `json:"input"`
+	BifrostParams
+}
+
+type EmbeddingRequest struct {
+	Input schemas.EmbeddingInput `json:"input"`
+	BifrostParams
+}
+
+type SpeechRequest struct {
+	*schemas.SpeechInput
+	BifrostParams
+}
+
+type TranscriptionRequest struct {
+	*schemas.TranscriptionInput
+	BifrostParams
+}
+
+// ProcessExtraParams extracts unknown fields from JSON data into ExtraParams
+func (cr *BifrostParams) ProcessExtraParams(data []byte) error {
+	// Initialize ModelParameters if nil to avoid panic
+	if cr.ModelParameters == nil {
+		cr.ModelParameters = &schemas.ModelParameters{}
 	}
 
-	// Then unmarshal to map for unknown fields
+	// Parse JSON to extract unknown fields
 	var rawData map[string]json.RawMessage
 	if err := sonic.Unmarshal(data, &rawData); err != nil {
 		return err
@@ -122,7 +123,7 @@ func (cr *CompletionRequest) UnmarshalJSON(data []byte) error {
 
 	// Extract unknown fields
 	for key, value := range rawData {
-		if !completionRequestKnownFields[key] {
+		if !modelParamsKnownFields[key] {
 			var v interface{}
 			if err := sonic.Unmarshal(value, &v); err != nil {
 				continue // Skip fields that can't be unmarshaled
@@ -134,22 +135,18 @@ func (cr *CompletionRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (cr *CompletionRequest) GetModelParameters() *schemas.ModelParameters {
+func (cr *BifrostParams) GetModelParameters() *schemas.ModelParameters {
+	// Initialize ModelParameters if nil
+	if cr.ModelParameters == nil {
+		cr.ModelParameters = &schemas.ModelParameters{}
+	}
+
 	params := &schemas.ModelParameters{
-		ExtraParams:       make(map[string]interface{}),
-		ToolChoice:        cr.ToolChoice,
-		Tools:             cr.Tools,
-		Temperature:       cr.Temperature,
-		TopP:              cr.TopP,
-		TopK:              cr.TopK,
-		MaxTokens:         cr.MaxTokens,
-		StopSequences:     cr.StopSequences,
-		PresencePenalty:   cr.PresencePenalty,
-		FrequencyPenalty:  cr.FrequencyPenalty,
-		ParallelToolCalls: cr.ParallelToolCalls,
-		EncodingFormat:    cr.EncodingFormat,
-		Dimensions:        cr.Dimensions,
-		User:              cr.User,
+		ExtraParams:         make(map[string]interface{}),
+		CommonParameters:    cr.CommonParameters,
+		EmbeddingParameters: cr.EmbeddingParameters,
+		ChatParameters:      cr.ChatParameters,
+		ResponsesParameters: cr.ResponsesParameters,
 	}
 
 	if cr.ExtraParams != nil {
@@ -166,6 +163,7 @@ type CompletionType string
 const (
 	CompletionTypeText          CompletionType = "text"
 	CompletionTypeChat          CompletionType = "chat"
+	CompletionTypeResponses     CompletionType = "responses"
 	CompletionTypeEmbeddings    CompletionType = "embeddings"
 	CompletionTypeSpeech        CompletionType = "speech"
 	CompletionTypeTranscription CompletionType = "transcription"
@@ -186,115 +184,246 @@ const (
 	AudioMimeFLAC2 = "audio/x-flac" // Alternative FLAC
 )
 
-// validateAudioFile checks if the file size and format are valid
-func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) error {
-	// Check file size
-	if fileHeader.Size > MaxFileSize {
-		return fmt.Errorf("file size exceeds maximum limit of %d MB", MaxFileSize/1024/1024)
-	}
-
-	// Get file extension
-	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-
-	// Check file extension
-	validExtensions := map[string]bool{
-		".flac": true,
-		".mp3":  true,
-		".mp4":  true,
-		".mpeg": true,
-		".mpga": true,
-		".m4a":  true,
-		".ogg":  true,
-		".wav":  true,
-		".webm": true,
-	}
-
-	if !validExtensions[ext] {
-		return fmt.Errorf("unsupported file format: %s. Supported formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm", ext)
-	}
-
-	// Open file to check MIME type
-	file, err := fileHeader.Open()
-	if err != nil {
-		return fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
-
-	// Read first 512 bytes for MIME type detection
-	buffer := make([]byte, 512)
-	_, err = file.Read(buffer)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("failed to read file header: %v", err)
-	}
-
-	// Check MIME type
-	mimeType := http.DetectContentType(buffer)
-	validMimeTypes := map[string]bool{
-		// Primary MIME types
-		AudioMimeMP3:   true, // Covers MP3, MPEG, MPGA
-		AudioMimeMP4:   true,
-		AudioMimeM4A:   true,
-		AudioMimeOGG:   true,
-		AudioMimeWAV:   true,
-		AudioMimeWEBM:  true,
-		AudioMimeFLAC:  true,
-		AudioMimeFLAC2: true,
-
-		// Alternative MIME types
-		"audio/mpeg3":       true,
-		"audio/x-wav":       true,
-		"audio/vnd.wave":    true,
-		"audio/x-mpeg":      true,
-		"audio/x-mpeg3":     true,
-		"audio/x-mpg":       true,
-		"audio/x-mpegaudio": true,
-	}
-
-	if !validMimeTypes[mimeType] {
-		return fmt.Errorf("invalid file type: %s. Supported audio formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm", mimeType)
-	}
-
-	// Reset file pointer for subsequent reads
-	_, err = file.Seek(0, 0)
-	if err != nil {
-		return fmt.Errorf("failed to reset file pointer: %v", err)
-	}
-
-	return nil
-}
-
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router) {
 	// Completion endpoints
 	r.POST("/v1/text/completions", h.textCompletion)
 	r.POST("/v1/chat/completions", h.chatCompletion)
+	r.POST("/v1/responses", h.responses)
 	r.POST("/v1/embeddings", h.embeddings)
-	r.POST("/v1/audio/speech", h.speechCompletion)
-	r.POST("/v1/audio/transcriptions", h.transcriptionCompletion)
+	r.POST("/v1/audio/speech", h.speech)
+	r.POST("/v1/audio/transcriptions", h.transcription)
 }
 
 // textCompletion handles POST /v1/text/completions - Process text completion requests
 func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
-	h.handleRequest(ctx, CompletionTypeText)
+	var req TextRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
+		return
+	}
+
+	bifrostReq, err := extractBifrostRequest(req.Model, &req.BifrostParams)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error(), h.logger)
+		return
+	}
+
+	if req.Text.Prompt == nil && req.Text.PromptArray == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Text is required for text completion", h.logger)
+		return
+	}
+	bifrostReq.Input = schemas.RequestInput{
+		TextCompletionInput: &req.Text,
+	}
+
+	// Convert context
+	bifrostCtx := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context", h.logger)
+		return
+	}
+
+	resp, bifrostErr := h.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr, h.logger)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, resp, h.logger)
 }
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
-	h.handleRequest(ctx, CompletionTypeChat)
+	var req ChatRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
+		return
+	}
+
+	bifrostReq, err := extractBifrostRequest(req.Model, &req.BifrostParams)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error(), h.logger)
+		return
+	}
+
+	if len(req.Messages) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "Messages is required for chat completion", h.logger)
+		return
+	}
+	bifrostReq.Input = schemas.RequestInput{
+		ChatCompletionInput: &req.Messages,
+	}
+
+	// Convert context
+	bifrostCtx := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context", h.logger)
+		return
+	}
+
+	if req.Stream != nil && *req.Stream {
+		h.handleStreamingChatCompletion(ctx, bifrostReq, bifrostCtx)
+		return
+	}
+
+	resp, bifrostErr := h.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr, h.logger)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, resp, h.logger)
+}
+
+// responses handles POST /v1/responses - Process responses requests
+func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
+	var req ResponsesRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
+		return
+	}
+
+	// Process extra parameters for unknown fields
+	if err := req.BifrostParams.ProcessExtraParams(ctx.PostBody()); err != nil {
+		h.logger.Warn(fmt.Sprintf("Failed to process extra params: %v", err))
+	}
+
+	bifrostReq, err := extractBifrostRequest(req.Model, &req.BifrostParams)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error(), h.logger)
+		return
+	}
+
+	if len(req.Input) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for responses", h.logger)
+		return
+	}
+	bifrostReq.Input = schemas.RequestInput{
+		ResponsesInput: &req.Input,
+	}
+
+	// Convert context
+	bifrostCtx := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context", h.logger)
+		return
+	}
+
+	if req.Stream != nil && *req.Stream {
+		h.handleStreamingResponses(ctx, bifrostReq, bifrostCtx)
+		return
+	}
+
+	resp, bifrostErr := h.client.ResponsesRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr, h.logger)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, resp, h.logger)
 }
 
 // embeddings handles POST /v1/embeddings - Process embeddings requests
 func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
-	h.handleRequest(ctx, CompletionTypeEmbeddings)
+	var req EmbeddingRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
+		return
+	}
+
+	bifrostReq, err := extractBifrostRequest(req.Model, &req.BifrostParams)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error(), h.logger)
+		return
+	}
+
+	if req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for embeddings", h.logger)
+		return
+	}
+	bifrostReq.Input = schemas.RequestInput{
+		EmbeddingInput: &req.Input,
+	}
+
+	// Convert context
+	bifrostCtx := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context", h.logger)
+		return
+	}
+
+	resp, bifrostErr := h.client.EmbeddingRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr, h.logger)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, resp, h.logger)
 }
 
-// speechCompletion handles POST /v1/audio/speech - Process speech completion requests
-func (h *CompletionHandler) speechCompletion(ctx *fasthttp.RequestCtx) {
-	h.handleRequest(ctx, CompletionTypeSpeech)
+// speech handles POST /v1/audio/speech - Process speech completion requests
+func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
+	var req SpeechRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
+		return
+	}
+
+	bifrostReq, err := extractBifrostRequest(req.Model, &req.BifrostParams)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error(), h.logger)
+		return
+	}
+
+	if req.Input == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for speech completion", h.logger)
+		return
+	}
+	if req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "Voice is required for speech completion", h.logger)
+		return
+	}
+	bifrostReq.Input = schemas.RequestInput{
+		SpeechInput: req.SpeechInput,
+	}
+
+	// Convert context
+	bifrostCtx := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context", h.logger)
+		return
+	}
+
+	if req.StreamFormat != nil && *req.StreamFormat == "sse" {
+		h.handleStreamingSpeech(ctx, bifrostReq, bifrostCtx)
+		return
+	}
+
+	resp, bifrostErr := h.client.SpeechRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr, h.logger)
+		return
+	}
+
+	// Send successful response
+	if resp.Speech.Audio == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Speech response is missing audio data", h.logger)
+		return
+	}
+
+	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+	ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
+	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Speech.Audio)))
+	ctx.Response.SetBody(resp.Speech.Audio)
 }
 
-// transcriptionCompletion handles POST /v1/audio/transcriptions - Process transcription requests
-func (h *CompletionHandler) transcriptionCompletion(ctx *fasthttp.RequestCtx) {
+// transcription handles POST /v1/audio/transcriptions - Process transcription requests
+func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 	// Parse multipart form
 	form, err := ctx.MultipartForm()
 	if err != nil {
@@ -399,150 +528,62 @@ func (h *CompletionHandler) transcriptionCompletion(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp, h.logger)
 }
 
-// handleCompletion processes both text and chat completion requests
-// It handles request parsing, validation, and response formatting
-func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionType CompletionType) {
-	var req CompletionRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
-		return
+// handleStreamingChatCompletion handles streaming chat completion requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingChatCompletion(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
+	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		return h.client.ChatCompletionStreamRequest(*bifrostCtx, req)
 	}
 
-	if req.Model == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Model is required", h.logger)
-		return
+	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
+		return response, true
 	}
 
-	provider, modelName, err := ParseModel(req.Model)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Model must be in the format of 'provider/model': %v", err), h.logger)
-		return
+	h.handleStreamingResponse(ctx, getStream, extractResponse)
+}
+
+// handleStreamingResponses handles streaming responses requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingResponses(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
+	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		return h.client.ResponsesStreamRequest(*bifrostCtx, req)
 	}
 
-	fallbacks := make([]schemas.Fallback, len(req.Fallbacks))
-	for i, fallback := range req.Fallbacks {
-		fallbackProvider, fallbackModelName, err := ParseModel(fallback)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Fallback must be in the format of 'provider/model': %v", err), h.logger)
-			return
-		}
-		if fallbackProvider == "" || fallbackModelName == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "Fallback must be in the format of 'provider/model'", h.logger)
-			return
-		}
-		fallbacks[i] = schemas.Fallback{
-			Provider: schemas.ModelProvider(fallbackProvider),
-			Model:    fallbackModelName,
-		}
+	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
+		return response, true
 	}
 
-	// Create BifrostRequest
-	bifrostReq := &schemas.BifrostRequest{
-		Model:     modelName,
-		Provider:  schemas.ModelProvider(provider),
-		Params:    req.GetModelParameters(),
-		Fallbacks: fallbacks,
+	h.handleStreamingResponse(ctx, getStream, extractResponse)
+}
+
+// handleStreamingSpeech handles streaming speech requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingSpeech(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
+	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		return h.client.SpeechStreamRequest(*bifrostCtx, req)
 	}
 
-	// Validate and set input based on completion type
-	switch completionType {
-	case CompletionTypeText:
-		if req.Text == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "Text is required for text completion", h.logger)
-			return
+	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
+		if response.Speech == nil || response.Speech.BifrostSpeechStreamResponse == nil {
+			return nil, false
 		}
-		bifrostReq.Input = schemas.RequestInput{
-			TextCompletionInput: &req.Text,
-		}
-	case CompletionTypeChat:
-		if len(req.Messages) == 0 {
-			SendError(ctx, fasthttp.StatusBadRequest, "Messages array is required for chat completion", h.logger)
-			return
-		}
-		bifrostReq.Input = schemas.RequestInput{
-			ChatCompletionInput: &req.Messages,
-		}
-	case CompletionTypeEmbeddings:
-		bifrostReq.Input = schemas.RequestInput{
-			EmbeddingInput: &req.Input,
-		}
-	case CompletionTypeSpeech:
-		if req.Input.Text == nil {
-			SendError(ctx, fasthttp.StatusBadRequest, "Input is required for speech completion", h.logger)
-			return
-		}
-		if req.Voice.Voice == nil && len(req.Voice.MultiVoiceConfig) == 0 {
-			SendError(ctx, fasthttp.StatusBadRequest, "Voice is required for speech completion", h.logger)
-			return
-		}
-		bifrostReq.Input = schemas.RequestInput{
-			SpeechInput: &schemas.SpeechInput{
-				Input:          *req.Input.Text,
-				VoiceConfig:    req.Voice,
-				Instructions:   req.Instructions,
-				ResponseFormat: req.ResponseFormat,
-			},
-		}
+		return response.Speech, true
 	}
 
-	// Convert context
-	bifrostCtx := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
-	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context", h.logger)
-		return
+	h.handleStreamingResponse(ctx, getStream, extractResponse)
+}
+
+// handleStreamingTranscriptionRequest handles streaming transcription requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
+	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		return h.client.TranscriptionStreamRequest(*bifrostCtx, req)
 	}
 
-	// Check if streaming is requested
-	isStreaming := req.Stream != nil && *req.Stream || req.StreamFormat != nil && *req.StreamFormat == "sse"
-
-	// Handle streaming for chat completions only
-	if isStreaming {
-		switch completionType {
-		case CompletionTypeChat:
-			h.handleStreamingChatCompletion(ctx, bifrostReq, bifrostCtx)
-			return
-		case CompletionTypeSpeech:
-			h.handleStreamingSpeech(ctx, bifrostReq, bifrostCtx)
-			return
+	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
+		if response.Transcribe == nil || response.Transcribe.BifrostTranscribeStreamResponse == nil {
+			return nil, false
 		}
+		return response.Transcribe, true
 	}
 
-	// Handle non-streaming requests
-	var resp *schemas.BifrostResponse
-	var bifrostErr *schemas.BifrostError
-
-	switch completionType {
-	case CompletionTypeText:
-		resp, bifrostErr = h.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
-	case CompletionTypeChat:
-		resp, bifrostErr = h.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
-	case CompletionTypeEmbeddings:
-		resp, bifrostErr = h.client.EmbeddingRequest(*bifrostCtx, bifrostReq)
-	case CompletionTypeSpeech:
-		resp, bifrostErr = h.client.SpeechRequest(*bifrostCtx, bifrostReq)
-	}
-
-	// Handle response
-	if bifrostErr != nil {
-		SendBifrostError(ctx, bifrostErr, h.logger)
-		return
-	}
-
-	if completionType == CompletionTypeSpeech {
-		if resp.Speech.Audio == nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, "Speech response is missing audio data", h.logger)
-			return
-		}
-
-		ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-		ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
-		ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Speech.Audio)))
-		ctx.Response.SetBody(resp.Speech.Audio)
-		return
-	}
-
-	// Send successful response
-	SendJSON(ctx, resp, h.logger)
+	h.handleStreamingResponse(ctx, getStream, extractResponse)
 }
 
 // handleStreamingResponse is a generic function to handle streaming responses using Server-Sent Events (SSE)
@@ -604,47 +645,113 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 	})
 }
 
-// handleStreamingChatCompletion handles streaming chat completion requests using Server-Sent Events (SSE)
-func (h *CompletionHandler) handleStreamingChatCompletion(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
-	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-		return h.client.ChatCompletionStreamRequest(*bifrostCtx, req)
+// validateAudioFile checks if the file size and format are valid
+func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) error {
+	// Check file size
+	if fileHeader.Size > MaxFileSize {
+		return fmt.Errorf("file size exceeds maximum limit of %d MB", MaxFileSize/1024/1024)
 	}
 
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		return response, true
+	// Get file extension
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+
+	// Check file extension
+	validExtensions := map[string]bool{
+		".flac": true,
+		".mp3":  true,
+		".mp4":  true,
+		".mpeg": true,
+		".mpga": true,
+		".m4a":  true,
+		".ogg":  true,
+		".wav":  true,
+		".webm": true,
 	}
 
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
+	if !validExtensions[ext] {
+		return fmt.Errorf("unsupported file format: %s. Supported formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm", ext)
+	}
+
+	// Open file to check MIME type
+	file, err := fileHeader.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	// Read first 512 bytes for MIME type detection
+	buffer := make([]byte, 512)
+	_, err = file.Read(buffer)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("failed to read file header: %v", err)
+	}
+
+	// Check MIME type
+	mimeType := http.DetectContentType(buffer)
+	validMimeTypes := map[string]bool{
+		// Primary MIME types
+		AudioMimeMP3:   true, // Covers MP3, MPEG, MPGA
+		AudioMimeMP4:   true,
+		AudioMimeM4A:   true,
+		AudioMimeOGG:   true,
+		AudioMimeWAV:   true,
+		AudioMimeWEBM:  true,
+		AudioMimeFLAC:  true,
+		AudioMimeFLAC2: true,
+
+		// Alternative MIME types
+		"audio/mpeg3":       true,
+		"audio/x-wav":       true,
+		"audio/vnd.wave":    true,
+		"audio/x-mpeg":      true,
+		"audio/x-mpeg3":     true,
+		"audio/x-mpg":       true,
+		"audio/x-mpegaudio": true,
+	}
+
+	if !validMimeTypes[mimeType] {
+		return fmt.Errorf("invalid file type: %s. Supported audio formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm", mimeType)
+	}
+
+	// Reset file pointer for subsequent reads
+	_, err = file.Seek(0, 0)
+	if err != nil {
+		return fmt.Errorf("failed to reset file pointer: %v", err)
+	}
+
+	return nil
 }
 
-// handleStreamingSpeech handles streaming speech requests using Server-Sent Events (SSE)
-func (h *CompletionHandler) handleStreamingSpeech(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
-	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-		return h.client.SpeechStreamRequest(*bifrostCtx, req)
+func extractBifrostRequest(model string, bifrostParams *BifrostParams) (*schemas.BifrostRequest, error) {
+	if model == "" {
+		return nil, fmt.Errorf("model is required")
 	}
 
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		if response.Speech == nil || response.Speech.BifrostSpeechStreamResponse == nil {
-			return nil, false
+	provider, modelName, err := ParseModel(model)
+	if err != nil {
+		return nil, fmt.Errorf("model must be in the format of 'provider/model': %v", err)
+	}
+
+	bifrostFallbacks := make([]schemas.Fallback, len(bifrostParams.Fallbacks))
+	for i, fallback := range bifrostParams.Fallbacks {
+		fallbackProvider, fallbackModelName, err := ParseModel(fallback)
+		if err != nil {
+			return nil, fmt.Errorf("fallback must be in the format of 'provider/model': %v", err)
 		}
-		return response.Speech, true
-	}
-
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
-}
-
-// handleStreamingTranscriptionRequest handles streaming transcription requests using Server-Sent Events (SSE)
-func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.RequestCtx, req *schemas.BifrostRequest, bifrostCtx *context.Context) {
-	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-		return h.client.TranscriptionStreamRequest(*bifrostCtx, req)
-	}
-
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		if response.Transcribe == nil || response.Transcribe.BifrostTranscribeStreamResponse == nil {
-			return nil, false
+		if fallbackProvider == "" || fallbackModelName == "" {
+			return nil, fmt.Errorf("fallback must be in the format of 'provider/model'")
 		}
-		return response.Transcribe, true
+		bifrostFallbacks[i] = schemas.Fallback{
+			Provider: schemas.ModelProvider(fallbackProvider),
+			Model:    fallbackModelName,
+		}
 	}
 
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
+	// Create BifrostRequest
+	return &schemas.BifrostRequest{
+		Model:     modelName,
+		Provider:  schemas.ModelProvider(provider),
+		Params:    bifrostParams.GetModelParameters(),
+		Fallbacks: bifrostFallbacks,
+	}, nil
 }

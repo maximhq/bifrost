@@ -14,8 +14,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas/providers/gemini"
+	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
 
@@ -128,21 +128,21 @@ func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Gemini provider.
-func (provider *GeminiProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", string(provider.GetProviderKey()))
 }
 
 // ChatCompletion performs a chat completion request to the Gemini API.
-func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
-	reqBody := openai.ToOpenAIChatCompletionRequest(input)
+	reqBody := openai.ToOpenAIChatCompletionRequest(request)
 
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
@@ -193,13 +193,10 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	for _, choice := range response.Choices {
-		if choice.Message.AssistantMessage == nil || choice.Message.AssistantMessage.ToolCalls == nil {
-			continue
-		}
-		for i, toolCall := range *choice.Message.AssistantMessage.ToolCalls {
+		for i, toolCall := range *choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
 			if (toolCall.ID == nil || *toolCall.ID == "") && toolCall.Function.Name != nil && *toolCall.Function.Name != "" {
 				id := *toolCall.Function.Name
-				(*choice.Message.AssistantMessage.ToolCalls)[i].ID = &id
+				(*choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls)[i].ID = &id
 			}
 		}
 	}
@@ -210,10 +207,6 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	if input.Params != nil {
-		response.ExtraFields.Params = *input.Params
-	}
-
 	return response, nil
 }
 
@@ -221,16 +214,16 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Gemini's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
-	reqBody := openai.ToOpenAIChatCompletionRequest(input)
+	reqBody := openai.ToOpenAIChatCompletionRequest(request)
 	reqBody.Stream = schemas.Ptr(true)
 
 	// Prepare Gemini headers
@@ -250,36 +243,40 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		providerName,
-		input.Params,
 		postHookRunner,
 		provider.logger,
 	)
 }
 
 // Embedding performs an embedding request to the Gemini API.
-func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed for this provider
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
-	embeddingInput := input.Input.EmbeddingInput
+	embeddingInput := request.Input
 
 	if embeddingInput.Text == nil && len(embeddingInput.Texts) == 0 {
 		return nil, newBifrostOperationError("invalid embedding input: at least one text is required", nil, providerName)
 	}
 
-	requestBody := openai.ToOpenAIEmbeddingRequest(input)
+	requestBody := openai.ToOpenAIEmbeddingRequest(request)
+
+	jsonBody, err := sonic.Marshal(requestBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
 
 	// Use the shared embedding request handler
 	return handleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/openai/embeddings",
-		requestBody,
+		jsonBody,
 		key,
-		input.Params,
+		request.Params,
 		provider.networkConfig.ExtraHeaders,
 		providerName,
 		provider.sendBackRawResponse,
@@ -287,16 +284,16 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, 
 	)
 }
 
-func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if speech is allowed for this provider
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationSpeech); err != nil {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Validate input
-	if input == nil || input.Input.SpeechInput == nil || input.Input.SpeechInput.Input == "" {
+	if request == nil || request.Input.Input == "" {
 		return nil, newBifrostOperationError("invalid speech input: no text provided", fmt.Errorf("empty text input"), providerName)
 	}
 
@@ -315,16 +312,12 @@ func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, inp
 	}
 
 	bifrostResponse = geminiResponse.ToBifrostResponse()
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
-	}
-
 	return bifrostResponse, nil
 }
 
 func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if speech stream is allowed for this provider
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationSpeechStream); err != nil {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
 		return nil, err
 	}
 
@@ -495,9 +488,6 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				},
 			}
 
-			if input.Params != nil {
-				response.ExtraFields.Params = *input.Params
-			}
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 		}
 	}()
@@ -507,7 +497,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 
 func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if transcription is allowed for this provider
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationTranscription); err != nil {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
 	}
 
@@ -541,16 +531,12 @@ func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.K
 
 	bifrostResponse = geminiResponse.ToBifrostResponse()
 
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
-	}
-
 	return bifrostResponse, nil
 }
 
 func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if transcription stream is allowed for this provider
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationTranscriptionStream); err != nil {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionStreamRequest); err != nil {
 		return nil, err
 	}
 
@@ -741,9 +727,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				},
 			}
 
-			if input.Params != nil {
-				response.ExtraFields.Params = *input.Params
-			}
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 		}
 	}()
@@ -833,10 +816,6 @@ func (provider *GeminiProvider) completeRequest(ctx context.Context, model strin
 		},
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
-	}
-
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
 		var rawResponse interface{}
@@ -881,4 +860,22 @@ func parseGeminiError(providerName schemas.ModelProvider, resp *fasthttp.Respons
 	}
 
 	return newBifrostOperationError(fmt.Sprintf("Gemini error: %v", errorResp), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
+}
+
+// Responses performs a chat completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *GeminiProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	response, err := provider.ChatCompletion(ctx, key, request)
+	if err != nil {
+		return nil, err
+	}
+
+	response.ToResponsesOnly()
+
+	return response, nil
+}
+
+func (provider *GeminiProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "gemini")
 }

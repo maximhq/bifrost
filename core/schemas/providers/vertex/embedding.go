@@ -5,21 +5,16 @@ import (
 )
 
 // ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI format
-func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *VertexEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *VertexEmbeddingRequest {
+	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 
-	embeddingInput := bifrostReq.Input.EmbeddingInput
-	texts := embeddingInput.Texts
-
-	// Handle single text input
-	if len(texts) == 0 && embeddingInput.Text != nil {
-		texts = []string{*embeddingInput.Text}
-	}
-
-	if len(texts) == 0 {
-		return nil
+	var texts []string
+	if bifrostReq.Input.Text != nil {
+		texts = []string{*bifrostReq.Input.Text}
+	} else {
+		texts = bifrostReq.Input.Texts
 	}
 
 	// Create instances for each text
@@ -30,7 +25,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *VertexEmbeddi
 		}
 
 		// Add optional task_type and title from params
-		if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+		if bifrostReq.Params != nil {
 			if taskTypeStr, exists := bifrostReq.Params.ExtraParams["task_type"].(string); exists {
 				instance.TaskType = &taskTypeStr
 			}

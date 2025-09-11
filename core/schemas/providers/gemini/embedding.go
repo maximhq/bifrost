@@ -5,12 +5,12 @@ import (
 )
 
 // FromBifrostEmbeddingRequest converts a BifrostRequest with embedding input to Gemini's embedding request format
-func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *GeminiEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *GeminiEmbeddingRequest {
+	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 
-	embeddingInput := bifrostReq.Input.EmbeddingInput
+	embeddingInput := bifrostReq.Input
 
 	// Get the text to embed
 	var text string

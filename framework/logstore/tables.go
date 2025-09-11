@@ -73,8 +73,8 @@ type Log struct {
 	Object              string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider            string    `gorm:"type:varchar(255);index;not null" json:"provider"`
 	Model               string    `gorm:"type:varchar(255);index;not null" json:"model"`
-	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.BifrostMessage
-	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostMessage
+	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
+	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
 	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *[][]float32
 	Params              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
 	Tools               string    `gorm:"type:text" json:"-"` // JSON serialized *[]schemas.Tool
@@ -100,19 +100,19 @@ type Log struct {
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
-	InputHistoryParsed        []schemas.BifrostMessage    `gorm:"-" json:"input_history,omitempty"`
-	OutputMessageParsed       *schemas.BifrostMessage     `gorm:"-" json:"output_message,omitempty"`
-	EmbeddingOutputParsed     *[]schemas.BifrostEmbedding `gorm:"-" json:"embedding_output,omitempty"`
-	ParamsParsed              *schemas.ModelParameters    `gorm:"-" json:"params,omitempty"`
-	ToolsParsed               *[]schemas.Tool             `gorm:"-" json:"tools,omitempty"`
-	ToolCallsParsed           *[]schemas.ToolCall         `gorm:"-" json:"tool_calls,omitempty"`
-	TokenUsageParsed          *schemas.LLMUsage           `gorm:"-" json:"token_usage,omitempty"`
-	ErrorDetailsParsed        *schemas.BifrostError       `gorm:"-" json:"error_details,omitempty"`
-	SpeechInputParsed         *schemas.SpeechInput        `gorm:"-" json:"speech_input,omitempty"`
-	TranscriptionInputParsed  *schemas.TranscriptionInput `gorm:"-" json:"transcription_input,omitempty"`
-	SpeechOutputParsed        *schemas.BifrostSpeech      `gorm:"-" json:"speech_output,omitempty"`
-	TranscriptionOutputParsed *schemas.BifrostTranscribe  `gorm:"-" json:"transcription_output,omitempty"`
-	CacheDebugParsed          *schemas.BifrostCacheDebug  `gorm:"-" json:"cache_debug,omitempty"`
+	InputHistoryParsed        []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
+	OutputMessageParsed       *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
+	EmbeddingOutputParsed     *[]schemas.BifrostEmbedding             `gorm:"-" json:"embedding_output,omitempty"`
+	ParamsParsed              *schemas.ModelParameters                `gorm:"-" json:"params,omitempty"`
+	ToolsParsed               *[]schemas.ChatTool                     `gorm:"-" json:"tools,omitempty"`
+	ToolCallsParsed           *[]schemas.ChatAssistantMessageToolCall `gorm:"-" json:"tool_calls,omitempty"`
+	TokenUsageParsed          *schemas.LLMUsage                       `gorm:"-" json:"token_usage,omitempty"`
+	ErrorDetailsParsed        *schemas.BifrostError                   `gorm:"-" json:"error_details,omitempty"`
+	SpeechInputParsed         *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
+	TranscriptionInputParsed  *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
+	SpeechOutputParsed        *schemas.BifrostSpeech                  `gorm:"-" json:"speech_output,omitempty"`
+	TranscriptionOutputParsed *schemas.BifrostTranscribe              `gorm:"-" json:"transcription_output,omitempty"`
+	CacheDebugParsed          *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 }
 
 // TableName sets the table name for GORM
@@ -260,7 +260,7 @@ func (l *Log) DeserializeFields() error {
 	if l.InputHistory != "" {
 		if err := json.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
-			l.InputHistoryParsed = []schemas.BifrostMessage{}
+			l.InputHistoryParsed = []schemas.ChatMessage{}
 		}
 	}
 

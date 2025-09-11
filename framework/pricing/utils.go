@@ -30,7 +30,7 @@ func isCacheReadRequest(req *schemas.BifrostRequest, headers map[string]string) 
 		return true
 	}
 
-	// TODO: Add message-level cache control detection when BifrostMessage schema supports it
+	// TODO: Add message-level cache control detection when ChatMessage schema supports it
 	// For now, cache detection relies on headers only
 
 	return false

@@ -20,7 +20,7 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 	}
 
 	t.Run("SimpleChat", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateBasicChatMessage("Hello! What's the capital of France?"),
 		}
 

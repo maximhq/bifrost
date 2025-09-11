@@ -84,18 +84,22 @@ func TestToolVariations(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("What's the weather like today?"),
 					},
 				},
 			},
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.5),
-			MaxTokens:   bifrost.Ptr(100),
+			ChatParameters: schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
+			CommonParameters: schemas.CommonParameters{
+				Temperature: bifrost.Ptr(0.5),
+			},
 		},
 	}
 
@@ -104,31 +108,38 @@ func TestToolVariations(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("What's the weather like today?"),
 					},
 				},
 			},
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.5),
-			MaxTokens:   bifrost.Ptr(100),
-			Tools: &[]schemas.Tool{
-				{
-					Type: "function",
-					Function: schemas.Function{
-						Name:        "get_weather",
-						Description: "Get the current weather",
-						Parameters: schemas.FunctionParameters{
-							Type: "object",
-							Properties: map[string]interface{}{
-								"location": map[string]interface{}{
-									"type":        "string",
-									"description": "The city and state",
+			ChatParameters: schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
+			CommonParameters: schemas.CommonParameters{
+				Temperature: bifrost.Ptr(0.5),
+				Tools: &schemas.BifrostTool{
+					ChatTools: []schemas.ChatTool{
+						{
+							Type: schemas.ChatToolTypeFunction,
+							Function: &schemas.ChatToolFunction{
+								Name:        "get_weather",
+								Description: bifrost.Ptr("Get the current weather"),
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									Properties: map[string]interface{}{
+										"location": map[string]interface{}{
+											"type":        "string",
+											"description": "The city and state",
+										},
+									},
 								},
+								Strict: bifrost.Ptr(false),
 							},
 						},
 					},
@@ -142,31 +153,38 @@ func TestToolVariations(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("What's the weather like today?"),
 					},
 				},
 			},
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.5),
-			MaxTokens:   bifrost.Ptr(100),
-			Tools: &[]schemas.Tool{
-				{
-					Type: "function",
-					Function: schemas.Function{
-						Name:        "get_current_weather", // Different name
-						Description: "Get current weather information",
-						Parameters: schemas.FunctionParameters{
-							Type: "object",
-							Properties: map[string]interface{}{
-								"city": map[string]interface{}{ // Different parameter name
-									"type":        "string",
-									"description": "The city name",
+			ChatParameters: schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
+			CommonParameters: schemas.CommonParameters{
+				Temperature: bifrost.Ptr(0.5),
+				Tools: &schemas.BifrostTool{
+					ChatTools: []schemas.ChatTool{
+						{
+							Type: schemas.ChatToolTypeFunction,
+							Function: &schemas.ChatToolFunction{
+								Name:        "get_current_weather",
+								Description: bifrost.Ptr("Get current weather information"),
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									Properties: map[string]interface{}{
+										"city": map[string]interface{}{ // Different parameter name
+											"type":        "string",
+											"description": "The city name",
+										},
+									},
 								},
+								Strict: bifrost.Ptr(false),
 							},
 						},
 					},
@@ -233,18 +251,22 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("🌟 Unicode test: Hello, 世界! مرحبا 🌍"),
 							},
 						},
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.1),
-					MaxTokens:   bifrost.Ptr(50),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(50),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.1),
+					},
 				},
 			},
 		},
@@ -254,18 +276,18 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
-								ContentBlocks: &[]schemas.ContentBlock{
+							Content: schemas.ChatMessageContent{
+								ContentBlocks: &[]schemas.ChatContentBlock{
 									{
-										Type: "text",
+										Type: schemas.ChatContentBlockTypeText,
 										Text: bifrost.Ptr("Analyze this image"),
 									},
 									{
-										Type: "image_url",
-										ImageURL: &schemas.ImageURLStruct{
+										Type: schemas.ChatContentBlockTypeImage,
+										ImageURLStruct: &schemas.ChatInputImage{
 											URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
 										},
 									},
@@ -275,8 +297,12 @@ func TestContentVariations(t *testing.T) {
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.3),
-					MaxTokens:   bifrost.Ptr(200),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(200),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.3),
+					},
 				},
 			},
 		},
@@ -286,24 +312,24 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
-								ContentBlocks: &[]schemas.ContentBlock{
+							Content: schemas.ChatMessageContent{
+								ContentBlocks: &[]schemas.ChatContentBlock{
 									{
-										Type: "text",
+										Type: schemas.ChatContentBlockTypeText,
 										Text: bifrost.Ptr("Compare these images"),
 									},
 									{
-										Type: "image_url",
-										ImageURL: &schemas.ImageURLStruct{
+										Type: schemas.ChatContentBlockTypeImage,
+										ImageURLStruct: &schemas.ChatInputImage{
 											URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
 										},
 									},
 									{
-										Type: "image_url",
-										ImageURL: &schemas.ImageURLStruct{
+										Type: schemas.ChatContentBlockTypeImage,
+										ImageURLStruct: &schemas.ChatInputImage{
 											URL: "https://upload.wikimedia.org/wikipedia/commons/b/b5/Scenery_.jpg",
 										},
 									},
@@ -313,8 +339,12 @@ func TestContentVariations(t *testing.T) {
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.3),
-					MaxTokens:   bifrost.Ptr(200),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(200),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.3),
+					},
 				},
 			},
 		},
@@ -324,18 +354,22 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr(strings.Repeat("This is a very long prompt. ", 100)),
 							},
 						},
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.2),
-					MaxTokens:   bifrost.Ptr(50),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(50),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.2),
+					},
 				},
 			},
 		},
@@ -345,30 +379,34 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("What is AI?"),
 							},
 						},
 						{
 							Role: "assistant",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("AI stands for Artificial Intelligence..."),
 							},
 						},
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("Can you give me examples?"),
 							},
 						},
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.5),
-					MaxTokens:   bifrost.Ptr(150),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(150),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.5),
+					},
 				},
 			},
 		},
@@ -417,21 +455,25 @@ func TestBoundaryParameterValues(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("Test max parameters"),
 							},
 						},
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature:      bifrost.Ptr(2.0),
-					MaxTokens:        bifrost.Ptr(4096),
-					TopP:             bifrost.Ptr(1.0),
-					PresencePenalty:  bifrost.Ptr(2.0),
-					FrequencyPenalty: bifrost.Ptr(2.0),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(4096),
+						PresencePenalty:     bifrost.Ptr(2.0),
+						FrequencyPenalty:    bifrost.Ptr(2.0),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(2.0),
+						TopP:        bifrost.Ptr(1.0),
+					},
 				},
 			},
 		},
@@ -441,21 +483,25 @@ func TestBoundaryParameterValues(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("Test min parameters"),
 							},
 						},
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature:      bifrost.Ptr(0.0),
-					MaxTokens:        bifrost.Ptr(1),
-					TopP:             bifrost.Ptr(0.01),
-					PresencePenalty:  bifrost.Ptr(-2.0),
-					FrequencyPenalty: bifrost.Ptr(-2.0),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(1),
+						PresencePenalty:     bifrost.Ptr(-2.0),
+						FrequencyPenalty:    bifrost.Ptr(-2.0),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.0),
+						TopP:        bifrost.Ptr(0.01),
+					},
 				},
 			},
 		},
@@ -465,20 +511,24 @@ func TestBoundaryParameterValues(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: &[]schemas.ChatMessage{
 						{
 							Role: "user",
-							Content: schemas.MessageContent{
+							Content: schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("Test edge case parameters"),
 							},
 						},
 					},
 				},
 				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.0),
-					MaxTokens:   bifrost.Ptr(1),
-					TopP:        bifrost.Ptr(0.1),
-					User:        bifrost.Ptr("test-user-id-12345"),
+					ChatParameters: schemas.ChatParameters{
+						MaxCompletionTokens: bifrost.Ptr(1),
+						User:                bifrost.Ptr("test-user-id-12345"),
+					},
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.0),
+						TopP:        bifrost.Ptr(0.1),
+					},
 				},
 			},
 		},

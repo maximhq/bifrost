@@ -122,9 +122,9 @@ func NewTestSetup(t *testing.T) *TestSetup {
 	}
 
 	return NewTestSetupWithConfig(t, Config{
-		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-small",
-		Threshold:      0.8,
+		Provider:          schemas.OpenAI,
+		EmbeddingModel:    "text-embedding-3-small",
+		Threshold:         0.8,
 		CleanUpOnShutdown: true,
 		Keys: []schemas.Key{
 			{
@@ -198,18 +198,22 @@ func CreateBasicChatRequest(content string, temperature float64, maxTokens int) 
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: &content,
 					},
 				},
 			},
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: &temperature,
-			MaxTokens:   &maxTokens,
+			CommonParameters: schemas.CommonParameters{
+				Temperature: &temperature,
+			},
+			ChatParameters: schemas.ChatParameters{
+				MaxCompletionTokens: &maxTokens,
+			},
 		},
 	}
 }
@@ -398,7 +402,7 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 }
 
 // CreateConversationRequest creates a chat request with conversation history
-func CreateConversationRequest(messages []schemas.BifrostMessage, temperature float64, maxTokens int) *schemas.BifrostRequest {
+func CreateConversationRequest(messages []schemas.ChatMessage, temperature float64, maxTokens int) *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
@@ -406,21 +410,25 @@ func CreateConversationRequest(messages []schemas.BifrostMessage, temperature fl
 			ChatCompletionInput: &messages,
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: &temperature,
-			MaxTokens:   &maxTokens,
+			CommonParameters: schemas.CommonParameters{
+				Temperature: &temperature,
+			},
+			ChatParameters: schemas.ChatParameters{
+				MaxCompletionTokens: &maxTokens,
+			},
 		},
 	}
 }
 
 // BuildConversationHistory creates a conversation history from pairs of user/assistant messages
-func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]string) []schemas.BifrostMessage {
-	messages := []schemas.BifrostMessage{}
+func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]string) []schemas.ChatMessage {
+	messages := []schemas.ChatMessage{}
 
 	// Add system prompt if provided
 	if systemPrompt != "" {
-		messages = append(messages, schemas.BifrostMessage{
-			Role: schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{
+		messages = append(messages, schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{
 				ContentStr: &systemPrompt,
 			},
 		})
@@ -430,18 +438,18 @@ func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]strin
 	for _, pair := range userAssistantPairs {
 		if len(pair) >= 1 && pair[0] != "" {
 			userMsg := pair[0]
-			messages = append(messages, schemas.BifrostMessage{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+			messages = append(messages, schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentStr: &userMsg,
 				},
 			})
 		}
 		if len(pair) >= 2 && pair[1] != "" {
 			assistantMsg := pair[1]
-			messages = append(messages, schemas.BifrostMessage{
-				Role: schemas.ModelChatMessageRoleAssistant,
-				Content: schemas.MessageContent{
+			messages = append(messages, schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: schemas.ChatMessageContent{
 					ContentStr: &assistantMsg,
 				},
 			})
@@ -452,10 +460,10 @@ func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]strin
 }
 
 // AddUserMessage adds a user message to existing conversation
-func AddUserMessage(messages []schemas.BifrostMessage, userMessage string) []schemas.BifrostMessage {
-	newMessage := schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
+func AddUserMessage(messages []schemas.ChatMessage, userMessage string) []schemas.ChatMessage {
+	newMessage := schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
 			ContentStr: &userMessage,
 		},
 	}

@@ -96,28 +96,49 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the Cohere provider.
 // Returns an error indicating that text completion is not supported.
-func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "cohere")
 }
 
 // ChatCompletion performs a chat completion request to the Cohere API using v2 converter.
 // It formats the request, sends it to Cohere, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Convert to Cohere v2 request
-	reqBody := cohere.ToCohereChatCompletionRequest(input)
+	reqBody := cohere.ToCohereChatCompletionRequest(request)
+
+	cohereResponse, rawResponse, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert Cohere v2 response to Bifrost response
+	bifrostResponse := cohereResponse.ToBifrostResponse()
+
+	bifrostResponse.Model = request.Model
+	bifrostResponse.ExtraFields.Provider = providerName
+
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
+}
+
+func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Context, reqBody *cohere.CohereChatRequest, key schemas.Key) (*cohere.CohereChatResponse, interface{}, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
 
 	// Marshal request body
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
 				Message: schemas.ErrProviderJSONMarshaling,
@@ -145,7 +166,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 	// Make request
 	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, nil, bifrostErr
 	}
 
 	// Handle error response
@@ -156,13 +177,13 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 		bifrostErr.Error.Message = errorResp.Message
 
-		return nil, bifrostErr
+		return nil, nil, bifrostErr
 	}
 
 	// Parse Cohere v2 response
 	var cohereResponse cohere.CohereChatResponse
 	if err := sonic.Unmarshal(resp.Body(), &cohereResponse); err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
 				Message: "error parsing Cohere v2 response",
@@ -175,7 +196,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 	var rawResponse interface{}
 	if provider.sendBackRawResponse {
 		if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
-			return nil, &schemas.BifrostError{
+			return nil, nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				Error: schemas.ErrorField{
 					Message: "error parsing raw response",
@@ -185,18 +206,33 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 		}
 	}
 
-	// Convert Cohere v2 response to Bifrost response
-	bifrostResponse := cohereResponse.ToBifrostResponse()
+	return &cohereResponse, rawResponse, nil
+}
 
-	bifrostResponse.Model = input.Model
+func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Check if chat completion is allowed
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Convert to Cohere v2 request
+	reqBody := cohere.ToCohereResponsesAPIRequest(request)
+
+	cohereResponse, rawResponse, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert Cohere v2 response to Bifrost response
+	bifrostResponse := cohereResponse.ToResponsesAPIBifrostResponse()
+
+	bifrostResponse.Model = request.Model
 	bifrostResponse.ExtraFields.Provider = providerName
 
 	if provider.sendBackRawResponse {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
@@ -204,16 +240,16 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 
 // Embedding generates embeddings for the given input text(s) using the Cohere API.
 // Supports Cohere's embedding models and returns a BifrostResponse containing the embedding(s).
-func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Create Bifrost request for conversion
-	reqBody := cohere.ToCohereEmbeddingRequest(input)
+	reqBody := cohere.ToCohereEmbeddingRequest(request)
 
 	// Marshal request body
 	jsonBody, err := sonic.Marshal(reqBody)
@@ -268,16 +304,12 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 
 	// Create BifrostResponse
 	bifrostResponse := cohereResp.ToBifrostResponse()
-	bifrostResponse.Model = input.Model
+	bifrostResponse.Model = request.Model
 	bifrostResponse.ExtraFields.Provider = providerName
 
 	// Only include RawResponse if sendBackRawResponse is enabled
 	if provider.sendBackRawResponse {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
@@ -286,15 +318,15 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 // ChatCompletionStream performs a streaming chat completion request to the Cohere API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 	// Convert to Cohere v2 request and add streaming
-	reqBody := cohere.ToCohereChatCompletionRequest(input)
+	reqBody := cohere.ToCohereChatCompletionRequest(request)
 	reqBody.Stream = schemas.Ptr(true)
 
 	jsonBody, err := sonic.Marshal(reqBody)
@@ -385,8 +417,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 				response := &schemas.BifrostResponse{
 					ID:     responseID,
 					Object: "chat.completion.chunk",
-					Model:  input.Model,
-					Choices: []schemas.BifrostResponseChoice{
+					Model:  request.Model,
+					Choices: []schemas.BifrostChatResponseChoice{
 						{
 							Index: 0,
 							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
@@ -428,7 +460,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.ToolCalls != nil && event.Delta.Message.ToolCalls.ToolCall != nil {
 						// Handle single tool call object (tool-call-start/delta events)
 						cohereToolCall := event.Delta.Message.ToolCalls.ToolCall
-						toolCall := schemas.ToolCall{}
+						toolCall := schemas.ChatAssistantMessageToolCall{}
 
 						if cohereToolCall.ID != nil {
 							toolCall.ID = cohereToolCall.ID
@@ -441,7 +473,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 							toolCall.Function.Arguments = cohereToolCall.Function.Arguments
 						}
 
-						response.Choices[0].BifrostStreamResponseChoice.Delta.ToolCalls = []schemas.ToolCall{toolCall}
+						response.Choices[0].BifrostStreamResponseChoice.Delta.ToolCalls = []schemas.ChatAssistantMessageToolCall{toolCall}
 					}
 
 				case cohere.StreamEventMessageEnd:
@@ -478,10 +510,6 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 							}
 						}
 
-						if input.Params != nil {
-							response.ExtraFields.Params = *input.Params
-						}
-
 						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					}
 
@@ -511,18 +539,22 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	return responseChan, nil
 }
 
-func (provider *CohereProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "cohere")
 }
 
-func (provider *CohereProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "cohere")
 }
 
-func (provider *CohereProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "cohere")
 }
 
-func (provider *CohereProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "cohere")
+}
+
+func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "cohere")
 }

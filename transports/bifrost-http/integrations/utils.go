@@ -306,16 +306,18 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
-	if bifrostReq.Input.TextCompletionInput != nil {
-		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.ChatCompletionInput != nil {
-		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.EmbeddingInput != nil {
-		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.SpeechInput != nil {
-		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.TranscriptionInput != nil {
-		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq)
+	if bifrostReq.TextCompletionRequest != nil {
+		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq.TextCompletionRequest)
+	} else if bifrostReq.ChatRequest != nil {
+		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq.ChatRequest)
+	} else if bifrostReq.ResponsesRequest != nil {
+		result, bifrostErr = g.client.ResponsesRequest(*bifrostCtx, bifrostReq.ResponsesRequest)
+	} else if bifrostReq.EmbeddingRequest != nil {
+		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq.EmbeddingRequest)
+	} else if bifrostReq.SpeechRequest != nil {
+		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq.SpeechRequest)
+	} else if bifrostReq.TranscriptionRequest != nil {
+		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
 	}
 
 	// Handle errors
@@ -360,7 +362,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
-func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig,  bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
+func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
 	// Set common SSE headers
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
@@ -371,12 +373,14 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
-	if bifrostReq.Input.ChatCompletionInput != nil {
-		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.SpeechInput != nil {
-		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.TranscriptionInput != nil {
-		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq)
+	if bifrostReq.ChatRequest != nil {
+		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq.ChatRequest)
+	} else if bifrostReq.ResponsesRequest != nil {
+		stream, bifrostErr = g.client.ResponsesStreamRequest(*bifrostCtx, bifrostReq.ResponsesRequest)
+	} else if bifrostReq.SpeechRequest != nil {
+		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq.SpeechRequest)
+	} else if bifrostReq.TranscriptionRequest != nil {
+		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
 	}
 
 	// Get the streaming channel from Bifrost

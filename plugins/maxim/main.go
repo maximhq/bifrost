@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -278,10 +279,18 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	} else if req.Input.TextCompletionInput != nil {
 		requestType = "text_completion"
 		messages = append(messages, logging.CompletionRequest{
-			Role:    string(schemas.ModelChatMessageRoleUser),
+			Role:    string(schemas.ChatMessageRoleUser),
 			Content: req.Input.TextCompletionInput,
 		})
-		latestMessage = *req.Input.TextCompletionInput
+		if req.Input.TextCompletionInput.Prompt != nil {
+			latestMessage = *req.Input.TextCompletionInput.Prompt
+		} else {
+			var stringBuilder strings.Builder
+			for _, prompt := range req.Input.TextCompletionInput.PromptArray {
+				stringBuilder.WriteString(prompt)
+			}
+			latestMessage = stringBuilder.String()
+		}
 	}
 
 	tags["action"] = requestType

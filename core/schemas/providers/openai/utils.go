@@ -20,8 +20,8 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 	params.ToolChoice = r.ToolChoice
 
 	// Direct field mapping
-	if r.MaxTokens != nil {
-		params.MaxTokens = r.MaxTokens
+	if r.MaxCompletionTokens != nil {
+		params.MaxCompletionTokens = r.MaxCompletionTokens
 	}
 	if r.Temperature != nil {
 		params.Temperature = r.Temperature
@@ -34,9 +34,6 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 	}
 	if r.FrequencyPenalty != nil {
 		params.FrequencyPenalty = r.FrequencyPenalty
-	}
-	if r.N != nil {
-		params.N = r.N
 	}
 	if r.LogProbs != nil {
 		params.LogProbs = r.LogProbs
@@ -53,9 +50,6 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 	if r.User != nil {
 		params.User = r.User
 	}
-	if r.Stream != nil {
-		params.Stream = r.Stream
-	}
 	if r.Seed != nil {
 		params.Seed = r.Seed
 	}
@@ -65,45 +59,8 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 	if r.ResponseFormat != nil {
 		params.ResponseFormat = r.ResponseFormat
 	}
-	if r.MaxCompletionTokens != nil {
-		params.MaxCompletionTokens = r.MaxCompletionTokens
-	}
 	if r.ReasoningEffort != nil {
 		params.ReasoningEffort = r.ReasoningEffort
-	}
-
-	return params
-}
-
-// convertSpeechParameters converts OpenAI speech request parameters to Bifrost ModelParameters
-func (r *OpenAISpeechRequest) convertSpeechParameters() *schemas.ModelParameters {
-	params := &schemas.ModelParameters{
-		ExtraParams: make(map[string]interface{}),
-	}
-
-	// Add speech-specific parameters
-	if r.Speed != nil {
-		params.ExtraParams["speed"] = *r.Speed
-	}
-
-	return params
-}
-
-// convertTranscriptionParameters converts OpenAI transcription request parameters to Bifrost ModelParameters
-func (r *OpenAITranscriptionRequest) convertTranscriptionParameters() *schemas.ModelParameters {
-	params := &schemas.ModelParameters{
-		ExtraParams: make(map[string]interface{}),
-	}
-
-	// Add transcription-specific parameters
-	if r.Temperature != nil {
-		params.ExtraParams["temperature"] = *r.Temperature
-	}
-	if len(r.TimestampGranularities) > 0 {
-		params.ExtraParams["timestamp_granularities"] = r.TimestampGranularities
-	}
-	if len(r.Include) > 0 {
-		params.ExtraParams["include"] = r.Include
 	}
 
 	return params
@@ -127,4 +84,65 @@ func (r *OpenAIEmbeddingRequest) convertEmbeddingParameters() *schemas.ModelPara
 	}
 
 	return params
+}
+
+// prepareOpenAIChatRequest formats messages for the OpenAI API.
+// It handles both text and image content in messages.
+// Returns a slice of formatted messages and any additional parameters.
+// sanitizeBifrostMessages performs in-place image URL sanitization for any content blocks
+// with type image_url in the provided Bifrost messages and returns the sanitized slice.
+func sanitizeChatImageInputs(messages []schemas.ChatMessage) []schemas.ChatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	for mi := range messages {
+		content := &messages[mi].Content
+		if content.ContentBlocks == nil {
+			continue
+		}
+		blocks := *content.ContentBlocks
+		for bi := range blocks {
+			if blocks[bi].Type == schemas.ChatContentBlockTypeImage && blocks[bi].ImageURLStruct != nil {
+				if sanitizedURL, _ := schemas.SanitizeImageURL(blocks[bi].ImageURLStruct.URL); sanitizedURL != "" {
+					blocks[bi].ImageURLStruct = &schemas.ChatInputImage{
+						URL:    sanitizedURL,
+						Detail: blocks[bi].ImageURLStruct.Detail,
+					}
+				}
+			}
+		}
+		*content.ContentBlocks = blocks
+	}
+	return messages
+}
+
+func sanitizeResponsesImageInputs(messages []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	for mi := range messages {
+		// Check if ResponsesInputMessage is not nil before accessing Content
+		if messages[mi].Content == nil {
+			continue
+		}
+		content := messages[mi].Content
+		if content.ContentBlocks == nil {
+			continue
+		}
+		blocks := *content.ContentBlocks
+		for bi := range blocks {
+			if blocks[bi].Type == schemas.ResponsesInputMessageContentBlockTypeImage && blocks[bi].ResponsesInputMessageContentBlockImage != nil {
+				if blocks[bi].ResponsesInputMessageContentBlockImage.ImageURL != nil {
+					if sanitizedURL, _ := schemas.SanitizeImageURL(*blocks[bi].ResponsesInputMessageContentBlockImage.ImageURL); sanitizedURL != "" {
+						blocks[bi].ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
+							ImageURL: &sanitizedURL,
+							Detail:   blocks[bi].ResponsesInputMessageContentBlockImage.Detail,
+						}
+					}
+				}
+			}
+		}
+		*content.ContentBlocks = blocks
+	}
+	return messages
 }
