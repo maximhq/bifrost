@@ -8,12 +8,12 @@ import (
 )
 
 // ToBedrockChatCompletionRequest converts a Bifrost request to Bedrock Converse API format
-func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostRequest) (*BedrockConverseRequest, error) {
+func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*BedrockConverseRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
 
-	if bifrostReq.Input.ChatCompletionInput == nil {
+	if bifrostReq.Input == nil {
 		return nil, fmt.Errorf("only chat completion requests are supported for Bedrock Converse API")
 	}
 
@@ -22,7 +22,7 @@ func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostRequest) (*Bedroc
 	}
 
 	// Convert messages and system messages
-	messages, systemMessages, err := convertMessages(*bifrostReq.Input.ChatCompletionInput)
+	messages, systemMessages, err := convertMessages(bifrostReq.Input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}
@@ -32,10 +32,10 @@ func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostRequest) (*Bedroc
 	}
 
 	// Convert parameters and configurations
-	convertParameters(bifrostReq, bedrockReq)
+	convertChatParameters(bifrostReq, bedrockReq)
 
 	// Ensure tool config is present when needed
-	ensureToolConfigForConversation(bifrostReq, bedrockReq)
+	ensureChatToolConfigForConversation(bifrostReq, bedrockReq)
 
 	return bedrockReq, nil
 }
@@ -47,15 +47,15 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	}
 
 	// Convert content blocks and tool calls
-	var contentBlocks []schemas.ContentBlock
-	var toolCalls []schemas.ToolCall
+	var contentBlocks []schemas.ChatContentBlock
+	var toolCalls []schemas.ChatAssistantMessageToolCall
 
 	if bedrockResp.Output.Message != nil {
 		for _, contentBlock := range bedrockResp.Output.Message.Content {
 			// Handle text content
 			if contentBlock.Text != nil && *contentBlock.Text != "" {
-				contentBlocks = append(contentBlocks, schemas.ContentBlock{
-					Type: schemas.ContentBlockTypeText,
+				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText,
 					Text: contentBlock.Text,
 				})
 			}
@@ -74,11 +74,15 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 					arguments = "{}"
 				}
 
-				toolCalls = append(toolCalls, schemas.ToolCall{
+				// Create copies of the values to avoid range loop variable capture
+				toolUseID := contentBlock.ToolUse.ToolUseID
+				toolUseName := contentBlock.ToolUse.Name
+
+				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
 					Type: schemas.Ptr("function"),
-					ID:   &contentBlock.ToolUse.ToolUseID,
-					Function: schemas.FunctionCall{
-						Name:      &contentBlock.ToolUse.Name,
+					ID:   &toolUseID,
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &toolUseName,
 						Arguments: arguments,
 					},
 				})
@@ -87,28 +91,28 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	}
 
 	// Create assistant message if we have tool calls
-	var assistantMessage *schemas.AssistantMessage
+	var assistantMessage *schemas.ChatAssistantMessage
 	if len(toolCalls) > 0 {
-		assistantMessage = &schemas.AssistantMessage{
+		assistantMessage = &schemas.ChatAssistantMessage{
 			ToolCalls: &toolCalls,
 		}
 	}
 
 	// Create the message content
-	messageContent := schemas.MessageContent{}
+	messageContent := schemas.ChatMessageContent{}
 	if len(contentBlocks) > 0 {
 		messageContent.ContentBlocks = &contentBlocks
 	}
 
 	// Create the response choice
-	choices := []schemas.BifrostResponseChoice{
+	choices := []schemas.BifrostChatResponseChoice{
 		{
 			Index: 0,
 			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-				Message: schemas.BifrostMessage{
-					Role:             schemas.ModelChatMessageRoleAssistant,
-					Content:          messageContent,
-					AssistantMessage: assistantMessage,
+				Message: schemas.ChatMessage{
+					Role:                 schemas.ChatMessageRoleAssistant,
+					Content:              messageContent,
+					ChatAssistantMessage: assistantMessage,
 				},
 			},
 			FinishReason: &bedrockResp.StopReason,
@@ -130,8 +134,9 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 		Choices: choices,
 		Usage:   usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:  &latency,
-			Provider: schemas.Bedrock,
+			RequestType: schemas.ChatCompletionRequest,
+			Latency:     &latency,
+			Provider:    schemas.Bedrock,
 		},
 	}
 

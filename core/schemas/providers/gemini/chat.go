@@ -10,7 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
+func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
 	provider, model := schemas.ParseModelString(r.Model, schemas.Gemini)
 
 	if provider == schemas.Vertex && !r.IsEmbedding {
@@ -20,67 +20,14 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		}
 	}
 
-	// Handle embedding requests
-	if r.IsEmbedding {
-		// Extract texts from content (embedding requests) or contents (chat completion requests)
-		var texts []string
-
-		// Check for batch embedding requests first
-		if len(r.Requests) > 0 {
-			for _, req := range r.Requests {
-				if req.Content != nil {
-					for _, part := range req.Content.Parts {
-						if part.Text != "" {
-							texts = append(texts, part.Text)
-						}
-					}
-				}
-			}
-		}
-
-		// Fallback to contents (plural) for backward compatibility
-		if len(texts) == 0 {
-			for _, content := range r.Contents {
-				for _, part := range content.Parts {
-					if part.Text != "" {
-						texts = append(texts, part.Text)
-					}
-				}
-			}
-		}
-
-		// Create embedding input
-		embeddingInput := &schemas.EmbeddingInput{
-			Texts: texts,
-		}
-
-		bifrostReq := &schemas.BifrostRequest{
-			Provider: provider,
-			Model:    model,
-			Input: schemas.RequestInput{
-				EmbeddingInput: embeddingInput,
-			},
-		}
-
-		// Convert embedding parameters
-		params := r.convertEmbeddingParameters()
-		if params != nil {
-			bifrostReq.Params = params
-		}
-
-		return bifrostReq
-	}
-
 	// Handle chat completion requests
-	bifrostReq := &schemas.BifrostRequest{
+	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: provider,
 		Model:    model,
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{},
-		},
+		Input:    []schemas.ChatMessage{},
 	}
 
-	messages := []schemas.BifrostMessage{}
+	messages := []schemas.ChatMessage{}
 
 	allGenAiMessages := []Content{}
 	if r.SystemInstruction != nil {
@@ -96,8 +43,8 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		}
 
 		// Handle multiple parts - collect all content and tool calls
-		var toolCalls []schemas.ToolCall
-		var contentBlocks []schemas.ContentBlock
+		var toolCalls []schemas.ChatAssistantMessageToolCall
+		var contentBlocks []schemas.ChatContentBlock
 		var thoughtStr string // Track thought content for assistant/model
 
 		for _, part := range content.Parts {
@@ -105,28 +52,33 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 			case part.Text != "":
 				// Handle thought content specially for assistant messages
 				if part.Thought &&
-					(content.Role == string(schemas.ModelChatMessageRoleAssistant) || content.Role == string(RoleModel)) {
+					(content.Role == string(schemas.ChatMessageRoleAssistant) || content.Role == string(RoleModel)) {
 					thoughtStr = thoughtStr + part.Text + "\n"
 				} else {
-					contentBlocks = append(contentBlocks, schemas.ContentBlock{
-						Type: schemas.ContentBlockTypeText,
+					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+						Type: schemas.ChatContentBlockTypeText,
 						Text: &part.Text,
 					})
 				}
 
 			case part.FunctionCall != nil:
 				// Only add function calls for assistant messages
-				if content.Role == string(schemas.ModelChatMessageRoleAssistant) || content.Role == string(RoleModel) {
+				if content.Role == string(schemas.ChatMessageRoleAssistant) || content.Role == string(RoleModel) {
 					jsonArgs, err := json.Marshal(part.FunctionCall.Args)
 					if err != nil {
 						jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
 					}
-					id := part.FunctionCall.ID     // create local copy
 					name := part.FunctionCall.Name // create local copy
-					toolCall := schemas.ToolCall{
-						ID:   schemas.Ptr(id),
-						Type: schemas.Ptr(string(schemas.ToolChoiceTypeFunction)),
-						Function: schemas.FunctionCall{
+					// Gemini primarily works with function names for correlation
+					// Use ID if provided, otherwise fallback to name for stable correlation
+					callID := name
+					if strings.TrimSpace(part.FunctionCall.ID) != "" {
+						callID = part.FunctionCall.ID
+					}
+					toolCall := schemas.ChatAssistantMessageToolCall{
+						ID:   schemas.Ptr(callID),
+						Type: schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
 							Name:      &name,
 							Arguments: string(jsonArgs),
 						},
@@ -141,13 +93,28 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 					responseContent = []byte(fmt.Sprintf("%v", part.FunctionResponse.Response))
 				}
 
-				toolResponseMsg := schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleTool,
-					Content: schemas.MessageContent{
+				// Correlate with the function call: prefer ID if available, otherwise use name
+				callID := part.FunctionResponse.Name
+				if strings.TrimSpace(part.FunctionResponse.ID) != "" {
+					callID = part.FunctionResponse.ID
+				} else {
+					// Fallback: correlate with the prior function call by name to reuse its ID
+					for _, tc := range toolCalls {
+						if tc.Function.Name != nil && *tc.Function.Name == part.FunctionResponse.Name &&
+							tc.ID != nil && *tc.ID != "" {
+							callID = *tc.ID
+							break
+						}
+					}
+				}
+
+				toolResponseMsg := schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleTool,
+					Content: schemas.ChatMessageContent{
 						ContentStr: schemas.Ptr(string(responseContent)),
 					},
-					ToolMessage: &schemas.ToolMessage{
-						ToolCallID: &part.FunctionResponse.Name,
+					ChatToolMessage: &schemas.ChatToolMessage{
+						ToolCallID: &callID,
 					},
 				}
 
@@ -156,9 +123,9 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 			case part.InlineData != nil:
 				// Handle inline images/media - only append if it's actually an image
 				if isImageMimeType(part.InlineData.MIMEType) {
-					contentBlocks = append(contentBlocks, schemas.ContentBlock{
-						Type: schemas.ContentBlockTypeImage,
-						ImageURL: &schemas.ImageURLStruct{
+					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+						Type: schemas.ChatContentBlockTypeImage,
+						ImageURLStruct: &schemas.ChatInputImage{
 							URL: fmt.Sprintf("data:%s;base64,%s", part.InlineData.MIMEType, base64.StdEncoding.EncodeToString(part.InlineData.Data)),
 						},
 					})
@@ -167,9 +134,9 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 			case part.FileData != nil:
 				// Handle file data - only append if it's actually an image
 				if isImageMimeType(part.FileData.MIMEType) {
-					contentBlocks = append(contentBlocks, schemas.ContentBlock{
-						Type: schemas.ContentBlockTypeImage,
-						ImageURL: &schemas.ImageURLStruct{
+					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+						Type: schemas.ChatContentBlockTypeImage,
+						ImageURLStruct: &schemas.ChatInputImage{
 							URL: part.FileData.FileURI,
 						},
 					})
@@ -178,16 +145,16 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 			case part.ExecutableCode != nil:
 				// Handle executable code as text content
 				codeText := fmt.Sprintf("```%s\n%s\n```", part.ExecutableCode.Language, part.ExecutableCode.Code)
-				contentBlocks = append(contentBlocks, schemas.ContentBlock{
-					Type: schemas.ContentBlockTypeText,
+				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText,
 					Text: &codeText,
 				})
 
 			case part.CodeExecutionResult != nil:
 				// Handle code execution results as text content
 				resultText := fmt.Sprintf("Code execution result (%s):\n%s", part.CodeExecutionResult.Outcome, part.CodeExecutionResult.Output)
-				contentBlocks = append(contentBlocks, schemas.ContentBlock{
-					Type: schemas.ContentBlockTypeText,
+				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText,
 					Text: &resultText,
 				})
 			}
@@ -196,31 +163,28 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		// Only create message if there's actual content, tool calls, or thought content
 		if len(contentBlocks) > 0 || len(toolCalls) > 0 || thoughtStr != "" {
 			// Create main message with content blocks
-			bifrostMsg := schemas.BifrostMessage{
-				Role: func(r string) schemas.ModelChatMessageRole {
+			bifrostMsg := schemas.ChatMessage{
+				Role: func(r string) schemas.ChatMessageRole {
 					if r == string(RoleModel) { // GenAI's internal alias
-						return schemas.ModelChatMessageRoleAssistant
+						return schemas.ChatMessageRoleAssistant
 					}
-					return schemas.ModelChatMessageRole(r)
+					return schemas.ChatMessageRole(r)
 				}(content.Role),
 			}
 
 			// Set content only if there are content blocks
 			if len(contentBlocks) > 0 {
-				bifrostMsg.Content = schemas.MessageContent{
+				bifrostMsg.Content = schemas.ChatMessageContent{
 					ContentBlocks: &contentBlocks,
 				}
 			}
 
 			// Set assistant-specific fields for assistant/model messages
-			if content.Role == string(schemas.ModelChatMessageRoleAssistant) || content.Role == string(RoleModel) {
+			if content.Role == string(schemas.ChatMessageRoleAssistant) || content.Role == string(RoleModel) {
 				if len(toolCalls) > 0 || thoughtStr != "" {
-					bifrostMsg.AssistantMessage = &schemas.AssistantMessage{}
+					bifrostMsg.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 					if len(toolCalls) > 0 {
-						bifrostMsg.AssistantMessage.ToolCalls = &toolCalls
-					}
-					if thoughtStr != "" {
-						bifrostMsg.AssistantMessage.Thought = &thoughtStr
+						bifrostMsg.ChatAssistantMessage.ToolCalls = &toolCalls
 					}
 				}
 			}
@@ -229,10 +193,10 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		}
 	}
 
-	bifrostReq.Input.ChatCompletionInput = &messages
+	bifrostReq.Input = messages
 
 	// Convert generation config to parameters
-	if params := r.convertGenerationConfigToParams(); params != nil {
+	if params := r.convertGenerationConfigToChatParameters(); params != nil {
 		bifrostReq.Params = params
 	}
 
@@ -264,20 +228,21 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 	if len(r.Tools) > 0 {
 		ensureExtraParams(bifrostReq)
 
-		tools := make([]schemas.Tool, 0, len(r.Tools))
+		tools := make([]schemas.ChatTool, 0, len(r.Tools))
 		for _, tool := range r.Tools {
 			if len(tool.FunctionDeclarations) > 0 {
 				for _, fn := range tool.FunctionDeclarations {
-					bifrostTool := schemas.Tool{
-						Type: "function",
-						Function: schemas.Function{
+					bifrostTool := schemas.ChatTool{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
 							Name:        fn.Name,
-							Description: fn.Description,
+							Description: schemas.Ptr(fn.Description),
 						},
 					}
 					// Convert parameters schema if present
 					if fn.Parameters != nil {
-						bifrostTool.Function.Parameters = r.convertSchemaToFunctionParameters(fn.Parameters)
+						params := r.convertSchemaToFunctionParameters(fn.Parameters)
+						bifrostTool.Function.Parameters = &params
 					}
 					tools = append(tools, bifrostTool)
 				}
@@ -295,7 +260,7 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		}
 
 		if len(tools) > 0 {
-			bifrostReq.Params.Tools = &tools
+			bifrostReq.Params.Tools = tools
 		}
 	}
 
@@ -308,8 +273,8 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 	return bifrostReq
 }
 
-// ToGeminiGenerationRequest converts a BifrostRequest to Gemini's generation request format
-func ToGeminiGenerationRequest(bifrostReq *schemas.BifrostRequest, responseModalities []string) *GeminiGenerationRequest {
+// ToGeminiChatGenerationRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
+func ToGeminiChatGenerationRequest(bifrostReq *schemas.BifrostChatRequest, responseModalities []string) *GeminiGenerationRequest {
 	if bifrostReq == nil {
 		return nil
 	}
@@ -324,8 +289,8 @@ func ToGeminiGenerationRequest(bifrostReq *schemas.BifrostRequest, responseModal
 		geminiReq.GenerationConfig = convertParamsToGenerationConfig(bifrostReq.Params, responseModalities)
 
 		// Handle tool-related parameters
-		if bifrostReq.Params.Tools != nil && len(*bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools = convertBifrostToolsToGemini(*bifrostReq.Params.Tools)
+		if len(bifrostReq.Params.Tools) > 0 {
+			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
 
 			// Convert tool choice to tool config
 			if bifrostReq.Params.ToolChoice != nil {
@@ -336,26 +301,24 @@ func ToGeminiGenerationRequest(bifrostReq *schemas.BifrostRequest, responseModal
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings
-			if safetySettings, ok := bifrostReq.Params.ExtraParams["safety_settings"]; ok {
+			if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safety_settings"); ok {
 				if settings, ok := safetySettings.([]SafetySetting); ok {
 					geminiReq.SafetySettings = settings
 				}
 			}
 
 			// Cached content
-			if cachedContent, ok := bifrostReq.Params.ExtraParams["cached_content"].(string); ok {
+			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
 				geminiReq.CachedContent = cachedContent
 			}
 
 			// Response modalities
-			if modalities, ok := bifrostReq.Params.ExtraParams["response_modalities"]; ok {
-				if modalitySlice, ok := modalities.([]string); ok {
-					geminiReq.ResponseModalities = modalitySlice
-				}
+			if modalities, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["response_modalities"]); ok {
+				geminiReq.ResponseModalities = modalities
 			}
 
 			// Labels
-			if labels, ok := bifrostReq.Params.ExtraParams["labels"]; ok {
+			if labels, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "labels"); ok {
 				if labelMap, ok := labels.(map[string]string); ok {
 					geminiReq.Labels = labelMap
 				}
@@ -363,56 +326,8 @@ func ToGeminiGenerationRequest(bifrostReq *schemas.BifrostRequest, responseModal
 		}
 	}
 
-	// Convert input based on type
-	if bifrostReq.Input.SpeechInput != nil {
-		// Speech/TTS request
-		geminiReq.Contents = []CustomContent{
-			{
-				Parts: []*CustomPart{
-					{
-						Text: bifrostReq.Input.SpeechInput.Input,
-					},
-				},
-			},
-		}
-
-		// Add speech config to generation config
-		addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Input.SpeechInput.VoiceConfig)
-
-	} else if bifrostReq.Input.TranscriptionInput != nil {
-		var prompt string
-		if bifrostReq.Input.TranscriptionInput.Prompt != nil {
-			prompt = *bifrostReq.Input.TranscriptionInput.Prompt
-		} else {
-			prompt = "Generate a transcript of the speech."
-		}
-		// Transcription request
-		parts := []*CustomPart{
-			{
-				Text: prompt,
-			},
-		}
-
-		// Add audio file if present
-		if len(bifrostReq.Input.TranscriptionInput.File) > 0 {
-			parts = append(parts, &CustomPart{
-				InlineData: &CustomBlob{
-					MIMEType: detectAudioMimeType(bifrostReq.Input.TranscriptionInput.File),
-					Data:     bifrostReq.Input.TranscriptionInput.File,
-				},
-			})
-		}
-
-		geminiReq.Contents = []CustomContent{
-			{
-				Parts: parts,
-			},
-		}
-
-	} else if bifrostReq.Input.ChatCompletionInput != nil {
-		// Chat completion request - convert messages to Gemini format
-		geminiReq.Contents = convertBifrostMessagesToGemini(*bifrostReq.Input.ChatCompletionInput)
-	}
+	// Convert chat completion messages to Gemini format
+	geminiReq.Contents = convertBifrostMessagesToGemini(bifrostReq.Input)
 
 	return geminiReq
 }
@@ -599,8 +514,8 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 			}
 
 			// Handle tool calls
-			if choice.Message.AssistantMessage != nil && choice.Message.AssistantMessage.ToolCalls != nil {
-				for _, toolCall := range *choice.Message.AssistantMessage.ToolCalls {
+			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
+				for _, toolCall := range *choice.Message.ChatAssistantMessage.ToolCalls {
 					argsMap := make(map[string]interface{})
 					if toolCall.Function.Arguments != "" {
 						json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
@@ -616,14 +531,6 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 						parts = append(parts, &Part{FunctionCall: fc})
 					}
 				}
-			}
-
-			// Handle thinking content if present
-			if choice.Message.AssistantMessage != nil && choice.Message.AssistantMessage.Thought != nil && *choice.Message.AssistantMessage.Thought != "" {
-				parts = append(parts, &Part{
-					Text:    *choice.Message.AssistantMessage.Thought,
-					Thought: true,
-				})
 			}
 
 			if len(parts) > 0 {

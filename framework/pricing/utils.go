@@ -30,7 +30,7 @@ func isCacheReadRequest(req *schemas.BifrostRequest, headers map[string]string) 
 		return true
 	}
 
-	// TODO: Add message-level cache control detection when BifrostMessage schema supports it
+	// TODO: Add message-level cache control detection when ChatMessage schema supports it
 	// For now, cache detection relies on headers only
 
 	return false
@@ -54,6 +54,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "completion"
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		baseType = "chat"
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		baseType = "responses"
 	case schemas.EmbeddingRequest:
 		baseType = "embedding"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
@@ -82,7 +84,7 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 			modelName = strings.Join(parts[1:], "/")
 		}
 	}
-	
+
 	pricing := configstore.TableModelPricing{
 		Model:              modelName,
 		Provider:           provider,

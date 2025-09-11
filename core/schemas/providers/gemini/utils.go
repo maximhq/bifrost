@@ -2,52 +2,15 @@ package gemini
 
 import (
 	"bytes"
-	"encoding/json"
-	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// convertEmbeddingParameters converts Gemini embedding request parameters to ModelParameters
-func (r *GeminiGenerationRequest) convertEmbeddingParameters() *schemas.ModelParameters {
-	params := &schemas.ModelParameters{
-		ExtraParams: make(map[string]interface{}),
-	}
-
-	// Check for parameters from batch embedding requests first
-	if len(r.Requests) > 0 {
-		// Use parameters from the first request in the batch
-		firstReq := r.Requests[0]
-		if firstReq.TaskType != nil {
-			params.ExtraParams["taskType"] = *firstReq.TaskType
-		}
-		if firstReq.Title != nil {
-			params.ExtraParams["title"] = *firstReq.Title
-		}
-		if firstReq.OutputDimensionality != nil {
-			params.Dimensions = firstReq.OutputDimensionality
-		}
-	} else {
-		// Fallback to top-level embedding parameters for single requests
-		if r.TaskType != nil {
-			params.ExtraParams["taskType"] = *r.TaskType
-		}
-		if r.Title != nil {
-			params.ExtraParams["title"] = *r.Title
-		}
-		if r.OutputDimensionality != nil {
-			params.Dimensions = r.OutputDimensionality
-		}
-	}
-
-	return params
-}
-
-// convertGenerationConfigToParams converts Gemini GenerationConfig to ModelParameters
-func (r *GeminiGenerationRequest) convertGenerationConfigToParams() *schemas.ModelParameters {
-	params := &schemas.ModelParameters{
+// convertGenerationConfigToChatParameters converts Gemini GenerationConfig to ModelParameters
+func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *schemas.ChatParameters {
+	params := &schemas.ChatParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
 
@@ -55,33 +18,31 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToParams() *schemas.Mod
 
 	// Map generation config fields to parameters
 	if config.Temperature != nil {
-		temp := float64(*config.Temperature)
-		params.Temperature = &temp
+		params.Temperature = config.Temperature
 	}
 	if config.TopP != nil {
-		params.TopP = schemas.Ptr(float64(*config.TopP))
+		params.TopP = config.TopP
 	}
 	if config.TopK != nil {
-		params.TopK = schemas.Ptr(int(*config.TopK))
+		params.ExtraParams["top_k"] = *config.TopK
 	}
 	if config.MaxOutputTokens > 0 {
-		maxTokens := int(config.MaxOutputTokens)
-		params.MaxTokens = &maxTokens
+		params.MaxCompletionTokens = schemas.Ptr(int(config.MaxOutputTokens))
 	}
 	if config.CandidateCount > 0 {
 		params.ExtraParams["candidate_count"] = config.CandidateCount
 	}
 	if len(config.StopSequences) > 0 {
-		params.StopSequences = &config.StopSequences
+		params.Stop = &config.StopSequences
 	}
 	if config.PresencePenalty != nil {
-		params.PresencePenalty = schemas.Ptr(float64(*config.PresencePenalty))
+		params.PresencePenalty = config.PresencePenalty
 	}
 	if config.FrequencyPenalty != nil {
-		params.FrequencyPenalty = schemas.Ptr(float64(*config.FrequencyPenalty))
+		params.FrequencyPenalty = config.FrequencyPenalty
 	}
 	if config.Seed != nil {
-		params.ExtraParams["seed"] = *config.Seed
+		params.Seed = schemas.Ptr(int(*config.Seed))
 	}
 	if config.ResponseMIMEType != "" {
 		params.ExtraParams["response_mime_type"] = config.ResponseMIMEType
@@ -97,8 +58,8 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToParams() *schemas.Mod
 }
 
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
-func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Schema) schemas.FunctionParameters {
-	params := schemas.FunctionParameters{
+func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
+	params := schemas.ToolFunctionParameters{
 		Type: string(schema.Type),
 	}
 
@@ -168,9 +129,9 @@ func isImageMimeType(mimeType string) bool {
 }
 
 // ensureExtraParams ensures that bifrostReq.Params and bifrostReq.Params.ExtraParams are initialized
-func ensureExtraParams(bifrostReq *schemas.BifrostRequest) {
+func ensureExtraParams(bifrostReq *schemas.BifrostChatRequest) {
 	if bifrostReq.Params == nil {
-		bifrostReq.Params = &schemas.ModelParameters{
+		bifrostReq.Params = &schemas.ChatParameters{
 			ExtraParams: make(map[string]interface{}),
 		}
 	}
@@ -191,7 +152,7 @@ func (r *GenerateContentResponse) extractUsageMetadata() (int, int, int) {
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
-func convertParamsToGenerationConfig(params *schemas.ModelParameters, responseModalities []string) GenerationConfig {
+func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string) GenerationConfig {
 	config := GenerationConfig{}
 
 	// Add response modalities if specified
@@ -204,50 +165,60 @@ func convertParamsToGenerationConfig(params *schemas.ModelParameters, responseMo
 	}
 
 	// Map standard parameters
-	if params.StopSequences != nil {
-		config.StopSequences = *params.StopSequences
+	if params.Stop != nil {
+		config.StopSequences = *params.Stop
 	}
-	if params.MaxTokens != nil {
-		config.MaxOutputTokens = int32(*params.MaxTokens)
+	if params.MaxCompletionTokens != nil {
+		config.MaxOutputTokens = int32(*params.MaxCompletionTokens)
 	}
 	if params.Temperature != nil {
-		temp := float32(*params.Temperature)
+		temp := float64(*params.Temperature)
 		config.Temperature = &temp
 	}
 	if params.TopP != nil {
-		topP := float32(*params.TopP)
+		topP := float64(*params.TopP)
 		config.TopP = &topP
 	}
-	if params.TopK != nil {
-		topK := float32(*params.TopK)
-		config.TopK = &topK
-	}
 	if params.PresencePenalty != nil {
-		penalty := float32(*params.PresencePenalty)
+		penalty := float64(*params.PresencePenalty)
 		config.PresencePenalty = &penalty
 	}
 	if params.FrequencyPenalty != nil {
-		penalty := float32(*params.FrequencyPenalty)
+		penalty := float64(*params.FrequencyPenalty)
 		config.FrequencyPenalty = &penalty
+	}
+
+	if params.ExtraParams != nil {
+		if topK, ok := params.ExtraParams["top_k"]; ok {
+			if val, success := schemas.SafeExtractInt(topK); success {
+				config.TopK = schemas.Ptr(val)
+			}
+		}
 	}
 
 	return config
 }
 
 // convertBifrostToolsToGemini converts Bifrost tools to Gemini format
-func convertBifrostToolsToGemini(bifrostTools []schemas.Tool) []Tool {
+func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) []Tool {
 	var geminiTools []Tool
 
 	for _, tool := range bifrostTools {
-		if tool.Type == "function" {
+		if tool.Type == "" {
+			continue
+		}
+		if tool.Type == "function" && tool.Function != nil {
+			fd := &FunctionDeclaration{
+				Name: tool.Function.Name,
+			}
+			if tool.Function.Parameters != nil {
+				fd.Parameters = convertFunctionParametersToSchema(*tool.Function.Parameters)
+			}
+			if tool.Function.Description != nil {
+				fd.Description = *tool.Function.Description
+			}
 			geminiTool := Tool{
-				FunctionDeclarations: []*FunctionDeclaration{
-					{
-						Name:        tool.Function.Name,
-						Description: tool.Function.Description,
-						Parameters:  convertFunctionParametersToSchema(tool.Function.Parameters),
-					},
-				},
+				FunctionDeclarations: []*FunctionDeclaration{fd},
 			}
 			geminiTools = append(geminiTools, geminiTool)
 		}
@@ -257,7 +228,7 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.Tool) []Tool {
 }
 
 // convertFunctionParametersToSchema converts Bifrost function parameters to Gemini Schema
-func convertFunctionParametersToSchema(params schemas.FunctionParameters) *Schema {
+func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *Schema {
 	schema := &Schema{
 		Type: Type(params.Type),
 	}
@@ -292,15 +263,14 @@ func convertFunctionParametersToSchema(params schemas.FunctionParameters) *Schem
 	return schema
 }
 
-
 // convertToolChoiceToToolConfig converts Bifrost tool choice to Gemini tool config
-func convertToolChoiceToToolConfig(toolChoice *schemas.ToolChoice) ToolConfig {
+func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfig {
 	config := ToolConfig{}
 	functionCallingConfig := FunctionCallingConfig{}
 
-	if toolChoice.ToolChoiceStr != nil {
+	if toolChoice.ChatToolChoiceStr != nil {
 		// Map string values to Gemini's enum values
-		switch *toolChoice.ToolChoiceStr {
+		switch *toolChoice.ChatToolChoiceStr {
 		case "none":
 			functionCallingConfig.Mode = FunctionCallingConfigModeNone
 		case "auto":
@@ -310,21 +280,21 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ToolChoice) ToolConfig {
 		default:
 			functionCallingConfig.Mode = FunctionCallingConfigModeAuto
 		}
-	} else if toolChoice.ToolChoiceStruct != nil {
-		switch toolChoice.ToolChoiceStruct.Type {
-		case schemas.ToolChoiceTypeNone:
+	} else if toolChoice.ChatToolChoiceStruct != nil {
+		switch toolChoice.ChatToolChoiceStruct.Type {
+		case schemas.ChatToolChoiceTypeNone:
 			functionCallingConfig.Mode = FunctionCallingConfigModeNone
-		case schemas.ToolChoiceTypeAuto:
-			functionCallingConfig.Mode = FunctionCallingConfigModeAuto
-		case schemas.ToolChoiceTypeRequired, schemas.ToolChoiceTypeFunction:
+		case schemas.ChatToolChoiceTypeFunction:
+			functionCallingConfig.Mode = FunctionCallingConfigModeAny
+		case schemas.ChatToolChoiceTypeRequired:
 			functionCallingConfig.Mode = FunctionCallingConfigModeAny
 		default:
 			functionCallingConfig.Mode = FunctionCallingConfigModeAuto
 		}
 
 		// Handle specific function selection
-		if toolChoice.ToolChoiceStruct.Function.Name != "" {
-			functionCallingConfig.AllowedFunctionNames = []string{toolChoice.ToolChoiceStruct.Function.Name}
+		if toolChoice.ChatToolChoiceStruct.Function.Name != "" {
+			functionCallingConfig.AllowedFunctionNames = []string{toolChoice.ChatToolChoiceStruct.Function.Name}
 		}
 	}
 
@@ -368,7 +338,7 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig sch
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomContent {
+func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []CustomContent {
 	var contents []CustomContent
 
 	for _, message := range messages {
@@ -391,8 +361,8 @@ func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomC
 		}
 
 		// Handle tool calls for assistant messages
-		if message.AssistantMessage != nil && message.AssistantMessage.ToolCalls != nil {
-			for _, toolCall := range *message.AssistantMessage.ToolCalls {
+		if message.ChatAssistantMessage != nil && message.ChatAssistantMessage.ToolCalls != nil {
+			for _, toolCall := range *message.ChatAssistantMessage.ToolCalls {
 				// Convert tool call to function call part
 				if toolCall.Function.Name != nil {
 					// Create function call part - simplified implementation
@@ -400,9 +370,14 @@ func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomC
 					if toolCall.Function.Arguments != "" {
 						sonic.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
 					}
+					// Handle ID: use it if available, otherwise fallback to function name
+					callID := *toolCall.Function.Name
+					if toolCall.ID != nil && strings.TrimSpace(*toolCall.ID) != "" {
+						callID = *toolCall.ID
+					}
 					parts = append(parts, &CustomPart{
 						FunctionCall: &FunctionCall{
-							ID:   *toolCall.ID,
+							ID:   callID,
 							Name: *toolCall.Function.Name,
 							Args: argsMap,
 						},
@@ -411,11 +386,54 @@ func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomC
 			}
 		}
 
-		// Handle thinking content
-		if message.AssistantMessage != nil && message.AssistantMessage.Thought != nil && *message.AssistantMessage.Thought != "" {
+		// Handle tool response messages
+		if message.Role == schemas.ChatMessageRoleTool && message.ChatToolMessage != nil {
+			// Parse the response content
+			var responseData map[string]any
+			var contentStr string
+
+			// Extract content string from ContentStr or ContentBlocks
+			if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+				contentStr = *message.Content.ContentStr
+			} else if message.Content.ContentBlocks != nil {
+				// Fallback: try to extract text from content blocks
+				var textParts []string
+				for _, block := range *message.Content.ContentBlocks {
+					if block.Text != nil && *block.Text != "" {
+						textParts = append(textParts, *block.Text)
+					}
+				}
+				if len(textParts) > 0 {
+					contentStr = strings.Join(textParts, "\n")
+				}
+			}
+
+			// Try to unmarshal as JSON
+			if contentStr != "" {
+				err := sonic.Unmarshal([]byte(contentStr), &responseData)
+				if err != nil {
+					// If unmarshaling fails, wrap the original string to preserve it
+					responseData = map[string]any{
+						"content": contentStr,
+					}
+				}
+			} else {
+				// If no content at all, use empty map to avoid nil
+				responseData = map[string]any{}
+			}
+
+			// Use ToolCallID if available, ensuring it's not nil
+			callID := ""
+			if message.ChatToolMessage.ToolCallID != nil {
+				callID = *message.ChatToolMessage.ToolCallID
+			}
+
 			parts = append(parts, &CustomPart{
-				Text:    *message.AssistantMessage.Thought,
-				Thought: true,
+				FunctionResponse: &FunctionResponse{
+					ID:       callID,
+					Name:     callID, // Gemini uses name for correlation
+					Response: responseData,
+				},
 			})
 		}
 
@@ -486,59 +504,6 @@ func detectAudioMimeType(audioData []byte) string {
 	}
 	// Fallback within supported set
 	return "audio/mp3"
-}
-// safeFloat32Conversion safely converts various numeric types to float32
-func safeFloat32Conversion(value interface{}) (float32, bool) {
-	if value == nil {
-		return 0, false
-	}
-
-	switch v := value.(type) {
-	case int:
-		return float32(v), true
-	case int64:
-		return float32(v), true
-	case float64:
-		return float32(v), true
-	case float32:
-		return v, true
-	case json.Number:
-		if val, err := v.Float64(); err == nil {
-			return float32(val), true
-		}
-		return 0, false
-	case string:
-		if val, err := strconv.ParseFloat(v, 32); err == nil {
-			return float32(val), true
-		}
-		return 0, false
-	default:
-		return 0, false
-	}
-}
-
-// safeStringSliceConversion safely converts various types to []string
-func safeStringSliceConversion(value interface{}) ([]string, bool) {
-	if value == nil {
-		return nil, false
-	}
-
-	switch v := value.(type) {
-	case []string:
-		return v, true
-	case []interface{}:
-		var result []string
-		for _, item := range v {
-			if str, ok := item.(string); ok {
-				result = append(result, str)
-			} else {
-				return nil, false // If any item is not a string, fail
-			}
-		}
-		return result, true
-	default:
-		return nil, false
-	}
 }
 
 // normalizeAudioMIMEType converts audio format tokens to proper MIME types

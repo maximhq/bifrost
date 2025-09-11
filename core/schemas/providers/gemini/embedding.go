@@ -4,13 +4,13 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// FromBifrostEmbeddingRequest converts a BifrostRequest with embedding input to Gemini's embedding request format
-func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *GeminiEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+// ToGeminiEmbeddingRequest converts a BifrostRequest with embedding input to Gemini's embedding request format
+func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *GeminiEmbeddingRequest {
+	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 
-	embeddingInput := bifrostReq.Input.EmbeddingInput
+	embeddingInput := bifrostReq.Input
 
 	// Get the text to embed
 	var text string
@@ -45,11 +45,11 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *GeminiEmbeddi
 
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
-			if taskType, ok := bifrostReq.Params.ExtraParams["taskType"].(string); ok {
-				request.TaskType = &taskType
+			if taskType, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["taskType"]); ok {
+				request.TaskType = taskType
 			}
-			if title, ok := bifrostReq.Params.ExtraParams["title"].(string); ok {
-				request.Title = &title
+			if title, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["title"]); ok {
+				request.Title = title
 			}
 		}
 	}

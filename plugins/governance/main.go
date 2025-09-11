@@ -117,10 +117,6 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 	provider := req.Provider
 	model := req.Model
 
-	// Store original request provider/model and operation flags in context for PostHook
-	*ctx = context.WithValue(*ctx, schemas.BifrostContextKeyRequestProvider, provider)
-	*ctx = context.WithValue(*ctx, schemas.BifrostContextKeyRequestModel, model)
-
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
 		VirtualKey: virtualKey,
@@ -208,32 +204,8 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		return result, err, nil
 	}
 
-	// Extract provider and model from stored context values (set in PreHook)
-	var provider schemas.ModelProvider
-	var model string
-	var requestType schemas.RequestType
-
-	if providerValue := (*ctx).Value(schemas.BifrostContextKeyRequestProvider); providerValue != nil {
-		if p, ok := providerValue.(schemas.ModelProvider); ok {
-			provider = p
-		}
-	}
-	if modelValue := (*ctx).Value(schemas.BifrostContextKeyRequestModel); modelValue != nil {
-		if m, ok := modelValue.(string); ok {
-			model = m
-		}
-	}
-	if requestTypeValue := (*ctx).Value(schemas.BifrostContextKeyRequestType); requestTypeValue != nil {
-		if r, ok := requestTypeValue.(schemas.RequestType); ok {
-			requestType = r
-		}
-	}
-
-	// If we couldn't get provider/model from context, skip usage tracking
-	if provider == "" || model == "" {
-		p.logger.Debug("Could not extract provider/model from context, skipping usage tracking")
-		return result, err, nil
-	}
+	// Extract request type, provider, and model
+	requestType, provider, model := bifrost.GetRequestFields(result, err)
 
 	// Extract cache and batch flags from context
 	isCacheRead := false
@@ -295,8 +267,8 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 
 	cost := 0.0
 	if !isStreaming || (isStreaming && isFinalChunk) {
-		if p.pricingManager != nil {
-			cost = p.pricingManager.CalculateCost(result, provider, model, requestType)
+		if p.pricingManager != nil && result != nil {
+			cost = p.pricingManager.CalculateCost(result)
 		}
 	}
 

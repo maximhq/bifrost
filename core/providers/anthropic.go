@@ -33,7 +33,7 @@ type AnthropicProvider struct {
 // anthropicChatResponsePool provides a pool for Anthropic chat response objects.
 var anthropicChatResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &anthropic.AnthropicChatResponse{}
+		return &anthropic.AnthropicMessageResponse{}
 	},
 }
 
@@ -175,14 +175,14 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 // TextCompletion performs a text completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationTextCompletion); err != nil {
+func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
 
 	// Convert to Anthropic format using the centralized converter
-	anthropicReq := anthropic.ToAnthropicTextCompletionRequest(input)
-	if anthropicReq == nil {
+	reqBody := anthropic.ToAnthropicTextCompletionRequest(request)
+	if reqBody == nil {
 		return nil, newBifrostOperationError("text completion input is not provided", nil, provider.GetProviderKey())
 	}
 
@@ -203,13 +203,14 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 
 	bifrostResponse := response.ToBifrostResponse()
 
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
+
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
@@ -218,15 +219,15 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 // ChatCompletion performs a chat completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
 	// Convert to Anthropic format using the centralized converter
-	anthropicReq := anthropic.ToAnthropicChatCompletionRequest(input)
-	if anthropicReq == nil {
-		return nil, newBifrostOperationError("failed to convert request", fmt.Errorf("conversion returned nil"), provider.GetProviderKey())
+	reqBody := anthropic.ToAnthropicChatCompletionRequest(request)
+	if reqBody == nil {
+		return nil, newBifrostOperationError("chat completion input is not provided", nil, provider.GetProviderKey())
 	}
 
 	// Use struct directly for JSON marshaling
@@ -247,34 +248,80 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 	// Create final response
 	bifrostResponse := response.ToBifrostResponse()
 
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
+
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
+	return bifrostResponse, nil
+}
+
+// Responses performs a chat completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
+
+	// Convert to Anthropic format using the centralized converter
+	reqBody := anthropic.ToAnthropicResponsesRequest(request)
+	if reqBody == nil {
+		return nil, newBifrostOperationError("responses input is not provided", nil, provider.GetProviderKey())
+	}
+
+	// Use struct directly for JSON marshaling
+	responseBody, err := provider.completeRequest(ctx, reqBody, provider.networkConfig.BaseURL+"/v1/messages", key.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create response object from pool
+	response := acquireAnthropicChatResponse()
+	defer releaseAnthropicChatResponse(response)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create final response
+	bifrostResponse := response.ToResponsesBifrostResponse()
+
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	return bifrostResponse, nil
 }
 
 // Embedding is not supported by the Anthropic provider.
-func (provider *AnthropicProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "anthropic")
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Anthropic API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
 	// Convert to Anthropic format using the centralized converter
-	anthropicReq := anthropic.ToAnthropicChatCompletionRequest(input)
-	if anthropicReq == nil {
+	reqBody := anthropic.ToAnthropicChatCompletionRequest(request)
+	if reqBody == nil {
 		return nil, newBifrostOperationError("failed to convert request", fmt.Errorf("conversion returned nil"), provider.GetProviderKey())
 	}
 	reqBody.Stream = schemas.Ptr(true)
@@ -297,7 +344,6 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
-		input.Params,
 		postHookRunner,
 		provider.logger,
 	)
@@ -313,7 +359,6 @@ func handleAnthropicStreaming(
 	headers map[string]string,
 	extraHeaders map[string]string,
 	providerType schemas.ModelProvider,
-	params *schemas.ModelParameters,
 	postHookRunner schemas.PostHookRunner,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
@@ -408,7 +453,7 @@ func handleAnthropicStreaming(
 				}
 			}
 			if event.Delta != nil && event.Delta.StopReason != nil {
-				mappedReason := anthropic.MapAnthropicFinishReason(*event.Delta.StopReason)
+				mappedReason := anthropic.MapAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 				finishReason = &mappedReason
 			}
 
@@ -429,7 +474,7 @@ func handleAnthropicStreaming(
 							ID:     messageID,
 							Object: "chat.completion.chunk",
 							Model:  modelName,
-							Choices: []schemas.BifrostResponseChoice{
+							Choices: []schemas.BifrostChatResponseChoice{
 								{
 									Index: 0,
 									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
@@ -440,8 +485,10 @@ func handleAnthropicStreaming(
 								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
-								Provider:   providerType,
-								ChunkIndex: chunkIndex,
+								RequestType:    schemas.ChatCompletionStreamRequest,
+								Provider:       providerType,
+								ModelRequested: modelName,
+								ChunkIndex:     chunkIndex,
 							},
 						}
 
@@ -465,16 +512,16 @@ func handleAnthropicStreaming(
 								ID:     messageID,
 								Object: "chat.completion.chunk",
 								Model:  modelName,
-								Choices: []schemas.BifrostResponseChoice{
+								Choices: []schemas.BifrostChatResponseChoice{
 									{
 										Index: *event.Index,
 										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
 											Delta: schemas.BifrostStreamDelta{
-												ToolCalls: []schemas.ToolCall{
+												ToolCalls: []schemas.ChatAssistantMessageToolCall{
 													{
 														Type: func() *string { s := "function"; return &s }(),
 														ID:   event.ContentBlock.ID,
-														Function: schemas.FunctionCall{
+														Function: schemas.ChatAssistantMessageToolCallFunction{
 															Name: event.ContentBlock.Name,
 														},
 													},
@@ -484,8 +531,10 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider:   providerType,
-									ChunkIndex: chunkIndex,
+									RequestType:    schemas.ChatCompletionStreamRequest,
+									Provider:       providerType,
+									ModelRequested: modelName,
+									ChunkIndex:     chunkIndex,
 								},
 							}
 
@@ -507,7 +556,7 @@ func handleAnthropicStreaming(
 							ID:     messageID,
 							Object: "chat.completion.chunk",
 							Model:  modelName,
-							Choices: []schemas.BifrostResponseChoice{
+							Choices: []schemas.BifrostChatResponseChoice{
 								{
 									Index: *event.Index,
 									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
@@ -519,8 +568,10 @@ func handleAnthropicStreaming(
 								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
-								Provider:   providerType,
-								ChunkIndex: chunkIndex,
+								RequestType:    schemas.ChatCompletionStreamRequest,
+								Provider:       providerType,
+								ModelRequested: modelName,
+								ChunkIndex:     chunkIndex,
 							},
 						}
 
@@ -542,7 +593,7 @@ func handleAnthropicStreaming(
 								ID:     messageID,
 								Object: "chat.completion.chunk",
 								Model:  modelName,
-								Choices: []schemas.BifrostResponseChoice{
+								Choices: []schemas.BifrostChatResponseChoice{
 									{
 										Index: *event.Index,
 										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
@@ -553,8 +604,10 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider:   providerType,
-									ChunkIndex: chunkIndex,
+									RequestType:    schemas.ChatCompletionStreamRequest,
+									Provider:       providerType,
+									ModelRequested: modelName,
+									ChunkIndex:     chunkIndex,
 								},
 							}
 
@@ -570,15 +623,15 @@ func handleAnthropicStreaming(
 								ID:     messageID,
 								Object: "chat.completion.chunk",
 								Model:  modelName,
-								Choices: []schemas.BifrostResponseChoice{
+								Choices: []schemas.BifrostChatResponseChoice{
 									{
 										Index: *event.Index,
 										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
 											Delta: schemas.BifrostStreamDelta{
-												ToolCalls: []schemas.ToolCall{
+												ToolCalls: []schemas.ChatAssistantMessageToolCall{
 													{
 														Type: func() *string { s := "function"; return &s }(),
-														Function: schemas.FunctionCall{
+														Function: schemas.ChatAssistantMessageToolCallFunction{
 															Arguments: event.Delta.PartialJSON,
 														},
 													},
@@ -588,8 +641,10 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider:   providerType,
-									ChunkIndex: chunkIndex,
+									RequestType:    schemas.ChatCompletionStreamRequest,
+									Provider:       providerType,
+									ModelRequested: modelName,
+									ChunkIndex:     chunkIndex,
 								},
 							}
 
@@ -605,7 +660,7 @@ func handleAnthropicStreaming(
 								ID:     messageID,
 								Object: "chat.completion.chunk",
 								Model:  modelName,
-								Choices: []schemas.BifrostResponseChoice{
+								Choices: []schemas.BifrostChatResponseChoice{
 									{
 										Index: *event.Index,
 										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
@@ -616,8 +671,10 @@ func handleAnthropicStreaming(
 									},
 								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
-									Provider:   providerType,
-									ChunkIndex: chunkIndex,
+									RequestType:    schemas.ChatCompletionStreamRequest,
+									Provider:       providerType,
+									ModelRequested: modelName,
+									ChunkIndex:     chunkIndex,
 								},
 							}
 
@@ -676,9 +733,9 @@ func handleAnthropicStreaming(
 
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerType, err))
-			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
+			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerType, modelName, logger)
 		} else {
-			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerType)
+			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerType, modelName)
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()
@@ -686,18 +743,22 @@ func handleAnthropicStreaming(
 	return responseChan, nil
 }
 
-func (provider *AnthropicProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "anthropic")
 }
 
-func (provider *AnthropicProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "anthropic")
 }
 
-func (provider *AnthropicProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "anthropic")
 }
 
-func (provider *AnthropicProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "anthropic")
+}
+
+func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "anthropic")
 }

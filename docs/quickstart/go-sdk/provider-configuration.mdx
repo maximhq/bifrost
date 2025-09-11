@@ -254,8 +254,14 @@ type BifrostResponse struct {
 }
 
 type BifrostResponseExtraFields struct {
-    Provider    ModelProvider `json:"provider"`
-    RawResponse interface{}   `json:"raw_response,omitempty"` // Original provider response
+	RequestType    RequestType        `json:"request_type"`
+	Provider       ModelProvider      `json:"provider"`
+	ModelRequested string             `json:"model_requested"`
+	Latency        *float64           `json:"latency,omitempty"`
+	BilledUsage    *BilledLLMUsage    `json:"billed_usage,omitempty"`
+	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawResponse    interface{}        `json:"raw_response,omitempty"`
+	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`
 }
 ```
 

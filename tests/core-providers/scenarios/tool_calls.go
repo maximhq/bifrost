@@ -20,7 +20,7 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 	}
 
 	t.Run("ToolCalls", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateBasicChatMessage("What's the weather like in New York? answer in celsius"),
 		}
 

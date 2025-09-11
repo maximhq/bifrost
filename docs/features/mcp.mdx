@@ -298,9 +298,9 @@ func main() {
         },
     })
 
-    firstMessage := schemas.BifrostMessage{
-        Role: schemas.ModelChatMessageRoleUser,
-        Content: schemas.MessageContent{
+    firstMessage := schemas.ChatMessage{
+        Role: schemas.ChatMessageRoleUser,
+        Content: schemas.ChatMessageContent{
             ContentStr: bifrost.Ptr("Read the contents of config.json file"),
         },
     }
@@ -310,7 +310,7 @@ func main() {
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
         Input: schemas.RequestInput{
-            ChatCompletionInput: &[]schemas.BifrostMessage{
+            ChatCompletionInput: &[]schemas.ChatMessage{
                 firstMessage,
             },
         },
@@ -326,7 +326,7 @@ func main() {
     }
 
     // Build conversation history for final response
-    conversationHistory := []schemas.BifrostMessage{
+    conversationHistory := []schemas.ChatMessage{
         firstMessage,
     }
 
@@ -592,10 +592,10 @@ func main() {
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
         Input: schemas.RequestInput{
-            ChatCompletionInput: &[]schemas.BifrostMessage{
+            ChatCompletionInput: &[]schemas.ChatMessage{
                 {
-                    Role: schemas.ModelChatMessageRoleUser,
-                    Content: schemas.MessageContent{
+                    Role: schemas.ChatMessageRoleUser,
+                    Content: schemas.ChatMessageContent{
                         ContentStr: bifrost.Ptr("Calculate 15.5 + 24.3"),
                     },
                 },

@@ -96,10 +96,10 @@ func chatWithFallbacks(client *bifrost.Bifrost) {
     response, err := client.ChatCompletion(ctx, &schemas.BifrostRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
-        Messages: []schemas.BifrostMessage{
+        Messages: []schemas.ChatMessage{
             {
-                Role: schemas.ModelChatMessageRoleUser,
-                Content: schemas.MessageContent{
+                Role: schemas.ChatMessageRoleUser,
+                Content: schemas.ChatMessageContent{
                     ContentStr: bifrost.Ptr("Explain quantum computing in simple terms"),
                 },
             },
