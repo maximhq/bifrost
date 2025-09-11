@@ -103,16 +103,14 @@ func TestMaximLoggerPlugin(t *testing.T) {
 	}
 
 	// Make a test chat completion request
-	_, bifrostErr := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
+	_, bifrostErr := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: "user",
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, how are you?"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: "user",
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, how are you?"),
 				},
 			},
 		},

@@ -52,7 +52,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -271,8 +271,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Invalid request"))
 			return
 		}
-		if bifrostReq.Model == "" {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Model parameter is required"))
+
+		// Extract and parse fallbacks from the request if present
+		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
 
@@ -306,16 +308,16 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
-	if bifrostReq.Input.TextCompletionInput != nil {
-		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.ChatCompletionInput != nil {
-		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.EmbeddingInput != nil {
-		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.SpeechInput != nil {
-		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.TranscriptionInput != nil {
-		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq)
+	if bifrostReq.TextCompletionRequest != nil {
+		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq.TextCompletionRequest)
+	} else if bifrostReq.ChatRequest != nil {
+		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq.ChatRequest)
+	} else if bifrostReq.EmbeddingRequest != nil {
+		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq.EmbeddingRequest)
+	} else if bifrostReq.SpeechRequest != nil {
+		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq.SpeechRequest)
+	} else if bifrostReq.TranscriptionRequest != nil {
+		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
 	}
 
 	// Handle errors
@@ -360,7 +362,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
-func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig,  bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
+func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
 	// Set common SSE headers
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
@@ -371,12 +373,12 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
-	if bifrostReq.Input.ChatCompletionInput != nil {
-		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.SpeechInput != nil {
-		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.TranscriptionInput != nil {
-		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq)
+	if bifrostReq.ChatRequest != nil {
+		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq.ChatRequest)
+	} else if bifrostReq.SpeechRequest != nil {
+		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq.SpeechRequest)
+	} else if bifrostReq.TranscriptionRequest != nil {
+		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -630,191 +632,6 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter Err
 	ctx.SetBody(responseBody)
 }
 
-// ValidProviders is a pre-computed map for efficient O(1) provider validation.
-var ValidProviders = map[schemas.ModelProvider]bool{
-	schemas.OpenAI:     true,
-	schemas.Azure:      true,
-	schemas.Anthropic:  true,
-	schemas.Bedrock:    true,
-	schemas.Cohere:     true,
-	schemas.Vertex:     true,
-	schemas.Mistral:    true,
-	schemas.Ollama:     true,
-	schemas.Groq:       true,
-	schemas.SGL:        true,
-	schemas.Parasail:   true,
-	schemas.Cerebras:   true,
-	schemas.Gemini:     true,
-	schemas.OpenRouter: true,
-}
-
-// ParseModelString extracts provider and model from a model string.
-// For model strings like "anthropic/claude", it returns ("anthropic", "claude").
-// For model strings like "claude", it returns ("", "claude").
-func ParseModelString(model string, defaultProvider schemas.ModelProvider, checkProviderFromModel bool) (schemas.ModelProvider, string) {
-	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
-	if strings.Contains(model, "/") {
-		parts := strings.SplitN(model, "/", 2)
-		if len(parts) == 2 {
-			extractedProvider := parts[0]
-			extractedModel := parts[1]
-
-			return schemas.ModelProvider(extractedProvider), extractedModel
-		}
-	}
-
-	//TODO add model wise check for provider
-
-	// No provider prefix found, return empty provider and the original model
-	return defaultProvider, model
-}
-
-// GetProviderFromModel determines the appropriate provider based on model name patterns
-// This function uses comprehensive pattern matching to identify the correct provider
-// for various model naming conventions used across different AI providers.
-func GetProviderFromModel(model string) schemas.ModelProvider {
-	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
-	if strings.Contains(model, "/") {
-		parts := strings.SplitN(model, "/", 2)
-		if len(parts) > 1 {
-			extractedProvider := parts[0]
-
-			if ValidProviders[schemas.ModelProvider(extractedProvider)] {
-				return schemas.ModelProvider(extractedProvider)
-			}
-		}
-	}
-
-	// Normalize model name for case-insensitive matching
-	modelLower := strings.ToLower(strings.TrimSpace(model))
-
-	// Azure OpenAI Models - check first to prevent false positives from OpenAI "gpt" patterns
-	if isAzureModel(modelLower) {
-		return schemas.Azure
-	}
-
-	// OpenAI Models - comprehensive pattern matching
-	if isOpenAIModel(modelLower) {
-		return schemas.OpenAI
-	}
-
-	// Anthropic Models - Claude family
-	if isAnthropicModel(modelLower) {
-		return schemas.Anthropic
-	}
-
-	// Google Vertex AI Models - Gemini and Palm family
-	if isVertexModel(modelLower) {
-		return schemas.Vertex
-	}
-
-	// AWS Bedrock Models - various model providers through Bedrock
-	if isBedrockModel(modelLower) {
-		return schemas.Bedrock
-	}
-
-	// Cohere Models - Command and Embed family
-	if isCohereModel(modelLower) {
-		return schemas.Cohere
-	}
-
-	// Google GenAI Models - Gemini and Palm family
-	if isGeminiModel(modelLower) {
-		return schemas.Gemini
-	}
-
-	// Default to OpenAI for unknown models (most LiteLLM compatible)
-	return schemas.OpenAI
-}
-
-// isOpenAIModel checks for OpenAI model patterns
-func isOpenAIModel(model string) bool {
-	// Exclude Azure models to prevent overlap
-	if strings.Contains(model, "azure/") {
-		return false
-	}
-
-	openaiPatterns := []string{
-		"gpt", "davinci", "curie", "babbage", "ada", "o1", "o3", "o4",
-		"text-embedding", "dall-e", "whisper", "tts", "chatgpt",
-	}
-
-	return matchesAnyPattern(model, openaiPatterns)
-}
-
-// isAzureModel checks for Azure OpenAI specific patterns
-func isAzureModel(model string) bool {
-	azurePatterns := []string{
-		"azure", "model-router", "computer-use-preview",
-	}
-
-	return matchesAnyPattern(model, azurePatterns)
-}
-
-// isAnthropicModel checks for Anthropic Claude model patterns
-func isAnthropicModel(model string) bool {
-	anthropicPatterns := []string{
-		"claude", "anthropic/",
-	}
-
-	return matchesAnyPattern(model, anthropicPatterns)
-}
-
-var geminiRegexp = regexp.MustCompile(`\b(gemini|gemini-embedding|palm|bison|gecko)\b`)
-
-// isGeminiModel checks for Google Gemini model patterns using strict regex matching
-func isGeminiModel(model string) bool {
-	return geminiRegexp.MatchString(model)
-}
-
-// isVertexModel checks for Google Vertex AI model patterns
-func isVertexModel(model string) bool {
-	vertexPatterns := []string{
-		"gemini", "palm", "bison", "gecko", "vertex/", "google/",
-	}
-
-	return matchesAnyPattern(model, vertexPatterns)
-}
-
-// isBedrockModel checks for AWS Bedrock model patterns
-func isBedrockModel(model string) bool {
-	bedrockPatterns := []string{
-		"bedrock", "bedrock.amazonaws.com/", "bedrock/",
-		"amazon.titan", "amazon.nova", "aws/amazon.",
-		"ai21.jamba", "ai21.j2", "aws/ai21.",
-		"meta.llama", "aws/meta.",
-		"stability.stable-diffusion", "stability.sd3", "aws/stability.",
-		"anthropic.claude", "aws/anthropic.",
-		"cohere.command", "cohere.embed", "aws/cohere.",
-		"mistral.mistral", "mistral.mixtral", "aws/mistral.",
-		"titan-text", "titan-embed", "nova-micro", "nova-lite", "nova-pro",
-		"jamba-instruct", "j2-ultra", "j2-mid",
-		"llama-2", "llama-3", "llama-3.1", "llama-3.2",
-		"stable-diffusion-xl", "sd3-large",
-	}
-
-	return matchesAnyPattern(model, bedrockPatterns)
-}
-
-// isCohereModel checks for Cohere model patterns
-func isCohereModel(model string) bool {
-	coherePatterns := []string{
-		"command-", "embed-", "cohere",
-	}
-
-	return matchesAnyPattern(model, coherePatterns)
-}
-
-// matchesAnyPattern checks if the model matches any of the given patterns
-func matchesAnyPattern(model string, patterns []string) bool {
-	for _, pattern := range patterns {
-		if strings.Contains(model, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error, message string) *schemas.BifrostError {
@@ -836,28 +653,110 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 	}
 }
 
-// MapFinishReasonToProvider maps OpenAI-compatible finish reasons to provider-specific format
-func MapFinishReasonToProvider(finishReason string, targetProvider schemas.ModelProvider) string {
-	switch targetProvider {
-	case schemas.Anthropic:
-		return mapFinishReasonToAnthropic(finishReason)
-	default:
-		// For OpenAI, Azure, and other providers, pass through as-is
-		return finishReason
+// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
+func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
+	// Check if the request has a fallbacks field ([]string)
+	fallbacks, err := g.extractFallbacksFromRequest(req)
+	if err != nil {
+		return fmt.Errorf("failed to extract fallbacks: %w", err)
 	}
+
+	if len(fallbacks) == 0 {
+		return nil // No fallbacks to process
+	}
+
+	// Parse fallbacks from strings to Fallback structs
+	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
+	for _, fallbackStr := range fallbacks {
+		if fallbackStr == "" {
+			continue // Skip empty strings
+		}
+
+		// Use ParseModelString to extract provider and model
+		provider, model := schemas.ParseModelString(fallbackStr, bifrostReq.Provider)
+
+		parsedFallback := schemas.Fallback{
+			Provider: provider,
+			Model:    model,
+		}
+		parsedFallbacks = append(parsedFallbacks, parsedFallback)
+	}
+
+	if len(parsedFallbacks) == 0 {
+		return nil // No valid fallbacks found
+	}
+
+	// Add fallbacks to the main BifrostRequest
+	bifrostReq.Fallbacks = parsedFallbacks
+
+	// Also add fallbacks to the specific request type if it exists
+	switch bifrostReq.RequestType {
+	case schemas.TextCompletionRequest:
+		if bifrostReq.TextCompletionRequest != nil {
+			bifrostReq.TextCompletionRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		if bifrostReq.ChatRequest != nil {
+			bifrostReq.ChatRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		if bifrostReq.ResponsesRequest != nil {
+			bifrostReq.ResponsesRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.EmbeddingRequest:
+		if bifrostReq.EmbeddingRequest != nil {
+			bifrostReq.EmbeddingRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		if bifrostReq.SpeechRequest != nil {
+			bifrostReq.SpeechRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		if bifrostReq.TranscriptionRequest != nil {
+			bifrostReq.TranscriptionRequest.Fallbacks = parsedFallbacks
+		}
+	}
+
+	return nil
 }
 
-// mapFinishReasonToAnthropic maps OpenAI finish reasons to Anthropic format
-func mapFinishReasonToAnthropic(finishReason string) string {
-	switch finishReason {
-	case "stop":
-		return "end_turn"
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	default:
-		// Pass through other reasons like "pause_turn", "refusal", "stop_sequence", etc.
-		return finishReason
+// extractFallbacksFromRequest uses reflection to extract fallbacks field from any request type
+func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, error) {
+	if req == nil {
+		return nil, nil
 	}
+
+	// Try to use reflection to find a "fallbacks" field
+	reqValue := reflect.ValueOf(req)
+	if reqValue.Kind() == reflect.Ptr {
+		reqValue = reqValue.Elem()
+	}
+
+	if reqValue.Kind() != reflect.Struct {
+		return nil, nil // Not a struct, no fallbacks
+	}
+
+	// Look for the "fallbacks" field
+	fallbacksField := reqValue.FieldByName("fallbacks")
+	if !fallbacksField.IsValid() {
+		return nil, nil // No fallbacks field found
+	}
+
+	// Handle different types of fallbacks field
+	switch fallbacksField.Kind() {
+	case reflect.Slice:
+		if fallbacksField.Type().Elem().Kind() == reflect.String {
+			// []string case
+			fallbacks := make([]string, fallbacksField.Len())
+			for i := 0; i < fallbacksField.Len(); i++ {
+				fallbacks[i] = fallbacksField.Index(i).String()
+			}
+			return fallbacks, nil
+		}
+	case reflect.String:
+		// Single string case - treat as one fallback
+		return []string{fallbacksField.String()}, nil
+	}
+
+	return nil, nil
 }

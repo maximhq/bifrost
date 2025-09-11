@@ -21,9 +21,9 @@ func TestCustomProvider(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  config.ProviderOpenAICustom,
-		ChatModel: "llama-3.3-70b-versatile",
-		TextModel: "", // OpenAI doesn't support text completion in newer models
+		Provider:       config.ProviderOpenAICustom,
+		ChatModel:      "llama-3.3-70b-versatile",
+		TextModel:      "", // OpenAI doesn't support text completion in newer models
 		EmbeddingModel: "", // groq custom base: embeddings not supported
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
@@ -62,12 +62,11 @@ func TestCustomProvider_DisallowedOperation(t *testing.T) {
 	defer cancel()
 	defer client.Shutdown()
 
-
 	// Create a speech request to the custom provider
 	prompt := "The future of artificial intelligence is"
 	request := &schemas.BifrostRequest{
 		Provider: config.ProviderOpenAICustom, // Use the custom provider
-		Model:    "llama-3.3-70b-versatile", // Use a model that exists for this provider
+		Model:    "llama-3.3-70b-versatile",   // Use a model that exists for this provider
 		Input: schemas.RequestInput{
 			SpeechInput: &schemas.SpeechInput{
 				Input: prompt,
@@ -107,10 +106,10 @@ func TestCustomProvider_MismatchedIdentity(t *testing.T) {
 		Provider: wrongProvider,
 		Model:    "llama-3.3-70b-versatile",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello! What's the capital of France?"),
 					},
 				},

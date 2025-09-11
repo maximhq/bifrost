@@ -20,25 +20,25 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 
 	// Add cache key to context
 	ctx = context.WithValue(ctx, CacheKey, "test-cache-enabled")
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	// Test request
 	request := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, world!"),
 					},
 				},
 			},
-		},
-		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.7),
-			MaxTokens:   bifrost.Ptr(100),
+			Params: &schemas.ChatParameters{
+				Temperature:         bifrost.Ptr(0.7),
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
 		},
 	}
 
@@ -63,12 +63,12 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	// Simulate a response
 	response := &schemas.BifrostResponse{
 		ID: uuid.New().String(),
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("Hello! How can I help you today?"),
 						},
 					},
@@ -76,7 +76,9 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.OpenAI,
+			Provider:       schemas.OpenAI,
+			ModelRequested: "gpt-4o-mini",
+			RequestType:    schemas.ChatCompletionRequest,
 		},
 	}
 
@@ -107,7 +109,6 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	// Reset context for second request
 	ctx2 := context.Background()
 	ctx2 = context.WithValue(ctx2, CacheKey, "test-cache-enabled")
-	ctx2 = context.WithValue(ctx2, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	modifiedReq2, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request)
 	if err != nil {
@@ -162,25 +163,25 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, CacheKey, "test-cache-enabled")
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	// Base request
 	baseRequest := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("What is the weather like?"),
 					},
 				},
 			},
-		},
-		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.7),
-			MaxTokens:   bifrost.Ptr(100),
+			Params: &schemas.ChatParameters{
+				Temperature:         bifrost.Ptr(0.7),
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
 		},
 	}
 
@@ -199,12 +200,12 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 	// Cache a response
 	response := &schemas.BifrostResponse{
 		ID: uuid.New().String(),
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("It's sunny today!"),
 						},
 					},
@@ -212,7 +213,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.OpenAI,
+			Provider:       schemas.OpenAI,
+			ModelRequested: "gpt-4o-mini",
+			RequestType:    schemas.ChatCompletionRequest,
 		},
 	}
 
@@ -229,15 +232,28 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 
 	ctx2 := context.Background()
 	ctx2 = context.WithValue(ctx2, CacheKey, "test-cache-enabled")
-	ctx2 = context.WithValue(ctx2, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
-	modifiedRequest := *baseRequest
-	modifiedRequest.Params = &schemas.ModelParameters{
-		Temperature: bifrost.Ptr(0.5), // Different temperature
-		MaxTokens:   bifrost.Ptr(100),
+	modifiedRequest := &schemas.BifrostRequest{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
+						ContentStr: bifrost.Ptr("What is the weather like?"),
+					},
+				},
+			},
+			Params: &schemas.ChatParameters{
+				Temperature:         bifrost.Ptr(0.5), // Different temperature
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
+		},
 	}
 
-	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, &modifiedRequest)
+	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, modifiedRequest)
 	if err != nil {
 		t.Fatalf("Second PreHook failed: %v", err)
 	}
@@ -253,12 +269,28 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 
 	ctx3 := context.Background()
 	ctx3 = context.WithValue(ctx3, CacheKey, "test-cache-enabled")
-	ctx3 = context.WithValue(ctx3, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
-	modifiedRequest2 := *baseRequest
-	modifiedRequest2.Model = "gpt-3.5-turbo" // Different model
+	modifiedRequest2 := &schemas.BifrostRequest{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-3.5-turbo", // Different model
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
+						ContentStr: bifrost.Ptr("What is the weather like?"),
+					},
+				},
+			},
+			Params: &schemas.ChatParameters{
+				Temperature:         bifrost.Ptr(0.7),
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
+		},
+	}
 
-	_, shortCircuit3, err := setup.Plugin.PreHook(&ctx3, &modifiedRequest2)
+	_, shortCircuit3, err := setup.Plugin.PreHook(&ctx3, modifiedRequest2)
 	if err != nil {
 		t.Fatalf("Third PreHook failed: %v", err)
 	}
@@ -278,23 +310,23 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, CacheKey, "test-cache-enabled")
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionStreamRequest)
 
 	request := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Tell me a short story"),
 					},
 				},
 			},
-		},
-		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.8),
+			Params: &schemas.ChatParameters{
+				Temperature: bifrost.Ptr(0.8),
+			},
 		},
 	}
 
@@ -329,7 +361,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 
 		chunkResponse := &schemas.BifrostResponse{
 			ID: uuid.New().String(),
-			Choices: []schemas.BifrostResponseChoice{
+			Choices: []schemas.BifrostChatResponseChoice{
 				{
 					Index:        i,
 					FinishReason: finishReason,
@@ -341,8 +373,10 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:   schemas.OpenAI,
-				ChunkIndex: i,
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-4o-mini",
+				RequestType:    schemas.ChatCompletionStreamRequest,
+				ChunkIndex:     i,
 			},
 		}
 
@@ -360,7 +394,6 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 
 	ctx2 := context.Background()
 	ctx2 = context.WithValue(ctx2, CacheKey, "test-cache-enabled")
-	ctx2 = context.WithValue(ctx2, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionStreamRequest)
 
 	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request)
 	if err != nil {
@@ -405,16 +438,16 @@ func TestSemanticCache_NoCacheWhenKeyMissing(t *testing.T) {
 
 	ctx := context.Background()
 	// Don't set the cache key - cache should be disabled
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	request := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Test message"),
 					},
 				},
@@ -444,16 +477,16 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, CacheKey, "test-cache-enabled")
 	ctx = context.WithValue(ctx, CacheTTLKey, 1*time.Minute) // Custom TTL
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	request := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("TTL test message"),
 					},
 				},
@@ -474,12 +507,12 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 	// Simulate response and cache it
 	response := &schemas.BifrostResponse{
 		ID: "ttl-test-response",
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("TTL test response"),
 						},
 					},
@@ -487,7 +520,9 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.OpenAI,
+			Provider:       schemas.OpenAI,
+			ModelRequested: "gpt-4o-mini",
+			RequestType:    schemas.ChatCompletionRequest,
 		},
 	}
 
@@ -510,16 +545,16 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, CacheKey, "test-cache-enabled")
 	ctx = context.WithValue(ctx, CacheThresholdKey, 0.95) // Very high threshold
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	request := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Threshold test message"),
 					},
 				},
@@ -551,16 +586,16 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, CacheKey, "test-cache-enabled")
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	request1 := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Provider model flags test"),
 					},
 				},
@@ -581,12 +616,12 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 	// Cache the response
 	response := &schemas.BifrostResponse{
 		ID: "provider-model-test",
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("Provider model test response"),
 						},
 					},
@@ -594,7 +629,9 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.OpenAI,
+			Provider:       schemas.OpenAI,
+			ModelRequested: "gpt-4o-mini",
+			RequestType:    schemas.ChatCompletionRequest,
 		},
 	}
 
@@ -607,13 +644,14 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 
 	// Second request with different provider - should potentially hit cache since provider is not considered
 	request2 := &schemas.BifrostRequest{
-		Provider: schemas.Anthropic, // Different provider
-		Model:    "claude-3-haiku",  // Different model
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.Anthropic, // Different provider
+		Model:       "claude-3-haiku",  // Different model
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Provider model flags test"), // Same content
 					},
 				},
@@ -623,7 +661,6 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 
 	ctx2 := context.Background()
 	ctx2 = context.WithValue(ctx2, CacheKey, "test-cache-enabled")
-	ctx2 = context.WithValue(ctx2, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request2)
 	if err != nil {
@@ -646,16 +683,16 @@ func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, CacheKey, "test-cache-enabled")
 	ctx = context.WithValue(ctx, CacheTTLKey, "not-a-duration") // Invalid TTL type
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	request := &schemas.BifrostRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
 				{
-					Role: "user",
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Edge case test"),
 					},
 				},
@@ -677,7 +714,6 @@ func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
 	ctx2 := context.Background()
 	ctx2 = context.WithValue(ctx2, CacheKey, "test-cache-enabled")
 	ctx2 = context.WithValue(ctx2, CacheThresholdKey, "not-a-float") // Invalid threshold type
-	ctx2 = context.WithValue(ctx2, schemas.BifrostContextKeyRequestType, schemas.ChatCompletionRequest)
 
 	// Should handle invalid threshold gracefully
 	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, request)

@@ -73,16 +73,14 @@ func TestMockerPlugin_Disabled(t *testing.T) {
 	defer client.Shutdown()
 
 	// This should pass through to the real provider (but will fail due to dummy key)
-	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, test message"),
 				},
 			},
 		},
@@ -117,16 +115,14 @@ func TestMockerPlugin_DefaultMockRule(t *testing.T) {
 	}
 	defer client.Shutdown()
 
-	response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+	response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, test message"),
 				},
 			},
 		},
@@ -141,11 +137,11 @@ func TestMockerPlugin_DefaultMockRule(t *testing.T) {
 	if len(response.Choices) == 0 {
 		t.Fatal("Expected at least one choice")
 	}
-	if response.Choices[0].Message.Content.ContentStr == nil {
+	if response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr == nil {
 		t.Fatal("Expected content string")
 	}
-	if *response.Choices[0].Message.Content.ContentStr != "This is a mock response from the Mocker plugin" {
-		t.Errorf("Expected default mock message, got: %s", *response.Choices[0].Message.Content.ContentStr)
+	if *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr != "This is a mock response from the Mocker plugin" {
+		t.Errorf("Expected default mock message, got: %s", *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr)
 	}
 }
 
@@ -195,16 +191,14 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 	}
 	defer client.Shutdown()
 
-	response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+	response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, test message"),
 				},
 			},
 		},
@@ -219,11 +213,11 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 	if len(response.Choices) == 0 {
 		t.Fatal("Expected at least one choice")
 	}
-	if response.Choices[0].Message.Content.ContentStr == nil {
+	if response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr == nil {
 		t.Fatal("Expected content string")
 	}
-	if *response.Choices[0].Message.Content.ContentStr != "Custom OpenAI mock response" {
-		t.Errorf("Expected custom message, got: %s", *response.Choices[0].Message.Content.ContentStr)
+	if *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr != "Custom OpenAI mock response" {
+		t.Errorf("Expected custom message, got: %s", *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr)
 	}
 	if response.Usage.TotalTokens != 40 {
 		t.Errorf("Expected 40 total tokens, got %d", response.Usage.TotalTokens)
@@ -276,16 +270,14 @@ func TestMockerPlugin_ErrorResponse(t *testing.T) {
 	}
 	defer client.Shutdown()
 
-	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, test message"),
 				},
 			},
 		},
@@ -341,16 +333,14 @@ func TestMockerPlugin_MessageTemplate(t *testing.T) {
 	}
 	defer client.Shutdown()
 
-	response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+	response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
 		Model:    "claude-3",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello, test message"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello, test message"),
 				},
 			},
 		},
@@ -365,12 +355,12 @@ func TestMockerPlugin_MessageTemplate(t *testing.T) {
 	if len(response.Choices) == 0 {
 		t.Fatal("Expected at least one choice")
 	}
-	if response.Choices[0].Message.Content.ContentStr == nil {
+	if response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr == nil {
 		t.Fatal("Expected content string")
 	}
 	expectedMessage := "Hello from anthropic using model claude-3"
-	if *response.Choices[0].Message.Content.ContentStr != expectedMessage {
-		t.Errorf("Expected '%s', got: %s", expectedMessage, *response.Choices[0].Message.Content.ContentStr)
+	if *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr != expectedMessage {
+		t.Errorf("Expected '%s', got: %s", expectedMessage, *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr)
 	}
 }
 
@@ -415,16 +405,14 @@ func TestMockerPlugin_Statistics(t *testing.T) {
 
 	// Make multiple requests
 	for i := 0; i < 3; i++ {
-		_, _ = client.ChatCompletionRequest(ctx, &schemas.BifrostRequest{
+		_, _ = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4",
-			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
-					{
-						Role: schemas.ModelChatMessageRoleUser,
-						Content: schemas.MessageContent{
-							ContentStr: bifrost.Ptr("Hello, test message"),
-						},
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
+						ContentStr: bifrost.Ptr("Hello, test message"),
 					},
 				},
 			},

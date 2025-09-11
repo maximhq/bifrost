@@ -2,15 +2,27 @@ package anthropic
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ToAnthropicTextCompletionRequest converts a Bifrost text completion request to Anthropic format
-func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostRequest) *AnthropicTextRequest {
+func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequest) *AnthropicTextRequest {
+	if bifrostReq == nil {
+		return nil
+	}
+
+	prompt := ""
+	if bifrostReq.Input.PromptStr != nil {
+		prompt = *bifrostReq.Input.PromptStr
+	} else if len(bifrostReq.Input.PromptArray) > 0 {
+		prompt = strings.Join(bifrostReq.Input.PromptArray, "\n\n")
+	}
+
 	anthropicReq := &AnthropicTextRequest{
 		Model:             bifrostReq.Model,
-		Prompt:            fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", *bifrostReq.Input.TextCompletionInput),
+		Prompt:            fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", prompt),
 		MaxTokensToSample: AnthropicDefaultMaxTokens, // Default value
 	}
 
@@ -21,8 +33,13 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostRequest) *Anthr
 		}
 		anthropicReq.Temperature = bifrostReq.Params.Temperature
 		anthropicReq.TopP = bifrostReq.Params.TopP
-		anthropicReq.TopK = bifrostReq.Params.TopK
-		anthropicReq.StopSequences = bifrostReq.Params.StopSequences
+		anthropicReq.StopSequences = bifrostReq.Params.Stop
+
+		if bifrostReq.Params.ExtraParams != nil {
+			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
+				anthropicReq.TopK = topK
+			}
+		}
 	}
 
 	return anthropicReq
@@ -31,16 +48,11 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostRequest) *Anthr
 func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	return &schemas.BifrostResponse{
 		ID: response.ID,
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				Index: 0,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
-							ContentStr: &response.Completion,
-						},
-					},
+				BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
+					Text: &response.Completion,
 				},
 			},
 		},
@@ -51,7 +63,8 @@ func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostRespo
 		},
 		Model: response.Model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Anthropic,
+			RequestType: schemas.TextCompletionRequest,
+			Provider:    schemas.Anthropic,
 		},
 	}
 }

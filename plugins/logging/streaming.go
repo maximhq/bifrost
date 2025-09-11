@@ -13,7 +13,7 @@ import (
 )
 
 // appendContentToMessage efficiently appends content to a message
-func (p *LoggerPlugin) appendContentToMessage(message *schemas.BifrostMessage, newContent string) {
+func (p *LoggerPlugin) appendContentToMessage(message *schemas.ChatMessage, newContent string) {
 	if message == nil {
 		return
 	}
@@ -23,13 +23,13 @@ func (p *LoggerPlugin) appendContentToMessage(message *schemas.BifrostMessage, n
 	} else if message.Content.ContentBlocks != nil {
 		// Find the last text block and append, or create new one
 		blocks := *message.Content.ContentBlocks
-		if len(blocks) > 0 && blocks[len(blocks)-1].Type == schemas.ContentBlockTypeText && blocks[len(blocks)-1].Text != nil {
+		if len(blocks) > 0 && blocks[len(blocks)-1].Type == schemas.ChatContentBlockTypeText && blocks[len(blocks)-1].Text != nil {
 			// Append to last text block
 			*blocks[len(blocks)-1].Text += newContent
 		} else {
 			// Create new text block
-			blocks = append(blocks, schemas.ContentBlock{
-				Type: schemas.ContentBlockTypeText,
+			blocks = append(blocks, schemas.ChatContentBlock{
+				Type: schemas.ChatContentBlockTypeText,
 				Text: &newContent,
 			})
 			message.Content.ContentBlocks = &blocks
@@ -41,19 +41,19 @@ func (p *LoggerPlugin) appendContentToMessage(message *schemas.BifrostMessage, n
 }
 
 // accumulateToolCallsInMessage efficiently accumulates tool calls in a message
-func (p *LoggerPlugin) accumulateToolCallsInMessage(message *schemas.BifrostMessage, deltaToolCalls []schemas.ToolCall) {
+func (p *LoggerPlugin) accumulateToolCallsInMessage(message *schemas.ChatMessage, deltaToolCalls []schemas.ChatAssistantMessageToolCall) {
 	if message == nil {
 		return
 	}
-	if message.AssistantMessage == nil {
-		message.AssistantMessage = &schemas.AssistantMessage{}
+	if message.ChatAssistantMessage == nil {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 	}
 
-	if message.AssistantMessage.ToolCalls == nil {
-		message.AssistantMessage.ToolCalls = &[]schemas.ToolCall{}
+	if message.ChatAssistantMessage.ToolCalls == nil {
+		message.ChatAssistantMessage.ToolCalls = &[]schemas.ChatAssistantMessageToolCall{}
 	}
 
-	existingToolCalls := *message.AssistantMessage.ToolCalls
+	existingToolCalls := *message.ChatAssistantMessage.ToolCalls
 
 	for _, deltaToolCall := range deltaToolCalls {
 		// Find existing tool call with same ID or create new one
@@ -72,7 +72,7 @@ func (p *LoggerPlugin) accumulateToolCallsInMessage(message *schemas.BifrostMess
 			existingToolCalls = append(existingToolCalls, deltaToolCall)
 		}
 	}
-	message.AssistantMessage.ToolCalls = &existingToolCalls
+	message.ChatAssistantMessage.ToolCalls = &existingToolCalls
 }
 
 // Stream accumulator helper methods
@@ -159,8 +159,8 @@ func (p *LoggerPlugin) processAccumulatedChunks(ctx context.Context, requestID s
 	tempEntry := &logstore.Log{
 		OutputMessageParsed: completeMessage,
 	}
-	if completeMessage.AssistantMessage != nil && completeMessage.AssistantMessage.ToolCalls != nil {
-		tempEntry.ToolCallsParsed = completeMessage.AssistantMessage.ToolCalls
+	if completeMessage.ChatAssistantMessage != nil && completeMessage.ChatAssistantMessage.ToolCalls != nil {
+		tempEntry.ToolCallsParsed = completeMessage.ChatAssistantMessage.ToolCalls
 	}
 	if err := tempEntry.SerializeFields(); err != nil {
 		return fmt.Errorf("failed to serialize complete message: %w", err)
@@ -236,10 +236,10 @@ func (p *LoggerPlugin) processAccumulatedChunks(ctx context.Context, requestID s
 }
 
 // buildCompleteMessageFromChunks builds a complete message from ordered chunks
-func (p *LoggerPlugin) buildCompleteMessageFromChunks(chunks []*StreamChunk) *schemas.BifrostMessage {
-	completeMessage := &schemas.BifrostMessage{
-		Role:    schemas.ModelChatMessageRoleAssistant,
-		Content: schemas.MessageContent{},
+func (p *LoggerPlugin) buildCompleteMessageFromChunks(chunks []*StreamChunk) *schemas.ChatMessage {
+	completeMessage := &schemas.ChatMessage{
+		Role:    schemas.ChatMessageRoleAssistant,
+		Content: schemas.ChatMessageContent{},
 	}
 
 	for _, chunk := range chunks {
@@ -249,7 +249,7 @@ func (p *LoggerPlugin) buildCompleteMessageFromChunks(chunks []*StreamChunk) *sc
 
 		// Handle role (usually in first chunk)
 		if chunk.Delta.Role != nil {
-			completeMessage.Role = schemas.ModelChatMessageRole(*chunk.Delta.Role)
+			completeMessage.Role = schemas.ChatMessageRole(*chunk.Delta.Role)
 		}
 
 		// Append content
@@ -259,13 +259,13 @@ func (p *LoggerPlugin) buildCompleteMessageFromChunks(chunks []*StreamChunk) *sc
 
 		// Handle refusal
 		if chunk.Delta.Refusal != nil && *chunk.Delta.Refusal != "" {
-			if completeMessage.AssistantMessage == nil {
-				completeMessage.AssistantMessage = &schemas.AssistantMessage{}
+			if completeMessage.ChatAssistantMessage == nil {
+				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
-			if completeMessage.AssistantMessage.Refusal == nil {
-				completeMessage.AssistantMessage.Refusal = chunk.Delta.Refusal
+			if completeMessage.ChatAssistantMessage.Refusal == nil {
+				completeMessage.ChatAssistantMessage.Refusal = chunk.Delta.Refusal
 			} else {
-				*completeMessage.AssistantMessage.Refusal += *chunk.Delta.Refusal
+				*completeMessage.ChatAssistantMessage.Refusal += *chunk.Delta.Refusal
 			}
 		}
 
@@ -331,24 +331,6 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 		return result, err, nil
 	}
 
-	provider, ok := (*ctx).Value(schemas.BifrostContextKeyRequestProvider).(schemas.ModelProvider)
-	if !ok {
-		p.logger.Error("provider not found in context")
-		return result, err, nil
-	}
-
-	model, ok := (*ctx).Value(schemas.BifrostContextKeyRequestModel).(string)
-	if !ok {
-		p.logger.Error("model not found in context")
-		return result, err, nil
-	}
-
-	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
-	if !ok {
-		p.logger.Error("request type not found in context")
-		return result, err, nil
-	}
-
 	// Create chunk from current response using pool
 	chunk := p.getStreamChunk()
 	chunk.Timestamp = time.Now()
@@ -383,7 +365,7 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 		if result != nil {
 			if isFinalChunk {
 				if p.pricingManager != nil {
-					cost := p.pricingManager.CalculateCostWithCacheDebug(result, provider, model, requestType)
+					cost := p.pricingManager.CalculateCostWithCacheDebug(result)
 					chunk.Cost = bifrost.Ptr(cost)
 				}
 				chunk.SemanticCacheDebug = result.ExtraFields.CacheDebug

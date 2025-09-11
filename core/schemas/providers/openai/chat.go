@@ -3,56 +3,32 @@ package openai
 import "github.com/maximhq/bifrost/core/schemas"
 
 // ToBifrostRequest converts an OpenAI chat request to Bifrost format
-func (r *OpenAIChatRequest) ToBifrostRequest() *schemas.BifrostRequest {
+func (r *OpenAIChatRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
 	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
 
-	params := r.convertParameters()
-
-	bifrostReq := &schemas.BifrostRequest{
+	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: provider,
 		Model:    model,
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &r.Messages,
-		},
-		Params: filterParams(provider, params),
+		Input:    r.Messages,
+		Params:   &r.ChatParameters,
 	}
 
 	return bifrostReq
 }
 
-// ToOpenAIChatCompletionResponse converts a Bifrost response to OpenAI format
-func ToOpenAIChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *OpenAIChatResponse {
-	if bifrostResp == nil {
+// ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
+func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
+	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
-
-	openaiResp := &OpenAIChatResponse{
-		ID:                bifrostResp.ID,
-		Object:            bifrostResp.Object,
-		Created:           bifrostResp.Created,
-		Model:             bifrostResp.Model,
-		Choices:           bifrostResp.Choices,
-		Usage:             bifrostResp.Usage,
-		ServiceTier:       bifrostResp.ServiceTier,
-		SystemFingerprint: bifrostResp.SystemFingerprint,
-	}
-
-	return openaiResp
-}
-
-// ToOpenAIChatCompletionRequest converts a Bifrost chat completion request to OpenAI format
-func ToOpenAIChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *OpenAIChatRequest {
-	if bifrostReq == nil || bifrostReq.Input.ChatCompletionInput == nil {
-		return nil
-	}
-
-	messages := *bifrostReq.Input.ChatCompletionInput
-	params := bifrostReq.Params
 
 	openaiReq := &OpenAIChatRequest{
-		Model:           bifrostReq.Model,
-		Messages:        messages,
-		ModelParameters: params, // Directly embed the parameters
+		Model:    bifrostReq.Model,
+		Messages: bifrostReq.Input,
+	}
+
+	if bifrostReq.Params != nil {
+		openaiReq.ChatParameters = *bifrostReq.Params
 	}
 
 	return openaiReq

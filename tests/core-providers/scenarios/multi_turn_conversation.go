@@ -23,7 +23,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	t.Run("MultiTurnConversation", func(t *testing.T) {
 		// First message
 		userMessage1 := CreateBasicChatMessage("My name is Alice. Remember this.")
-		messages1 := []schemas.BifrostMessage{
+		messages1 := []schemas.ChatMessage{
 			userMessage1,
 		}
 
@@ -46,7 +46,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 		// Second message with conversation history
 		// Build conversation history with all choice messages
-		messages2 := []schemas.BifrostMessage{
+		messages2 := []schemas.ChatMessage{
 			userMessage1,
 		}
 

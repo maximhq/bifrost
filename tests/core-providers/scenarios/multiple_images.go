@@ -20,10 +20,10 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 	}
 
 	t.Run("MultipleImages", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentBlocks: &[]schemas.ContentBlock{
 						{
 							Type: schemas.ContentBlockTypeText,

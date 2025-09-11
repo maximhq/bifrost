@@ -146,19 +146,19 @@ func CreateTranscriptionInput(audioData []byte, language, responseFormat *string
 }
 
 // Helper functions for creating requests
-func CreateBasicChatMessage(content string) schemas.BifrostMessage {
-	return schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
+func CreateBasicChatMessage(content string) schemas.ChatMessage {
+	return schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
 			ContentStr: bifrost.Ptr(content),
 		},
 	}
 }
 
-func CreateImageMessage(text, imageURL string) schemas.BifrostMessage {
-	return schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
+func CreateImageMessage(text, imageURL string) schemas.ChatMessage {
+	return schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
 			ContentBlocks: &[]schemas.ContentBlock{
 				{
 					Type: schemas.ContentBlockTypeText,
@@ -175,10 +175,10 @@ func CreateImageMessage(text, imageURL string) schemas.BifrostMessage {
 	}
 }
 
-func CreateToolMessage(content string, toolCallID string) schemas.BifrostMessage {
-	return schemas.BifrostMessage{
+func CreateToolMessage(content string, toolCallID string) schemas.ChatMessage {
+	return schemas.ChatMessage{
 		Role: schemas.ModelChatMessageRoleTool,
-		Content: schemas.MessageContent{
+		Content: schemas.ChatMessageContent{
 			ContentStr: bifrost.Ptr(content),
 		},
 		ToolMessage: &schemas.ToolMessage{

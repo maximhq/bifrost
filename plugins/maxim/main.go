@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -236,7 +237,6 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	}
 
 	// Determine request type and set appropriate tags
-	var requestType string
 	var messages []logging.CompletionRequest
 	var latestMessage string
 
@@ -248,23 +248,47 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	// Add model to tags
 	tags["model"] = req.Model
 
-	if req.Input.ChatCompletionInput != nil {
-		requestType = "chat_completion"
-		for _, message := range *req.Input.ChatCompletionInput {
+	modelParams := make(map[string]interface{})
+
+	switch req.RequestType {
+	case schemas.TextCompletionRequest:
+		messages = append(messages, logging.CompletionRequest{
+			Role:    string(schemas.ChatMessageRoleUser),
+			Content: req.TextCompletionRequest.Input,
+		})
+		if req.TextCompletionRequest.Input.PromptStr != nil {
+			latestMessage = *req.TextCompletionRequest.Input.PromptStr
+		} else {
+			var stringBuilder strings.Builder
+			for _, prompt := range req.TextCompletionRequest.Input.PromptArray {
+				stringBuilder.WriteString(prompt)
+			}
+			latestMessage = stringBuilder.String()
+		}
+
+		if req.TextCompletionRequest.Params != nil {
+			// Convert the struct to a map using reflection or JSON marshaling
+			jsonData, err := json.Marshal(req.TextCompletionRequest.Params)
+			if err == nil {
+				json.Unmarshal(jsonData, &modelParams)
+			}
+		}
+	case schemas.ChatCompletionRequest:
+		for _, message := range req.ChatRequest.Input {
 			messages = append(messages, logging.CompletionRequest{
 				Role:    string(message.Role),
 				Content: message.Content,
 			})
 		}
-		if len(*req.Input.ChatCompletionInput) > 0 {
-			lastMsg := (*req.Input.ChatCompletionInput)[len(*req.Input.ChatCompletionInput)-1]
+		if len(req.ChatRequest.Input) > 0 {
+			lastMsg := req.ChatRequest.Input[len(req.ChatRequest.Input)-1]
 			if lastMsg.Content.ContentStr != nil {
 				latestMessage = *lastMsg.Content.ContentStr
 			} else if lastMsg.Content.ContentBlocks != nil {
 				// Find the last text content block
 				for i := len(*lastMsg.Content.ContentBlocks) - 1; i >= 0; i-- {
 					block := (*lastMsg.Content.ContentBlocks)[i]
-					if block.Type == "text" && block.Text != nil {
+					if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
 						latestMessage = *block.Text
 						break
 					}
@@ -275,21 +299,65 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 				}
 			}
 		}
-	} else if req.Input.TextCompletionInput != nil {
-		requestType = "text_completion"
-		messages = append(messages, logging.CompletionRequest{
-			Role:    string(schemas.ModelChatMessageRoleUser),
-			Content: req.Input.TextCompletionInput,
-		})
-		latestMessage = *req.Input.TextCompletionInput
+
+		if req.ChatRequest.Params != nil {
+			// Convert the struct to a map using reflection or JSON marshaling
+			jsonData, err := json.Marshal(req.ChatRequest.Params)
+			if err == nil {
+				json.Unmarshal(jsonData, &modelParams)
+			}
+		}
+	case schemas.ResponsesRequest:
+		for _, message := range req.ResponsesRequest.Input {
+			if message.Content != nil {
+				role := schemas.ChatMessageRoleUser
+				if message.Role != nil {
+					role = schemas.ChatMessageRole(*message.Role)
+				}
+				messages = append(messages, logging.CompletionRequest{
+					Role:    string(role),
+					Content: message.Content,
+				})
+			}
+		}
+		if len(req.ResponsesRequest.Input) > 0 {
+			lastMsg := req.ResponsesRequest.Input[len(req.ResponsesRequest.Input)-1]
+			// Initialize to placeholder in case content is missing or empty
+			latestMessage = "-"
+
+			// Check if Content is nil before accessing its fields
+			if lastMsg.Content != nil {
+				if lastMsg.Content.ContentStr != nil {
+					latestMessage = *lastMsg.Content.ContentStr
+				} else if lastMsg.Content.ContentBlocks != nil {
+					// Find the last text content block
+					for i := len(*lastMsg.Content.ContentBlocks) - 1; i >= 0; i-- {
+						block := (*lastMsg.Content.ContentBlocks)[i]
+						if block.Text != nil {
+							latestMessage = *block.Text
+							break
+						}
+					}
+					// If no text block found, keep the placeholder
+				}
+			}
+		}
+
+		if req.ResponsesRequest.Params != nil {
+			// Convert the struct to a map using reflection or JSON marshaling
+			jsonData, err := json.Marshal(req.ResponsesRequest.Params)
+			if err == nil {
+				json.Unmarshal(jsonData, &modelParams)
+			}
+		}
 	}
 
-	tags["action"] = requestType
+	tags["action"] = string(req.RequestType)
 
 	if traceID == "" {
 		// If traceID is not set, create a new trace
 		traceID = uuid.New().String()
-		name := fmt.Sprintf("bifrost_%s", requestType)
+		name := fmt.Sprintf("bifrost_%s", string(req.RequestType))
 		if traceName != "" {
 			name = traceName
 		}
@@ -309,16 +377,6 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		if err == nil {
 			trace := logger.Trace(&traceConfig)
 			trace.SetInput(latestMessage)
-		}
-	}
-
-	// Convert ModelParameters to map[string]interface{}
-	modelParams := make(map[string]interface{})
-	if req.Params != nil {
-		// Convert the struct to a map using reflection or JSON marshaling
-		jsonData, err := json.Marshal(req.Params)
-		if err == nil {
-			json.Unmarshal(jsonData, &modelParams)
 		}
 	}
 

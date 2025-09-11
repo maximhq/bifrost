@@ -227,7 +227,7 @@
         }
       }
     },
-    "/v1/text/completions": {
+    "/v1/completions": {
       "post": {
         "summary": "Create Text Completion",
         "description": "Creates a text completion from a prompt. Useful for text generation, summarization, and other non-conversational tasks.",
@@ -372,7 +372,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BifrostMessage"
+                  "$ref": "#/components/schemas/ChatMessage"
                 },
                 "examples": {
                   "search_result": {
@@ -1803,7 +1803,7 @@
           "messages": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/BifrostMessage"
+              "$ref": "#/components/schemas/ChatMessage"
             },
             "description": "Array of chat messages",
             "minItems": 1
@@ -1892,7 +1892,23 @@
         "description": "AI model provider",
         "example": "openai"
       },
-      "BifrostMessage": {
+      "RequestType": {
+        "type": "string",
+        "enum": [
+          "text_completion",
+          "chat_completion",
+          "chat_completion_stream",
+          "responses",
+          "responses_stream",
+          "embedding",
+          "speech",
+          "speech_stream",
+          "transcription",
+          "transcription_stream"
+        ],
+        "description": "Request type"
+      },
+      "ChatMessage": {
         "type": "object",
         "required": ["role"],
         "properties": {
@@ -2343,7 +2359,7 @@
             "example": 0
           },
           "message": {
-            "$ref": "#/components/schemas/BifrostMessage"
+            "$ref": "#/components/schemas/ChatMessage"
           },
           "finish_reason": {
             "type": "string",
@@ -2416,6 +2432,13 @@
           "provider": {
             "$ref": "#/components/schemas/ModelProvider"
           },
+          "request_type": {
+            "$ref": "#/components/schemas/RequestType"
+          },
+          "model_requested": {
+            "type": "string",
+            "description": "Model requested"
+          },
           "model_params": {
             "$ref": "#/components/schemas/ModelParameters"
           },
@@ -2423,13 +2446,6 @@
             "type": "number",
             "description": "Request latency in seconds",
             "example": 1.234
-          },
-          "chat_history": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/BifrostMessage"
-            },
-            "description": "Full conversation history"
           },
           "billed_usage": {
             "$ref": "#/components/schemas/BilledLLMUsage"

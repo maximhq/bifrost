@@ -299,30 +299,30 @@ func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.Bifr
 	}
 
 	// Parse existing message or create new one
-	var outputMessage *schemas.BifrostMessage
+	var outputMessage *schemas.ChatMessage
 	if currentEntry.OutputMessage != "" {
-		outputMessage = &schemas.BifrostMessage{}
+		outputMessage = &schemas.ChatMessage{}
 		// Attempt to deserialize; use parsed message only if successful
 		if err := currentEntry.DeserializeFields(); err == nil && currentEntry.OutputMessageParsed != nil {
 			outputMessage = currentEntry.OutputMessageParsed
 		} else {
 			// Create new message if parsing fails
-			outputMessage = &schemas.BifrostMessage{
-				Role:    schemas.ModelChatMessageRoleAssistant,
-				Content: schemas.MessageContent{},
+			outputMessage = &schemas.ChatMessage{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: schemas.ChatMessageContent{},
 			}
 		}
 	} else {
 		// Create new message
-		outputMessage = &schemas.BifrostMessage{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{},
+		outputMessage = &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: schemas.ChatMessageContent{},
 		}
 	}
 
 	// Handle role (usually in first chunk)
 	if delta.Role != nil {
-		outputMessage.Role = schemas.ModelChatMessageRole(*delta.Role)
+		outputMessage.Role = schemas.ChatMessageRole(*delta.Role)
 	}
 
 	// Append content
@@ -332,13 +332,13 @@ func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.Bifr
 
 	// Handle refusal
 	if delta.Refusal != nil && *delta.Refusal != "" {
-		if outputMessage.AssistantMessage == nil {
-			outputMessage.AssistantMessage = &schemas.AssistantMessage{}
+		if outputMessage.ChatAssistantMessage == nil {
+			outputMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 		}
-		if outputMessage.AssistantMessage.Refusal == nil {
-			outputMessage.AssistantMessage.Refusal = delta.Refusal
+		if outputMessage.ChatAssistantMessage.Refusal == nil {
+			outputMessage.ChatAssistantMessage.Refusal = delta.Refusal
 		} else {
-			*outputMessage.AssistantMessage.Refusal += *delta.Refusal
+			*outputMessage.ChatAssistantMessage.Refusal += *delta.Refusal
 		}
 	}
 
@@ -351,8 +351,8 @@ func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.Bifr
 	tempEntry := &logstore.Log{
 		OutputMessageParsed: outputMessage,
 	}
-	if outputMessage.AssistantMessage != nil && outputMessage.AssistantMessage.ToolCalls != nil {
-		tempEntry.ToolCallsParsed = outputMessage.AssistantMessage.ToolCalls
+	if outputMessage.ChatAssistantMessage != nil && outputMessage.ChatAssistantMessage.ToolCalls != nil {
+		tempEntry.ToolCallsParsed = outputMessage.ChatAssistantMessage.ToolCalls
 	}
 
 	if err := tempEntry.SerializeFields(); err != nil {
