@@ -167,15 +167,15 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 			ctx := CreateContextWithCacheKey("test-threshold-" + tc.name)
 
 			// Build conversation with specified number of messages
-			var conversation []schemas.BifrostMessage
+			var conversation []schemas.ChatMessage
 			for i := 0; i < tc.messages; i++ {
-				role := schemas.ModelChatMessageRoleUser
+				role := schemas.ChatMessageRoleUser
 				if i%2 == 1 {
-					role = schemas.ModelChatMessageRoleAssistant
+					role = schemas.ChatMessageRoleAssistant
 				}
-				message := schemas.BifrostMessage{
+				message := schemas.ChatMessage{
 					Role: role,
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Message " + strconv.Itoa(i+1)),
 					},
 				}
@@ -328,41 +328,41 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 	ctx := CreateContextWithCacheKey("test-multiple-system-messages")
 
 	// Manually create conversation with multiple system messages
-	conversation1 := []schemas.BifrostMessage{
+	conversation1 := []schemas.ChatMessage{
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("You are helpful")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("You are helpful")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Be concise")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Be concise")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleUser,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello")},
+			Role:    schemas.ChatMessageRoleUser,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hello")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hi!")},
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hi!")},
 		},
 	}
 
-	conversation2 := []schemas.BifrostMessage{
+	conversation2 := []schemas.ChatMessage{
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("You are an expert")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("You are an expert")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Be detailed")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Be detailed")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleUser,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello")},
+			Role:    schemas.ChatMessageRoleUser,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hello")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hi!")},
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hi!")},
 		},
 	}
 
@@ -397,14 +397,14 @@ func TestExcludeSystemPromptWithNoSystemMessages(t *testing.T) {
 	ctx := CreateContextWithCacheKey("test-no-system-messages")
 
 	// Conversation with no system messages
-	conversation := []schemas.BifrostMessage{
+	conversation := []schemas.ChatMessage{
 		{
-			Role:    schemas.ModelChatMessageRoleUser,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello")},
+			Role:    schemas.ChatMessageRoleUser,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hello")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hi there!")},
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hi there!")},
 		},
 	}
 

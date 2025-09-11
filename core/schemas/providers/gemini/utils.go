@@ -9,8 +9,8 @@ import (
 )
 
 // convertEmbeddingParameters converts Gemini embedding request parameters to ModelParameters
-func (r *GeminiGenerationRequest) convertEmbeddingParameters() *schemas.ModelParameters {
-	params := &schemas.ModelParameters{
+func (r *GeminiGenerationRequest) convertEmbeddingParameters() *schemas.EmbeddingParameters {
+	params := &schemas.EmbeddingParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
 
@@ -43,9 +43,9 @@ func (r *GeminiGenerationRequest) convertEmbeddingParameters() *schemas.ModelPar
 	return params
 }
 
-// convertGenerationConfigToParams converts Gemini GenerationConfig to ModelParameters
-func (r *GeminiGenerationRequest) convertGenerationConfigToParams() *schemas.ModelParameters {
-	params := &schemas.ModelParameters{
+// convertGenerationConfigToChatParameters converts Gemini GenerationConfig to ModelParameters
+func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *schemas.ChatParameters {
+	params := &schemas.ChatParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
 
@@ -60,17 +60,17 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToParams() *schemas.Mod
 		params.TopP = schemas.Ptr(float64(*config.TopP))
 	}
 	if config.TopK != nil {
-		params.TopK = schemas.Ptr(int(*config.TopK))
+		params.ExtraParams["top_k"] = int(*config.TopK)
 	}
 	if config.MaxOutputTokens > 0 {
 		maxTokens := int(config.MaxOutputTokens)
-		params.MaxTokens = &maxTokens
+		params.ExtraParams["max_tokens"] = maxTokens
 	}
 	if config.CandidateCount > 0 {
 		params.ExtraParams["candidate_count"] = config.CandidateCount
 	}
 	if len(config.StopSequences) > 0 {
-		params.StopSequences = &config.StopSequences
+		params.ExtraParams["stop_sequences"] = config.StopSequences
 	}
 	if config.PresencePenalty != nil {
 		params.PresencePenalty = schemas.Ptr(float64(*config.PresencePenalty))
@@ -95,8 +95,8 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToParams() *schemas.Mod
 }
 
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
-func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Schema) schemas.FunctionParameters {
-	params := schemas.FunctionParameters{
+func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
+	params := schemas.ToolFunctionParameters{
 		Type: string(schema.Type),
 	}
 
@@ -166,9 +166,9 @@ func isImageMimeType(mimeType string) bool {
 }
 
 // ensureExtraParams ensures that bifrostReq.Params and bifrostReq.Params.ExtraParams are initialized
-func ensureExtraParams(bifrostReq *schemas.BifrostRequest) {
+func ensureExtraParams(bifrostReq *schemas.BifrostChatRequest) {
 	if bifrostReq.Params == nil {
-		bifrostReq.Params = &schemas.ModelParameters{
+		bifrostReq.Params = &schemas.ChatParameters{
 			ExtraParams: make(map[string]interface{}),
 		}
 	}
@@ -189,7 +189,7 @@ func (r *GenerateContentResponse) extractUsageMetadata() (int, int, int) {
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
-func convertParamsToGenerationConfig(params *schemas.ModelParameters, responseModalities []string) GenerationConfig {
+func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string) GenerationConfig {
 	config := GenerationConfig{}
 
 	// Add response modalities if specified
@@ -202,11 +202,11 @@ func convertParamsToGenerationConfig(params *schemas.ModelParameters, responseMo
 	}
 
 	// Map standard parameters
-	if params.StopSequences != nil {
-		config.StopSequences = *params.StopSequences
+	if params.Stop != nil {
+		config.StopSequences = *params.Stop
 	}
-	if params.MaxTokens != nil {
-		config.MaxOutputTokens = int32(*params.MaxTokens)
+	if params.MaxCompletionTokens != nil {
+		config.MaxOutputTokens = int32(*params.MaxCompletionTokens)
 	}
 	if params.Temperature != nil {
 		temp := float32(*params.Temperature)
@@ -215,10 +215,6 @@ func convertParamsToGenerationConfig(params *schemas.ModelParameters, responseMo
 	if params.TopP != nil {
 		topP := float32(*params.TopP)
 		config.TopP = &topP
-	}
-	if params.TopK != nil {
-		topK := float32(*params.TopK)
-		config.TopK = &topK
 	}
 	if params.PresencePenalty != nil {
 		penalty := float32(*params.PresencePenalty)
@@ -229,23 +225,34 @@ func convertParamsToGenerationConfig(params *schemas.ModelParameters, responseMo
 		config.FrequencyPenalty = &penalty
 	}
 
+	if params.ExtraParams != nil {
+		if topK, ok := params.ExtraParams["top_k"]; ok {
+			config.TopK = schemas.Ptr(float32(topK.(float64)))
+		}
+	}
+
 	return config
 }
 
 // convertBifrostToolsToGemini converts Bifrost tools to Gemini format
-func convertBifrostToolsToGemini(bifrostTools []schemas.Tool) []Tool {
+func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) []Tool {
 	var geminiTools []Tool
 
 	for _, tool := range bifrostTools {
+		if tool.Type == "" {
+			continue
+		}
 		if tool.Type == "function" {
 			geminiTool := Tool{
 				FunctionDeclarations: []*FunctionDeclaration{
 					{
-						Name:        tool.Function.Name,
-						Description: tool.Function.Description,
-						Parameters:  convertFunctionParametersToSchema(tool.Function.Parameters),
+						Name:       tool.Function.Name,
+						Parameters: convertFunctionParametersToSchema(*tool.Function.Parameters),
 					},
 				},
+			}
+			if tool.Function.Description != nil {
+				geminiTool.FunctionDeclarations[0].Description = *tool.Function.Description
 			}
 			geminiTools = append(geminiTools, geminiTool)
 		}
@@ -255,7 +262,7 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.Tool) []Tool {
 }
 
 // convertFunctionParametersToSchema converts Bifrost function parameters to Gemini Schema
-func convertFunctionParametersToSchema(params schemas.FunctionParameters) *Schema {
+func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *Schema {
 	schema := &Schema{
 		Type: Type(params.Type),
 	}
@@ -290,15 +297,14 @@ func convertFunctionParametersToSchema(params schemas.FunctionParameters) *Schem
 	return schema
 }
 
-
 // convertToolChoiceToToolConfig converts Bifrost tool choice to Gemini tool config
-func convertToolChoiceToToolConfig(toolChoice *schemas.ToolChoice) ToolConfig {
+func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfig {
 	config := ToolConfig{}
 	functionCallingConfig := FunctionCallingConfig{}
 
-	if toolChoice.ToolChoiceStr != nil {
+	if toolChoice.ChatToolChoiceStr != nil {
 		// Map string values to Gemini's enum values
-		switch *toolChoice.ToolChoiceStr {
+		switch *toolChoice.ChatToolChoiceStr {
 		case "none":
 			functionCallingConfig.Mode = FunctionCallingConfigModeNone
 		case "auto":
@@ -308,21 +314,21 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ToolChoice) ToolConfig {
 		default:
 			functionCallingConfig.Mode = FunctionCallingConfigModeAuto
 		}
-	} else if toolChoice.ToolChoiceStruct != nil {
-		switch toolChoice.ToolChoiceStruct.Type {
-		case schemas.ToolChoiceTypeNone:
+	} else if toolChoice.ChatToolChoiceStruct != nil {
+		switch toolChoice.ChatToolChoiceStruct.Type {
+		case schemas.ChatToolChoiceTypeNone:
 			functionCallingConfig.Mode = FunctionCallingConfigModeNone
-		case schemas.ToolChoiceTypeAuto:
-			functionCallingConfig.Mode = FunctionCallingConfigModeAuto
-		case schemas.ToolChoiceTypeRequired, schemas.ToolChoiceTypeFunction:
+		case schemas.ChatToolChoiceTypeFunction:
+			functionCallingConfig.Mode = FunctionCallingConfigModeAny
+		case schemas.ChatToolChoiceTypeRequired:
 			functionCallingConfig.Mode = FunctionCallingConfigModeAny
 		default:
 			functionCallingConfig.Mode = FunctionCallingConfigModeAuto
 		}
 
 		// Handle specific function selection
-		if toolChoice.ToolChoiceStruct.Function.Name != "" {
-			functionCallingConfig.AllowedFunctionNames = []string{toolChoice.ToolChoiceStruct.Function.Name}
+		if toolChoice.ChatToolChoiceStruct.Function.Name != "" {
+			functionCallingConfig.AllowedFunctionNames = []string{toolChoice.ChatToolChoiceStruct.Function.Name}
 		}
 	}
 
@@ -366,7 +372,7 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig sch
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomContent {
+func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []CustomContent {
 	var contents []CustomContent
 
 	for _, message := range messages {
@@ -389,8 +395,8 @@ func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomC
 		}
 
 		// Handle tool calls for assistant messages
-		if message.AssistantMessage != nil && message.AssistantMessage.ToolCalls != nil {
-			for _, toolCall := range *message.AssistantMessage.ToolCalls {
+		if message.ChatAssistantMessage != nil && message.ChatAssistantMessage.ToolCalls != nil {
+			for _, toolCall := range *message.ChatAssistantMessage.ToolCalls {
 				// Convert tool call to function call part
 				if toolCall.Function.Name != nil {
 					// Create function call part - simplified implementation
@@ -407,14 +413,6 @@ func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomC
 					})
 				}
 			}
-		}
-
-		// Handle thinking content
-		if message.AssistantMessage != nil && message.AssistantMessage.Thought != nil && *message.AssistantMessage.Thought != "" {
-			parts = append(parts, &CustomPart{
-				Text:    *message.AssistantMessage.Thought,
-				Thought: true,
-			})
 		}
 
 		if len(parts) > 0 {

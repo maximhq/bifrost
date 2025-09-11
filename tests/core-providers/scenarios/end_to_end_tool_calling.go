@@ -33,7 +33,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			Provider: testConfig.Provider,
 			Model:    testConfig.ChatModel,
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{userMessage},
+				ChatCompletionInput: &[]schemas.ChatMessage{userMessage},
 			},
 			Params:    params,
 			Fallbacks: testConfig.Fallbacks,
@@ -78,7 +78,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		require.NotEmpty(t, toolCallID, "toolCallID must not be empty")
 
 		// Build conversation history with all choice messages from first response
-		conversationMessages := []schemas.BifrostMessage{
+		conversationMessages := []schemas.ChatMessage{
 			userMessage,
 		}
 

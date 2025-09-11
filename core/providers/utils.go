@@ -3,13 +3,11 @@
 package providers
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -18,80 +16,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
-
-	"maps"
 )
-
-// ContextKey is a custom type for context keys to prevent key collisions in the context.
-// It provides type safety for context values and ensures that context keys are unique
-// across different packages.
-type ContextKey string
-
-// mergeConfig merges a default configuration map with custom parameters.
-// It creates a new map containing all default values, then overrides them with any custom values.
-// Returns a new map containing the merged configuration.
-func mergeConfig(defaultConfig map[string]interface{}, customParams map[string]interface{}) map[string]interface{} {
-	merged := make(map[string]interface{})
-
-	// Copy default config
-	for k, v := range defaultConfig {
-		merged[k] = v
-	}
-
-	// Override with custom parameters
-	for k, v := range customParams {
-		merged[k] = v
-	}
-
-	return merged
-}
-
-// prepareParams converts ModelParameters into a flat map of parameters.
-// It handles both standard fields and extra parameters, using reflection to process
-// the struct fields and their JSON tags.
-// Returns a map containing all parameters ready for use in API requests.
-func prepareParams(params *schemas.ModelParameters) map[string]interface{} {
-	flatParams := make(map[string]interface{})
-
-	// Return empty map if params is nil
-	if params == nil {
-		return flatParams
-	}
-
-	// Use reflection to get the type and value of params
-	val := reflect.ValueOf(params).Elem()
-	typ := val.Type()
-
-	// Iterate through all fields
-	for i := range val.NumField() {
-		field := val.Field(i)
-		fieldType := typ.Field(i)
-
-		// Skip the ExtraParams field as it's handled separately
-		if fieldType.Name == "ExtraParams" {
-			continue
-		}
-
-		// Get the JSON tag name
-		jsonTag := fieldType.Tag.Get("json")
-		if jsonTag == "" || jsonTag == "-" {
-			continue
-		}
-
-		// Strip out ,omitempty and others from the tag
-		jsonTag = strings.Split(jsonTag, ",")[0]
-
-		// Handle pointer fields
-		if field.Kind() == reflect.Ptr && !field.IsNil() {
-			flatParams[jsonTag] = field.Elem().Interface()
-		}
-	}
-
-	// Handle ExtraParams
-	maps.Copy(flatParams, params.ExtraParams)
-
-	return flatParams
-}
 
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
 // context is done. The fasthttp client call will continue in its goroutine until it completes
@@ -113,7 +38,7 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		return &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
-				Type:    Ptr(schemas.RequestCancelled),
+				Type:    schemas.Ptr(schemas.RequestCancelled),
 				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
@@ -320,99 +245,17 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 	return nil, nil
 }
 
-// getRoleFromMessage extracts and validates the role from a message map.
-func getRoleFromMessage(msg map[string]interface{}) (schemas.ModelChatMessageRole, bool) {
-	roleVal, exists := msg["role"]
-	if !exists {
-		return "", false // Role key doesn't exist
-	}
-
-	// Try direct assertion to ModelChatMessageRole
-	roleAsModelType, ok := roleVal.(schemas.ModelChatMessageRole)
-	if ok {
-		return roleAsModelType, true
-	}
-
-	// Try assertion to string and then convert
-	roleAsString, okStr := roleVal.(string)
-	if okStr {
-		return schemas.ModelChatMessageRole(roleAsString), true
-	}
-
-	return "", false // Role is of an unexpected or invalid type
-}
-
-// Ptr creates a pointer to any value.
-// This is a helper function for creating pointers to values.
-func Ptr[T any](v T) *T {
-	return &v
-}
-
-var (
-	riff = []byte("RIFF")
-	wave = []byte("WAVE")
-	id3  = []byte("ID3")
-	form = []byte("FORM")
-	aiff = []byte("AIFF")
-	aifc = []byte("AIFC")
-	flac = []byte("fLaC")
-	oggs = []byte("OggS")
-	adif = []byte("ADIF")
-)
-
-// detectAudioMimeType attempts to detect the MIME type from audio file headers
-// Gemini supports: WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC
-func detectAudioMimeType(audioData []byte) string {
-	if len(audioData) < 4 {
-		return "audio/mp3"
-	}
-	// WAV (RIFF/WAVE)
-	if len(audioData) >= 12 &&
-		bytes.Equal(audioData[:4], riff) &&
-		bytes.Equal(audioData[8:12], wave) {
-		return "audio/wav"
-	}
-	// MP3: ID3v2 tag (keep this check for MP3)
-	if len(audioData) >= 3 && bytes.Equal(audioData[:3], id3) {
-		return "audio/mp3"
-	}
-	// AAC: ADIF or ADTS (0xFFF sync) - check before MP3 frame sync to avoid misclassification
-	if bytes.HasPrefix(audioData, adif) {
-		return "audio/aac"
-	}
-	if len(audioData) >= 2 && audioData[0] == 0xFF && (audioData[1]&0xF6) == 0xF0 {
-		return "audio/aac"
-	}
-	// AIFF / AIFC (map both to audio/aiff)
-	if len(audioData) >= 12 && bytes.Equal(audioData[:4], form) &&
-		(bytes.Equal(audioData[8:12], aiff) || bytes.Equal(audioData[8:12], aifc)) {
-		return "audio/aiff"
-	}
-	// FLAC
-	if bytes.HasPrefix(audioData, flac) {
-		return "audio/flac"
-	}
-	// OGG container
-	if bytes.HasPrefix(audioData, oggs) {
-		return "audio/ogg"
-	}
-	// MP3: MPEG frame sync (cover common variants) - check after AAC to avoid misclassification
-	if len(audioData) >= 2 && audioData[0] == 0xFF &&
-		(audioData[1] == 0xFB || audioData[1] == 0xF3 || audioData[1] == 0xF2 || audioData[1] == 0xFA) {
-		return "audio/mp3"
-	}
-	// Fallback within supported set
-	return "audio/mp3"
-}
-
 // newUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
 func newUnsupportedOperationError(operation string, providerName string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Provider:       schemas.ModelProvider(providerName),
 		Error: schemas.ErrorField{
 			Message: fmt.Sprintf("%s is not supported by %s provider", operation, providerName),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider:    schemas.ModelProvider(providerName),
+			RequestType: schemas.RequestType(operation),
 		},
 	}
 }
@@ -421,7 +264,7 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 // Behavior:
 // - If no gating is configured (config == nil or AllowedRequests == nil), the operation is allowed.
 // - If gating is configured, returns an error when the operation is not explicitly allowed.
-func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.Operation) *schemas.BifrostError {
+func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.RequestType) *schemas.BifrostError {
 	// No gating configured => allowed
 	if config == nil || config.AllowedRequests == nil {
 		return nil
@@ -440,7 +283,6 @@ func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 func newConfigurationError(message string, providerType schemas.ModelProvider) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Provider:       providerType,
 		Error: schemas.ErrorField{
 			Message: message,
 		},
@@ -452,7 +294,6 @@ func newConfigurationError(message string, providerType schemas.ModelProvider) *
 func newBifrostOperationError(message string, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: true,
-		Provider:       providerType,
 		Error: schemas.ErrorField{
 			Message: message,
 			Error:   err,
@@ -465,7 +306,6 @@ func newBifrostOperationError(message string, err error, providerType schemas.Mo
 func newProviderAPIError(message string, err error, statusCode int, providerType schemas.ModelProvider, errorType *string, eventID *string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Provider:       providerType,
 		StatusCode:     &statusCode,
 		Type:           errorType,
 		EventID:        eventID,
@@ -557,6 +397,9 @@ func processAndSendError(
 	postHookRunner schemas.PostHookRunner,
 	err error,
 	responseChan chan *schemas.BifrostStream,
+	requestType schemas.RequestType,
+	providerName schemas.ModelProvider,
+	model string,
 	logger schemas.Logger,
 ) {
 	// Send scanner error through channel
@@ -566,6 +409,11 @@ func processAndSendError(
 			Error: schemas.ErrorField{
 				Message: fmt.Sprintf("Error reading stream: %v", err),
 				Error:   err,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    requestType,
+				Provider:       providerName,
+				ModelRequested: model,
 			},
 		}
 	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostError)
@@ -589,14 +437,15 @@ func createBifrostChatCompletionChunkResponse(
 	usage *schemas.LLMUsage,
 	finishReason *string,
 	currentChunkIndex int,
-	params *schemas.ModelParameters,
+	requestType schemas.RequestType,
 	providerName schemas.ModelProvider,
+	model string,
 ) *schemas.BifrostResponse {
 	response := &schemas.BifrostResponse{
 		ID:     id,
 		Object: "chat.completion.chunk",
 		Usage:  usage,
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				FinishReason: finishReason,
 				BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
@@ -605,12 +454,11 @@ func createBifrostChatCompletionChunkResponse(
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:   providerName,
-			ChunkIndex: currentChunkIndex + 1,
+			RequestType:    requestType,
+			Provider:       providerName,
+			ModelRequested: model,
+			ChunkIndex:     currentChunkIndex + 1,
 		},
-	}
-	if params != nil {
-		response.ExtraFields.Params = *params
 	}
 	return response
 }

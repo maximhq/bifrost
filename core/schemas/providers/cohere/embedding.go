@@ -3,19 +3,26 @@ package cohere
 import "github.com/maximhq/bifrost/core/schemas"
 
 // ToCohereEmbeddingRequest converts a Bifrost embedding request to Cohere format
-func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *CohereEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *CohereEmbeddingRequest {
+	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 
-	embeddingInput := bifrostReq.Input.EmbeddingInput
+	embeddingInput := bifrostReq.Input
 	cohereReq := &CohereEmbeddingRequest{
 		Model: bifrostReq.Model,
 	}
 
+	texts := []string{}
+	if embeddingInput.Text != nil {
+		texts = append(texts, *embeddingInput.Text)
+	} else {
+		texts = embeddingInput.Texts
+	}
+
 	// Convert texts from Bifrost format
-	if len(embeddingInput.Texts) > 0 {
-		cohereReq.Texts = &embeddingInput.Texts
+	if len(texts) > 0 {
+		cohereReq.Texts = &texts
 	}
 
 	// Set default input type if not specified in extra params
@@ -23,7 +30,12 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *CohereEmbeddi
 
 	if bifrostReq.Params != nil {
 		cohereReq.OutputDimension = bifrostReq.Params.Dimensions
-		cohereReq.MaxTokens = bifrostReq.Params.MaxTokens
+
+		if bifrostReq.Params.ExtraParams != nil {
+			if maxTokens, ok := bifrostReq.Params.ExtraParams["max_tokens"].(int); ok {
+				cohereReq.MaxTokens = &maxTokens
+			}
+		}
 	}
 
 	// Handle extra params

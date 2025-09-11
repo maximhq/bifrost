@@ -21,7 +21,7 @@ func RunImageURLTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 	}
 
 	t.Run("ImageURL", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateImageMessage("What do you see in this image?", TestImageURL),
 		}
 

@@ -12,6 +12,11 @@ export const customProviderNameSchema = z.string().min(1, "Custom provider name 
 // Model provider name schema (union of known and custom providers)
 export const modelProviderNameSchema = z.union([knownProviderSchema, customProviderNameSchema]);
 
+// OpenAI key config schema
+export const openaiKeyConfigSchema = z.object({
+	use_responses_api: z.boolean(),
+});
+
 // Azure key config schema
 export const azureKeyConfigSchema = z.object({
 	endpoint: z.url("Must be a valid URL"),
@@ -43,6 +48,7 @@ export const modelProviderKeySchema = z
 		value: z.string().optional(),
 		models: z.array(z.string()).default([]).optional(),
 		weight: z.number().min(0.1, "Weight must be greater than 0.1").max(1, "Weight must be less than 1"),
+		openai_key_config: openaiKeyConfigSchema.optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),

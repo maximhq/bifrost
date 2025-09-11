@@ -1,49 +1,49 @@
 package anthropic
 
 import (
-	"encoding/json"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// mapAnthropicFinishReasonToOpenAI maps Anthropic finish reasons to OpenAI-compatible ones
-func MapAnthropicFinishReason(anthropicReason string) string {
-	switch anthropicReason {
-	case "end_turn":
-		return "stop"
-	case "max_tokens":
-		return "length"
-	case "stop_sequence":
-		return "stop"
-	case "tool_use":
-		return "tool_calls"
-	default:
-		// Pass through Anthropic-specific reasons like "pause_turn", "refusal", etc.
-		return anthropicReason
+var (
+	finishReasonMap = map[string]string{
+		"end_turn":      "stop",
+		"max_tokens":    "length",
+		"stop_sequence": "stop",
+		"tool_use":      "tool_calls",
 	}
+)
+
+// MapAnthropicFinishReasonToOpenAI maps Anthropic finish reasons to OpenAI-compatible ones
+func MapAnthropicFinishReasonToBifrost(anthropicReason string) string {
+	if _, ok := finishReasonMap[anthropicReason]; ok {
+		return finishReasonMap[anthropicReason]
+	}
+	return anthropicReason
 }
 
-// Helper function to convert interface{} to JSON string
-func jsonifyInput(input interface{}) string {
-	if input == nil {
-		return "{}"
+func MapBifrostFinishReasonToAnthropic(bifrostReason string) string {
+	for k, v := range finishReasonMap {
+		if v == bifrostReason {
+			return k
+		}
 	}
-	jsonBytes, err := json.Marshal(input)
-	if err != nil {
-		return "{}"
-	}
-	return string(jsonBytes)
+	return bifrostReason
 }
 
 // convertImageBlock converts a Bifrost image block to Anthropic format
 // Uses the same pattern as the original buildAnthropicImageSourceMap function
-func convertImageBlock(block schemas.ContentBlock) AnthropicContentBlock {
+func convertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
 	imageBlock := AnthropicContentBlock{
 		Type:   "image",
 		Source: &AnthropicImageSource{},
 	}
 
+	if block.ImageURLStruct == nil {
+		return imageBlock
+	}
+
 	// Use the centralized utility functions from schemas package
-	sanitizedURL, _ := schemas.SanitizeImageURL(block.ImageURL.URL)
+	sanitizedURL, _ := schemas.SanitizeImageURL(block.ImageURLStruct.URL)
 	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
 
 	formattedImgContent := &AnthropicImageContent{
@@ -73,4 +73,35 @@ func convertImageBlock(block schemas.ContentBlock) AnthropicContentBlock {
 	}
 
 	return imageBlock
-}	
+}
+
+func (block AnthropicContentBlock) ToBifrostContentImageBlock() schemas.ChatContentBlock {
+	return schemas.ChatContentBlock{
+		Type: schemas.ChatContentBlockTypeImage,
+		ImageURLStruct: &schemas.ChatInputImage{
+			URL: getImageURLFromBlock(block),
+		},
+	}
+}
+
+func getImageURLFromBlock(block AnthropicContentBlock) string {
+	if block.Source == nil {
+		return ""
+	}
+
+	// Handle base64 data - convert to data URL
+	if block.Source.Data != nil {
+		mime := "image/png"
+		if block.Source.MediaType != nil && *block.Source.MediaType != "" {
+			mime = *block.Source.MediaType
+		}
+		return "data:" + mime + ";base64," + *block.Source.Data
+	}
+
+	// Handle regular URLs
+	if block.Source.URL != nil {
+		return *block.Source.URL
+	}
+
+	return ""
+}

@@ -30,7 +30,7 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 	}
 
 	t.Run("MultipleToolCalls", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateBasicChatMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both?"),
 		}
 

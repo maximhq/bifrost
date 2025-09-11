@@ -1,14 +1,16 @@
 package cohere
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // ConvertChatRequestToCohere converts a Bifrost request to Cohere v2 format
-func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereChatRequest {
-	if bifrostReq == nil || bifrostReq.Input.ChatCompletionInput == nil {
+func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *CohereChatRequest {
+	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
 
-	messages := *bifrostReq.Input.ChatCompletionInput
+	messages := bifrostReq.Input
 	cohereReq := &CohereChatRequest{
 		Model: bifrostReq.Model,
 	}
@@ -28,14 +30,14 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 			for _, block := range *msg.Content.ContentBlocks {
 				if block.Text != nil {
 					contentBlocks = append(contentBlocks, CohereContentBlock{
-						Type: "text",
+						Type: CohereContentBlockTypeText,
 						Text: block.Text,
 					})
-				} else if block.ImageURL != nil {
+				} else if block.ImageURLStruct != nil {
 					contentBlocks = append(contentBlocks, CohereContentBlock{
-						Type: "image_url",
+						Type: CohereContentBlockTypeImage,
 						ImageURL: &CohereImageURL{
-							URL: block.ImageURL.URL,
+							URL: block.ImageURLStruct.URL,
 						},
 					})
 				}
@@ -46,9 +48,9 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 		}
 
 		// Convert tool calls for assistant messages
-		if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
+		if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 			var toolCalls []CohereToolCall
-			for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+			for _, toolCall := range *msg.ChatAssistantMessage.ToolCalls {
 				cohereToolCall := CohereToolCall{
 					ID:   toolCall.ID,
 					Type: "function",
@@ -63,8 +65,8 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 		}
 
 		// Convert tool messages
-		if msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil {
-			cohereMsg.ToolCallID = msg.ToolMessage.ToolCallID
+		if msg.ChatToolMessage != nil && msg.ChatToolMessage.ToolCallID != nil {
+			cohereMsg.ToolCallID = msg.ChatToolMessage.ToolCallID
 		}
 
 		cohereMessages = append(cohereMessages, cohereMsg)
@@ -74,11 +76,10 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 
 	// Convert parameters
 	if bifrostReq.Params != nil {
-		cohereReq.MaxTokens = bifrostReq.Params.MaxTokens
+		cohereReq.MaxTokens = bifrostReq.Params.MaxCompletionTokens
 		cohereReq.Temperature = bifrostReq.Params.Temperature
 		cohereReq.P = bifrostReq.Params.TopP
-		cohereReq.K = bifrostReq.Params.TopK
-		cohereReq.StopSequences = bifrostReq.Params.StopSequences
+		cohereReq.StopSequences = bifrostReq.Params.Stop
 		cohereReq.FrequencyPenalty = bifrostReq.Params.FrequencyPenalty
 		cohereReq.PresencePenalty = bifrostReq.Params.PresencePenalty
 
@@ -118,28 +119,39 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 			}
 		}
 
-		// Convert tools - direct assignment since formats are identical
+		// Convert tools to Cohere-specific format (without "strict" field)
 		if bifrostReq.Params.Tools != nil {
-			cohereReq.Tools = bifrostReq.Params.Tools
+			cohereTools := make([]CohereChatRequestTool, len(bifrostReq.Params.Tools))
+			for i, tool := range bifrostReq.Params.Tools {
+				cohereTools[i] = CohereChatRequestTool{
+					Type: string(tool.Type),
+				}
+				if tool.Function != nil {
+					cohereTools[i].Function = CohereChatRequestFunction{
+						Name:        tool.Function.Name,
+						Description: tool.Function.Description,
+						Parameters:  tool.Function.Parameters, // Convert to map
+						// Note: No "strict" field - Cohere doesn't support it
+					}
+				}
+			}
+			cohereReq.Tools = &cohereTools
 		}
 
 		// Convert tool choice
 		if bifrostReq.Params.ToolChoice != nil {
-			if bifrostReq.Params.ToolChoice.ToolChoiceStr != nil {
-				toolChoice := CohereToolChoice(*bifrostReq.Params.ToolChoice.ToolChoiceStr)
+			toolChoice := bifrostReq.Params.ToolChoice
+
+			if toolChoice.ChatToolChoiceStr != nil {
+				toolChoice := CohereToolChoice(*toolChoice.ChatToolChoiceStr)
 				cohereReq.ToolChoice = &toolChoice
-			} else if bifrostReq.Params.ToolChoice.ToolChoiceStruct != nil {
-				switch bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type {
-				case schemas.ToolChoiceTypeFunction:
-					toolChoice := CohereToolChoice("REQUIRED")
-					cohereReq.ToolChoice = &toolChoice
-				case schemas.ToolChoiceTypeNone:
-					toolChoice := CohereToolChoice("NONE")
+			} else if bifrostReq.Params.ToolChoice.ChatToolChoiceStruct != nil {
+				switch bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Type {
+				case schemas.ChatToolChoiceTypeFunction:
+					toolChoice := ToolChoiceRequired
 					cohereReq.ToolChoice = &toolChoice
 				default:
-					toolChoiceStr := string(bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type)
-					toolChoice := CohereToolChoice(toolChoiceStr)
-					cohereReq.ToolChoice = &toolChoice
+					cohereReq.ToolChoice = nil
 				}
 			}
 		}
@@ -157,12 +169,12 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 	bifrostResponse := &schemas.BifrostResponse{
 		ID:     cohereResp.ID,
 		Object: "chat.completion",
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				Index: 0,
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
+					Message: schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
 					},
 				},
 			},
@@ -177,30 +189,30 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 		if cohereResp.Message.Content != nil {
 			if cohereResp.Message.Content.IsString() {
 				content := cohereResp.Message.Content.GetString()
-				bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = schemas.MessageContent{
+				bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = schemas.ChatMessageContent{
 					ContentStr: content,
 				}
 			} else if cohereResp.Message.Content.IsBlocks() {
 				blocks := cohereResp.Message.Content.GetBlocks()
 				if blocks != nil {
-					var contentBlocks []schemas.ContentBlock
+					var contentBlocks []schemas.ChatContentBlock
 					for _, block := range *blocks {
-						if block.Type == "text" && block.Text != nil {
-							contentBlocks = append(contentBlocks, schemas.ContentBlock{
-								Type: "text",
+						if block.Type == CohereContentBlockTypeText && block.Text != nil {
+							contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+								Type: schemas.ChatContentBlockTypeText,
 								Text: block.Text,
 							})
-						} else if block.Type == "image_url" && block.ImageURL != nil {
-							contentBlocks = append(contentBlocks, schemas.ContentBlock{
-								Type: "image_url",
-								ImageURL: &schemas.ImageURLStruct{
+						} else if block.Type == CohereContentBlockTypeImage && block.ImageURL != nil {
+							contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+								Type: schemas.ChatContentBlockTypeImage,
+								ImageURLStruct: &schemas.ChatInputImage{
 									URL: block.ImageURL.URL,
 								},
 							})
 						}
 					}
 					if len(contentBlocks) > 0 {
-						bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = schemas.MessageContent{
+						bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = schemas.ChatMessageContent{
 							ContentBlocks: &contentBlocks,
 						}
 					}
@@ -210,18 +222,18 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 
 		// Convert tool calls
 		if cohereResp.Message.ToolCalls != nil {
-			var toolCalls []schemas.ToolCall
+			var toolCalls []schemas.ChatAssistantMessageToolCall
 			for _, toolCall := range *cohereResp.Message.ToolCalls {
-				bifrostToolCall := schemas.ToolCall{
+				bifrostToolCall := schemas.ChatAssistantMessageToolCall{
 					ID: toolCall.ID,
-					Function: schemas.FunctionCall{
+					Function: schemas.ChatAssistantMessageToolCallFunction{
 						Name:      toolCall.Function.Name,
 						Arguments: toolCall.Function.Arguments,
 					},
 				}
 				toolCalls = append(toolCalls, bifrostToolCall)
 			}
-			bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.AssistantMessage = &schemas.AssistantMessage{
+			bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls: &toolCalls,
 			}
 		}

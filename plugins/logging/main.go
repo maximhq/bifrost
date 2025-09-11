@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,9 +45,9 @@ type UpdateLogData struct {
 	Status              string
 	TokenUsage          *schemas.LLMUsage
 	Cost                *float64 // Cost in dollars from pricing plugin
-	OutputMessage       *schemas.BifrostMessage
+	OutputMessage       *schemas.ChatMessage
 	EmbeddingOutput     *[]schemas.BifrostEmbedding
-	ToolCalls           *[]schemas.ToolCall
+	ToolCalls           *[]schemas.ChatAssistantMessageToolCall
 	ErrorDetails        *schemas.BifrostError
 	Model               string                     // May be different from request
 	Object              string                     // May be different from request
@@ -82,11 +83,11 @@ type InitialLogData struct {
 	Provider           string
 	Model              string
 	Object             string
-	InputHistory       []schemas.BifrostMessage
-	Params             *schemas.ModelParameters
+	InputHistory       []schemas.ChatMessage
+	Params             interface{}
 	SpeechInput        *schemas.SpeechInput
 	TranscriptionInput *schemas.TranscriptionInput
-	Tools              *[]schemas.Tool
+	Tools              *[]schemas.ChatTool
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -273,28 +274,40 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		return req, nil, nil
 	}
 
-	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
-	if !ok {
-		p.logger.Error("request type not found in context")
-		return req, nil, nil
-	}
-
 	// Prepare initial log data
-	objectType := p.determineObjectType(requestType)
-	inputHistory := p.extractInputHistory(req.Input)
+	objectType := p.determineObjectType(req.RequestType)
+	inputHistory := p.extractInputHistory(req)
 
 	initialData := &InitialLogData{
-		Provider:           string(req.Provider),
-		Model:              req.Model,
-		Object:             objectType,
-		InputHistory:       inputHistory,
-		Params:             req.Params,
-		SpeechInput:        req.Input.SpeechInput,
-		TranscriptionInput: req.Input.TranscriptionInput,
+		Provider:     string(req.Provider),
+		Model:        req.Model,
+		Object:       objectType,
+		InputHistory: inputHistory,
 	}
 
-	if req.Params != nil && req.Params.Tools != nil {
-		initialData.Tools = req.Params.Tools
+	switch req.RequestType {
+	case schemas.TextCompletionRequest:
+		initialData.Params = &req.TextCompletionRequest.Params
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		initialData.Params = &req.ChatRequest.Params
+		initialData.Tools = &req.ChatRequest.Params.Tools
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		initialData.Params = &req.ResponsesRequest.Params
+
+		var tools []schemas.ChatTool
+		for _, tool := range req.ResponsesRequest.Params.Tools {
+			tools = append(tools, *tool.ToChatTool())
+		}
+
+		initialData.Tools = &tools
+	case schemas.EmbeddingRequest:
+		initialData.Params = &req.EmbeddingRequest.Params
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		initialData.Params = &req.SpeechRequest.Params
+		initialData.SpeechInput = &req.SpeechRequest.Input
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		initialData.Params = &req.TranscriptionRequest.Params
+		initialData.TranscriptionInput = &req.TranscriptionRequest.Input
 	}
 
 	// Store created timestamp in context for latency calculation optimization
@@ -361,23 +374,14 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 		return result, err, nil
 	}
 
-	provider, ok := (*ctx).Value(schemas.BifrostContextKeyRequestProvider).(schemas.ModelProvider)
-	if !ok {
-		p.logger.Error("provider not found in context")
-		return result, err, nil
+	var requestType schemas.RequestType
+
+	if result != nil {
+		requestType = result.ExtraFields.RequestType
+	} else {
+		requestType = err.ExtraFields.RequestType
 	}
 
-	model, ok := (*ctx).Value(schemas.BifrostContextKeyRequestModel).(string)
-	if !ok {
-		p.logger.Error("model not found in context")
-		return result, err, nil
-	}
-	// Check if this is a streaming response
-	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
-	if !ok {
-		p.logger.Error("request type missing/invalid in PostHook for request %s", requestID)
-		return result, err, nil
-	}
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest
 
@@ -403,7 +407,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			streamUpdateData.ErrorDetails = err
 		} else if result != nil {
 			if result.Model != "" {
-				streamUpdateData.Model = model
+				streamUpdateData.Model = result.Model
 			}
 
 			// Update object type if available
@@ -460,7 +464,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			updateData.Status = "success"
 
 			if result.Model != "" {
-				updateData.Model = model
+				updateData.Model = result.Model
 			}
 
 			// Update object type if available
@@ -468,23 +472,37 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				updateData.Object = result.Object
 			}
 
-			// Token usage
-			if result.Usage != nil && result.Usage.TotalTokens > 0 {
-				updateData.TokenUsage = result.Usage
+			// Token usage - handle both regular usage and responses API usage
+			if result.Usage != nil {
+				// For responses API, TotalTokens might not be set, but we can calculate it
+				if result.Usage.TotalTokens > 0 {
+					updateData.TokenUsage = result.Usage
+				} else if result.Usage.ResponsesExtendedResponseUsage != nil {
+					// For responses API, calculate total from input + output tokens
+					totalTokens := result.Usage.ResponsesExtendedResponseUsage.InputTokens +
+						result.Usage.ResponsesExtendedResponseUsage.OutputTokens
+					if totalTokens > 0 {
+						// Create a copy of usage with calculated total
+						usageCopy := *result.Usage
+						usageCopy.TotalTokens = totalTokens
+						updateData.TokenUsage = &usageCopy
+					}
+				}
 			}
 
-			// Output message and tool calls
-			if len(result.Choices) > 0 {
+			// Output message and tool calls - handle both chat completions and responses API
+			// Check if this is a chat completions response (has ChatCompletionsExtendedResponse)
+			if result != nil && len(result.Choices) > 0 {
 				choice := result.Choices[0]
 
-				// Check if this is a non-stream response choice
+				// Check if this is a non-stream response choice (chat completions)
 				if choice.BifrostNonStreamResponseChoice != nil {
 					updateData.OutputMessage = &choice.BifrostNonStreamResponseChoice.Message
 
 					// Extract tool calls if present
-					if choice.BifrostNonStreamResponseChoice.Message.AssistantMessage != nil &&
-						choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls != nil {
-						updateData.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls
+					if choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
+						choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
+						updateData.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
 					}
 				}
 			}
@@ -547,11 +565,11 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 		}
 
 		if logMsg.UpdateData != nil && p.pricingManager != nil {
-			cost := p.pricingManager.CalculateCostWithCacheDebug(result, provider, model, requestType)
+			cost := p.pricingManager.CalculateCostWithCacheDebug(result)
 			logMsg.UpdateData.Cost = &cost
 		}
 		if logMsg.StreamUpdateData != nil && isFinalChunk && p.pricingManager != nil {
-			cost := p.pricingManager.CalculateCostWithCacheDebug(result, provider, model, requestType)
+			cost := p.pricingManager.CalculateCostWithCacheDebug(result)
 			logMsg.StreamUpdateData.Cost = &cost
 		}
 
@@ -636,43 +654,58 @@ func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) stri
 }
 
 // extractInputHistory extracts input history from request input
-func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas.BifrostMessage {
-	if input.ChatCompletionInput != nil {
-		return *input.ChatCompletionInput
+func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) []schemas.ChatMessage {
+	if request.ChatRequest != nil {
+		return request.ChatRequest.Input
 	}
-	if input.TextCompletionInput != nil {
-		// Convert text completion to message format
-		return []schemas.BifrostMessage{
+	if request.TextCompletionRequest != nil {
+		var text string
+		if request.TextCompletionRequest.Input.Prompt != nil {
+			text = *request.TextCompletionRequest.Input.Prompt
+		} else {
+			var stringBuilder strings.Builder
+			for _, prompt := range request.TextCompletionRequest.Input.PromptArray {
+				stringBuilder.WriteString(prompt)
+			}
+			text = stringBuilder.String()
+		}
+
+		var stringBuilder strings.Builder
+		for _, prompt := range request.TextCompletionRequest.Input.PromptArray {
+			stringBuilder.WriteString(prompt)
+		}
+		return []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
-					ContentStr: input.TextCompletionInput,
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: &text,
 				},
 			},
 		}
-	}
-	if input.EmbeddingInput != nil {
-		texts := input.EmbeddingInput.Texts
 
-		if len(texts) == 0 && input.EmbeddingInput.Text != nil {
-			texts = []string{*input.EmbeddingInput.Text}
+	}
+	if request.EmbeddingRequest != nil {
+		texts := request.EmbeddingRequest.Input.Texts
+
+		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {
+			texts = []string{*request.EmbeddingRequest.Input.Text}
 		}
 
-		contentBlocks := make([]schemas.ContentBlock, len(texts))
+		contentBlocks := make([]schemas.ChatContentBlock, len(texts))
 		for i, text := range texts {
-			contentBlocks[i] = schemas.ContentBlock{
-				Type: schemas.ContentBlockTypeText,
+			contentBlocks[i] = schemas.ChatContentBlock{
+				Type: schemas.ChatContentBlockTypeText,
 				Text: &text,
 			}
 		}
-		return []schemas.BifrostMessage{
+		return []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentBlocks: &contentBlocks,
 				},
 			},
 		}
 	}
-	return []schemas.BifrostMessage{}
+	return []schemas.ChatMessage{}
 }

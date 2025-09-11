@@ -106,22 +106,24 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
-					return openaiReq.ToBifrostRequest(), nil
+					return &schemas.BifrostRequest{
+						ChatRequest: openaiReq.ToBifrostRequest(),
+					}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return openai.ToOpenAIChatCompletionResponse(resp), nil
+				return resp, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return openai.ToOpenAIError(err)
+				return err
 			},
 			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return openai.ToOpenAIChatCompletionStreamResponse(resp), nil
+					return resp, nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return openai.ToOpenAIError(err)
+					return err
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -142,15 +144,17 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if embeddingReq, ok := req.(*openai.OpenAIEmbeddingRequest); ok {
-					return embeddingReq.ToBifrostRequest(), nil
+					return &schemas.BifrostRequest{
+						EmbeddingRequest: embeddingReq.ToBifrostRequest(),
+					}, nil
 				}
 				return nil, errors.New("invalid embedding request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return openai.ToOpenAIEmbeddingResponse(resp), nil
+				return resp, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return openai.ToOpenAIError(err)
+				return err
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
 		})
@@ -170,7 +174,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if speechReq, ok := req.(*openai.OpenAISpeechRequest); ok {
-					return speechReq.ToBifrostRequest(), nil
+					return &schemas.BifrostRequest{
+						SpeechRequest: speechReq.ToBifrostRequest(),
+					}, nil
 				}
 				return nil, errors.New("invalid speech request type")
 			},
@@ -179,14 +185,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return speechResp.Audio, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return openai.ToOpenAIError(err)
+				return err
 			},
 			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
 					return openai.ToOpenAISpeechResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return openai.ToOpenAIError(err)
+					return err
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -208,22 +214,24 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestParser: parseTranscriptionMultipartRequest, // Handle multipart form parsing
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if transcriptionReq, ok := req.(*openai.OpenAITranscriptionRequest); ok {
-					return transcriptionReq.ToBifrostRequest(), nil
+					return &schemas.BifrostRequest{
+						TranscriptionRequest: transcriptionReq.ToBifrostRequest(),
+					}, nil
 				}
 				return nil, errors.New("invalid transcription request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return openai.ToOpenAITranscriptionResponse(resp), nil
+				return resp, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return openai.ToOpenAIError(err)
+				return err
 			},
 			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return openai.ToOpenAITranscriptionResponse(resp), nil
+					return resp, nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return openai.ToOpenAIError(err)
+					return err
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -283,51 +291,17 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 	// Extract optional parameters
 	if languageValues := form.Value["language"]; len(languageValues) > 0 && languageValues[0] != "" {
 		language := languageValues[0]
-		transcriptionReq.Language = &language
+		transcriptionReq.TranscriptionParameters.Language = &language
 	}
 
 	if promptValues := form.Value["prompt"]; len(promptValues) > 0 && promptValues[0] != "" {
 		prompt := promptValues[0]
-		transcriptionReq.Prompt = &prompt
+		transcriptionReq.TranscriptionParameters.Prompt = &prompt
 	}
 
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		responseFormat := responseFormatValues[0]
-		transcriptionReq.ResponseFormat = &responseFormat
-	}
-
-	if temperatureValues := form.Value["temperature"]; len(temperatureValues) > 0 && temperatureValues[0] != "" {
-		temp, err := strconv.ParseFloat(temperatureValues[0], 64)
-		if err != nil {
-			return errors.New("invalid temperature value")
-		}
-		transcriptionReq.Temperature = &temp
-	}
-
-	// Handle include[] array format used by OpenAI
-	if includeValues := form.Value["include[]"]; len(includeValues) > 0 {
-		transcriptionReq.Include = includeValues
-	} else if includeValues := form.Value["include"]; len(includeValues) > 0 && includeValues[0] != "" {
-		// Fallback: Handle comma-separated values for backwards compatibility
-		includes := strings.Split(includeValues[0], ",")
-		// Trim whitespace from each value
-		for i, v := range includes {
-			includes[i] = strings.TrimSpace(v)
-		}
-		transcriptionReq.Include = includes
-	}
-
-	// Handle timestamp_granularities[] array format used by OpenAI
-	if timestampValues := form.Value["timestamp_granularities[]"]; len(timestampValues) > 0 {
-		transcriptionReq.TimestampGranularities = timestampValues
-	} else if timestampValues := form.Value["timestamp_granularities"]; len(timestampValues) > 0 && timestampValues[0] != "" {
-		// Fallback: Handle comma-separated values for backwards compatibility
-		granularities := strings.Split(timestampValues[0], ",")
-		// Trim whitespace from each value
-		for i, v := range granularities {
-			granularities[i] = strings.TrimSpace(v)
-		}
-		transcriptionReq.TimestampGranularities = granularities
+		transcriptionReq.TranscriptionParameters.ResponseFormat = &responseFormat
 	}
 
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] != "" {

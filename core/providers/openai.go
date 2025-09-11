@@ -19,27 +19,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// // openAIResponsePool provides a pool for OpenAI response objects.
-// var openAIResponsePool = sync.Pool{
-// 	New: func() interface{} {
-// 		return &schemas.BifrostResponse{}
-// 	},
-// }
-
-// // acquireOpenAIResponse gets an OpenAI response from the pool and resets it.
-// func acquireOpenAIResponse() *schemas.BifrostResponse {
-// 	resp := openAIResponsePool.Get().(*schemas.BifrostResponse)
-// 	*resp = schemas.BifrostResponse{} // Reset the struct
-// 	return resp
-// }
-
-// // releaseOpenAIResponse returns an OpenAI response to the pool.
-// func releaseOpenAIResponse(resp *schemas.BifrostResponse) {
-// 	if resp != nil {
-// 		openAIResponsePool.Put(resp)
-// 	}
-// }
-
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
@@ -98,23 +77,115 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the OpenAI provider.
 // Returns an error indicating that text completion is not available.
-func (provider *OpenAIProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "openai")
+}
+
+func handleOpenAITextCompletionRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostTextCompletionRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	reqBody := openai.ToOpenAITextCompletionRequest(request)
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	jsonBody, err := sonic.Marshal(reqBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
+
+	req.SetBody(jsonBody)
+
+	// Make request
+	bifrostErr := makeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+
+		var errorResp map[string]interface{}
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = fmt.Sprintf("%s error: %v", providerName, errorResp)
+		return nil, bifrostErr
+	}
+
+	responseBody := resp.Body()
+
+	response := &schemas.BifrostResponse{}
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.Provider = providerName
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // ChatCompletion performs a chat completion request to the OpenAI API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
-	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
-	providerName := provider.GetProviderKey()
+	return handleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}
+
+func handleOpenAIChatCompletionRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostChatRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
 
 	// Use centralized converter
-	reqBody := openai.ToOpenAIChatCompletionRequest(input)
+	reqBody := openai.ToOpenAIChatRequest(request)
 
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
@@ -128,9 +199,9 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeaders(req, extraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
+	req.SetRequestURI(url)
 	req.Header.SetMethod("POST")
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
@@ -138,14 +209,14 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	bifrostErr := makeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, parseOpenAIError(resp)
 	}
 
@@ -157,18 +228,106 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.
 	response := &schemas.BifrostResponse{}
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Set raw response if enabled
-	if provider.sendBackRawResponse {
+	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	if input.Params != nil {
-		response.ExtraFields.Params = *input.Params
+	response.ExtraFields.Provider = providerName
+
+	return response, nil
+}
+
+func (provider *OpenAIProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Check if chat completion is allowed for this provider
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
+
+	return handleOpenAIResponsesRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/responses",
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}
+
+func handleOpenAIResponsesRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostResponsesRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
+
+	// Use centralized converter
+	reqBody := openai.ToOpenAIResponsesRequest(request)
+
+	jsonBody, err := sonic.Marshal(reqBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
+
+	logger.Debug(fmt.Sprintf("request body: %s", string(jsonBody)))
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
+
+	req.SetBody(jsonBody)
+
+	// Make request
+	bifrostErr := makeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, parseOpenAIError(resp)
+	}
+
+	responseBody := resp.Body()
+
+	// Pre-allocate response structs from pools
+	// response := acquireOpenAIResponse()
+	// defer releaseOpenAIResponse(response)
+	response := &schemas.BifrostResponse{}
+
+	// Use enhanced response handler with pre-allocated response
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	response.ExtraFields.Provider = providerName
@@ -179,25 +338,30 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.
 // Embedding generates embeddings for the given input text(s).
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed for this provider
-	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Use centralized converter
-	reqBody := openai.ToOpenAIEmbeddingRequest(input)
+	reqBody := openai.ToOpenAIEmbeddingRequest(request)
+
+	jsonBody, err := sonic.Marshal(reqBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
 
 	// Use the shared embedding request handler
 	return handleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/embeddings",
-		reqBody,
+		jsonBody,
 		key,
-		input.Params,
+		request.Params,
 		provider.networkConfig.ExtraHeaders,
 		providerName,
 		provider.sendBackRawResponse,
@@ -205,12 +369,20 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, 
 	)
 }
 
-func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, url string, requestBody interface{}, key schemas.Key, params *schemas.ModelParameters, extraHeaders map[string]string, providerName schemas.ModelProvider, sendBackRawResponse bool, logger schemas.Logger) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	jsonBody, err := sonic.Marshal(requestBody)
-	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
-	}
-
+// handleOpenAIEmbeddingRequest handles embedding requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same embedding request format.
+func handleOpenAIEmbeddingRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	jsonBody []byte,
+	key schemas.Key,
+	params *schemas.EmbeddingParameters,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -252,10 +424,6 @@ func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, 
 
 	response.ExtraFields.Provider = providerName
 
-	if params != nil {
-		response.ExtraFields.Params = *params
-	}
-
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -266,17 +434,17 @@ func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, 
 // ChatCompletionStream handles streaming for OpenAI chat completions.
 // It formats messages, prepares request body, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
-func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
-	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
 	// Use centralized converter
-	reqBody := openai.ToOpenAIChatCompletionRequest(input)
+	reqBody := openai.ToOpenAIChatRequest(request)
 	reqBody.Stream = schemas.Ptr(true)
-	reqBody.StreamOptions = &map[string]interface{}{
-		"include_usage": true,
+	reqBody.StreamOptions = &schemas.ChatStreamOptions{
+		IncludeUsage: schemas.Ptr(true),
 	}
 
 	// Prepare OpenAI headers
@@ -287,34 +455,32 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		"Cache-Control": "no-cache",
 	}
 
-	providerName := provider.GetProviderKey()
-
 	// Use shared streaming logic
 	return handleOpenAIStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		reqBody,
+		request.Model,
 		headers,
 		provider.networkConfig.ExtraHeaders,
-		providerName,
-		input.Params,
+		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
 	)
 }
 
-// performOpenAICompatibleStreaming handles streaming for OpenAI-compatible APIs (OpenAI, Azure).
+// handleOpenAIStreaming handles streaming for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE format.
 func handleOpenAIStreaming[T any](
 	ctx context.Context,
 	httpClient *http.Client,
 	url string,
 	requestBody T,
+	model string,
 	headers map[string]string,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
-	params *schemas.ModelParameters,
 	postHookRunner schemas.PostHookRunner,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
@@ -362,7 +528,7 @@ func handleOpenAIStreaming[T any](
 		usage := &schemas.LLMUsage{}
 
 		var finishReason *string
-		var id string
+		var messageID string
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -453,15 +619,17 @@ func handleOpenAIStreaming[T any](
 				response.Choices[0].FinishReason = nil
 			}
 
-			if response.ID != "" && id == "" {
-				id = response.ID
+			if response.ID != "" && messageID == "" {
+				messageID = response.ID
 			}
 
 			// Handle regular content chunks
 			if choice.BifrostStreamResponseChoice != nil && (choice.BifrostStreamResponseChoice.Delta.Content != nil || len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0) {
 				chunkIndex++
 
+				response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
 				response.ExtraFields.Provider = providerName
+				response.ExtraFields.ModelRequested = model
 				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
@@ -471,9 +639,9 @@ func handleOpenAIStreaming[T any](
 		// Handle scanner errors first
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
+			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, model, logger)
 		} else {
-			response := createBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, params, providerName)
+			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, model)
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()
@@ -484,15 +652,15 @@ func handleOpenAIStreaming[T any](
 // Speech handles non-streaming speech synthesis requests.
 // It formats the request body, makes the API call, and returns the response.
 // Returns the response and any error that occurred.
-func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.OperationSpeech); err != nil {
+func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Use centralized converter
-	openaiReq := openai.ToOpenAISpeechRequest(input)
+	openaiReq := openai.ToOpenAISpeechRequest(request)
 
 	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
@@ -535,7 +703,7 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, inp
 	// The audio data is typically in MP3, WAV, or other audio formats as specified by response_format
 	bifrostResponse := &schemas.BifrostResponse{
 		Object: "audio.speech",
-		Model:  input.Model,
+		Model:  request.Model,
 		Speech: &schemas.BifrostSpeech{
 			Audio: audioData,
 		},
@@ -544,25 +712,21 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, inp
 		},
 	}
 
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
-	}
-
 	return bifrostResponse, nil
 }
 
 // SpeechStream handles streaming for speech synthesis.
 // It formats the request body, creates HTTP request, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
-func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.OperationSpeechStream); err != nil {
+func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Use centralized converter
-	reqBody := openai.ToOpenAISpeechRequest(input)
+	reqBody := openai.ToOpenAISpeechRequest(request)
 	reqBody.StreamFormat = schemas.Ptr("sse")
 
 	jsonBody, err := sonic.Marshal(reqBody)
@@ -674,18 +838,16 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 			response.Speech = &speechResponse
 			response.Object = "audio.speech.chunk"
-			response.Model = input.Model
+			response.Model = request.Model
 			response.ExtraFields = schemas.BifrostResponseExtraFields{
-				Provider: providerName,
+				RequestType:    schemas.SpeechStreamRequest,
+				Provider:       providerName,
+				ModelRequested: request.Model,
 			}
 
 			response.ExtraFields.ChunkIndex = chunkIndex
 
 			if speechResponse.Usage != nil {
-				if input.Params != nil {
-					response.ExtraFields.Params = *input.Params
-				}
-
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 				return
@@ -697,7 +859,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
+			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, provider.logger)
 		}
 	}()
 
@@ -707,15 +869,15 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 // Transcription handles non-streaming transcription requests.
 // It creates a multipart form, adds fields, makes the API call, and returns the response.
 // Returns the response and any error that occurred.
-func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.OperationTranscription); err != nil {
+func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Use centralized converter
-	reqBody := openai.ToOpenAITranscriptionRequest(input)
+	reqBody := openai.ToOpenAITranscriptionRequest(request)
 
 	// Create multipart form
 	var body bytes.Buffer
@@ -773,7 +935,7 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 	// Create final response
 	bifrostResponse := &schemas.BifrostResponse{
 		Object:     "audio.transcription",
-		Model:      input.Model,
+		Model:      request.Model,
 		Transcribe: transcribeResponse,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
@@ -784,23 +946,19 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	if input.Params != nil {
-		bifrostResponse.ExtraFields.Params = *input.Params
-	}
-
 	return bifrostResponse, nil
 
 }
 
-func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.OperationTranscriptionStream); err != nil {
+func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionStreamRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
 	// Use centralized converter
-	reqBody := openai.ToOpenAITranscriptionRequest(input)
+	reqBody := openai.ToOpenAITranscriptionRequest(request)
 	reqBody.Stream = schemas.Ptr(true)
 
 	// Create multipart form
@@ -913,18 +1071,16 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 			response.Transcribe = &transcriptionResponse
 			response.Object = "audio.transcription.chunk"
-			response.Model = input.Model
+			response.Model = request.Model
 			response.ExtraFields = schemas.BifrostResponseExtraFields{
-				Provider: providerName,
+				RequestType:    schemas.TranscriptionStreamRequest,
+				Provider:       providerName,
+				ModelRequested: request.Model,
 			}
 
 			response.ExtraFields.ChunkIndex = chunkIndex
 
 			if transcriptionResponse.Usage != nil {
-				if input.Params != nil {
-					response.ExtraFields.Params = *input.Params
-				}
-
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 				return
@@ -936,7 +1092,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
+			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
 		}
 	}()
 
@@ -977,28 +1133,9 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 		}
 	}
 
-	if openaiReq.Temperature != nil {
-		if err := writer.WriteField("temperature", fmt.Sprintf("%f", *openaiReq.Temperature)); err != nil {
-			return newBifrostOperationError("failed to write temperature field", err, providerName)
-		}
-	}
-
 	if openaiReq.Stream != nil && *openaiReq.Stream {
 		if err := writer.WriteField("stream", "true"); err != nil {
 			return newBifrostOperationError("failed to write stream field", err, providerName)
-		}
-	}
-
-	// Handle array parameters specially for OpenAI's form data format
-	for _, item := range openaiReq.TimestampGranularities {
-		if err := writer.WriteField("timestamp_granularities[]", item); err != nil {
-			return newBifrostOperationError("failed to write timestamp_granularities param", err, providerName)
-		}
-	}
-
-	for _, item := range openaiReq.Include {
-		if err := writer.WriteField("include[]", item); err != nil {
-			return newBifrostOperationError("failed to write include param", err, providerName)
 		}
 	}
 
@@ -1010,7 +1147,7 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	return nil
 }
 
-func parseTranscriptionFormDataBody(writer *multipart.Writer, input *schemas.TranscriptionInput, model string, params *schemas.ModelParameters, providerName schemas.ModelProvider) *schemas.BifrostError {
+func parseTranscriptionFormDataBody(writer *multipart.Writer, input *schemas.TranscriptionInput, model string, params *schemas.TranscriptionParameters, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add file field
 	fileWriter, err := writer.CreateFormFile("file", "audio.mp3") // OpenAI requires a filename
 	if err != nil {
@@ -1026,20 +1163,20 @@ func parseTranscriptionFormDataBody(writer *multipart.Writer, input *schemas.Tra
 	}
 
 	// Add optional fields
-	if input.Language != nil {
-		if err := writer.WriteField("language", *input.Language); err != nil {
+	if params.Language != nil {
+		if err := writer.WriteField("language", *params.Language); err != nil {
 			return newBifrostOperationError("failed to write language field", err, providerName)
 		}
 	}
 
-	if input.Prompt != nil {
-		if err := writer.WriteField("prompt", *input.Prompt); err != nil {
+	if params.Prompt != nil {
+		if err := writer.WriteField("prompt", *params.Prompt); err != nil {
 			return newBifrostOperationError("failed to write prompt field", err, providerName)
 		}
 	}
 
-	if input.ResponseFormat != nil {
-		if err := writer.WriteField("response_format", *input.ResponseFormat); err != nil {
+	if params.ResponseFormat != nil {
+		if err := writer.WriteField("response_format", *params.ResponseFormat); err != nil {
 			return newBifrostOperationError("failed to write response_format field", err, providerName)
 		}
 	}
@@ -1080,6 +1217,10 @@ func parseTranscriptionFormDataBody(writer *multipart.Writer, input *schemas.Tra
 	}
 
 	return nil
+}
+
+func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "openai")
 }
 
 func parseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {

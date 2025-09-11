@@ -9,32 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
-
-// // ollamaResponsePool provides a pool for Ollama response objects.
-// var ollamaResponsePool = sync.Pool{
-// 	New: func() interface{} {
-// 		return &schemas.BifrostResponse{}
-// 	},
-// }
-
-// // acquireOllamaResponse gets a Ollama response from the pool and resets it.
-// func acquireOllamaResponse() *schemas.BifrostResponse {
-// 	resp := ollamaResponsePool.Get().(*schemas.BifrostResponse)
-// 	*resp = schemas.BifrostResponse{} // Reset the struct
-// 	return resp
-// }
-
-// // releaseOllamaResponse returns a Ollama response to the pool.
-// func releaseOllamaResponse(resp *schemas.BifrostResponse) {
-// 	if resp != nil {
-// 		ollamaResponsePool.Put(resp)
-// 	}
-// }
 
 // OllamaProvider implements the Provider interface for Ollama's API.
 type OllamaProvider struct {
@@ -92,82 +70,38 @@ func (provider *OllamaProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Ollama provider.
-func (provider *OllamaProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OllamaProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "ollama")
 }
 
 // ChatCompletion performs a chat completion request to the Ollama API.
-func (provider *OllamaProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Use centralized OpenAI converter since Ollama is OpenAI-compatible
-	openaiReq := openai.ToOpenAIChatCompletionRequest(input)
+func (provider *OllamaProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return handleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}
 
-	jsonBody, err := sonic.Marshal(openaiReq)
+func (provider *OllamaProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	response, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Ollama)
+		return nil, err
 	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
-	}
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from ollama provider: %s", string(resp.Body())))
-
-		var errorResp map[string]interface{}
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("Ollama error: %v", errorResp)
-		return nil, bifrostErr
-	}
-
-	responseBody := resp.Body()
-
-	// Pre-allocate response structs from pools
-	// response := acquireOllamaResponse()
-	// defer releaseOllamaResponse(response)
-	response := &schemas.BifrostResponse{}
-
-	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	response.ExtraFields.Provider = schemas.Ollama
-
-	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	if input.Params != nil {
-		response.ExtraFields.Params = *input.Params
-	}
+	response.ToResponsesOnly()
 
 	return response, nil
 }
 
 // Embedding is not supported by the Ollama provider.
-func (provider *OllamaProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OllamaProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "ollama")
 }
 
@@ -175,9 +109,9 @@ func (provider *OllamaProvider) Embedding(ctx context.Context, key schemas.Key, 
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Ollama's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since Ollama is OpenAI-compatible
-	reqBody := openai.ToOpenAIChatCompletionRequest(input)
+	reqBody := openai.ToOpenAIChatRequest(request)
 	reqBody.Stream = schemas.Ptr(true)
 
 	// Prepare Ollama headers (Ollama typically doesn't require authorization, but we include it if provided)
@@ -198,27 +132,31 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		reqBody,
+		request.Model,
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Ollama,
-		input.Params,
 		postHookRunner,
 		provider.logger,
 	)
 }
 
-func (provider *OllamaProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OllamaProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "ollama")
 }
 
-func (provider *OllamaProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OllamaProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "ollama")
 }
 
-func (provider *OllamaProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OllamaProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "ollama")
 }
 
-func (provider *OllamaProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OllamaProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "ollama")
+}
+
+func (provider *OllamaProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "ollama")
 }

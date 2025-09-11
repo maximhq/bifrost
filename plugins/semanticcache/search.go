@@ -13,9 +13,9 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
-func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.BifrostRequest, cacheKey string) (*schemas.PluginShortCircuit, error) {
 	// Generate hash for the request
-	hash, err := plugin.generateRequestHash(req, requestType)
+	hash, err := plugin.generateRequestHash(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate request hash: %w", err)
 	}
@@ -23,7 +23,7 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 	plugin.logger.Debug(PluginLoggerPrefix + " Generated Hash for Request: " + hash)
 
 	// Extract metadata for strict filtering
-	_, paramsHash, err := plugin.extractTextForEmbedding(req, requestType)
+	_, paramsHash, err := plugin.extractTextForEmbedding(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract metadata for filtering: %w", err)
 	}
@@ -51,7 +51,7 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 
 	// Make a full copy so we don't mutate the original backing array
 	selectFields := append([]string(nil), SelectFields...)
-	if plugin.isStreamingRequest(requestType) {
+	if bifrost.IsStreamRequestType(req.RequestType) {
 		selectFields = removeField(selectFields, "response")
 	} else {
 		selectFields = removeField(selectFields, "stream_chunks")
@@ -81,9 +81,9 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 }
 
 // performSemanticSearch performs semantic similarity search and returns matching response if found.
-func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType, cacheKey string) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.BifrostRequest, cacheKey string) (*schemas.PluginShortCircuit, error) {
 	// Extract text and metadata for embedding
-	text, paramsHash, err := plugin.extractTextForEmbedding(req, requestType)
+	text, paramsHash, err := plugin.extractTextForEmbedding(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract text for embedding: %w", err)
 	}
@@ -129,7 +129,7 @@ func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.B
 
 	// Make a full copy so we don't mutate the original backing array
 	selectFields := append([]string(nil), SelectFields...)
-	if plugin.isStreamingRequest(requestType) {
+	if bifrost.IsStreamRequestType(req.RequestType) {
 		selectFields = removeField(selectFields, "response")
 	} else {
 		selectFields = removeField(selectFields, "stream_chunks")

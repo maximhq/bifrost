@@ -4,44 +4,30 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 )
 
-const AnthropicDefaultMaxTokens = 4096
-
 // ToBedrockTextCompletionRequest converts a Bifrost text completion request to Bedrock format
-func ToBedrockTextCompletionRequest(bifrostReq *schemas.BifrostRequest) *BedrockTextCompletionRequest {
-	if bifrostReq == nil || bifrostReq.Input.TextCompletionInput == nil {
+func ToBedrockTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequest) *BedrockTextCompletionRequest {
+	if bifrostReq == nil || (bifrostReq.Input.Prompt == nil && len(bifrostReq.Input.PromptArray) == 0) {
 		return nil
 	}
 
+	anthropicReq := anthropic.ToAnthropicTextCompletionRequest(bifrostReq)
+
 	bedrockReq := &BedrockTextCompletionRequest{
-		Prompt: *bifrostReq.Input.TextCompletionInput,
+		Prompt:      anthropicReq.Prompt,
+		Temperature: anthropicReq.Temperature,
+		TopP:        anthropicReq.TopP,
+		TopK:        anthropicReq.TopK,
 	}
 
-	// Convert parameters if present
-	if bifrostReq.Params != nil {
-		// Handle max tokens with model-specific logic
-		if bifrostReq.Params.MaxTokens != nil {
-			if strings.Contains(bifrostReq.Model, "anthropic.") {
-				bedrockReq.MaxTokensToSample = bifrostReq.Params.MaxTokens
-			} else {
-				bedrockReq.MaxTokens = bifrostReq.Params.MaxTokens
-			}
-		}
-
-		// Standard sampling parameters
-		bedrockReq.Temperature = bifrostReq.Params.Temperature
-		bedrockReq.TopP = bifrostReq.Params.TopP
-		bedrockReq.TopK = bifrostReq.Params.TopK
-
-		// Handle stop sequences with dual support
-		if bifrostReq.Params.StopSequences != nil {
-			if strings.Contains(bifrostReq.Model, "anthropic.") {
-				bedrockReq.StopSequences = bifrostReq.Params.StopSequences
-			} else {
-				bedrockReq.Stop = bifrostReq.Params.StopSequences
-			}
-		}
+	if strings.Contains(bifrostReq.Model, "anthropic.") || strings.Contains(bifrostReq.Model, "claude") {
+		bedrockReq.MaxTokensToSample = &anthropicReq.MaxTokensToSample
+		bedrockReq.StopSequences = anthropicReq.StopSequences
+	} else {
+		bedrockReq.MaxTokens = &anthropicReq.MaxTokensToSample
+		bedrockReq.Stop = anthropicReq.StopSequences
 	}
 
 	return bedrockReq
@@ -54,17 +40,11 @@ func (response *BedrockAnthropicTextResponse) ToBifrostResponse() *schemas.Bifro
 	}
 
 	return &schemas.BifrostResponse{
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				Index: 0,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
-							ContentStr: &response.Completion,
-						},
-					},
-					StopString: &response.Stop,
+				BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
+					Text: &response.Completion,
 				},
 				FinishReason: &response.StopReason,
 			},
@@ -81,17 +61,12 @@ func (response *BedrockMistralTextResponse) ToBifrostResponse() *schemas.Bifrost
 		return nil
 	}
 
-	var choices []schemas.BifrostResponseChoice
+	var choices []schemas.BifrostChatResponseChoice
 	for i, output := range response.Outputs {
-		choices = append(choices, schemas.BifrostResponseChoice{
+		choices = append(choices, schemas.BifrostChatResponseChoice{
 			Index: i,
-			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentStr: &output.Text,
-					},
-				},
+			BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
+				Text: &output.Text,
 			},
 			FinishReason: &output.StopReason,
 		})

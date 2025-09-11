@@ -4,14 +4,16 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func ToMistralEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *MistralEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+func ToMistralEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *MistralEmbeddingRequest {
+	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 
-	texts := bifrostReq.Input.EmbeddingInput.Texts
-	if len(texts) == 0 && bifrostReq.Input.EmbeddingInput.Text != nil {
-		texts = []string{*bifrostReq.Input.EmbeddingInput.Text}
+	var texts []string
+	if bifrostReq.Input.Text != nil {
+		texts = []string{*bifrostReq.Input.Text}
+	} else {
+		texts = bifrostReq.Input.Texts
 	}
 
 	mistralReq := &MistralEmbeddingRequest{
@@ -23,7 +25,11 @@ func ToMistralEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *MistralEmbed
 	if bifrostReq.Params != nil {
 		mistralReq.OutputDtype = bifrostReq.Params.EncodingFormat
 		mistralReq.OutputDimension = bifrostReq.Params.Dimensions
-		mistralReq.User = bifrostReq.Params.User
+		if bifrostReq.Params.ExtraParams != nil {
+			if user, ok := bifrostReq.Params.ExtraParams["user"].(*string); ok {
+				mistralReq.User = user
+			}
+		}
 	}
 
 	return mistralReq
