@@ -386,11 +386,13 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					ID:     responseID,
 					Object: "chat.completion.chunk",
 					Model:  input.Model,
-					Choices: []schemas.BifrostResponseChoice{
-						{
-							Index: 0,
-							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-								Delta: schemas.BifrostStreamDelta{},
+					ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{},
+								},
 							},
 						},
 					},
@@ -525,4 +527,12 @@ func (provider *CohereProvider) Transcription(ctx context.Context, key schemas.K
 
 func (provider *CohereProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "cohere")
+}
+
+func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "cohere")
+}
+
+func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "cohere")
 }

@@ -208,6 +208,10 @@ type Provider interface {
 	ChatCompletion(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
 	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, input *BifrostRequest) (chan *BifrostStream, *BifrostError)
+	// Response performs a chat completion request using the Responses API
+	Responses(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
+	// ResponseStream performs a chat completion request using the Responses API stream
+	// ResponseStream(ctx context.Context, postHookRunner PostHookRunner, key Key, input *BifrostRequest) (chan *BifrostStream, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
 	// Speech performs a text to speech request

@@ -228,3 +228,11 @@ func (provider *SGLProvider) Transcription(ctx context.Context, key schemas.Key,
 func (provider *SGLProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "sgl")
 }
+
+func (provider *SGLProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "sgl")
+}
+
+func (provider *SGLProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "sgl")
+}

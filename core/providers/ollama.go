@@ -222,3 +222,11 @@ func (provider *OllamaProvider) Transcription(ctx context.Context, key schemas.K
 func (provider *OllamaProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "ollama")
 }
+
+func (provider *OllamaProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "ollama")
+}
+
+func (provider *OllamaProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "ollama")
+}

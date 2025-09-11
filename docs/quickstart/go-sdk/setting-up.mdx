@@ -78,7 +78,7 @@ func main() {
 	if initErr != nil {
 		panic(initErr)
 	}
-	defer client.Cleanup()
+	defer client.Shutdown()
 
 	messages := []schemas.BifrostMessage{
 		{

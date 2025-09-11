@@ -90,7 +90,9 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	var assistantMessage *schemas.AssistantMessage
 	if len(toolCalls) > 0 {
 		assistantMessage = &schemas.AssistantMessage{
-			ToolCalls: &toolCalls,
+			ChatCompletionsAssistantMessage: &schemas.ChatCompletionsAssistantMessage{
+				ToolCalls: &toolCalls,
+			},
 		}
 	}
 
@@ -127,7 +129,9 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostResponse{
-		Choices: choices,
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: choices,
+		},
 		Usage:   usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:  &latency,

@@ -54,19 +54,21 @@ func (response *BedrockAnthropicTextResponse) ToBifrostResponse() *schemas.Bifro
 	}
 
 	return &schemas.BifrostResponse{
-		Choices: []schemas.BifrostResponseChoice{
-			{
-				Index: 0,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
-							ContentStr: &response.Completion,
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+						Message: schemas.BifrostMessage{
+							Role: schemas.ModelChatMessageRoleAssistant,
+							Content: schemas.MessageContent{
+								ContentStr: &response.Completion,
+							},
 						},
+						StopString: &response.Stop,
 					},
-					StopString: &response.Stop,
+					FinishReason: &response.StopReason,
 				},
-				FinishReason: &response.StopReason,
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
@@ -98,7 +100,9 @@ func (response *BedrockMistralTextResponse) ToBifrostResponse() *schemas.Bifrost
 	}
 
 	return &schemas.BifrostResponse{
-		Choices: choices,
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: choices,
+		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.Bedrock,
 		},

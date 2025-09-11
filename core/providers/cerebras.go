@@ -284,3 +284,11 @@ func (provider *CerebrasProvider) Transcription(ctx context.Context, key schemas
 func (provider *CerebrasProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "cerebras")
 }
+
+func (provider *CerebrasProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "cerebras")
+}
+
+func (provider *CerebrasProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "cerebras")
+}

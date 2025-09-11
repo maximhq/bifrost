@@ -65,9 +65,6 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 	if r.ResponseFormat != nil {
 		params.ResponseFormat = r.ResponseFormat
 	}
-	if r.MaxCompletionTokens != nil {
-		params.MaxCompletionTokens = r.MaxCompletionTokens
-	}
 	if r.ReasoningEffort != nil {
 		params.ReasoningEffort = r.ReasoningEffort
 	}
@@ -127,4 +124,31 @@ func (r *OpenAIEmbeddingRequest) convertEmbeddingParameters() *schemas.ModelPara
 	}
 
 	return params
+}
+
+// prepareOpenAIChatRequest formats messages for the OpenAI API.
+// It handles both text and image content in messages.
+// Returns a slice of formatted messages and any additional parameters.
+// sanitizeBifrostMessages performs in-place image URL sanitization for any content blocks
+// with type image_url in the provided Bifrost messages and returns the sanitized slice.
+func sanitizeImageInputs(messages []schemas.BifrostMessage) []schemas.BifrostMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	for mi := range messages {
+		content := &messages[mi].Content
+		if content.ContentBlocks == nil {
+			continue
+		}
+		blocks := *content.ContentBlocks
+		for bi := range blocks {
+			if blocks[bi].Type == schemas.ContentBlockTypeImage && blocks[bi].ImageURL != nil {
+				if sanitizedURL, _ := schemas.SanitizeImageURL(*blocks[bi].ImageURL); sanitizedURL != "" {
+					blocks[bi].ImageURL = &sanitizedURL
+				}
+			}
+		}
+		*content.ContentBlocks = blocks
+	}
+	return messages
 }

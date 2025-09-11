@@ -69,9 +69,11 @@ func (response *OpenAITextCompletionResponse) ToBifrostResponse() *schemas.Bifro
 
 	// Create the Bifrost response
 	bifrostResponse := &schemas.BifrostResponse{
-		ID:      response.ID,
-		Object:  "list", // Standard Bifrost object type for completions
-		Choices: choices,
+		ID:     response.ID,
+		Object: "list", // Standard Bifrost object type for completions
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: choices,
+		},
 		Model:   response.Model,
 		Created: response.Created,
 		// Set provider outside of this function

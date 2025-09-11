@@ -42,8 +42,12 @@ func convertImageBlock(block schemas.ContentBlock) AnthropicContentBlock {
 		Source: &AnthropicImageSource{},
 	}
 
+	if block.ImageURL == nil {
+		return imageBlock
+	}
+
 	// Use the centralized utility functions from schemas package
-	sanitizedURL, _ := schemas.SanitizeImageURL(block.ImageURL.URL)
+	sanitizedURL, _ := schemas.SanitizeImageURL(*block.ImageURL)
 	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
 
 	formattedImgContent := &AnthropicImageContent{

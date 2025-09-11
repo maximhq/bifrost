@@ -31,14 +31,16 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostRequest) *Anthr
 func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	return &schemas.BifrostResponse{
 		ID: response.ID,
-		Choices: []schemas.BifrostResponseChoice{
-			{
-				Index: 0,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
-							ContentStr: &response.Completion,
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+						Message: schemas.BifrostMessage{
+							Role: schemas.ModelChatMessageRoleAssistant,
+							Content: schemas.MessageContent{
+								ContentStr: &response.Completion,
+							},
 						},
 					},
 				},

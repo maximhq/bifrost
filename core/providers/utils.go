@@ -596,11 +596,13 @@ func createBifrostChatCompletionChunkResponse(
 		ID:     id,
 		Object: "chat.completion.chunk",
 		Usage:  usage,
-		Choices: []schemas.BifrostResponseChoice{
-			{
-				FinishReason: finishReason,
-				BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-					Delta: schemas.BifrostStreamDelta{}, // empty delta
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+						Delta: schemas.BifrostStreamDelta{}, // empty delta
+					},
 				},
 			},
 		},

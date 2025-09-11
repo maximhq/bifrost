@@ -146,7 +146,6 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	// Format messages for Vertex API
-
 	var requestBody map[string]interface{}
 
 	if strings.Contains(input.Model, "claude") {
@@ -570,4 +569,12 @@ func (provider *VertexProvider) Transcription(ctx context.Context, key schemas.K
 
 func (provider *VertexProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "vertex")
+}
+
+func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "vertex")
+}
+
+func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "vertex")
 }

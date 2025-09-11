@@ -763,12 +763,14 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 			ID:     *messageID,
 			Object: "chat.completion.chunk",
 			Model:  model,
-			Choices: []schemas.BifrostResponseChoice{
-				{
-					Index: 0,
-					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-						Delta: schemas.BifrostStreamDelta{
-							Role: streamEvent.Role,
+			ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+							Delta: schemas.BifrostStreamDelta{
+								Role: streamEvent.Role,
+							},
 						},
 					},
 				},
@@ -793,20 +795,22 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 
 		// Create tool call structure for start event
 		var toolCall schemas.ToolCall
-		toolCall.Type = schemas.Ptr("function")
-		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
+		toolCall.Type = Ptr("function")
+		toolCall.Function.Name = Ptr(toolUseStart.Name)
 		toolCall.Function.Arguments = "{}" // Start with empty arguments
 
 		streamResponse := &schemas.BifrostResponse{
 			ID:     *messageID,
 			Object: "chat.completion.chunk",
 			Model:  model,
-			Choices: []schemas.BifrostResponseChoice{
-				{
-					Index: contentBlockIndex,
-					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-						Delta: schemas.BifrostStreamDelta{
-							ToolCalls: []schemas.ToolCall{toolCall},
+			ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: contentBlockIndex,
+						BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+							Delta: schemas.BifrostStreamDelta{
+								ToolCalls: []schemas.ToolCall{toolCall},
+							},
 						},
 					},
 				},
@@ -833,12 +837,14 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 					ID:     *messageID,
 					Object: "chat.completion.chunk",
 					Model:  model,
-					Choices: []schemas.BifrostResponseChoice{
-						{
-							Index: contentBlockIndex,
-							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-								Delta: schemas.BifrostStreamDelta{
-									Content: &text,
+					ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: contentBlockIndex,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: schemas.BifrostStreamDelta{
+										Content: &text,
+									},
 								},
 							},
 						},
@@ -864,7 +870,7 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 
 			// Create tool call structure
 			var toolCall schemas.ToolCall
-			toolCall.Type = schemas.Ptr("function")
+			toolCall.Type = Ptr("function")
 
 			// For streaming, we need to accumulate tool use data
 			// This is a simplified approach - in practice, you'd need to track tool calls across chunks
@@ -874,12 +880,14 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 				ID:     *messageID,
 				Object: "chat.completion.chunk",
 				Model:  model,
-				Choices: []schemas.BifrostResponseChoice{
-					{
-						Index: contentBlockIndex,
-						BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-							Delta: schemas.BifrostStreamDelta{
-								ToolCalls: []schemas.ToolCall{toolCall},
+				ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: contentBlockIndex,
+							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+								Delta: schemas.BifrostStreamDelta{
+									ToolCalls: []schemas.ToolCall{toolCall},
+								},
 							},
 						},
 					},
@@ -942,4 +950,12 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	}
 
 	return path
+}
+
+func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "bedrock")
+}
+
+func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "bedrock")
 }

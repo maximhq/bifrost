@@ -299,12 +299,17 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, 
 		}
 	}
 
+	jsonBody, err := sonic.Marshal(requestBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
+
 	// Use the shared embedding request handler
 	return handleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/openai/embeddings",
-		requestBody,
+		jsonBody,
 		key,
 		input.Params,
 		provider.networkConfig.ExtraHeaders,
@@ -870,7 +875,7 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 			// Transform Bifrost tools to Gemini format
 			var geminiTools []map[string]interface{}
 			for _, tool := range *params.Tools {
-				if tool.Type == "function" {
+				if *tool.Type == "function" {
 					geminiTool := map[string]interface{}{
 						"functionDeclarations": []map[string]interface{}{
 							{
@@ -909,7 +914,7 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 							functionCallingConfig["mode"] = "AUTO"
 						}
 					} else if params.ToolChoice.ToolChoiceStruct != nil {
-						switch params.ToolChoice.ToolChoiceStruct.Type {
+						switch *params.ToolChoice.ToolChoiceStruct.Type {
 						case schemas.ToolChoiceTypeNone:
 							functionCallingConfig["mode"] = "NONE"
 						case schemas.ToolChoiceTypeAuto:
@@ -1168,4 +1173,12 @@ func parseGeminiError(providerName schemas.ModelProvider, resp *fasthttp.Respons
 	}
 
 	return newBifrostOperationError(fmt.Sprintf("Gemini error: %v", errorResp), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
+}
+
+func (provider *GeminiProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "gemini")
+}
+
+func (provider *GeminiProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "gemini")
 }

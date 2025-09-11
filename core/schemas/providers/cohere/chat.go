@@ -35,7 +35,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 					contentBlocks = append(contentBlocks, CohereContentBlock{
 						Type: "image_url",
 						ImageURL: &CohereImageURL{
-							URL: block.ImageURL.URL,
+							URL: *block.ImageURL,
 						},
 					})
 				}
@@ -129,7 +129,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 				toolChoice := CohereToolChoice(*bifrostReq.Params.ToolChoice.ToolChoiceStr)
 				cohereReq.ToolChoice = &toolChoice
 			} else if bifrostReq.Params.ToolChoice.ToolChoiceStruct != nil {
-				switch bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type {
+				switch *bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type {
 				case schemas.ToolChoiceTypeFunction:
 					toolChoice := CohereToolChoice("REQUIRED")
 					cohereReq.ToolChoice = &toolChoice
@@ -137,7 +137,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereCh
 					toolChoice := CohereToolChoice("NONE")
 					cohereReq.ToolChoice = &toolChoice
 				default:
-					toolChoiceStr := string(bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type)
+					toolChoiceStr := string(*bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type)
 					toolChoice := CohereToolChoice(toolChoiceStr)
 					cohereReq.ToolChoice = &toolChoice
 				}
@@ -157,12 +157,14 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 	bifrostResponse := &schemas.BifrostResponse{
 		ID:     cohereResp.ID,
 		Object: "chat.completion",
-		Choices: []schemas.BifrostResponseChoice{
-			{
-				Index: 0,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+						Message: schemas.BifrostMessage{
+							Role: schemas.ModelChatMessageRoleAssistant,
+						},
 					},
 				},
 			},
@@ -193,8 +195,10 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 						} else if block.Type == "image_url" && block.ImageURL != nil {
 							contentBlocks = append(contentBlocks, schemas.ContentBlock{
 								Type: "image_url",
-								ImageURL: &schemas.ImageURLStruct{
-									URL: block.ImageURL.URL,
+								ChatCompletionsExtendedContentBlock: &schemas.ChatCompletionsExtendedContentBlock{
+								InputImage: &schemas.InputImage{
+										URL: block.ImageURL.URL,
+									},
 								},
 							})
 						}
@@ -222,7 +226,9 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 				toolCalls = append(toolCalls, bifrostToolCall)
 			}
 			bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.AssistantMessage = &schemas.AssistantMessage{
-				ToolCalls: &toolCalls,
+				ChatCompletionsAssistantMessage: &schemas.ChatCompletionsAssistantMessage{
+					ToolCalls: &toolCalls,
+				},
 			}
 		}
 	}

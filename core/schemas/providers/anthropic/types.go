@@ -128,11 +128,7 @@ type AnthropicTool struct {
 	Name        string  `json:"name"`
 	Type        *string `json:"type,omitempty"`
 	Description string  `json:"description"`
-	InputSchema *struct {
-		Type       string                 `json:"type"` // "object"
-		Properties map[string]interface{} `json:"properties"`
-		Required   []string               `json:"required"`
-	} `json:"input_schema,omitempty"`
+	InputSchema *schemas.FunctionParameters `json:"input_schema,omitempty"`
 }
 
 // AnthropicToolChoice represents tool choice in Anthropic format

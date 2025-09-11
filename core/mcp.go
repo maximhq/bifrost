@@ -798,14 +798,18 @@ func (m *MCPManager) shouldSkipToolForRequest(toolName string, ctx context.Conte
 // convertMCPToolToBifrostSchema converts an MCP tool definition to Bifrost format.
 func (m *MCPManager) convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.Tool {
 	return schemas.Tool{
-		Type: "function",
-		Function: schemas.Function{
-			Name:        mcpTool.Name,
-			Description: mcpTool.Description,
-			Parameters: schemas.FunctionParameters{
-				Type:       mcpTool.InputSchema.Type,
-				Properties: mcpTool.InputSchema.Properties,
-				Required:   mcpTool.InputSchema.Required,
+		Type: Ptr("function"),
+		ChatCompletionsExtendedTool: &schemas.ChatCompletionsExtendedTool{
+			Function: &schemas.ChatCompletionsFunction{
+				Name:        mcpTool.Name,
+				Description: Ptr(mcpTool.Description),
+				ToolFunction: &schemas.ToolFunction{
+					Parameters: schemas.FunctionParameters{
+						Type:       mcpTool.InputSchema.Type,
+						Properties: mcpTool.InputSchema.Properties,
+						Required:   mcpTool.InputSchema.Required,
+					},
+				},
 			},
 		},
 	}
@@ -859,7 +863,9 @@ func (m *MCPManager) createToolResponseMessage(toolCall schemas.ToolCall, respon
 			ContentStr: &responseText,
 		},
 		ToolMessage: &schemas.ToolMessage{
-			ToolCallID: toolCall.ID,
+			ChatCompletionsToolMessage: &schemas.ChatCompletionsToolMessage{
+				ToolCallID: toolCall.ID,
+			},
 		},
 	}
 }

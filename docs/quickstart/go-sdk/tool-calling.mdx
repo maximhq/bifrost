@@ -89,7 +89,7 @@ client, initErr := bifrost.Init(context.Background(), schemas.BifrostConfig{
 if initErr != nil {
 	panic(initErr)
 }
-defer client.Cleanup()
+defer client.Shutdown()
 
 response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
 	Provider: schemas.OpenAI,

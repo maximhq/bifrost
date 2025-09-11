@@ -190,12 +190,17 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, 
 	// Use centralized converter
 	reqBody := openai.ToOpenAIEmbeddingRequest(input)
 
+	jsonBody, err := sonic.Marshal(reqBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
+
 	// Use the shared embedding request handler
 	return handleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/embeddings",
-		reqBody,
+		jsonBody,
 		key,
 		input.Params,
 		provider.networkConfig.ExtraHeaders,
@@ -205,12 +210,9 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, 
 	)
 }
 
-func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, url string, requestBody interface{}, key schemas.Key, params *schemas.ModelParameters, extraHeaders map[string]string, providerName schemas.ModelProvider, sendBackRawResponse bool, logger schemas.Logger) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	jsonBody, err := sonic.Marshal(requestBody)
-	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
-	}
-
+// handleOpenAIEmbeddingRequest handles embedding requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same embedding request format.
+func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, url string, jsonBody []byte, key schemas.Key, params *schemas.ModelParameters, extraHeaders map[string]string, providerName schemas.ModelProvider, sendBackRawResponse bool, logger schemas.Logger) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -274,9 +276,9 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	// Use centralized converter
 	reqBody := openai.ToOpenAIChatCompletionRequest(input)
-	reqBody.Stream = schemas.Ptr(true)
-	reqBody.StreamOptions = &map[string]interface{}{
-		"include_usage": true,
+	reqBody.Stream = Ptr(true)
+	reqBody.StreamOptions = &schemas.StreamOptions{
+		IncludeUsage: Ptr(true),
 	}
 
 	// Prepare OpenAI headers
@@ -304,7 +306,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 	)
 }
 
-// performOpenAICompatibleStreaming handles streaming for OpenAI-compatible APIs (OpenAI, Azure).
+// handleOpenAIStreaming handles streaming for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE format.
 func handleOpenAIStreaming[T any](
 	ctx context.Context,
@@ -362,7 +364,7 @@ func handleOpenAIStreaming[T any](
 		usage := &schemas.LLMUsage{}
 
 		var finishReason *string
-		var id string
+		var messageID string
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -438,8 +440,8 @@ func handleOpenAIStreaming[T any](
 				response.Choices[0].FinishReason = nil
 			}
 
-			if response.ID != "" && id == "" {
-				id = response.ID
+			if response.ID != "" && messageID == "" {
+				messageID = response.ID
 			}
 
 			// Handle regular content chunks
@@ -458,7 +460,7 @@ func handleOpenAIStreaming[T any](
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
 		} else {
-			response := createBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, params, providerName)
+			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerName)
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()
@@ -1065,6 +1067,14 @@ func parseTranscriptionFormDataBody(writer *multipart.Writer, input *schemas.Tra
 	}
 
 	return nil
+}
+
+func (provider *OpenAIProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "openai")
+}
+
+func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "openai")
 }
 
 func parseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {

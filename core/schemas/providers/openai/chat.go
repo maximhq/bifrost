@@ -8,11 +8,13 @@ func (r *OpenAIChatRequest) ToBifrostRequest() *schemas.BifrostRequest {
 
 	params := r.convertParameters()
 
+	messages := sanitizeImageInputs(r.Messages)
+
 	bifrostReq := &schemas.BifrostRequest{
 		Provider: provider,
 		Model:    model,
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &r.Messages,
+			ChatCompletionInput: &messages,
 		},
 		Params: filterParams(provider, params),
 	}

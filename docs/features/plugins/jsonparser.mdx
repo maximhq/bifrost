@@ -208,7 +208,7 @@ func main() {
     if err != nil {
         panic(err)
     }
-    defer client.Cleanup()
+    defer client.Shutdown()
 
     // Request structured JSON response  
     request := &schemas.BifrostRequest{

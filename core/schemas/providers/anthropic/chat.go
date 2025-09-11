@@ -73,20 +73,22 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostReque
 					if content.Source != nil {
 						contentBlocks = append(contentBlocks, schemas.ContentBlock{
 							Type: schemas.ContentBlockTypeImage,
-							ImageURL: &schemas.ImageURLStruct{
-								URL: func() string {
-									if content.Source.Data != nil {
-										mime := "image/png"
-										if content.Source.MediaType != nil && *content.Source.MediaType != "" {
-											mime = *content.Source.MediaType
+							ChatCompletionsExtendedContentBlock: &schemas.ChatCompletionsExtendedContentBlock{
+								InputImage: &schemas.InputImage{
+									URL: func() string {
+										if content.Source.Data != nil {
+											mime := "image/png"
+											if content.Source.MediaType != nil && *content.Source.MediaType != "" {
+												mime = *content.Source.MediaType
+											}
+											return "data:" + mime + ";base64," + *content.Source.Data
 										}
-										return "data:" + mime + ";base64," + *content.Source.Data
-									}
-									if content.Source.URL != nil {
-										return *content.Source.URL
-									}
-									return ""
-								}(),
+										if content.Source.URL != nil {
+											return *content.Source.URL
+										}
+										return ""
+									}(),
+								},
 							},
 						})
 					}
@@ -105,7 +107,9 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostReque
 				case "tool_result":
 					if content.ToolUseID != nil {
 						bifrostMsg.ToolMessage = &schemas.ToolMessage{
-							ToolCallID: content.ToolUseID,
+							ChatCompletionsToolMessage: &schemas.ChatCompletionsToolMessage{
+								ToolCallID: content.ToolUseID,
+							},
 						}
 						if content.Content.ContentStr != nil {
 							contentBlocks = append(contentBlocks, schemas.ContentBlock{
@@ -122,20 +126,22 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostReque
 								} else if block.Source != nil {
 									contentBlocks = append(contentBlocks, schemas.ContentBlock{
 										Type: schemas.ContentBlockTypeImage,
-										ImageURL: &schemas.ImageURLStruct{
-											URL: func() string {
-												if block.Source.Data != nil {
-													mime := "image/png"
-													if block.Source.MediaType != nil && *block.Source.MediaType != "" {
-														mime = *block.Source.MediaType
+										ChatCompletionsExtendedContentBlock: &schemas.ChatCompletionsExtendedContentBlock{
+											InputImage: &schemas.InputImage{
+												URL: func() string {
+													if block.Source.Data != nil {
+														mime := "image/png"
+														if block.Source.MediaType != nil && *block.Source.MediaType != "" {
+															mime = *block.Source.MediaType
+														}
+														return "data:" + mime + ";base64," + *block.Source.Data
 													}
-													return "data:" + mime + ";base64," + *block.Source.Data
-												}
-												if block.Source.URL != nil {
-													return *block.Source.URL
-												}
-												return ""
-											}()},
+													if block.Source.URL != nil {
+														return *block.Source.URL
+													}
+													return ""
+												}()},
+										},
 									})
 								}
 							}
@@ -154,7 +160,9 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostReque
 
 			if len(toolCalls) > 0 && msg.Role == string(schemas.ModelChatMessageRoleAssistant) {
 				bifrostMsg.AssistantMessage = &schemas.AssistantMessage{
-					ToolCalls: &toolCalls,
+					ChatCompletionsAssistantMessage: &schemas.ChatCompletionsAssistantMessage{
+						ToolCalls: &toolCalls,
+					},
 				}
 			}
 		}
@@ -201,11 +209,15 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostReque
 			}
 
 			tools = append(tools, schemas.Tool{
-				Type: "function",
-				Function: schemas.Function{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  params,
+				Type: schemas.Ptr("function"),
+				ChatCompletionsExtendedTool: &schemas.ChatCompletionsExtendedTool{
+					Function: &schemas.ChatCompletionsFunction{
+						Name:        tool.Name,
+						Description: schemas.Ptr(tool.Description),
+						ToolFunction: &schemas.ToolFunction{
+							Parameters: params,
+						},
+					},
 				},
 			})
 		}
@@ -222,16 +234,16 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostReque
 		}
 		toolChoice := &schemas.ToolChoice{
 			ToolChoiceStruct: &schemas.ToolChoiceStruct{
-				Type: func() schemas.ToolChoiceType {
+				Type: func() *schemas.ToolChoiceType {
 					if request.ToolChoice.Type == "tool" {
-						return schemas.ToolChoiceTypeFunction
+						return schemas.Ptr(schemas.ToolChoiceTypeFunction)
 					}
-					return schemas.ToolChoiceType(request.ToolChoice.Type)
+					return schemas.Ptr(schemas.ToolChoiceType(request.ToolChoice.Type))
 				}(),
 			},
 		}
 		if request.ToolChoice.Type == "tool" && request.ToolChoice.Name != "" {
-			toolChoice.ToolChoiceStruct.Function = schemas.ToolChoiceFunction{
+			toolChoice.ToolChoiceStruct.Function = &schemas.ChatCompletionsToolChoiceFunction{
 				Name: request.ToolChoice.Name,
 			}
 		}
@@ -316,9 +328,6 @@ func (response *AnthropicMessageResponse) ToBifrostResponse() *schemas.BifrostRe
 		if len(toolCalls) > 0 {
 			assistantMessage.ToolCalls = &toolCalls
 		}
-		if thinking != "" {
-			assistantMessage.Thought = &thinking
-		}
 	}
 
 	// Create a single choice with the collected content
@@ -387,17 +396,15 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *Anthr
 			tools := make([]AnthropicTool, 0, len(*bifrostReq.Params.Tools))
 			for _, tool := range *bifrostReq.Params.Tools {
 				anthropicTool := AnthropicTool{
-					Name:        tool.Function.Name,
-					Description: tool.Function.Description,
+					Name: tool.Function.Name,
+				}
+				if tool.Function.Description != nil {
+					anthropicTool.Description = *tool.Function.Description
 				}
 
 				// Convert function parameters to input_schema
 				if tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil {
-					anthropicTool.InputSchema = &struct {
-						Type       string                 `json:"type"`
-						Properties map[string]interface{} `json:"properties"`
-						Required   []string               `json:"required"`
-					}{
+					anthropicTool.InputSchema = &schemas.FunctionParameters{
 						Type:       tool.Function.Parameters.Type,
 						Properties: tool.Function.Parameters.Properties,
 						Required:   tool.Function.Parameters.Required,
@@ -416,12 +423,12 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *Anthr
 			if bifrostReq.Params.ToolChoice.ToolChoiceStr != nil {
 				toolChoice.Type = *bifrostReq.Params.ToolChoice.ToolChoiceStr
 			} else if bifrostReq.Params.ToolChoice.ToolChoiceStruct != nil {
-				switch bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type {
+				switch *bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type {
 				case schemas.ToolChoiceTypeFunction:
 					toolChoice.Type = "tool"
 					toolChoice.Name = bifrostReq.Params.ToolChoice.ToolChoiceStruct.Function.Name
 				default:
-					toolChoice.Type = string(bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type)
+					toolChoice.Type = string(*bifrostReq.Params.ToolChoice.ToolChoiceStruct.Type)
 				}
 			}
 
@@ -518,14 +525,6 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *Anthr
 				}
 			}
 
-			// Convert thinking content
-			if msg.AssistantMessage != nil && msg.AssistantMessage.Thought != nil {
-				content = append(content, AnthropicContentBlock{
-					Type:     "thinking",
-					Thinking: msg.AssistantMessage.Thought,
-				})
-			}
-
 			// Convert tool calls
 			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
 				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
@@ -598,14 +597,6 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 		}
 		if choice.StopString != nil {
 			anthropicResp.StopSequence = choice.StopString
-		}
-
-		// Add thinking content if present
-		if choice.Message.AssistantMessage != nil && choice.Message.AssistantMessage.Thought != nil && *choice.Message.AssistantMessage.Thought != "" {
-			content = append(content, AnthropicContentBlock{
-				Type: "thinking",
-				Text: choice.Message.AssistantMessage.Thought,
-			})
 		}
 
 		// Add text content

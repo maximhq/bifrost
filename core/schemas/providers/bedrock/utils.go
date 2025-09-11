@@ -303,9 +303,9 @@ func convertContentBlock(block schemas.ContentBlock) (BedrockContentBlock, error
 
 // convertImageToBedrockSource converts a Bifrost image URL to Bedrock image source
 // Uses centralized utility functions like Anthropic converter
-func convertImageToBedrockSource(imageURL schemas.ImageURLStruct) *BedrockImageSource {
+func convertImageToBedrockSource(imageURL string) *BedrockImageSource {
 	// Use centralized utility functions from schemas package
-	sanitizedURL, _ := schemas.SanitizeImageURL(imageURL.URL)
+	sanitizedURL, _ := schemas.SanitizeImageURL(imageURL)
 	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
 
 	// Determine format from media type or default to jpeg
@@ -378,9 +378,9 @@ func convertToolConfig(params *schemas.ModelParameters) *BedrockToolConfig {
 		bedrockTool := BedrockTool{
 			ToolSpec: &BedrockToolSpec{
 				Name:        tool.Function.Name,
-				Description: &tool.Function.Description,
+				Description: schemas.Ptr("Tool extracted from conversation history"),
 				InputSchema: BedrockToolInputSchema{
-					JSON: convertFunctionParameters(tool.Function.Parameters),
+					JSON: tool.Function.Parameters,
 				},
 			},
 		}
@@ -444,7 +444,7 @@ func convertToolChoice(toolChoice schemas.ToolChoice) *BedrockToolChoice {
 
 	// Check if it's a struct choice
 	if toolChoice.ToolChoiceStruct != nil {
-		switch toolChoice.ToolChoiceStruct.Type {
+		switch *toolChoice.ToolChoiceStruct.Type {
 		case schemas.ToolChoiceTypeAuto:
 			return &BedrockToolChoice{
 				Auto: &BedrockToolChoiceAuto{},
@@ -496,10 +496,10 @@ func checkMessageForToolContent(msg schemas.BifrostMessage, toolsMap map[string]
 			if toolCall.Function.Name != nil {
 				if _, exists := toolsMap[*toolCall.Function.Name]; !exists {
 					toolsMap[*toolCall.Function.Name] = BedrockTool{
-								ToolSpec: &BedrockToolSpec{
-								Name: *toolCall.Function.Name,
-								Description: schemas.Ptr("Tool extracted from conversation history"),
-								InputSchema: BedrockToolInputSchema{
+						ToolSpec: &BedrockToolSpec{
+							Name:        *toolCall.Function.Name,
+							Description: schemas.Ptr("Tool extracted from conversation history"),
+							InputSchema: BedrockToolInputSchema{
 								JSON: map[string]interface{}{
 									"type":       "object",
 									"properties": map[string]interface{}{},
