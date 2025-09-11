@@ -635,7 +635,15 @@ func (p *MockerPlugin) matchesConditionsFast(req *schemas.BifrostRequest, condit
 func (p *MockerPlugin) extractMessageContentFast(req *schemas.BifrostRequest) string {
 	// Handle text completion input
 	if req.Input.TextCompletionInput != nil {
-		return *req.Input.TextCompletionInput
+		if req.Input.TextCompletionInput.Prompt != nil {
+			return *req.Input.TextCompletionInput.Prompt
+		} else {
+			var stringBuilder strings.Builder
+			for _, prompt := range req.Input.TextCompletionInput.PromptArray {
+				stringBuilder.WriteString(prompt)
+			}
+			return stringBuilder.String()
+		}
 	}
 
 	// Handle chat completion input - optimized for common cases
@@ -676,7 +684,13 @@ func (p *MockerPlugin) calculateRequestSizeFast(req *schemas.BifrostRequest) int
 
 	// Add input size
 	if req.Input.TextCompletionInput != nil {
-		size += len(*req.Input.TextCompletionInput)
+		if req.Input.TextCompletionInput.Prompt != nil {
+			size += len(*req.Input.TextCompletionInput.Prompt)
+		} else {
+			for _, prompt := range req.Input.TextCompletionInput.PromptArray {
+				size += len(prompt)
+			}
+		}
 	}
 
 	if req.Input.ChatCompletionInput != nil {
@@ -736,13 +750,13 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	mockResponse := &schemas.BifrostResponse{
 		Model: req.Model,
 		Usage: &usage,
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				Index: 0,
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
+					Message: schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						Content: schemas.ChatMessageContent{
 							ContentStr: &message,
 						},
 					},
@@ -899,13 +913,13 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 					CompletionTokens: 10,
 					TotalTokens:      15,
 				},
-				Choices: []schemas.BifrostResponseChoice{
+				Choices: []schemas.BifrostChatResponseChoice{
 					{
 						Index: 0,
 						BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-							Message: schemas.BifrostMessage{
-								Role: schemas.ModelChatMessageRoleAssistant,
-								Content: schemas.MessageContent{
+							Message: schemas.ChatMessage{
+								Role: schemas.ChatMessageRoleAssistant,
+								Content: schemas.ChatMessageContent{
 									ContentStr: bifrost.Ptr("Mock plugin default response"),
 								},
 							},

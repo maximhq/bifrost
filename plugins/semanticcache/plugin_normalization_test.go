@@ -69,24 +69,28 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4o-mini",
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
+				ChatCompletionInput: &[]schemas.ChatMessage{
 					{
-						Role: schemas.ModelChatMessageRoleSystem,
-						Content: schemas.MessageContent{
+						Role: schemas.ChatMessageRoleSystem,
+						Content: schemas.ChatMessageContent{
 							ContentStr: &tc.systemMsg,
 						},
 					},
 					{
-						Role: schemas.ModelChatMessageRoleUser,
-						Content: schemas.MessageContent{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
 							ContentStr: &tc.userMsg,
 						},
 					},
 				},
 			},
 			Params: &schemas.ModelParameters{
-				Temperature: PtrFloat64(0.5),
-				MaxTokens:   PtrInt(50),
+				CommonParameters: schemas.CommonParameters{
+					Temperature: PtrFloat64(0.5),
+				},
+				ChatParameters: schemas.ChatParameters{
+					MaxCompletionTokens: PtrInt(50),
+				},
 			},
 		}
 	}
@@ -217,10 +221,10 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 	requests := make([]*schemas.BifrostRequest, len(testCases))
 	for i, tc := range testCases {
 		// Create content blocks
-		contentBlocks := make([]schemas.ContentBlock, len(tc.textBlocks))
+		contentBlocks := make([]schemas.ChatContentBlock, len(tc.textBlocks))
 		for j, text := range tc.textBlocks {
-			contentBlocks[j] = schemas.ContentBlock{
-				Type: schemas.ContentBlockTypeText,
+			contentBlocks[j] = schemas.ChatContentBlock{
+				Type: schemas.ChatContentBlockTypeText,
 				Text: &text,
 			}
 		}
@@ -229,18 +233,22 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4o-mini",
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
+				ChatCompletionInput: &[]schemas.ChatMessage{
 					{
-						Role: schemas.ModelChatMessageRoleUser,
-						Content: schemas.MessageContent{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
 							ContentBlocks: &contentBlocks,
 						},
 					},
 				},
 			},
 			Params: &schemas.ModelParameters{
-				Temperature: PtrFloat64(0.5),
-				MaxTokens:   PtrInt(50),
+				CommonParameters: schemas.CommonParameters{
+					Temperature: PtrFloat64(0.5),
+				},
+				ChatParameters: schemas.ChatParameters{
+					MaxCompletionTokens: PtrInt(50),
+				},
 			},
 		}
 	}

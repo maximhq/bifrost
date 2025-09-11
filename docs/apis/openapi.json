@@ -372,7 +372,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BifrostMessage"
+                  "$ref": "#/components/schemas/ChatMessage"
                 },
                 "examples": {
                   "search_result": {
@@ -1803,7 +1803,7 @@
           "messages": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/BifrostMessage"
+              "$ref": "#/components/schemas/ChatMessage"
             },
             "description": "Array of chat messages",
             "minItems": 1
@@ -1892,7 +1892,7 @@
         "description": "AI model provider",
         "example": "openai"
       },
-      "BifrostMessage": {
+      "ChatMessage": {
         "type": "object",
         "required": ["role"],
         "properties": {
@@ -2343,7 +2343,7 @@
             "example": 0
           },
           "message": {
-            "$ref": "#/components/schemas/BifrostMessage"
+            "$ref": "#/components/schemas/ChatMessage"
           },
           "finish_reason": {
             "type": "string",
@@ -2427,7 +2427,7 @@
           "chat_history": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/BifrostMessage"
+              "$ref": "#/components/schemas/ChatMessage"
             },
             "description": "Full conversation history"
           },

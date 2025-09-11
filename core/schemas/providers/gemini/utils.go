@@ -237,15 +237,20 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.Tool) []Tool {
 	var geminiTools []Tool
 
 	for _, tool := range bifrostTools {
-		if tool.Type == "function" {
+		if tool.Type == nil {
+			continue
+		}
+		if *tool.Type == "function" {
 			geminiTool := Tool{
 				FunctionDeclarations: []*FunctionDeclaration{
 					{
-						Name:        tool.Function.Name,
-						Description: tool.Function.Description,
-						Parameters:  convertFunctionParametersToSchema(tool.Function.Parameters),
+						Name:       tool.Function.Name,
+						Parameters: convertFunctionParametersToSchema(tool.Function.Parameters),
 					},
 				},
+			}
+			if tool.Function.Description != nil {
+				geminiTool.FunctionDeclarations[0].Description = *tool.Function.Description
 			}
 			geminiTools = append(geminiTools, geminiTool)
 		}
@@ -290,7 +295,6 @@ func convertFunctionParametersToSchema(params schemas.FunctionParameters) *Schem
 	return schema
 }
 
-
 // convertToolChoiceToToolConfig converts Bifrost tool choice to Gemini tool config
 func convertToolChoiceToToolConfig(toolChoice *schemas.ToolChoice) ToolConfig {
 	config := ToolConfig{}
@@ -309,7 +313,7 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ToolChoice) ToolConfig {
 			functionCallingConfig.Mode = FunctionCallingConfigModeAuto
 		}
 	} else if toolChoice.ToolChoiceStruct != nil {
-		switch toolChoice.ToolChoiceStruct.Type {
+		switch *toolChoice.ToolChoiceStruct.Type {
 		case schemas.ToolChoiceTypeNone:
 			functionCallingConfig.Mode = FunctionCallingConfigModeNone
 		case schemas.ToolChoiceTypeAuto:
@@ -366,7 +370,7 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig sch
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomContent {
+func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []CustomContent {
 	var contents []CustomContent
 
 	for _, message := range messages {
@@ -407,14 +411,6 @@ func convertBifrostMessagesToGemini(messages []schemas.BifrostMessage) []CustomC
 					})
 				}
 			}
-		}
-
-		// Handle thinking content
-		if message.AssistantMessage != nil && message.AssistantMessage.Thought != nil && *message.AssistantMessage.Thought != "" {
-			parts = append(parts, &CustomPart{
-				Text:    *message.AssistantMessage.Thought,
-				Thought: true,
-			})
 		}
 
 		if len(parts) > 0 {

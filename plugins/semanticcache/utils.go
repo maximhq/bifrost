@@ -121,8 +121,8 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 		if req.Params.ToolChoice != nil {
 			if req.Params.ToolChoice.ToolChoiceStr != nil {
 				metadata["tool_choice"] = *req.Params.ToolChoice.ToolChoiceStr
-			} else if req.Params.ToolChoice.ToolChoiceStruct != nil {
-				metadata["tool_choice"] = (*req.Params.ToolChoice.ToolChoiceStruct).Function.Name
+			} else if req.Params.ToolChoice.ChatToolChoice != nil {
+				metadata["tool_choice"] = req.Params.ToolChoice.ChatToolChoice.Function.Name
 			}
 		}
 		if req.Params.Temperature != nil {
@@ -131,14 +131,11 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 		if req.Params.TopP != nil {
 			metadata["top_p"] = *req.Params.TopP
 		}
-		if req.Params.TopK != nil {
-			metadata["top_k"] = *req.Params.TopK
+		if req.Params.MaxCompletionTokens != nil {
+			metadata["max_tokens"] = *req.Params.MaxCompletionTokens
 		}
-		if req.Params.MaxTokens != nil {
-			metadata["max_tokens"] = *req.Params.MaxTokens
-		}
-		if req.Params.StopSequences != nil {
-			metadata["stop_sequences"] = *req.Params.StopSequences
+		if req.Params.Stop != nil {
+			metadata["stop_sequences"] = *req.Params.Stop
 		}
 		if req.Params.PresencePenalty != nil {
 			metadata["presence_penalty"] = *req.Params.PresencePenalty
@@ -176,7 +173,13 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 			return "", "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
 		}
 
-		return *req.Input.TextCompletionInput, metadataHash, nil
+		var textContent string
+		if req.Input.TextCompletionInput.Prompt != nil {
+			textContent = *req.Input.TextCompletionInput.Prompt
+		} else if len(req.Input.TextCompletionInput.PromptArray) > 0 {
+			textContent = strings.Join(req.Input.TextCompletionInput.PromptArray, " ")
+		}
+		return textContent, metadataHash, nil
 
 	case req.Input.ChatCompletionInput != nil:
 		reqInput := plugin.getInputForCaching(req)
@@ -195,8 +198,8 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 					if block.Text != nil {
 						blockTexts = append(blockTexts, *block.Text)
 					}
-					if block.ImageURL != nil && block.ImageURL.URL != "" {
-						attachments = append(attachments, block.ImageURL.URL)
+					if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
+						attachments = append(attachments, block.ImageURLStruct.URL)
 					}
 				}
 				content = strings.Join(blockTexts, " ")
@@ -386,18 +389,24 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.R
 
 	// Handle text completion normalization
 	if reqInput.TextCompletionInput != nil {
-		normalizedText := normalizeText(*reqInput.TextCompletionInput)
-		reqInput.TextCompletionInput = &normalizedText
+		if reqInput.TextCompletionInput.Prompt != nil {
+			normalizedText := normalizeText(*reqInput.TextCompletionInput.Prompt)
+			reqInput.TextCompletionInput.Prompt = &normalizedText
+		} else if len(reqInput.TextCompletionInput.PromptArray) > 0 {
+			for i, prompt := range reqInput.TextCompletionInput.PromptArray {
+				reqInput.TextCompletionInput.PromptArray[i] = normalizeText(prompt)
+			}
+		}
 	}
 
 	// Handle chat completion normalization
 	if reqInput.ChatCompletionInput != nil {
 		originalMessages := *reqInput.ChatCompletionInput
-		normalizedMessages := make([]schemas.BifrostMessage, 0, len(originalMessages))
+		normalizedMessages := make([]schemas.ChatMessage, 0, len(originalMessages))
 
 		for _, msg := range originalMessages {
 			// Skip system messages if configured to exclude them
-			if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && msg.Role == schemas.ModelChatMessageRoleSystem {
+			if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && msg.Role == schemas.ChatMessageRoleSystem {
 				continue
 			}
 
@@ -410,7 +419,7 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.R
 				normalizedMsg.Content.ContentStr = &normalizedContent
 			} else if msg.Content.ContentBlocks != nil {
 				// Create a copy of content blocks with normalized text
-				normalizedBlocks := make([]schemas.ContentBlock, len(*msg.Content.ContentBlocks))
+				normalizedBlocks := make([]schemas.ChatContentBlock, len(*msg.Content.ContentBlocks))
 				for i, block := range *msg.Content.ContentBlocks {
 					normalizedBlocks[i] = block
 					if block.Text != nil {

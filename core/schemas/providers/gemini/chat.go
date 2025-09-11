@@ -76,11 +76,11 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		Provider: provider,
 		Model:    model,
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{},
+			ChatCompletionInput: &[]schemas.ChatMessage{},
 		},
 	}
 
-	messages := []schemas.BifrostMessage{}
+	messages := []schemas.ChatMessage{}
 
 	allGenAiMessages := []Content{}
 	if r.SystemInstruction != nil {
@@ -105,7 +105,7 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 			case part.Text != "":
 				// Handle thought content specially for assistant messages
 				if part.Thought &&
-					(content.Role == string(schemas.ModelChatMessageRoleAssistant) || content.Role == string(RoleModel)) {
+					(content.Role == string(schemas.ChatMessageRoleAssistant) || content.Role == string(RoleModel)) {
 					thoughtStr = thoughtStr + part.Text + "\n"
 				} else {
 					contentBlocks = append(contentBlocks, schemas.ContentBlock{
@@ -116,7 +116,7 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 
 			case part.FunctionCall != nil:
 				// Only add function calls for assistant messages
-				if content.Role == string(schemas.ModelChatMessageRoleAssistant) || content.Role == string(RoleModel) {
+				if content.Role == string(schemas.ChatMessageRoleAssistant) || content.Role == string(RoleModel) {
 					jsonArgs, err := json.Marshal(part.FunctionCall.Args)
 					if err != nil {
 						jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
@@ -141,13 +141,15 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 					responseContent = []byte(fmt.Sprintf("%v", part.FunctionResponse.Response))
 				}
 
-				toolResponseMsg := schemas.BifrostMessage{
+				toolResponseMsg := schemas.ChatMessage{
 					Role: schemas.ModelChatMessageRoleTool,
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: schemas.Ptr(string(responseContent)),
 					},
 					ToolMessage: &schemas.ToolMessage{
-						ToolCallID: &part.FunctionResponse.Name,
+						ChatCompletionsToolMessage: &schemas.ChatCompletionsToolMessage{
+							ToolCallID: &part.FunctionResponse.Name,
+						},
 					},
 				}
 
@@ -158,8 +160,10 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 				if isImageMimeType(part.InlineData.MIMEType) {
 					contentBlocks = append(contentBlocks, schemas.ContentBlock{
 						Type: schemas.ContentBlockTypeImage,
-						ImageURL: &schemas.ImageURLStruct{
-							URL: fmt.Sprintf("data:%s;base64,%s", part.InlineData.MIMEType, base64.StdEncoding.EncodeToString(part.InlineData.Data)),
+						ChatCompletionsExtendedContentBlock: &schemas.ChatCompletionsExtendedContentBlock{
+							ImageURL: &schemas.InputImage{
+								URL: fmt.Sprintf("data:%s;base64,%s", part.InlineData.MIMEType, base64.StdEncoding.EncodeToString(part.InlineData.Data)),
+							},
 						},
 					})
 				}
@@ -169,8 +173,10 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 				if isImageMimeType(part.FileData.MIMEType) {
 					contentBlocks = append(contentBlocks, schemas.ContentBlock{
 						Type: schemas.ContentBlockTypeImage,
-						ImageURL: &schemas.ImageURLStruct{
-							URL: part.FileData.FileURI,
+						ChatCompletionsExtendedContentBlock: &schemas.ChatCompletionsExtendedContentBlock{
+							ImageURL: &schemas.InputImage{
+								URL: part.FileData.FileURI,
+							},
 						},
 					})
 				}
@@ -196,10 +202,10 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 		// Only create message if there's actual content, tool calls, or thought content
 		if len(contentBlocks) > 0 || len(toolCalls) > 0 || thoughtStr != "" {
 			// Create main message with content blocks
-			bifrostMsg := schemas.BifrostMessage{
+			bifrostMsg := schemas.ChatMessage{
 				Role: func(r string) schemas.ModelChatMessageRole {
 					if r == string(RoleModel) { // GenAI's internal alias
-						return schemas.ModelChatMessageRoleAssistant
+						return schemas.ChatMessageRoleAssistant
 					}
 					return schemas.ModelChatMessageRole(r)
 				}(content.Role),
@@ -207,20 +213,17 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 
 			// Set content only if there are content blocks
 			if len(contentBlocks) > 0 {
-				bifrostMsg.Content = schemas.MessageContent{
+				bifrostMsg.Content = schemas.ChatMessageContent{
 					ContentBlocks: &contentBlocks,
 				}
 			}
 
 			// Set assistant-specific fields for assistant/model messages
-			if content.Role == string(schemas.ModelChatMessageRoleAssistant) || content.Role == string(RoleModel) {
+			if content.Role == string(schemas.ChatMessageRoleAssistant) || content.Role == string(RoleModel) {
 				if len(toolCalls) > 0 || thoughtStr != "" {
 					bifrostMsg.AssistantMessage = &schemas.AssistantMessage{}
 					if len(toolCalls) > 0 {
 						bifrostMsg.AssistantMessage.ToolCalls = &toolCalls
-					}
-					if thoughtStr != "" {
-						bifrostMsg.AssistantMessage.Thought = &thoughtStr
 					}
 				}
 			}
@@ -269,10 +272,12 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostRequest {
 			if len(tool.FunctionDeclarations) > 0 {
 				for _, fn := range tool.FunctionDeclarations {
 					bifrostTool := schemas.Tool{
-						Type: "function",
-						Function: schemas.Function{
-							Name:        fn.Name,
-							Description: fn.Description,
+						Type: schemas.Ptr("function"),
+						ChatCompletionsExtendedTool: &schemas.ChatCompletionsExtendedTool{
+							Function: &schemas.ChatCompletionsFunction{
+								Name:        fn.Name,
+								Description: schemas.Ptr(fn.Description),
+							},
 						},
 					}
 					// Convert parameters schema if present
@@ -616,14 +621,6 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 						parts = append(parts, &Part{FunctionCall: fc})
 					}
 				}
-			}
-
-			// Handle thinking content if present
-			if choice.Message.AssistantMessage != nil && choice.Message.AssistantMessage.Thought != nil && *choice.Message.AssistantMessage.Thought != "" {
-				parts = append(parts, &Part{
-					Text:    *choice.Message.AssistantMessage.Thought,
-					Thought: true,
-				})
 			}
 
 			if len(parts) > 0 {

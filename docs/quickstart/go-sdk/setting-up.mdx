@@ -78,12 +78,12 @@ func main() {
 	if initErr != nil {
 		panic(initErr)
 	}
-	defer client.Cleanup()
+	defer client.Shutdown()
 
-	messages := []schemas.BifrostMessage{
+	messages := []schemas.ChatMessage{
 		{
-            Role:    schemas.ModelChatMessageRoleUser,
-            Content: schemas.MessageContent{
+            Role:    schemas.ChatMessageRoleUser,
+            Content: schemas.ChatMessageContent{
                 ContentStr: bifrost.Ptr("Hello, Bifrost!"),
             },
         },

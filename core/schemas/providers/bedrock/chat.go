@@ -90,12 +90,14 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	var assistantMessage *schemas.AssistantMessage
 	if len(toolCalls) > 0 {
 		assistantMessage = &schemas.AssistantMessage{
-			ToolCalls: &toolCalls,
+			ChatCompletionsAssistantMessage: &schemas.ChatCompletionsAssistantMessage{
+				ToolCalls: &toolCalls,
+			},
 		}
 	}
 
 	// Create the message content
-	messageContent := schemas.MessageContent{}
+	messageContent := schemas.ChatMessageContent{}
 	if len(contentBlocks) > 0 {
 		messageContent.ContentBlocks = &contentBlocks
 	}
@@ -105,8 +107,8 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 		{
 			Index: 0,
 			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-				Message: schemas.BifrostMessage{
-					Role:             schemas.ModelChatMessageRoleAssistant,
+				Message: schemas.ChatMessage{
+					Role:             schemas.ChatMessageRoleAssistant,
 					Content:          messageContent,
 					AssistantMessage: assistantMessage,
 				},
@@ -127,8 +129,10 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostResponse{
-		Choices: choices,
-		Usage:   usage,
+		ChatCompletionsExtendedResponse: &schemas.ChatCompletionsExtendedResponse{
+			Choices: choices,
+		},
+		Usage: usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:  &latency,
 			Provider: schemas.Bedrock,

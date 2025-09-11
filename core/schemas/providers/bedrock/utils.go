@@ -114,7 +114,7 @@ func ensureToolConfigForConversation(bifrostReq *schemas.BifrostRequest, bedrock
 
 // convertMessages converts Bifrost messages to Bedrock format
 // Returns regular messages and system messages separately
-func convertMessages(bifrostMessages []schemas.BifrostMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
+func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
@@ -128,7 +128,7 @@ func convertMessages(bifrostMessages []schemas.BifrostMessage) ([]BedrockMessage
 			}
 			systemMessages = append(systemMessages, systemMsg)
 
-		case schemas.ModelChatMessageRoleUser, schemas.ModelChatMessageRoleAssistant:
+		case schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
 			// Convert regular message
 			bedrockMsg, err := convertMessage(msg)
 			if err != nil {
@@ -153,7 +153,7 @@ func convertMessages(bifrostMessages []schemas.BifrostMessage) ([]BedrockMessage
 }
 
 // convertSystemMessage converts a Bifrost system message to Bedrock format
-func convertSystemMessage(msg schemas.BifrostMessage) (BedrockSystemMessage, error) {
+func convertSystemMessage(msg schemas.ChatMessage) (BedrockSystemMessage, error) {
 	systemMsg := BedrockSystemMessage{}
 
 	// Convert content
@@ -178,7 +178,7 @@ func convertSystemMessage(msg schemas.BifrostMessage) (BedrockSystemMessage, err
 }
 
 // convertMessage converts a Bifrost message to Bedrock format
-func convertMessage(msg schemas.BifrostMessage) (BedrockMessage, error) {
+func convertMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 	bedrockMsg := BedrockMessage{
 		Role: string(msg.Role),
 	}
@@ -202,7 +202,7 @@ func convertMessage(msg schemas.BifrostMessage) (BedrockMessage, error) {
 }
 
 // convertToolMessage converts a Bifrost tool message to Bedrock format
-func convertToolMessage(msg schemas.BifrostMessage) (BedrockMessage, error) {
+func convertToolMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 	bedrockMsg := BedrockMessage{
 		Role: "user", // Tool messages are typically treated as user messages in Bedrock
 	}
@@ -229,7 +229,7 @@ func convertToolMessage(msg schemas.BifrostMessage) (BedrockMessage, error) {
 				}
 			case schemas.ContentBlockTypeImage:
 				if block.ImageURL != nil {
-					imageSource := convertImageToBedrockSource(*block.ImageURL)
+					imageSource := convertImageToBedrockSource(block.ImageURL.URL)
 					toolResultContent = append(toolResultContent, BedrockToolResultContent{
 						Image: imageSource,
 					})
@@ -252,7 +252,7 @@ func convertToolMessage(msg schemas.BifrostMessage) (BedrockMessage, error) {
 }
 
 // convertContent converts Bifrost message content to Bedrock content blocks
-func convertContent(content schemas.MessageContent) ([]BedrockContentBlock, error) {
+func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
 
 	if content.ContentStr != nil {
@@ -287,7 +287,7 @@ func convertContentBlock(block schemas.ContentBlock) (BedrockContentBlock, error
 			return BedrockContentBlock{}, fmt.Errorf("image_url block missing image_url field")
 		}
 
-		imageSource := convertImageToBedrockSource(*block.ImageURL)
+		imageSource := convertImageToBedrockSource(block.ImageURL.URL)
 		return BedrockContentBlock{
 			Image: imageSource,
 		}, nil
@@ -303,9 +303,9 @@ func convertContentBlock(block schemas.ContentBlock) (BedrockContentBlock, error
 
 // convertImageToBedrockSource converts a Bifrost image URL to Bedrock image source
 // Uses centralized utility functions like Anthropic converter
-func convertImageToBedrockSource(imageURL schemas.ImageURLStruct) *BedrockImageSource {
+func convertImageToBedrockSource(imageURL string) *BedrockImageSource {
 	// Use centralized utility functions from schemas package
-	sanitizedURL, _ := schemas.SanitizeImageURL(imageURL.URL)
+	sanitizedURL, _ := schemas.SanitizeImageURL(imageURL)
 	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
 
 	// Determine format from media type or default to jpeg
@@ -378,9 +378,9 @@ func convertToolConfig(params *schemas.ModelParameters) *BedrockToolConfig {
 		bedrockTool := BedrockTool{
 			ToolSpec: &BedrockToolSpec{
 				Name:        tool.Function.Name,
-				Description: &tool.Function.Description,
+				Description: schemas.Ptr("Tool extracted from conversation history"),
 				InputSchema: BedrockToolInputSchema{
-					JSON: convertFunctionParameters(tool.Function.Parameters),
+					JSON: tool.Function.Parameters,
 				},
 			},
 		}
@@ -400,27 +400,6 @@ func convertToolConfig(params *schemas.ModelParameters) *BedrockToolConfig {
 	}
 
 	return toolConfig
-}
-
-// convertFunctionParameters converts Bifrost function parameters to Bedrock input schema
-func convertFunctionParameters(params schemas.FunctionParameters) map[string]interface{} {
-	schema := map[string]interface{}{
-		"type": params.Type,
-	}
-
-	if params.Description != nil {
-		schema["description"] = *params.Description
-	}
-
-	if params.Properties != nil {
-		schema["properties"] = params.Properties
-	}
-
-	if len(params.Required) > 0 {
-		schema["required"] = params.Required
-	}
-
-	return schema
 }
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format
@@ -444,7 +423,7 @@ func convertToolChoice(toolChoice schemas.ToolChoice) *BedrockToolChoice {
 
 	// Check if it's a struct choice
 	if toolChoice.ToolChoiceStruct != nil {
-		switch toolChoice.ToolChoiceStruct.Type {
+		switch *toolChoice.ToolChoiceStruct.Type {
 		case schemas.ToolChoiceTypeAuto:
 			return &BedrockToolChoice{
 				Auto: &BedrockToolChoiceAuto{},
@@ -469,7 +448,7 @@ func convertToolChoice(toolChoice schemas.ToolChoice) *BedrockToolChoice {
 }
 
 // extractToolsFromConversationHistory analyzes conversation history for tool content
-func extractToolsFromConversationHistory(messages []schemas.BifrostMessage) (bool, []BedrockTool) {
+func extractToolsFromConversationHistory(messages []schemas.ChatMessage) (bool, []BedrockTool) {
 	hasToolContent := false
 	toolsMap := make(map[string]BedrockTool)
 
@@ -486,7 +465,7 @@ func extractToolsFromConversationHistory(messages []schemas.BifrostMessage) (boo
 }
 
 // checkMessageForToolContent checks a single message for tool content and updates the tools map
-func checkMessageForToolContent(msg schemas.BifrostMessage, toolsMap map[string]BedrockTool) bool {
+func checkMessageForToolContent(msg schemas.ChatMessage, toolsMap map[string]BedrockTool) bool {
 	hasContent := false
 
 	// Check assistant tool calls
@@ -496,10 +475,10 @@ func checkMessageForToolContent(msg schemas.BifrostMessage, toolsMap map[string]
 			if toolCall.Function.Name != nil {
 				if _, exists := toolsMap[*toolCall.Function.Name]; !exists {
 					toolsMap[*toolCall.Function.Name] = BedrockTool{
-								ToolSpec: &BedrockToolSpec{
-								Name: *toolCall.Function.Name,
-								Description: schemas.Ptr("Tool extracted from conversation history"),
-								InputSchema: BedrockToolInputSchema{
+						ToolSpec: &BedrockToolSpec{
+							Name:        *toolCall.Function.Name,
+							Description: schemas.Ptr("Tool extracted from conversation history"),
+							InputSchema: BedrockToolInputSchema{
 								JSON: map[string]interface{}{
 									"type":       "object",
 									"properties": map[string]interface{}{},

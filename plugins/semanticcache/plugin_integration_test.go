@@ -27,18 +27,22 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, world!"),
 					},
 				},
 			},
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.7),
-			MaxTokens:   bifrost.Ptr(100),
+			CommonParameters: schemas.CommonParameters{
+				Temperature: bifrost.Ptr(0.7),
+			},
+			ChatParameters: schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
 		},
 	}
 
@@ -63,12 +67,12 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	// Simulate a response
 	response := &schemas.BifrostResponse{
 		ID: uuid.New().String(),
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("Hello! How can I help you today?"),
 						},
 					},
@@ -169,18 +173,22 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("What is the weather like?"),
 					},
 				},
 			},
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.7),
-			MaxTokens:   bifrost.Ptr(100),
+			CommonParameters: schemas.CommonParameters{
+				Temperature: bifrost.Ptr(0.7),
+			},
+			ChatParameters: schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(100),
+			},
 		},
 	}
 
@@ -199,12 +207,12 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 	// Cache a response
 	response := &schemas.BifrostResponse{
 		ID: uuid.New().String(),
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("It's sunny today!"),
 						},
 					},
@@ -233,8 +241,12 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 
 	modifiedRequest := *baseRequest
 	modifiedRequest.Params = &schemas.ModelParameters{
-		Temperature: bifrost.Ptr(0.5), // Different temperature
-		MaxTokens:   bifrost.Ptr(100),
+		CommonParameters: schemas.CommonParameters{
+			Temperature: bifrost.Ptr(0.5), // Different temperature
+		},
+		ChatParameters: schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(100),
+		},
 	}
 
 	_, shortCircuit2, err := setup.Plugin.PreHook(&ctx2, &modifiedRequest)
@@ -284,17 +296,19 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Tell me a short story"),
 					},
 				},
 			},
 		},
 		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.8),
+			CommonParameters: schemas.CommonParameters{
+				Temperature: bifrost.Ptr(0.8),
+			},
 		},
 	}
 
@@ -329,7 +343,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 
 		chunkResponse := &schemas.BifrostResponse{
 			ID: uuid.New().String(),
-			Choices: []schemas.BifrostResponseChoice{
+			Choices: []schemas.BifrostChatResponseChoice{
 				{
 					Index:        i,
 					FinishReason: finishReason,
@@ -411,10 +425,10 @@ func TestSemanticCache_NoCacheWhenKeyMissing(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Test message"),
 					},
 				},
@@ -450,10 +464,10 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("TTL test message"),
 					},
 				},
@@ -474,12 +488,12 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 	// Simulate response and cache it
 	response := &schemas.BifrostResponse{
 		ID: "ttl-test-response",
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("TTL test response"),
 						},
 					},
@@ -516,10 +530,10 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Threshold test message"),
 					},
 				},
@@ -557,10 +571,10 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Provider model flags test"),
 					},
 				},
@@ -581,12 +595,12 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 	// Cache the response
 	response := &schemas.BifrostResponse{
 		ID: "provider-model-test",
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
+					Message: schemas.ChatMessage{
 						Role: "assistant",
-						Content: schemas.MessageContent{
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("Provider model test response"),
 						},
 					},
@@ -610,10 +624,10 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		Provider: schemas.Anthropic, // Different provider
 		Model:    "claude-3-haiku",  // Different model
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Provider model flags test"), // Same content
 					},
 				},
@@ -652,10 +666,10 @@ func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
 					Role: "user",
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Edge case test"),
 					},
 				},

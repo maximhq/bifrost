@@ -68,7 +68,6 @@ const AllowAllParams = "*"
 
 // Pre-defined parameter groups (initialized once at startup)
 var (
-
 	allowAllParams = ParameterSet{
 		AllowAllParams: true,
 	}
@@ -298,17 +297,11 @@ func (v *ParameterValidator) filterStandardFields(schema ParameterSet, source, t
 	if source.Stop != nil && schema["stop"] {
 		target.Stop = source.Stop
 	}
-	if source.MaxCompletionTokens != nil && schema["max_completion_tokens"] {
-		target.MaxCompletionTokens = source.MaxCompletionTokens
-	}
 	if source.ReasoningEffort != nil && schema["reasoning_effort"] {
 		target.ReasoningEffort = source.ReasoningEffort
 	}
 	if source.StreamOptions != nil && schema["stream_options"] {
 		target.StreamOptions = source.StreamOptions
-	}
-	if source.Stream != nil && schema["stream"] {
-		target.Stream = source.Stream
 	}
 	if source.LogProbs != nil && schema["logprobs"] {
 		target.LogProbs = source.LogProbs
@@ -445,6 +438,21 @@ var fileExtensionToMediaType = map[string]string{
 	".webp": "image/webp",
 	".svg":  "image/svg+xml",
 	".bmp":  "image/bmp",
+}
+
+// ImageContentType represents the type of image content
+type ImageContentType string
+
+const (
+	ImageContentTypeBase64 ImageContentType = "base64"
+	ImageContentTypeURL    ImageContentType = "url"
+)
+
+// URLTypeInfo contains extracted information about a URL
+type URLTypeInfo struct {
+	Type                 ImageContentType
+	MediaType            *string
+	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
 // SanitizeImageURL sanitizes and validates an image URL.

@@ -56,22 +56,6 @@ func (r *OpenAIEmbeddingRequest) ToBifrostRequest() *schemas.BifrostRequest {
 	return bifrostReq
 }
 
-// ToOpenAIEmbeddingResponse converts a Bifrost embedding response to OpenAI format
-func ToOpenAIEmbeddingResponse(bifrostResp *schemas.BifrostResponse) *OpenAIEmbeddingResponse {
-	if bifrostResp == nil || bifrostResp.Data == nil {
-		return nil
-	}
-
-	return &OpenAIEmbeddingResponse{
-		Object:            "list",
-		Data:              bifrostResp.Data,
-		Model:             bifrostResp.Model,
-		Usage:             bifrostResp.Usage,
-		ServiceTier:       bifrostResp.ServiceTier,
-		SystemFingerprint: bifrostResp.SystemFingerprint,
-	}
-}
-
 // ToOpenAIEmbeddingRequest converts a Bifrost embedding request to OpenAI format
 func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *OpenAIEmbeddingRequest {
 	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {

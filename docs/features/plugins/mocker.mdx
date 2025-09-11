@@ -37,17 +37,17 @@ func main() {
     if err != nil {
         panic(err)
     }
-    defer client.Cleanup()
+    defer client.Shutdown()
 
     // All requests will now return: "This is a mock response from the Mocker plugin"
     response, _ := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4",
         Input: schemas.RequestInput{
-            ChatCompletionInput: &[]schemas.BifrostMessage{
+            ChatCompletionInput: &[]schemas.ChatMessage{
                 {
-                    Role: schemas.ModelChatMessageRoleUser,
-                    Content: schemas.MessageContent{
+                    Role: schemas.ChatMessageRoleUser,
+                    Content: schemas.ChatMessageContent{
                         ContentStr: bifrost.Ptr("Hello!"),
                     },
                 },

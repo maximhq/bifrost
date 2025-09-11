@@ -41,10 +41,10 @@ func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, benchmark test"),
 					},
 				},
@@ -94,10 +94,10 @@ func BenchmarkMockerPlugin_PreHook_RegexRule(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, this should match the regex pattern"),
 					},
 				},
@@ -169,10 +169,10 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Test message"),
 					},
 				},
@@ -223,10 +223,10 @@ func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
 		Provider: schemas.OpenAI, // Different from rule condition
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Test message"),
 					},
 				},
@@ -274,10 +274,10 @@ func BenchmarkMockerPlugin_PreHook_Template(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Test message"),
 					},
 				},

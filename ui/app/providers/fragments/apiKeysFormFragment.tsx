@@ -3,6 +3,7 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
@@ -26,6 +27,7 @@ const MODEL_PLACEHOLDERS = {
 };
 
 export function ApiKeyFormFragment({ control, providerName }: Props) {
+	const isOpenAI = providerName === "openai";
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
@@ -133,6 +135,30 @@ export function ApiKeyFormFragment({ control, providerName }: Props) {
 					</FormItem>
 				)}
 			/>
+			{isOpenAI && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name={`key.openai_key_config.use_responses_api`}
+						render={({ field }) => (
+							<FormItem>
+								<FormControl>
+									<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+										<div className="space-y-0.5">
+											<label htmlFor="enforce-governance" className="text-sm font-medium">
+												Use Responses API
+											</label>
+											<p className="text-muted-foreground text-sm">Use the Responses API instead of the Chat Completion API.</p>
+										</div>
+										<Switch id="enforce-governance" size="md" checked={field.value} onCheckedChange={field.onChange} />
+									</div>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
 			{isAzure && (
 				<div className="space-y-4">
 					<FormField

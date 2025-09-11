@@ -57,6 +57,7 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostRequest) *OpenAITra
 	openaiReq.Language = transcriptionInput.Language
 	openaiReq.Prompt = transcriptionInput.Prompt
 	openaiReq.ResponseFormat = transcriptionInput.ResponseFormat
+	openaiReq.Temperature = params.Temperature
 
 	// Map parameters
 	if params != nil && params.ExtraParams != nil {
@@ -75,20 +76,4 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostRequest) *OpenAITra
 	}
 
 	return openaiReq
-}
-
-func ToOpenAITranscriptionResponse(bifrostResp *schemas.BifrostResponse) *OpenAITranscriptionResponse {
-	if bifrostResp == nil {
-		return nil
-	}
-
-	return &OpenAITranscriptionResponse{
-		ID:                bifrostResp.ID,
-		Object:            bifrostResp.Object,
-		Created:           bifrostResp.Created,
-		Model:             bifrostResp.Model,
-		Transcribe:        bifrostResp.Transcribe,
-		Usage:             bifrostResp.Usage,
-		SystemFingerprint: bifrostResp.SystemFingerprint,
-	}
 }

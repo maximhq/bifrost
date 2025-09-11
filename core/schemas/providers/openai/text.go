@@ -11,9 +11,8 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostRequest) *OpenAITe
 	}
 
 	openaiReq := &OpenAITextCompletionRequest{
-		Model:           bifrostReq.Model,
-		Prompt:          *bifrostReq.Input.TextCompletionInput,
-		ModelParameters: bifrostReq.Params, // Directly embed the parameters
+		Model:  bifrostReq.Model,
+		Prompt: *bifrostReq.Input.TextCompletionInput,
 	}
 
 	// Handle OpenAI-specific parameters from ExtraParams
@@ -35,59 +34,4 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostRequest) *OpenAITe
 	}
 
 	return openaiReq
-}
-
-// ToOpenAITextCompletionResponse converts an OpenAI text completion response to Bifrost format
-func (response *OpenAITextCompletionResponse) ToBifrostResponse() *schemas.BifrostResponse {
-	if response == nil {
-		return nil
-	}
-
-	// Convert choices
-	choices := make([]schemas.BifrostResponseChoice, 0, len(response.Choices))
-	for i, choice := range response.Choices {
-		// Create a copy of the text to avoid pointer issues
-		textCopy := choice.Text
-
-		bifrostChoice := schemas.BifrostResponseChoice{
-			Index: i,
-			BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
-				Text: &textCopy,
-			},
-			FinishReason: choice.FinishReason,
-		}
-
-		// Add log probabilities if available
-		if choice.Logprobs != nil {
-			bifrostChoice.LogProbs = &schemas.LogProbs{
-				TextCompletionLogProb: choice.Logprobs,
-			}
-		}
-
-		choices = append(choices, bifrostChoice)
-	}
-
-	// Create the Bifrost response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:      response.ID,
-		Object:  "list", // Standard Bifrost object type for completions
-		Choices: choices,
-		Model:   response.Model,
-		Created: response.Created,
-		// Set provider outside of this function
-	}
-
-	// Set system fingerprint
-	if response.SystemFingerprint != nil {
-		bifrostResponse.SystemFingerprint = response.SystemFingerprint
-	}
-
-	// Set usage information
-	if response.Usage != nil {
-		// Create a copy to avoid pointer issues
-		usageCopy := *response.Usage
-		bifrostResponse.Usage = &usageCopy
-	}
-
-	return bifrostResponse
 }
