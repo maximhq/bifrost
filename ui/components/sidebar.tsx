@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { useGetCoreConfigQuery } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetVersionQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useTheme } from "next-themes";
@@ -24,8 +24,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ThemeToggle } from "./theme-toggle";
-import { PromoCardStack } from "./ui/promo-card-stack";
+import { ThemeToggle } from "./themeToggle";
+import { PromoCardStack } from "./ui/promoCardStack";
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
@@ -135,6 +135,7 @@ const promoCards = [
 export default function AppSidebar() {
 	const pathname = usePathname();
 	const [mounted, setMounted] = useState(false);
+	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 
 	// Get governance config from RTK Query
@@ -245,6 +246,7 @@ export default function AppSidebar() {
 							<ThemeToggle />
 						</div>
 					</div>
+					<div className="mx-auto font-mono text-xs">{version ?? ""}</div>
 				</div>
 			</SidebarContent>
 

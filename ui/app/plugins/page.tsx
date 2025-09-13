@@ -4,10 +4,10 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import GradientHeader from "@/components/ui/gradient-header";
+import GradientHeader from "@/components/ui/gradientHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GithubLogoIcon } from "@phosphor-icons/react";
-import { AlertTriangle, ChevronRight, Code, Container, Database, Info, Monitor, Puzzle, Rocket, Shield, Terminal, Zap } from "lucide-react";
+import { AlertTriangle, ChevronRight, Code, Container, Database, Info, Monitor, Puzzle, Shield, Terminal, Zap } from "lucide-react";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
@@ -118,12 +118,6 @@ export default function PluginsPage() {
 								<Link href="https://github.com/maximhq/bifrost/tree/main/plugins" target="_blank">
 									<GithubLogoIcon className="mr-2 h-5 w-5" weight="bold" />
 									Browse All Plugins
-								</Link>
-							</Button>
-							<Button size="lg" variant="outline" asChild>
-								<Link href="https://github.com/maximhq/bifrost/tree/main/docs/contributing/plugin.md" target="_blank">
-									<Code className="mr-2 h-5 w-5" />
-									Build Your Own
 								</Link>
 							</Button>
 						</div>
@@ -373,13 +367,7 @@ export default function PluginsPage() {
 									</Link>
 								</Button>
 								<Button size="lg" variant="outline" asChild>
-									<Link href="https://github.com/maximhq/bifrost/tree/main/docs/contributing/plugin.md" target="_blank">
-										<Rocket className="mr-2 h-5 w-5" />
-										Development Guide
-									</Link>
-								</Button>
-								<Button size="lg" variant="outline" asChild>
-									<Link href="https://github.com/maximhq/bifrost/tree/main/docs/architecture/plugins.md" target="_blank">
+									<Link href="https://docs.getbifrost.ai/architecture/core/concurrency" target="_blank">
 										<Puzzle className="mr-2 h-5 w-5" />
 										Architecture Docs
 									</Link>

@@ -1,5 +1,5 @@
+import { ThemeToggle } from "./themeToggle";
 import { Separator } from "./ui/separator";
-import { ThemeToggle } from "./theme-toggle";
 
 export default function Header({ title }: { title: string }) {
 	return (

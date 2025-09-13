@@ -89,6 +89,8 @@ import (
 //go:embed all:ui
 var uiContent embed.FS
 
+var Version string
+
 var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 // Command line flags
@@ -118,8 +120,12 @@ const (
 //   - log-style: Logger output type (json or pretty). Default is JSON.
 
 func init() {
+	if Version == "" {
+		Version = "v1.0.0"
+	}
+	versionLine := fmt.Sprintf("║%s%s%s║", strings.Repeat(" ", (61-2-len(Version))/2), Version, strings.Repeat(" ", (61-2-len(Version)+1)/2))
 	// Welcome to bifrost!
-	fmt.Println(`
+	fmt.Printf(`
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
 ║   ██████╗ ██╗███████╗██████╗  ██████╗ ███████╗████████╗   ║
@@ -130,11 +136,15 @@ func init() {
 ║   ╚═════╝ ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝      ║
 ║                                                           ║
 ║═══════════════════════════════════════════════════════════║
-║                The Fastest LLM Gateway                    ║
+%s
 ║═══════════════════════════════════════════════════════════║
-║            https://github.com/maximhq/bifrost             ║
-╚═══════════════════════════════════════════════════════════╝`)
+║                 The Fastest LLM Gateway                   ║
+║═══════════════════════════════════════════════════════════║
+║             https://github.com/maximhq/bifrost            ║
+╚═══════════════════════════════════════════════════════════╝
 
+`, versionLine)
+	handlers.SetVersion(Version)
 	// Set default host from environment variable or use localhost
 	defaultHost := os.Getenv("BIFROST_HOST")
 	if defaultHost == "" {

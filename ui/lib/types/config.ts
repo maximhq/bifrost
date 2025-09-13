@@ -1,19 +1,19 @@
 // Configuration types that match the Go backend structures
 
-import { KNOWN_PROVIDERS } from "@/lib/constants/logs";
+import { KnownProvidersNames } from "@/lib/constants/logs";
 
 // Known provider names - all supported standard providers
-export type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
+export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Branded type for custom provider names to prevent collision with known providers
 export type CustomProviderName = string & { readonly __brand: "CustomProviderName" };
 
 // ModelProvider union - either known providers or branded custom providers
-export type ModelProvider = KnownProvider | CustomProviderName;
+export type ModelProviderName = KnownProvider | CustomProviderName;
 
 // Helper function to check if a provider name is a known provider
 export const isKnownProvider = (provider: string): provider is KnownProvider => {
-	return KNOWN_PROVIDERS.includes(provider.toLowerCase() as KnownProvider);
+	return KnownProvidersNames.includes(provider.toLowerCase() as KnownProvider);
 };
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
@@ -23,6 +23,12 @@ export interface AzureKeyConfig {
 	api_version?: string;
 }
 
+export const DefaultAzureKeyConfig: AzureKeyConfig = {
+	endpoint: "",
+	deployments: {},
+	api_version: "2024-02-01",
+} as const satisfies Required<AzureKeyConfig>;
+
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
 	project_id: string;
@@ -30,26 +36,48 @@ export interface VertexKeyConfig {
 	auth_credentials: string; // Always string - JSON string or env var
 }
 
+export const DefaultVertexKeyConfig: VertexKeyConfig = {
+	project_id: "",
+	region: "",
+	auth_credentials: "",
+} as const satisfies Required<VertexKeyConfig>;
+
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig
 export interface BedrockKeyConfig {
 	access_key: string;
 	secret_key: string;
 	session_token?: string;
-	region?: string;
+	region: string;
 	arn?: string;
 	deployments?: Record<string, string> | string; // Allow string during editing
 }
 
+export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
+	access_key: "",
+	secret_key: "",
+	session_token: "",
+	region: "us-east-1",
+	arn: "",
+	deployments: {},
+} as const satisfies Required<BedrockKeyConfig>;
+
 // Key structure matching Go's schemas.Key
-export interface Key {
+export interface ModelProviderKey {
 	id: string;
-	value: string;
-	models: string[];
+	value?: string;
+	models?: string[];
 	weight: number;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
 }
+
+export const DefaultModelProviderKey: ModelProviderKey = {
+	id: "",
+	value: "",
+	models: [],
+	weight: 1.0,
+};
 
 // NetworkConfig matching Go's schemas.NetworkConfig
 export interface NetworkConfig {
@@ -78,12 +106,6 @@ export interface ProxyConfig {
 	password?: string;
 }
 
-// CustomProviderConfig matching Go's schemas.CustomProviderConfig
-export interface CustomProviderConfig {
-	base_provider_type: KnownProvider;
-	allowed_requests?: AllowedRequests;
-}
-
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
 	text_completion: boolean;
@@ -96,31 +118,53 @@ export interface AllowedRequests {
 	transcription_stream: boolean;
 }
 
+export const DefaultAllowedRequests: AllowedRequests = {
+	text_completion: true,
+	chat_completion: true,
+	chat_completion_stream: true,
+	embedding: true,
+	speech: true,
+	speech_stream: true,
+	transcription: true,
+	transcription_stream: true,
+} as const satisfies Required<AllowedRequests>;
+
+// CustomProviderConfig matching Go's schemas.CustomProviderConfig
+export interface CustomProviderConfig {
+	base_provider_type: KnownProvider;
+	allowed_requests?: AllowedRequests;
+}
+
+export const DefaultCustomProviderConfig: CustomProviderConfig = {
+	base_provider_type: "openai",
+	allowed_requests: DefaultAllowedRequests,
+} as const satisfies Required<CustomProviderConfig>;
+
 // ProviderConfig matching Go's lib.ProviderConfig
-export interface ProviderConfig {
-	keys: Key[];
-	network_config: NetworkConfig;
-	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
+export interface ModelProviderConfig {
+	keys: ModelProviderKey[];
+	network_config?: NetworkConfig;
+	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
 
 // ProviderResponse matching Go's ProviderResponse
-export interface ProviderResponse extends ProviderConfig {
-	name: ModelProvider;
+export interface ModelProvider extends ModelProviderConfig {
+	name: ModelProviderName;
 }
 
 // ListProvidersResponse matching Go's ListProvidersResponse
 export interface ListProvidersResponse {
-	providers: ProviderResponse[];
+	providers?: ModelProvider[];
 	total: number;
 }
 
 // AddProviderRequest matching Go's AddProviderRequest
 export interface AddProviderRequest {
-	provider: ModelProvider;
-	keys: Key[];
+	provider: ModelProviderName;
+	keys: ModelProviderKey[];
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
@@ -130,7 +174,7 @@ export interface AddProviderRequest {
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
 export interface UpdateProviderRequest {
-	keys: Key[];
+	keys: ModelProviderKey[];
 	network_config: NetworkConfig;
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
 	proxy_config: ProxyConfig;
@@ -175,8 +219,8 @@ export interface CoreConfig {
 
 // Semantic cache configuration types
 export interface CacheConfig {
-	provider: ModelProvider;
-	keys: Key[];
+	provider: ModelProviderName;
+	keys: ModelProviderKey[];
 	embedding_model: string;
 	ttl_seconds: number;
 	threshold: number;
@@ -188,20 +232,31 @@ export interface CacheConfig {
 	updated_at?: string;
 }
 
+// Form-specific custom provider config that allows any string for base_provider_type
+export interface FormCustomProviderConfig extends Omit<CustomProviderConfig, "base_provider_type"> {
+	base_provider_type: string;
+}
+
+// Form-specific provider type that allows any string for name
+export interface FormModelProvider extends Omit<ModelProvider, "name" | "custom_provider_config"> {
+	name: string;
+	custom_provider_config?: FormCustomProviderConfig;
+}
+
 // Utility types for form handling
 export interface ProviderFormData {
-	provider: ModelProvider | "";
-	keys: Array<{ value: string; models: string[]; weight: number }>;
-	network_config: {
+	provider: FormModelProvider;
+	keys: ModelProviderKey[];
+	network_config?: {
 		baseURL?: string;
 		defaultRequestTimeoutInSeconds: number;
 		maxRetries: number;
 	};
-	concurrency_and_buffer_size: {
+	concurrency_and_buffer_size?: {
 		concurrency: number;
 		bufferSize: number;
 	};
-	custom_provider_config?: CustomProviderConfig;
+	custom_provider_config?: FormCustomProviderConfig;
 }
 
 // Status types

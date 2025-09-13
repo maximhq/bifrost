@@ -1,6 +1,6 @@
 "use client";
 
-import FullPageLoader from "@/components/full-page-loader";
+import FullPageLoader from "@/components/fullPageLoader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getErrorMessage, useGetCoreConfigQuery, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { useEffect, useState } from "react";

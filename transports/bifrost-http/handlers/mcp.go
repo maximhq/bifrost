@@ -32,16 +32,16 @@ func NewMCPHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.Co
 // RegisterRoutes registers all MCP-related routes
 func (h *MCPHandler) RegisterRoutes(r *router.Router) {
 	// MCP tool execution endpoint
-	r.POST("/v1/mcp/tool/execute", h.ExecuteTool)
-	r.GET("/api/mcp/clients", h.GetMCPClients)
-	r.POST("/api/mcp/client", h.AddMCPClient)
-	r.PUT("/api/mcp/client/{name}", h.EditMCPClientTools)
-	r.DELETE("/api/mcp/client/{name}", h.RemoveMCPClient)
-	r.POST("/api/mcp/client/{name}/reconnect", h.ReconnectMCPClient)
+	r.POST("/v1/mcp/tool/execute", h.executeTool)
+	r.GET("/api/mcp/clients", h.getMCPClients)
+	r.POST("/api/mcp/client", h.addMCPClient)
+	r.PUT("/api/mcp/client/{name}", h.editMCPClientTools)
+	r.DELETE("/api/mcp/client/{name}", h.removeMCPClient)
+	r.POST("/api/mcp/client/{name}/reconnect", h.reconnectMCPClient)
 }
 
-// ExecuteTool handles POST /v1/mcp/tool/execute - Execute MCP tool
-func (h *MCPHandler) ExecuteTool(ctx *fasthttp.RequestCtx) {
+// executeTool handles POST /v1/mcp/tool/execute - Execute MCP tool
+func (h *MCPHandler) executeTool(ctx *fasthttp.RequestCtx) {
 	var req schemas.ToolCall
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
@@ -72,8 +72,8 @@ func (h *MCPHandler) ExecuteTool(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp, h.logger)
 }
 
-// GetMCPClients handles GET /api/mcp/clients - Get all MCP clients
-func (h *MCPHandler) GetMCPClients(ctx *fasthttp.RequestCtx) {
+// getMCPClients handles GET /api/mcp/clients - Get all MCP clients
+func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	// Get clients from store config
 	configsInStore := h.store.MCPConfig
 	if configsInStore == nil {
@@ -120,8 +120,8 @@ func (h *MCPHandler) GetMCPClients(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, clients, h.logger)
 }
 
-// ReconnectMCPClient handles POST /api/mcp/client/{name}/reconnect - Reconnect an MCP client
-func (h *MCPHandler) ReconnectMCPClient(ctx *fasthttp.RequestCtx) {
+// reconnectMCPClient handles POST /api/mcp/client/{name}/reconnect - Reconnect an MCP client
+func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 	name, err := getNameFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid name: %v", err), h.logger)
@@ -139,8 +139,8 @@ func (h *MCPHandler) ReconnectMCPClient(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// AddMCPClient handles POST /api/mcp/client - Add a new MCP client
-func (h *MCPHandler) AddMCPClient(ctx *fasthttp.RequestCtx) {
+// addMCPClient handles POST /api/mcp/client - Add a new MCP client
+func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	var req schemas.MCPClientConfig
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
@@ -158,8 +158,8 @@ func (h *MCPHandler) AddMCPClient(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// EditMCPClientTools handles PUT /api/mcp/client/{name} - Edit MCP client tools
-func (h *MCPHandler) EditMCPClientTools(ctx *fasthttp.RequestCtx) {
+// editMCPClientTools handles PUT /api/mcp/client/{name} - Edit MCP client tools
+func (h *MCPHandler) editMCPClientTools(ctx *fasthttp.RequestCtx) {
 	name, err := getNameFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid name: %v", err), h.logger)
@@ -186,8 +186,8 @@ func (h *MCPHandler) EditMCPClientTools(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// RemoveMCPClient handles DELETE /api/mcp/client/{name} - Remove an MCP client
-func (h *MCPHandler) RemoveMCPClient(ctx *fasthttp.RequestCtx) {
+// removeMCPClient handles DELETE /api/mcp/client/{name} - Remove an MCP client
+func (h *MCPHandler) removeMCPClient(ctx *fasthttp.RequestCtx) {
 	name, err := getNameFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid name: %v", err), h.logger)

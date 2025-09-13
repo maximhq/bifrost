@@ -122,31 +122,31 @@ type UpdateCustomerRequest struct {
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router) {
 	// Virtual Key CRUD operations
-	r.GET("/api/governance/virtual-keys", h.GetVirtualKeys)
-	r.POST("/api/governance/virtual-keys", h.CreateVirtualKey)
-	r.GET("/api/governance/virtual-keys/{vk_id}", h.GetVirtualKey)
-	r.PUT("/api/governance/virtual-keys/{vk_id}", h.UpdateVirtualKey)
-	r.DELETE("/api/governance/virtual-keys/{vk_id}", h.DeleteVirtualKey)
+	r.GET("/api/governance/virtual-keys", h.getVirtualKeys)
+	r.POST("/api/governance/virtual-keys", h.createVirtualKey)
+	r.GET("/api/governance/virtual-keys/{vk_id}", h.getVirtualKey)
+	r.PUT("/api/governance/virtual-keys/{vk_id}", h.updateVirtualKey)
+	r.DELETE("/api/governance/virtual-keys/{vk_id}", h.deleteVirtualKey)
 
 	// Team CRUD operations
-	r.GET("/api/governance/teams", h.GetTeams)
-	r.POST("/api/governance/teams", h.CreateTeam)
-	r.GET("/api/governance/teams/{team_id}", h.GetTeam)
-	r.PUT("/api/governance/teams/{team_id}", h.UpdateTeam)
-	r.DELETE("/api/governance/teams/{team_id}", h.DeleteTeam)
+	r.GET("/api/governance/teams", h.getTeams)
+	r.POST("/api/governance/teams", h.createTeam)
+	r.GET("/api/governance/teams/{team_id}", h.getTeam)
+	r.PUT("/api/governance/teams/{team_id}", h.updateTeam)
+	r.DELETE("/api/governance/teams/{team_id}", h.deleteTeam)
 
 	// Customer CRUD operations
-	r.GET("/api/governance/customers", h.GetCustomers)
-	r.POST("/api/governance/customers", h.CreateCustomer)
-	r.GET("/api/governance/customers/{customer_id}", h.GetCustomer)
-	r.PUT("/api/governance/customers/{customer_id}", h.UpdateCustomer)
-	r.DELETE("/api/governance/customers/{customer_id}", h.DeleteCustomer)
+	r.GET("/api/governance/customers", h.getCustomers)
+	r.POST("/api/governance/customers", h.createCustomer)
+	r.GET("/api/governance/customers/{customer_id}", h.getCustomer)
+	r.PUT("/api/governance/customers/{customer_id}", h.updateCustomer)
+	r.DELETE("/api/governance/customers/{customer_id}", h.deleteCustomer)
 }
 
 // Virtual Key CRUD Operations
 
-// GetVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
-func (h *GovernanceHandler) GetVirtualKeys(ctx *fasthttp.RequestCtx) {
+// getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
+func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Preload all relationships for complete information
 	virtualKeys, err := h.configStore.GetVirtualKeys()
 	if err != nil {
@@ -161,8 +161,8 @@ func (h *GovernanceHandler) GetVirtualKeys(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// CreateVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
-func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
+// createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
+func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON", h.logger)
@@ -290,8 +290,8 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// GetVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
-func (h *GovernanceHandler) GetVirtualKey(ctx *fasthttp.RequestCtx) {
+// getVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
+func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 
 	vk, err := h.configStore.GetVirtualKey(vkID)
@@ -309,8 +309,8 @@ func (h *GovernanceHandler) GetVirtualKey(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// UpdateVirtualKey handles PUT /api/governance/virtual-keys/{vk_id} - Update a virtual key
-func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
+// updateVirtualKey handles PUT /api/governance/virtual-keys/{vk_id} - Update a virtual key
+func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 
 	var req UpdateVirtualKeyRequest
@@ -501,8 +501,8 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// DeleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a virtual key
-func (h *GovernanceHandler) DeleteVirtualKey(ctx *fasthttp.RequestCtx) {
+// deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a virtual key
+func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 
 	// Fetch the virtual key from the database to get the budget and rate limit
@@ -542,8 +542,8 @@ func (h *GovernanceHandler) DeleteVirtualKey(ctx *fasthttp.RequestCtx) {
 
 // Team CRUD Operations
 
-// GetTeams handles GET /api/governance/teams - Get all teams
-func (h *GovernanceHandler) GetTeams(ctx *fasthttp.RequestCtx) {
+// getTeams handles GET /api/governance/teams - Get all teams
+func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 
 	// Preload relationships for complete information
@@ -560,8 +560,8 @@ func (h *GovernanceHandler) GetTeams(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// CreateTeam handles POST /api/governance/teams - Create a new team
-func (h *GovernanceHandler) CreateTeam(ctx *fasthttp.RequestCtx) {
+// createTeam handles POST /api/governance/teams - Create a new team
+func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 	var req CreateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON", h.logger)
@@ -640,8 +640,8 @@ func (h *GovernanceHandler) CreateTeam(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// GetTeam handles GET /api/governance/teams/{team_id} - Get a specific team
-func (h *GovernanceHandler) GetTeam(ctx *fasthttp.RequestCtx) {
+// getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
+func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
 
 	team, err := h.configStore.GetTeam(teamID)
@@ -659,8 +659,8 @@ func (h *GovernanceHandler) GetTeam(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// UpdateTeam handles PUT /api/governance/teams/{team_id} - Update a team
-func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
+// updateTeam handles PUT /api/governance/teams/{team_id} - Update a team
+func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
 
 	var req UpdateTeamRequest
@@ -758,8 +758,8 @@ func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// DeleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
-func (h *GovernanceHandler) DeleteTeam(ctx *fasthttp.RequestCtx) {
+// deleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
+func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
 
 	team, err := h.configStore.GetTeam(teamID)
@@ -798,8 +798,8 @@ func (h *GovernanceHandler) DeleteTeam(ctx *fasthttp.RequestCtx) {
 
 // Customer CRUD Operations
 
-// GetCustomers handles GET /api/governance/customers - Get all customers
-func (h *GovernanceHandler) GetCustomers(ctx *fasthttp.RequestCtx) {
+// getCustomers handles GET /api/governance/customers - Get all customers
+func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
 	customers, err := h.configStore.GetCustomers()
 	if err != nil {
 		h.logger.Error("failed to retrieve customers: %v", err)
@@ -813,8 +813,8 @@ func (h *GovernanceHandler) GetCustomers(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// CreateCustomer handles POST /api/governance/customers - Create a new customer
-func (h *GovernanceHandler) CreateCustomer(ctx *fasthttp.RequestCtx) {
+// createCustomer handles POST /api/governance/customers - Create a new customer
+func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 	var req CreateCustomerRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON", h.logger)
@@ -891,8 +891,8 @@ func (h *GovernanceHandler) CreateCustomer(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// GetCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
-func (h *GovernanceHandler) GetCustomer(ctx *fasthttp.RequestCtx) {
+// getCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
+func (h *GovernanceHandler) getCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
 
 	customer, err := h.configStore.GetCustomer(customerID)
@@ -910,8 +910,8 @@ func (h *GovernanceHandler) GetCustomer(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// UpdateCustomer handles PUT /api/governance/customers/{customer_id} - Update a customer
-func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
+// updateCustomer handles PUT /api/governance/customers/{customer_id} - Update a customer
+func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
 
 	var req UpdateCustomerRequest
@@ -1006,8 +1006,8 @@ func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// DeleteCustomer handles DELETE /api/governance/customers/{customer_id} - Delete a customer
-func (h *GovernanceHandler) DeleteCustomer(ctx *fasthttp.RequestCtx) {
+// deleteCustomer handles DELETE /api/governance/customers/{customer_id} - Delete a customer
+func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
 
 	customer, err := h.configStore.GetCustomer(customerID)

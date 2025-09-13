@@ -1,7 +1,7 @@
 "use client";
 
 import MCPClientsList from "@/app/config/views/mcp-clients-lists";
-import FullPageLoader from "@/components/full-page-loader";
+import FullPageLoader from "@/components/fullPageLoader";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useGetMCPClientsQuery } from "@/lib/store";
 import { useEffect } from "react";

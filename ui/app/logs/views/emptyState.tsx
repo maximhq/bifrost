@@ -8,7 +8,7 @@ import { getExampleBaseUrl } from "@/lib/utils/port";
 import { AlertTriangle, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { CodeEditor } from "./code-editor";
+import { CodeEditor } from "./codeEditor";
 
 type Provider = "openai" | "anthropic" | "genai" | "litellm" | "langchain";
 type Language = "python" | "typescript";

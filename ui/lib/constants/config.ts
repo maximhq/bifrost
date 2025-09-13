@@ -1,17 +1,17 @@
-import { AllowedRequests } from "@/lib/types/config";
+import { AllowedRequests, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/types/config";
 
-export const DEFAULT_NETWORK_CONFIG = {
+export const DefaultNetworkConfig = {
 	base_url: "",
 	default_request_timeout_in_seconds: 30,
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
-};
+} satisfies NetworkConfig;
 
-export const DEFAULT_PERFORMANCE_CONFIG = {
-	concurrency: 10,
-	buffer_size: 100,
-};
+export const DefaultPerformanceConfig = {
+	concurrency: 1000,
+	buffer_size: 10000,
+} satisfies ConcurrencyAndBufferSize;
 
 export const MCP_STATUS_COLORS = {
 	connected: "bg-green-100 text-green-800",

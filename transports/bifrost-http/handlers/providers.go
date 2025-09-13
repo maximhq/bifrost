@@ -33,27 +33,6 @@ func NewProviderHandler(store *lib.Config, client *bifrost.Bifrost, logger schem
 	}
 }
 
-// AddProviderRequest represents the request body for adding a new provider
-type AddProviderRequest struct {
-	Provider                 schemas.ModelProvider             `json:"provider"`
-	Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider
-	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
-	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
-	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
-	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
-	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
-}
-
-// UpdateProviderRequest represents the request body for updating a provider
-type UpdateProviderRequest struct {
-	Keys                     []schemas.Key                    `json:"keys"`                             // API keys for the provider
-	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
-	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
-	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
-	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
-}
-
 // ProviderResponse represents the response for provider operations
 type ProviderResponse struct {
 	Name                     schemas.ModelProvider            `json:"name"`
@@ -80,16 +59,16 @@ type ErrorResponse struct {
 // RegisterRoutes registers all provider management routes
 func (h *ProviderHandler) RegisterRoutes(r *router.Router) {
 	// Provider CRUD operations
-	r.GET("/api/providers", h.ListProviders)
-	r.GET("/api/providers/{provider}", h.GetProvider)
-	r.POST("/api/providers", h.AddProvider)
-	r.PUT("/api/providers/{provider}", h.UpdateProvider)
-	r.DELETE("/api/providers/{provider}", h.DeleteProvider)
-	r.GET("/api/keys", h.ListKeys)
+	r.GET("/api/providers", h.listProviders)
+	r.GET("/api/providers/{provider}", h.getProvider)
+	r.POST("/api/providers", h.addProvider)
+	r.PUT("/api/providers/{provider}", h.updateProvider)
+	r.DELETE("/api/providers/{provider}", h.deleteProvider)
+	r.GET("/api/keys", h.listKeys)
 }
 
-// ListProviders handles GET /api/providers - List all providers
-func (h *ProviderHandler) ListProviders(ctx *fasthttp.RequestCtx) {
+// listProviders handles GET /api/providers - List all providers
+func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	providers, err := h.store.GetAllProviders()
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err), h.logger)
@@ -125,8 +104,8 @@ func (h *ProviderHandler) ListProviders(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response, h.logger)
 }
 
-// GetProvider handles GET /api/providers/{provider} - Get specific provider
-func (h *ProviderHandler) GetProvider(ctx *fasthttp.RequestCtx) {
+// getProvider handles GET /api/providers/{provider} - Get specific provider
+func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err), h.logger)
@@ -144,96 +123,101 @@ func (h *ProviderHandler) GetProvider(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response, h.logger)
 }
 
-// AddProvider handles POST /api/providers - Add a new provider
-func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
-	var req AddProviderRequest
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+// addProvider handles POST /api/providers - Add a new provider
+func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
+	// Payload structure
+	var payload = struct {
+		Provider                 schemas.ModelProvider             `json:"provider"`
+		Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider
+		NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
+		ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
+		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
+		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
+		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+	}{}
+
+	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err), h.logger)
 		return
 	}
 
 	// Validate provider
-	if req.Provider == "" {
+	if payload.Provider == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Missing provider", h.logger)
 		return
 	}
 
 	// baseProvider tracks the effective base provider type for validations/keys
-	baseProvider := req.Provider
-	if req.CustomProviderConfig != nil {
+	baseProvider := payload.Provider
+	if payload.CustomProviderConfig != nil {
 		// custom provider key should not be same as standard provider names
 		if bifrost.IsStandardProvider(baseProvider) {
 			SendError(ctx, fasthttp.StatusBadRequest, "Custom provider cannot be same as a standard provider", h.logger)
 			return
 		}
 
-		if req.CustomProviderConfig.BaseProviderType == "" {
+		if payload.CustomProviderConfig.BaseProviderType == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "BaseProviderType is required when CustomProviderConfig is provided", h.logger)
 			return
 		}
 
 		// check if base provider is a supported base provider
-		if !bifrost.IsSupportedBaseProvider(req.CustomProviderConfig.BaseProviderType) {
+		if !bifrost.IsSupportedBaseProvider(payload.CustomProviderConfig.BaseProviderType) {
 			SendError(ctx, fasthttp.StatusBadRequest, "BaseProviderType must be a standard provider", h.logger)
 			return
 		}
 
 		// CustomProviderKey is internally set by Bifrost, no validation needed
-		baseProvider = req.CustomProviderConfig.BaseProviderType
+		baseProvider = payload.CustomProviderConfig.BaseProviderType
 	}
 
-	// Validate required keys
-	if len(req.Keys) == 0 && baseProvider != schemas.Ollama && baseProvider != schemas.SGL {
-		SendError(ctx, fasthttp.StatusBadRequest, "At least one API key is required", h.logger)
-		return
-	}
-
-	if req.ConcurrencyAndBufferSize != nil {
-		if req.ConcurrencyAndBufferSize.Concurrency == 0 {
+	if payload.ConcurrencyAndBufferSize != nil {
+		if payload.ConcurrencyAndBufferSize.Concurrency == 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be greater than 0", h.logger)
 			return
 		}
-		if req.ConcurrencyAndBufferSize.BufferSize == 0 {
+		if payload.ConcurrencyAndBufferSize.BufferSize == 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "Buffer size must be greater than 0", h.logger)
 			return
 		}
 
-		if req.ConcurrencyAndBufferSize.Concurrency > req.ConcurrencyAndBufferSize.BufferSize {
+		if payload.ConcurrencyAndBufferSize.Concurrency > payload.ConcurrencyAndBufferSize.BufferSize {
 			SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be less than or equal to buffer size", h.logger)
 			return
 		}
 	}
 
 	// Check if provider already exists
-	if _, err := h.store.GetProviderConfigRedacted(req.Provider); err == nil {
-		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("Provider %s already exists", req.Provider), h.logger)
+	if _, err := h.store.GetProviderConfigRedacted(payload.Provider); err == nil {
+		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("Provider %s already exists", payload.Provider), h.logger)
 		return
 	}
 
 	// Construct ProviderConfig from individual fields
 	config := configstore.ProviderConfig{
-		Keys:                     req.Keys,
-		NetworkConfig:            req.NetworkConfig,
-		ConcurrencyAndBufferSize: req.ConcurrencyAndBufferSize,
-		SendBackRawResponse:      req.SendBackRawResponse != nil && *req.SendBackRawResponse,
-		CustomProviderConfig:     req.CustomProviderConfig,
+		Keys:                     payload.Keys,
+		NetworkConfig:            payload.NetworkConfig,
+		ProxyConfig:              payload.ProxyConfig,
+		ConcurrencyAndBufferSize: payload.ConcurrencyAndBufferSize,
+		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
+		CustomProviderConfig:     payload.CustomProviderConfig,
 	}
 
 	// Add provider to store (env vars will be processed by store)
-	if err := h.store.AddProvider(req.Provider, config); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", req.Provider, err))
+	if err := h.store.AddProvider(payload.Provider, config); err != nil {
+		h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", payload.Provider, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err), h.logger)
 		return
 	}
 
-	h.logger.Info(fmt.Sprintf("Provider %s added successfully", req.Provider))
+	h.logger.Info(fmt.Sprintf("Provider %s added successfully", payload.Provider))
 
 	// Get redacted config for response
-	redactedConfig, err := h.store.GetProviderConfigRedacted(req.Provider)
+	redactedConfig, err := h.store.GetProviderConfigRedacted(payload.Provider)
 	if err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to get redacted config for provider %s: %v", req.Provider, err))
+		h.logger.Warn(fmt.Sprintf("Failed to get redacted config for provider %s: %v", payload.Provider, err))
 		// Fall back to the raw config (no keys)
-		response := h.getProviderResponseFromConfig(req.Provider, configstore.ProviderConfig{
+		response := h.getProviderResponseFromConfig(payload.Provider, configstore.ProviderConfig{
 			NetworkConfig:            config.NetworkConfig,
 			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
 			ProxyConfig:              config.ProxyConfig,
@@ -244,24 +228,33 @@ func (h *ProviderHandler) AddProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	response := h.getProviderResponseFromConfig(req.Provider, *redactedConfig)
+	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig)
 
 	SendJSON(ctx, response, h.logger)
 }
 
-// UpdateProvider handles PUT /api/providers/{provider} - Update provider config
+// updateProvider handles PUT /api/providers/{provider} - Update provider config
 // NOTE: This endpoint expects ALL fields to be provided in the request body,
 // including both edited and non-edited fields. Partial updates are not supported.
 // The frontend should send the complete provider configuration.
-func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
+// This flow upserts the config
+func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err), h.logger)
 		return
 	}
 
-	var req UpdateProviderRequest
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+	var payload = struct {
+		Keys                     []schemas.Key                    `json:"keys"`                             // API keys for the provider
+		NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
+		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
+		ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
+		SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
+		CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
+	}{}
+
+	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err), h.logger)
 		return
 	}
@@ -269,14 +262,22 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	// Get the raw config to access actual values for merging with redacted request values
 	oldConfigRaw, err := h.store.GetProviderConfigRaw(provider)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err), h.logger)
+		SendError(ctx, fasthttp.StatusNotFound, err.Error(), h.logger)
 		return
+	}
+
+	if oldConfigRaw == nil {
+		oldConfigRaw = &configstore.ProviderConfig{}
 	}
 
 	oldConfigRedacted, err := h.store.GetProviderConfigRedacted(provider)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err), h.logger)
+		SendError(ctx, fasthttp.StatusNotFound, err.Error(), h.logger)
 		return
+	}
+
+	if oldConfigRedacted == nil {
+		oldConfigRedacted = &configstore.ProviderConfig{}
 	}
 
 	// Construct ProviderConfig from individual fields
@@ -293,7 +294,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	var keysToAdd []schemas.Key
 	var keysToUpdate []schemas.Key
 
-	for _, key := range req.Keys {
+	for _, key := range payload.Keys {
 		if !slices.ContainsFunc(oldConfigRaw.Keys, func(k schemas.Key) bool {
 			return k.ID == key.ID
 		}) {
@@ -305,7 +306,7 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 
 	var keysToDelete []schemas.Key
 	for _, key := range oldConfigRaw.Keys {
-		if !slices.ContainsFunc(req.Keys, func(k schemas.Key) bool {
+		if !slices.ContainsFunc(payload.Keys, func(k schemas.Key) bool {
 			return k.ID == key.ID
 		}) {
 			keysToDelete = append(keysToDelete, key)
@@ -319,34 +320,34 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	}
 	config.Keys = keys
 
-	if req.ConcurrencyAndBufferSize.Concurrency == 0 {
+	if payload.ConcurrencyAndBufferSize.Concurrency == 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be greater than 0", h.logger)
 		return
 	}
-	if req.ConcurrencyAndBufferSize.BufferSize == 0 {
+	if payload.ConcurrencyAndBufferSize.BufferSize == 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, "Buffer size must be greater than 0", h.logger)
 		return
 	}
 
-	if req.ConcurrencyAndBufferSize.Concurrency > req.ConcurrencyAndBufferSize.BufferSize {
+	if payload.ConcurrencyAndBufferSize.Concurrency > payload.ConcurrencyAndBufferSize.BufferSize {
 		SendError(ctx, fasthttp.StatusBadRequest, "Concurrency must be less than or equal to buffer size", h.logger)
 		return
 	}
 
 	// Build a prospective config with the requested CustomProviderConfig (including nil)
 	prospective := config
-	prospective.CustomProviderConfig = req.CustomProviderConfig
+	prospective.CustomProviderConfig = payload.CustomProviderConfig
 	if err := lib.ValidateCustomProviderUpdate(prospective, *oldConfigRaw, provider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err), h.logger)
 		return
 	}
 
-	config.ConcurrencyAndBufferSize = &req.ConcurrencyAndBufferSize
-	config.NetworkConfig = &req.NetworkConfig
-	config.ProxyConfig = req.ProxyConfig
-	config.CustomProviderConfig = req.CustomProviderConfig
-	if req.SendBackRawResponse != nil {
-		config.SendBackRawResponse = *req.SendBackRawResponse
+	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
+	config.NetworkConfig = &payload.NetworkConfig
+	config.ProxyConfig = payload.ProxyConfig
+	config.CustomProviderConfig = payload.CustomProviderConfig
+	if payload.SendBackRawResponse != nil {
+		config.SendBackRawResponse = *payload.SendBackRawResponse
 	}
 
 	// Update provider config in store (env vars will be processed by store)
@@ -391,8 +392,8 @@ func (h *ProviderHandler) UpdateProvider(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response, h.logger)
 }
 
-// DeleteProvider handles DELETE /api/providers/{provider} - Remove provider
-func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
+// deleteProvider handles DELETE /api/providers/{provider} - Remove provider
+func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err), h.logger)
@@ -421,8 +422,8 @@ func (h *ProviderHandler) DeleteProvider(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response, h.logger)
 }
 
-// ListKeys handles GET /api/keys - List all keys
-func (h *ProviderHandler) ListKeys(ctx *fasthttp.RequestCtx) {
+// listKeys handles GET /api/keys - List all keys
+func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 	keys, err := h.store.GetAllKeys()
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err), h.logger)

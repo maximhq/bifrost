@@ -1,23 +1,24 @@
-import { AddProviderRequest, ListProvidersResponse, ProviderResponse, UpdateProviderRequest } from "@/lib/types/config";
+import { AddProviderRequest, ListProvidersResponse, ModelProvider, ModelProviderName } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
 export const providersApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Get all providers
-		getProviders: builder.query<ListProvidersResponse, void>({
+		getProviders: builder.query<ModelProvider[], void>({
 			query: () => "/providers",
+			transformResponse: (response: ListProvidersResponse): ModelProvider[] => response.providers ?? [],
 			providesTags: ["Providers"],
 		}),
 
 		// Get single provider
-		getProvider: builder.query<ProviderResponse, string>({
+		getProvider: builder.query<ModelProvider, string>({
 			query: (provider) => `/providers/${provider}`,
 			providesTags: (result, error, provider) => [{ type: "Providers", id: provider }],
 		}),
 
 		// Create new provider
-		createProvider: builder.mutation<ProviderResponse, AddProviderRequest>({
+		createProvider: builder.mutation<ModelProvider, AddProviderRequest>({
 			query: (data) => ({
 				url: "/providers",
 				method: "POST",
@@ -27,17 +28,17 @@ export const providersApi = baseApi.injectEndpoints({
 		}),
 
 		// Update existing provider
-		updateProvider: builder.mutation<ProviderResponse, { provider: string; data: UpdateProviderRequest }>({
-			query: ({ provider, data }) => ({
-				url: `/providers/${provider}`,
+		updateProvider: builder.mutation<ModelProvider, ModelProvider>({
+			query: (provider) => ({
+				url: `/providers/${provider.name}`,
 				method: "PUT",
-				body: data,
+				body: provider,
 			}),
-			invalidatesTags: (result, error, { provider }) => ["Providers", { type: "Providers", id: provider }],
+			invalidatesTags: (result, error, provider) => ["Providers", { type: "Providers", id: provider.name }],
 		}),
 
 		// Delete provider
-		deleteProvider: builder.mutation<ProviderResponse, string>({
+		deleteProvider: builder.mutation<ModelProviderName, string>({
 			query: (provider) => ({
 				url: `/providers/${provider}`,
 				method: "DELETE",

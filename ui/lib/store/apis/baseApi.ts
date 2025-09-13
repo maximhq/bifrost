@@ -82,11 +82,25 @@ export const baseApi = createApi({
 });
 
 // Helper function to extract error message from RTK Query error
-export const getErrorMessage = (error: any): string => {
-	if (error?.data?.error?.message) {
-		return error.data.error.message;
+export const getErrorMessage = (error: unknown): string => {
+	if (error instanceof Error) {
+		return error.message;
 	}
-	if (error?.message) {
+	if (
+		typeof error === "object" &&
+		error &&
+		"data" in error &&
+		error.data &&
+		typeof error.data === "object" &&
+		"error" in error.data &&
+		error.data.error &&
+		typeof error.data.error === "object" &&
+		"message" in error.data.error &&
+		typeof error.data.error.message === "string"
+	) {
+		return error.data.error.message.charAt(0).toUpperCase() + error.data.error.message.slice(1);
+	}
+	if (typeof error === "object" && error && "message" in error && typeof error.message === "string") {
 		return error.message;
 	}
 	return "An unexpected error occurred";

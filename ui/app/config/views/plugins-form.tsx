@@ -3,19 +3,19 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Separator } from "@/components/ui/separator";
-import { getErrorMessage, useGetPluginsQuery, useUpdatePluginMutation, useCreatePluginMutation, useGetProvidersQuery } from "@/lib/store";
-import { CacheConfig, ModelProvider } from "@/lib/types/config";
-import { useEffect, useState, useMemo, useCallback, useRef } from "react";
-import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { Loader2 } from "lucide-react";
+import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetProvidersQuery, useUpdatePluginMutation } from "@/lib/store";
+import { CacheConfig, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
+import { Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 const defaultCacheConfig: CacheConfig = {
-	provider: "openai" as ModelProvider,
+	provider: "openai" as ModelProviderName,
 	keys: [],
 	embedding_model: "text-embedding-3-small",
 	ttl_seconds: 300,
@@ -65,7 +65,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 		if (providers.length > 0 && !semanticCachePlugin?.config) {
 			setCacheConfig((prev) => ({
 				...prev,
-				provider: providers[0].name as ModelProvider,
+				provider: providers[0].name as ModelProviderName,
 			}));
 		}
 	}, [providers, semanticCachePlugin?.config]);
@@ -224,7 +224,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 								<div className="grid grid-cols-2 gap-4">
 									<div className="space-y-2">
 										<Label htmlFor="provider">Configured Providers</Label>
-										<Select value={cacheConfig.provider} onValueChange={(value: ModelProvider) => updateCacheConfig({ provider: value })}>
+										<Select value={cacheConfig.provider} onValueChange={(value: ModelProviderName) => updateCacheConfig({ provider: value })}>
 											<SelectTrigger className="w-full">
 												<SelectValue placeholder="Select provider" />
 											</SelectTrigger>

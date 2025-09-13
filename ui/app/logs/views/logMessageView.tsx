@@ -1,5 +1,5 @@
-import { CodeEditor } from "./code-editor";
 import { BifrostMessage } from "@/lib/types/logs";
+import { CodeEditor } from "./codeEditor";
 
 interface LogMessageViewProps {
 	message: BifrostMessage;
@@ -14,9 +14,13 @@ const isJson = (text: string) => {
 	}
 };
 
-const cleanJson = (text: any) => {
+const cleanJson = (text: unknown) => {
 	try {
-		return JSON.parse(text);
+		if (typeof text === "string") return JSON.parse(text); // parse JSON strings
+		if (Array.isArray(text)) return text; // keep arrays as-is
+		if (text !== null && typeof text === "object") return text; // keep objects as-is
+		if (typeof text === "number" || typeof text === "boolean") return text;
+		return "Invalid payload";
 	} catch {
 		return text;
 	}

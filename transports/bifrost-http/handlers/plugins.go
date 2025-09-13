@@ -35,14 +35,14 @@ type UpdatePluginRequest struct {
 }
 
 func (h *PluginsHandler) RegisterRoutes(r *router.Router) {
-	r.GET("/api/plugins", h.GetPlugins)
-	r.GET("/api/plugins/{name}", h.GetPlugin)
-	r.POST("/api/plugins", h.CreatePlugin)
-	r.PUT("/api/plugins/{name}", h.UpdatePlugin)
-	r.DELETE("/api/plugins/{name}", h.DeletePlugin)
+	r.GET("/api/plugins", h.getPlugins)
+	r.GET("/api/plugins/{name}", h.getPlugin)
+	r.POST("/api/plugins", h.createPlugin)
+	r.PUT("/api/plugins/{name}", h.updatePlugin)
+	r.DELETE("/api/plugins/{name}", h.deletePlugin)
 }
 
-func (h *PluginsHandler) GetPlugins(ctx *fasthttp.RequestCtx) {
+func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 	plugins, err := h.configStore.GetPlugins()
 	if err != nil {
 		h.logger.Error("failed to get plugins: %v", err)
@@ -56,7 +56,7 @@ func (h *PluginsHandler) GetPlugins(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-func (h *PluginsHandler) GetPlugin(ctx *fasthttp.RequestCtx) {
+func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
 	if nameValue == nil {
@@ -91,7 +91,7 @@ func (h *PluginsHandler) GetPlugin(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, plugin, h.logger)
 }
 
-func (h *PluginsHandler) CreatePlugin(ctx *fasthttp.RequestCtx) {
+func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	var request CreatePluginRequest
 	if err := json.Unmarshal(ctx.PostBody(), &request); err != nil {
 		h.logger.Error("failed to unmarshal create plugin request: %v", err)
@@ -136,7 +136,7 @@ func (h *PluginsHandler) CreatePlugin(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-func (h *PluginsHandler) UpdatePlugin(ctx *fasthttp.RequestCtx) {
+func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
 	if nameValue == nil {
@@ -199,7 +199,7 @@ func (h *PluginsHandler) UpdatePlugin(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-func (h *PluginsHandler) DeletePlugin(ctx *fasthttp.RequestCtx) {
+func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
 	if nameValue == nil {

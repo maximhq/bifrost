@@ -25,12 +25,12 @@ func NewCacheHandler(plugin schemas.Plugin, logger schemas.Logger) *CacheHandler
 }
 
 func (h *CacheHandler) RegisterRoutes(r *router.Router) {
-	r.DELETE("/api/cache/clear/{request-id}", h.ClearCache)
-	r.DELETE("/api/cache/clear-by-key/{cache-key}", h.ClearCacheByKey)
+	r.DELETE("/api/cache/clear/{requestId}", h.clearCache)
+	r.DELETE("/api/cache/clear-by-key/{cacheKey}", h.clearCacheByKey)
 }
 
-func (h *CacheHandler) ClearCache(ctx *fasthttp.RequestCtx) {
-	requestID, ok := ctx.UserValue("request-id").(string)
+func (h *CacheHandler) clearCache(ctx *fasthttp.RequestCtx) {
+	requestID, ok := ctx.UserValue("requestId").(string)
 	if !ok {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request ID", h.logger)
 		return
@@ -40,13 +40,13 @@ func (h *CacheHandler) ClearCache(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	SendJSON(ctx, map[string]any{
 		"message": "Cache cleared successfully",
 	}, h.logger)
 }
 
-func (h *CacheHandler) ClearCacheByKey(ctx *fasthttp.RequestCtx) {
-	cacheKey, ok := ctx.UserValue("cache-key").(string)
+func (h *CacheHandler) clearCacheByKey(ctx *fasthttp.RequestCtx) {
+	cacheKey, ok := ctx.UserValue("cacheKey").(string)
 	if !ok {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid cache key", h.logger)
 		return
@@ -56,7 +56,7 @@ func (h *CacheHandler) ClearCacheByKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	SendJSON(ctx, map[string]any{
 		"message": "Cache cleared successfully",
 	}, h.logger)
 }

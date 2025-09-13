@@ -3,17 +3,16 @@
 import { Badge } from "@/components/ui/badge";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { REQUEST_TYPE_COLORS, REQUEST_TYPE_LABELS, Status, STATUS_COLORS } from "@/lib/constants/logs";
+import { RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { DollarSign, FileText, Info, Timer } from "lucide-react";
+import { DollarSign, FileText, Timer } from "lucide-react";
 import moment from "moment";
-import { CodeEditor } from "./code-editor";
-import LogEntryDetailsView from "./log-entry-details-view";
-import LogMessageView from "./log-message-view";
-import SpeechView from "./speech-view";
-import TranscriptionView from "./transcription-view";
+import { CodeEditor } from "./codeEditor";
+import LogEntryDetailsView from "./logEntryDetailsView";
+import LogMessageView from "./logMessageView";
+import SpeechView from "./speechView";
+import TranscriptionView from "./transcriptionView";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -45,7 +44,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 				<SheetHeader className="px-0">
 					<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 						{log.status === "success" && <p className="text-md max-w-full truncate">Request ID: {log.id}</p>}
-						<Badge variant="outline" className={STATUS_COLORS[log.status as Status]}>
+						<Badge variant="outline" className={StatusColors[log.status as Status]}>
 							{log.status}
 						</Badge>
 					</SheetTitle>
@@ -94,10 +93,10 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 								value={
 									<div
 										className={`${
-											REQUEST_TYPE_COLORS[log.object as keyof typeof REQUEST_TYPE_COLORS] ?? "bg-gray-100 text-gray-800"
+											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
 										} rounded-sm px-3 py-1`}
 									>
-										{REQUEST_TYPE_LABELS[log.object as keyof typeof REQUEST_TYPE_LABELS] ?? log.object ?? "unknown"}
+										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
 								}
 							/>
@@ -279,19 +278,6 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 							<>
 								<div className="mt-4 flex w-full items-center gap-2">
 									<div className="text-sm font-medium">Response</div>
-									{log.stream && (
-										<TooltipProvider>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<Info className="h-4 w-4 text-gray-600" />
-												</TooltipTrigger>
-												<TooltipContent>
-													The response shown may appear incomplete or out of order due to the way streamed data is accumulated for real-time
-													display.
-												</TooltipContent>
-											</Tooltip>
-										</TooltipProvider>
-									)}
 								</div>
 								<LogMessageView message={log.output_message} />
 							</>

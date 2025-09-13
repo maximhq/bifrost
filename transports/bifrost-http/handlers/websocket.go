@@ -24,30 +24,30 @@ type WebSocketClient struct {
 
 // WebSocketHandler manages WebSocket connections for real-time updates
 type WebSocketHandler struct {
-	logManager logging.LogManager
-	logger     schemas.Logger
+	logManager     logging.LogManager
+	logger         schemas.Logger
 	allowedOrigins []string
-	clients  map[*websocket.Conn]*WebSocketClient
-	mu       sync.RWMutex
-	stopChan chan struct{} // Channel to signal heartbeat goroutine to stop
-	done     chan struct{} // Channel to signal when heartbeat goroutine has stopped
+	clients        map[*websocket.Conn]*WebSocketClient
+	mu             sync.RWMutex
+	stopChan       chan struct{} // Channel to signal heartbeat goroutine to stop
+	done           chan struct{} // Channel to signal when heartbeat goroutine has stopped
 }
 
 // NewWebSocketHandler creates a new WebSocket handler instance
 func NewWebSocketHandler(logManager logging.LogManager, logger schemas.Logger, allowedOrigins []string) *WebSocketHandler {
 	return &WebSocketHandler{
-		logManager: logManager,
-		logger:     logger,
+		logManager:     logManager,
+		logger:         logger,
 		allowedOrigins: allowedOrigins,
-		clients:    make(map[*websocket.Conn]*WebSocketClient),
-		stopChan:   make(chan struct{}),
-		done:       make(chan struct{}),
+		clients:        make(map[*websocket.Conn]*WebSocketClient),
+		stopChan:       make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 }
 
 // RegisterRoutes registers all WebSocket-related routes
 func (h *WebSocketHandler) RegisterRoutes(r *router.Router) {
-	r.GET("/ws/logs", h.HandleLogStream)
+	r.GET("/ws/logs", h.connectLogStream)
 }
 
 // getUpgrader returns a WebSocket upgrader configured with the current allowed origins
@@ -82,8 +82,8 @@ func isLocalhost(host string) bool {
 		host == ""
 }
 
-// HandleLogStream handles WebSocket connections for real-time log streaming
-func (h *WebSocketHandler) HandleLogStream(ctx *fasthttp.RequestCtx) {
+// connectLogStream handles WebSocket connections for real-time log streaming
+func (h *WebSocketHandler) connectLogStream(ctx *fasthttp.RequestCtx) {
 	upgrader := h.getUpgrader()
 	err := upgrader.Upgrade(ctx, func(ws *websocket.Conn) {
 		// Create a new client with its own mutex

@@ -2,11 +2,11 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { PROVIDERS, REQUEST_TYPE_LABELS, REQUEST_TYPES, STATUSES } from "@/lib/constants/logs";
+import { ProviderNames, RequestTypeLabels, RequestTypes, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableModelsQuery } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { Check, Search } from "lucide-react";
+import { Check, FilterIcon, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface LogFiltersProps {
@@ -90,9 +90,9 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 	};
 
 	const FILTER_OPTIONS = {
-		Status: STATUSES,
-		Providers: PROVIDERS,
-		Type: REQUEST_TYPES,
+		Status: Statuses,
+		Providers: ProviderNames,
+		Type: RequestTypes,
 		Models: modelsLoading ? ["Loading models..."] : availableModels,
 	} as const;
 
@@ -112,6 +112,7 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 			<Popover open={open} onOpenChange={setOpen}>
 				<PopoverTrigger asChild>
 					<Button variant="outline" size="sm" className="h-9">
+						<FilterIcon className="h-4 w-4" />
 						Filters
 						{getSelectedCount() > 0 && (
 							<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">
@@ -149,7 +150,7 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 													)}
 												</div>
 												<span className={cn("lowercase", isModelLoading && "text-muted-foreground")}>
-													{category === "Type" ? REQUEST_TYPE_LABELS[value as keyof typeof REQUEST_TYPE_LABELS] : value}
+													{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] : value}
 												</span>
 											</CommandItem>
 										);
