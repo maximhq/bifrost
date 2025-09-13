@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -58,7 +59,7 @@ func (plugin *Plugin) performDirectSearch(ctx *context.Context, req *schemas.Bif
 
 	// Search for entries with matching hash and all params
 	var cursor *string
-	results, _, err := plugin.store.GetAll(*ctx, VectorStoreClassName, filters, selectFields, cursor, 1)
+	results, _, err := plugin.store.GetAll(*ctx, plugin.config.VectorStoreNamespace, filters, selectFields, cursor, 1)
 	if err != nil {
 		if errors.Is(err, vectorstore.ErrNotFound) {
 			return nil, nil
@@ -135,7 +136,7 @@ func (plugin *Plugin) performSemanticSearch(ctx *context.Context, req *schemas.B
 	}
 
 	// For semantic search, we want semantic similarity in content but exact parameter matching
-	results, err := plugin.store.GetNearest(*ctx, VectorStoreClassName, embedding, strictFilters, selectFields, cacheThreshold, 1)
+	results, err := plugin.store.GetNearest(*ctx, plugin.config.VectorStoreNamespace, embedding, strictFilters, selectFields, cacheThreshold, 1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search semantic cache: %w", err)
 	}
@@ -166,6 +167,14 @@ func (plugin *Plugin) buildResponseFromResult(ctx *context.Context, req *schemas
 		var expiresAt int64
 		var validType bool
 		switch v := expiresAtRaw.(type) {
+		case string:
+			var err error
+			expiresAt, err = strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				validType = false
+			} else {
+				validType = true
+			}
 		case float64:
 			expiresAt = int64(v)
 			validType = true
@@ -183,7 +192,7 @@ func (plugin *Plugin) buildResponseFromResult(ctx *context.Context, req *schemas
 				go func() {
 					deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					err := plugin.store.Delete(deleteCtx, VectorStoreClassName, result.ID)
+					err := plugin.store.Delete(deleteCtx, plugin.config.VectorStoreNamespace, result.ID)
 					if err != nil {
 						plugin.logger.Warn(fmt.Sprintf("%s Failed to delete expired entry %s: %v", PluginLoggerPrefix, result.ID, err))
 					}
@@ -202,8 +211,9 @@ func (plugin *Plugin) buildResponseFromResult(ctx *context.Context, req *schemas
 	hasValidSingleResponse := hasSingleResponse && singleResponse != nil
 	hasValidStreamingResponse := hasStreamingResponse && streamResponses != nil
 
-	streamChunks, ok := streamResponses.([]interface{})
-	if !ok || len(streamChunks) == 0 {
+	// Parse stream_chunks
+	streamChunks, err := plugin.parseStreamChunks(streamResponses)
+	if err != nil || len(streamChunks) == 0 {
 		hasValidStreamingResponse = false
 	}
 
@@ -268,9 +278,10 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *context.Context, req *s
 
 // buildStreamingResponseFromResult constructs a streaming response from cached data
 func (plugin *Plugin) buildStreamingResponseFromResult(ctx *context.Context, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.PluginShortCircuit, error) {
-	streamArray, ok := streamData.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("cached stream_chunks is not an array")
+	// Parse stream_chunks
+	streamArray, err := plugin.parseStreamChunks(streamData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse stream_chunks: %w", err)
 	}
 
 	// Mark cache-hit once to avoid concurrent ctx writes
@@ -339,4 +350,38 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *context.Context, req
 	return &schemas.PluginShortCircuit{
 		Stream: streamChan,
 	}, nil
+}
+
+// parseStreamChunks parses stream_chunks data from various formats into []interface{}
+// Handles []interface{}, []string, and JSON string formats
+func (plugin *Plugin) parseStreamChunks(streamData interface{}) ([]interface{}, error) {
+	if streamData == nil {
+		return nil, fmt.Errorf("stream data is nil")
+	}
+
+	switch v := streamData.(type) {
+	case []interface{}:
+		return v, nil
+	case []string:
+		// Convert []string to []interface{}
+		result := make([]interface{}, len(v))
+		for i, s := range v {
+			result[i] = s
+		}
+		return result, nil
+	case string:
+		// Parse JSON string from Redis
+		var stringArray []string
+		if err := json.Unmarshal([]byte(v), &stringArray); err != nil {
+			return nil, fmt.Errorf("failed to parse JSON string: %w", err)
+		}
+		// Convert to []interface{}
+		result := make([]interface{}, len(stringArray))
+		for i, s := range stringArray {
+			result[i] = s
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported stream data type: %T", streamData)
+	}
 }
