@@ -77,6 +77,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 	}
 	bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("request-id"), requestID)
 
+	// Initialize tags map for collecting maxim tags
+	maximTags := make(map[string]string)
+
 	// Then process other headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
@@ -99,6 +102,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 
 			if labelName == string(maxim.SessionIDKey) {
 				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
+
+			if labelName == string(maxim.TraceNameKey) {
+				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
+
+			if labelName == string(maxim.GenerationNameKey) {
+				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
+
+			// apart from these all headers starting with x-bf-maxim- are keys for tags
+			// collect them in the maximTags map
+			if labelName != string(maxim.GenerationIDKey) && labelName != string(maxim.TraceIDKey) && labelName != string(maxim.SessionIDKey) && labelName != string(maxim.TraceNameKey) && labelName != string(maxim.GenerationNameKey) {
+				maximTags[labelName] = string(value)
 			}
 		}
 
@@ -173,6 +190,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 
 		return true
 	})
+
+	// Store the collected maxim tags in the context
+	if len(maximTags) > 0 {
+		bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(maxim.TagsKey), maximTags)
+	}
 
 	if allowDirectKeys {
 		// Extract API key from Authorization header (Bearer format) or x-api-key header
