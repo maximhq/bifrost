@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/bytedance/sonic"
@@ -11,6 +12,8 @@ const (
 	DefaultInitialPoolSize = 100
 )
 
+type KeySelector func(ctx *context.Context, keys []Key, providerKey ModelProvider, model string) (Key, error)
+
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
@@ -18,9 +21,10 @@ type BifrostConfig struct {
 	Account            Account
 	Plugins            []Plugin
 	Logger             Logger
-	InitialPoolSize    int        // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool       // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig // MCP (Model Context Protocol) configuration for tool integration
+	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests bool        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig          *MCPConfig  // MCP (Model Context Protocol) configuration for tool integration
+	KeySelector        KeySelector // Custom key selector function
 }
 
 // ModelChatMessageRole represents the role of a chat message
@@ -101,6 +105,7 @@ type BifrostContextKey string
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
 	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
+	BifrostContextKeySelectedKey        BifrostContextKey = "bifrost-key-selected" // To store the selected key ID (set by bifrost)
 	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
 	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
 	BifrostContextKeyRequestProvider    BifrostContextKey = "bifrost-request-provider"
