@@ -57,9 +57,12 @@ type ContextKey string
 // This constant provides a consistent key for tracking request traces
 // throughout the request/response lifecycle.
 const (
-	SessionIDKey    ContextKey = "session-id"
-	TraceIDKey      ContextKey = "trace-id"
-	GenerationIDKey ContextKey = "generation-id"
+	SessionIDKey      ContextKey = "session-id"
+	TraceIDKey        ContextKey = "trace-id"
+	TraceNameKey      ContextKey = "trace-name"
+	GenerationIDKey   ContextKey = "generation-id"
+	GenerationNameKey ContextKey = "generation-name"
+	TagsKey           ContextKey = "maxim-tags"
 )
 
 // The plugin provides request/response tracing functionality by integrating with Maxim's logging system.
@@ -113,7 +116,10 @@ func (plugin *Plugin) GetName() string {
 //   - error: Any error that occurred during trace/generation creation
 func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	var traceID string
+	var traceName string
 	var sessionID string
+	var generationName string
+	var tags map[string]string
 
 	// Check if context already has traceID and generationID
 	if ctx != nil {
@@ -130,20 +136,42 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		if existingSessionID, ok := (*ctx).Value(SessionIDKey).(string); ok && existingSessionID != "" {
 			sessionID = existingSessionID
 		}
+
+		if existingTraceName, ok := (*ctx).Value(TraceNameKey).(string); ok && existingTraceName != "" {
+			traceName = existingTraceName
+		}
+
+		if existingGenerationName, ok := (*ctx).Value(GenerationNameKey).(string); ok && existingGenerationName != "" {
+			generationName = existingGenerationName
+		}
+
+		// retrieve all tags from context
+		// the transport layer now stores all maxim tags in a single map
+		if tagsValue := (*ctx).Value(TagsKey); tagsValue != nil {
+			if tagsMap, ok := tagsValue.(map[string]string); ok {
+				tags = make(map[string]string)
+				for key, value := range tagsMap {
+					tags[key] = value
+				}
+			}
+		}
 	}
 
 	// Determine request type and set appropriate tags
 	var requestType string
-	var tags map[string]string
 	var messages []logging.CompletionRequest
 	var latestMessage string
 
+	// Initialize tags map if not already initialized from context
+	if tags == nil {
+		tags = make(map[string]string)
+	}
+
+	// Add model to tags
+	tags["model"] = req.Model
+
 	if req.Input.ChatCompletionInput != nil {
 		requestType = "chat_completion"
-		tags = map[string]string{
-			"action": "chat_completion",
-			"model":  req.Model,
-		}
 		for _, message := range *req.Input.ChatCompletionInput {
 			messages = append(messages, logging.CompletionRequest{
 				Role:    string(message.Role),
@@ -171,10 +199,6 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		}
 	} else if req.Input.TextCompletionInput != nil {
 		requestType = "text_completion"
-		tags = map[string]string{
-			"action": "text_completion",
-			"model":  req.Model,
-		}
 		messages = append(messages, logging.CompletionRequest{
 			Role:    string(schemas.ModelChatMessageRoleUser),
 			Content: req.Input.TextCompletionInput,
@@ -182,13 +206,20 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		latestMessage = *req.Input.TextCompletionInput
 	}
 
+	// Set action tag after determining request type
+	tags["action"] = requestType
+
 	if traceID == "" {
 		// If traceID is not set, create a new trace
 		traceID = uuid.New().String()
+		name := fmt.Sprintf("bifrost_%s", requestType)
+		if traceName != "" {
+			name = traceName
+		}
 
 		traceConfig := logging.TraceConfig{
 			Id:   traceID,
-			Name: maxim.StrPtr(fmt.Sprintf("bifrost_%s", requestType)),
+			Name: maxim.StrPtr(name),
 			Tags: &tags,
 		}
 
@@ -213,14 +244,20 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 
 	generationID := uuid.New().String()
 
-	plugin.logger.AddGenerationToTrace(traceID, &logging.GenerationConfig{
+	generationConfig := logging.GenerationConfig{
 		Id:              generationID,
 		Model:           req.Model,
 		Provider:        string(req.Provider),
 		Tags:            &tags,
 		Messages:        messages,
 		ModelParameters: modelParams,
-	})
+	}
+
+	if generationName != "" {
+		generationConfig.Name = &generationName
+	}
+
+	plugin.logger.AddGenerationToTrace(traceID, &generationConfig)
 
 	if ctx != nil {
 		if _, ok := (*ctx).Value(TraceIDKey).(string); !ok {
