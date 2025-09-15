@@ -42,6 +42,7 @@ type PrometheusPlugin struct {
 	OutputTokensTotal     *prometheus.CounterVec
 	CacheHitsTotal        *prometheus.CounterVec
 	CostTotal             *prometheus.CounterVec
+	RetriesTotal          *prometheus.CounterVec
 }
 
 // NewPrometheusPlugin creates a new PrometheusPlugin with initialized metrics.
@@ -170,6 +171,11 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 			p.ErrorRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 		} else {
 			p.SuccessRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+		}
+
+		// Record retries if available in context
+		if retries, ok := (*ctx).Value(schemas.BifrostContextKeyRetryCount).(int); ok && retries > 0 {
+			p.RetriesTotal.WithLabelValues(promLabelValues...).Add(float64(retries))
 		}
 
 		// Record input and output tokens

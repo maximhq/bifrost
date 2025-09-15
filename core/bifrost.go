@@ -1234,6 +1234,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 		}
 
+		// Save retry count into context
+		req.Context = context.WithValue(req.Context, schemas.BifrostContextKeyRetryCount, attempts)
+
 		if bifrostError != nil {
 			// Add retry information to error
 			if attempts > 0 {

@@ -592,7 +592,11 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		ctx.Response.SetBody(resp.Speech.Audio)
 		return
 	}
-
+	
+	// // getting (handlers)
+	if retries, ok := (*bifrostCtx).Value(schemas.BifrostContextKeyRetryCount).(int); ok {
+		ctx.Response.Header.Set("x-bf-retries", strconv.Itoa(retries))
+	}
 	// Send successful response
 	SendJSON(ctx, resp, h.logger)
 }
