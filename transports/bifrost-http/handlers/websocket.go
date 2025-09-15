@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ type WebSocketClient struct {
 
 // WebSocketHandler manages WebSocket connections for real-time updates
 type WebSocketHandler struct {
+	ctx            context.Context
 	logManager     logging.LogManager
 	logger         schemas.Logger
 	allowedOrigins []string
@@ -34,8 +36,9 @@ type WebSocketHandler struct {
 }
 
 // NewWebSocketHandler creates a new WebSocket handler instance
-func NewWebSocketHandler(logManager logging.LogManager, logger schemas.Logger, allowedOrigins []string) *WebSocketHandler {
+func NewWebSocketHandler(ctx context.Context, logManager logging.LogManager, logger schemas.Logger, allowedOrigins []string) *WebSocketHandler {
 	return &WebSocketHandler{
+		ctx:            ctx,
 		logManager:     logManager,
 		logger:         logger,
 		allowedOrigins: allowedOrigins,
@@ -218,6 +221,9 @@ func (h *WebSocketHandler) StartHeartbeat() {
 
 		for {
 			select {
+			case <-h.ctx.Done():
+				h.logger.Info("got context cancel(), stopping webserver")
+				return
 			case <-ticker.C:
 				// Get a snapshot of clients to avoid holding the lock during writes
 				h.mu.RLock()
