@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -109,4 +110,13 @@ func ParseModel(model string) (string, string, error) {
 		return "", "", fmt.Errorf("model must be in the format 'provider/model' with non-empty provider and model")
 	}
 	return provider, name, nil
+}
+
+func getRetryCount(bctx *context.Context) int {
+	if bctx != nil {
+		if v, ok := (*bctx).Value(schemas.BifrostContextKeyRetryCount).(int); ok {
+			return v
+		}
+	}
+	return -1
 }

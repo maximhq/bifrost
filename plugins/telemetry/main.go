@@ -61,6 +61,7 @@ func Init(pricingManager *pricing.PricingManager, logger schemas.Logger) *Promet
 		OutputTokensTotal:     bifrostOutputTokensTotal,
 		CacheHitsTotal:        bifrostCacheHitsTotal,
 		CostTotal:             bifrostCostTotal,
+		RetriesTotal:          bifrostRetriesTotal,
 	}
 }
 

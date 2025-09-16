@@ -427,6 +427,10 @@ func (h *CompletionHandler) transcriptionCompletion(ctx *fasthttp.RequestCtx) {
 	// Make transcription request
 	resp, bifrostErr := h.client.TranscriptionRequest(*bifrostCtx, bifrostReq)
 
+	if r := getRetryCount(bifrostCtx); r >= 0 {
+		ctx.Response.Header.Set("x-bf-retries", strconv.Itoa(r))
+	}
+
 	// Handle response
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr, h.logger)
@@ -574,6 +578,10 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		resp, bifrostErr = h.client.SpeechRequest(*bifrostCtx, bifrostReq)
 	}
 
+	if r := getRetryCount(bifrostCtx); r >= 0 {
+		ctx.Response.Header.Set("x-bf-retries", strconv.Itoa(r))
+	}
+
 	// Handle response
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr, h.logger)
@@ -592,11 +600,12 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		ctx.Response.SetBody(resp.Speech.Audio)
 		return
 	}
-	
+
 	// // getting (handlers)
-	if retries, ok := (*bifrostCtx).Value(schemas.BifrostContextKeyRetryCount).(int); ok {
-		ctx.Response.Header.Set("x-bf-retries", strconv.Itoa(retries))
+	if r := getRetryCount(bifrostCtx); r >= 0 {
+		ctx.Response.Header.Set("x-bf-retries", strconv.Itoa(r))
 	}
+
 	// Send successful response
 	SendJSON(ctx, resp, h.logger)
 }
@@ -670,6 +679,10 @@ func (h *CompletionHandler) handleStreamingChatCompletion(ctx *fasthttp.RequestC
 		return response, true
 	}
 
+	if r := getRetryCount(bifrostCtx); r >= 0 {
+		ctx.Response.Header.Set("x-bf-retries", strconv.Itoa(r))
+	}
+
 	h.handleStreamingResponse(ctx, getStream, extractResponse)
 }
 
@@ -700,6 +713,10 @@ func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.Re
 			return nil, false
 		}
 		return response.Transcribe, true
+	}
+
+	if r := getRetryCount(bifrostCtx); r >= 0 {
+		ctx.Response.Header.Set("x-bf-retries", strconv.Itoa(r))
 	}
 
 	h.handleStreamingResponse(ctx, getStream, extractResponse)
