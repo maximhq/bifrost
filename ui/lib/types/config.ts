@@ -213,7 +213,6 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	enable_governance: boolean;
-	enable_maxim: boolean;
 	enforce_governance_header: boolean;
 	allow_direct_keys: boolean;
 	allowed_origins: string[];

@@ -8,10 +8,9 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetProvidersQuery, useUpdatePluginMutation } from "@/lib/store";
-import { CacheConfig, MaximConfig, ModelProviderName } from "@/lib/types/config";
-import { MAXIM_PLUGIN, SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
+import { CacheConfig, ModelProviderName } from "@/lib/types/config";
+import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { Loader2 } from "lucide-react";
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -28,18 +27,12 @@ const defaultCacheConfig: CacheConfig = {
 	cache_by_provider: true,
 };
 
-const defaultMaximConfig: MaximConfig = {
-	api_key: "",
-	log_repo_id: "",
-};
-
 interface PluginsFormProps {
 	isVectorStoreEnabled: boolean;
 }
 
 export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) {
 	const [cacheConfig, setCacheConfig] = useState<CacheConfig>(defaultCacheConfig);
-	const [maximConfig, setMaximConfig] = useState<MaximConfig>(defaultMaximConfig);
 
 	const { data: providersData, error: providersError, isLoading: providersLoading } = useGetProvidersQuery();
 
@@ -58,10 +51,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 
 	// Get semantic cache plugin and its config
 	const semanticCachePlugin = useMemo(() => plugins?.find((plugin) => plugin.name === SEMANTIC_CACHE_PLUGIN), [plugins]);
-	const maximPlugin = useMemo(() => plugins?.find((plugin) => plugin.name === MAXIM_PLUGIN), [plugins]);
 
 	const isSemanticCacheEnabled = Boolean(semanticCachePlugin?.enabled);
-	const isMaximEnabled = Boolean(maximPlugin?.enabled);
 
 	// Initialize cache config from plugin data
 	useEffect(() => {
@@ -70,21 +61,15 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 		}
 	}, [semanticCachePlugin]);
 
-	useEffect(() => {
-		if (maximPlugin?.config) {
-			setMaximConfig({ ...defaultMaximConfig, ...maximPlugin.config });
-		}
-	}, [maximPlugin]);
-
 	// Update default provider when providers are loaded (only for new configs)
 	useEffect(() => {
-		if (providers.length > 0 && !semanticCachePlugin?.config && !maximPlugin?.config) {
+		if (providers.length > 0 && !semanticCachePlugin?.config) {
 			setCacheConfig((prev) => ({
 				...prev,
 				provider: providers[0].name as ModelProviderName,
 			}));
 		}
-	}, [providers, semanticCachePlugin?.config, maximPlugin?.config]);
+	}, [providers, semanticCachePlugin?.config]);
 
 	// Handle semantic cache toggle (create or update)
 	const handleSemanticCacheToggle = async (enabled: boolean) => {
@@ -107,30 +92,6 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 		} catch (error) {
 			const errorMessage = getErrorMessage(error);
 			toast.error(`Failed to ${enabled ? "enable" : "disable"} semantic cache: ${errorMessage}`);
-		}
-	};
-
-	// Handle semantic cache toggle (create or update)
-	const handleMaximToggle = async (enabled: boolean) => {
-		try {
-			if (maximPlugin) {
-				// Update existing plugin
-				await updatePlugin({
-					name: MAXIM_PLUGIN,
-					data: { enabled, config: maximConfig },
-				}).unwrap();
-			} else {
-				// Create new plugin
-				await createPlugin({
-					name: MAXIM_PLUGIN,
-					enabled,
-					config: maximConfig,
-				}).unwrap();
-			}
-			toast.success(`Maxim ${enabled ? "enabled" : "disabled"} successfully`);
-		} catch (error) {
-			const errorMessage = getErrorMessage(error);
-			toast.error(`Failed to ${enabled ? "enable" : "disable"} Maxim: ${errorMessage}`);
 		}
 	};
 
@@ -160,9 +121,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 		}
 	};
 
-	// Refs to store the timeout IDs for debouncing (separate for cache and maxim)
+	// Refs to store the timeout IDs for debouncing (separate for cache)
 	const cacheDebounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const maximDebounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	// Debounced version for text/number inputs
 	const debouncedUpdateCacheConfig = useCallback(
@@ -198,47 +158,11 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 		[cacheConfig, semanticCachePlugin?.enabled, updatePlugin],
 	);
 
-	const debouncedUpdateMaximConfig = useCallback(
-		(updates: Partial<MaximConfig>) => {
-			// Update local state immediately for responsive UI
-			const newConfig = { ...maximConfig, ...updates };
-			setMaximConfig(newConfig);
-
-			// Clear previous timeout
-			if (maximDebounceTimeoutRef.current) {
-				clearTimeout(maximDebounceTimeoutRef.current);
-			}
-
-			// Only save to backend if plugin is enabled, with debouncing
-			if (maximPlugin?.enabled) {
-				maximDebounceTimeoutRef.current = setTimeout(() => {
-					updatePlugin({
-						name: MAXIM_PLUGIN,
-						data: { enabled: true, config: newConfig },
-					})
-						.unwrap()
-						.then(() => {
-							toast.success("Maxim configuration updated successfully");
-						})
-						.catch((error) => {
-							toast.error("Failed to update Maxim configuration");
-							// Revert on error - use the newConfig that was captured in closure
-							setMaximConfig(maximConfig);
-						});
-				}, 500); // 500ms debounce
-			}
-		},
-		[maximConfig, maximPlugin?.enabled, updatePlugin],
-	);
-
 	// Cleanup timeouts on component unmount
 	useEffect(() => {
 		return () => {
 			if (cacheDebounceTimeoutRef.current) {
 				clearTimeout(cacheDebounceTimeoutRef.current);
-			}
-			if (maximDebounceTimeoutRef.current) {
-				clearTimeout(maximDebounceTimeoutRef.current);
 			}
 		};
 	}, []);
@@ -449,88 +373,6 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 									</li>
 									<li>
 										You can pass <b>x-bf-cache-no-store</b> header with &quot;true&quot; to disable response caching.
-									</li>
-								</ul>
-							</div>
-						</div>
-					))}
-			</div>
-
-			{/* Maxim Logger Toggle */}
-			<div className="rounded-lg border p-4">
-				<div className="flex items-center justify-between space-x-2">
-					<div className="space-y-0.5">
-						<label htmlFor="enable-maxim" className="text-sm font-medium">
-							Enable Observability
-						</label>
-						<p className="text-muted-foreground text-sm">
-							This will send traces of your requests and responses to the Maxim's Log repository. Read more about it{" "}
-							<Link className="text-primary underline" href="https://getmaxim.ai" target="_blank" rel="noopener noreferrer">
-								here
-							</Link>
-							.
-							{!providersLoading && providers?.length === 0 && (
-								<span className="text-destructive font-medium"> Requires at least one provider to be configured.</span>
-							)}
-						</p>
-					</div>
-					<Switch
-						id="enable-maxim"
-						size="md"
-						checked={isMaximEnabled}
-						disabled={providersLoading || providers.length === 0}
-						onCheckedChange={(checked) => {
-							handleMaximToggle(checked);
-						}}
-					/>
-				</div>
-
-				{/* Maxim Configuration (only show when enabled) */}
-				{isMaximEnabled &&
-					(providersLoading ? (
-						<div className="flex items-center justify-center">
-							<Loader2 className="h-4 w-4 animate-spin" />
-						</div>
-					) : (
-						<div className="mt-4 space-y-4">
-							<Separator />
-							{/* Maxim API Key Input */}
-							<div className="space-y-4">
-								<div className="grid grid-cols-2 gap-4">
-									<div className="space-y-2">
-										<Label htmlFor="api_key">Maxim API Key</Label>
-										<Input
-											id="api_key"
-											placeholder="your-maxim-api-key"
-											value={maximConfig.api_key}
-											onChange={(e) => debouncedUpdateMaximConfig({ api_key: e.target.value })}
-										/>
-									</div>
-									<div className="space-y-2">
-										<Label htmlFor="log_repo_id">Log Repo ID (Optional)</Label>
-										<Input
-											id="log_repo_id"
-											placeholder="your-log-repo-id"
-											value={maximConfig.log_repo_id}
-											onChange={(e) => debouncedUpdateMaximConfig({ log_repo_id: e.target.value })}
-										/>
-									</div>
-								</div>
-							</div>
-
-							<div className="space-y-2">
-								<Label className="text-sm font-medium">Notes</Label>
-								<ul className="text-muted-foreground list-inside list-disc text-xs">
-									<li>
-										You can override the default repository per request using the <b>x-bf-maxim-log-repo-id</b> header.
-									</li>
-									<li>If both x-bf-maxim-log-repo-id and default log repo id are absent, the request will not be logged.</li>
-									<li>
-										You can pass custom trace and generation IDs to the request context using the <b>x-bf-maxim-trace-id</b> and
-										<b>x-bf-maxim-generation-id</b> headers.
-									</li>
-									<li>
-										You can pass custom tags for the trace using the <b>x-bf-maxim-[tag]</b> headers.
 									</li>
 								</ul>
 							</div>

@@ -88,6 +88,7 @@ export const networkFormConfigSchema = z.object({
 			message: "Only HTTPS URLs are supported",
 		})
 		.optional(),
+	extra_headers: z.record(z.string(), z.string()).optional(),
 	default_request_timeout_in_seconds: z.coerce
 		.number("Timeout must be a number")
 		.min(1, "Timeout must be greater than 0 seconds")
@@ -96,6 +97,16 @@ export const networkFormConfigSchema = z.object({
 		.number("Max retries must be a number")
 		.min(0, "Max retries must be greater than 0")
 		.max(10, "Max retries must be less than 10"),
+	retry_backoff_initial: z.coerce
+		.number("Retry backoff initial must be a number")
+		.min(0, "Retry backoff initial must be greater than 0"),
+	retry_backoff_max: z.coerce
+		.number("Retry backoff max must be a number")
+		.min(0, "Retry backoff max must be greater than 0"),
+})
+.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
+	message: "Initial backoff must be less than or equal to max backoff",
+	path: ["retry_backoff_initial"],
 });
 
 // Concurrency and buffer size schema
@@ -278,6 +289,7 @@ export const coreConfigSchema = z.object({
 	enforce_governance_header: z.boolean().default(false),
 	allow_direct_keys: z.boolean().default(false),
 	allowed_origins: z.array(z.string()).default(["*"]),
+	max_request_body_size_mb: z.number().min(1).default(100),
 });
 
 // Bifrost config schema

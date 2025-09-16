@@ -4,6 +4,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
@@ -49,12 +50,11 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 			network_config: {
 				...provider.network_config,
 				base_url: data.network_config?.base_url || undefined,
+				extra_headers: data.network_config?.extra_headers || undefined,
 				default_request_timeout_in_seconds: data.network_config?.default_request_timeout_in_seconds ?? 30,
 				max_retries: data.network_config?.max_retries ?? 0,
-				// Keep existing values for fields not in the form
-				extra_headers: provider.network_config?.extra_headers,
-				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? 1000,
-				retry_backoff_max: provider.network_config?.retry_backoff_max ?? 10000,
+				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
+				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
 			},
 		};
 		updateProvider(updatedProvider)
@@ -69,14 +69,21 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 	useEffect(() => {
 		// Reset form with new provider's network_config when provider.name changes
 		form.reset({
-			network_config: provider.network_config,
+			network_config: {
+				base_url: provider.network_config?.base_url || "",
+				extra_headers: provider.network_config?.extra_headers,
+				default_request_timeout_in_seconds: provider.network_config?.default_request_timeout_in_seconds || 30,
+				max_retries: provider.network_config?.max_retries || 0,
+				retry_backoff_initial: provider.network_config?.retry_backoff_initial || 500,
+				retry_backoff_max: provider.network_config?.retry_backoff_max || 5000,
+			},
 		});
 	}, [form, provider.name, provider.network_config]);
 
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
-				{showRestartAlert && (
+				{showRestartAlert && form.formState.isDirty && (
 					<Alert>
 						<AlertTriangle className="h-4 w-4" />
 						<AlertDescription>
@@ -128,6 +135,73 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 										<FormLabel>Max Retries</FormLabel>
 										<FormControl>
 											<Input placeholder="0" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</div>
+						<FormField
+							control={form.control}
+							name="network_config.extra_headers"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Extra Headers (Optional)</FormLabel>
+									<FormControl>
+										<Textarea
+											placeholder='{"Authorization": "Bearer token", "X-Custom-Header": "value"}'
+											value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+											onChange={(e) => {
+												// Store as string during editing to allow intermediate invalid states
+												field.onChange(e.target.value);
+											}}
+											onBlur={(e) => {
+												// Try to parse as JSON on blur, but keep as string if invalid
+												const value = e.target.value.trim();
+												if (value) {
+													try {
+														const parsed = JSON.parse(value);
+														if (typeof parsed === "object" && parsed !== null) {
+															field.onChange(parsed);
+														}
+													} catch {
+														// Keep as string for validation on submit
+													}
+												} else {
+													field.onChange(undefined);
+												}
+												field.onBlur();
+											}}
+											rows={3}
+											className="max-w-full font-mono text-sm wrap-anywhere"
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<div className="flex w-full flex-row items-start gap-4">
+							<FormField
+								control={form.control}
+								name="network_config.retry_backoff_initial"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Initial Backoff (ms)</FormLabel>
+										<FormControl>
+											<Input placeholder="500" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="network_config.retry_backoff_max"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Max Backoff (ms)</FormLabel>
+										<FormControl>
+											<Input placeholder="5000" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>

@@ -3,8 +3,8 @@
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { AllowedRequestsFields } from "./allowedRequestsFields";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { KnownProvider, ModelProvider } from "@/lib/types/config";
@@ -15,6 +15,8 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { fi } from "zod/v4/locales";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AlertTriangle } from "lucide-react";
 
 // Type for form data
 type FormCustomProviderConfig = z.infer<typeof formCustomProviderConfigSchema>;
@@ -78,11 +80,14 @@ export function ApiStructureFormFragment({ provider, showRestartAlert }: Props) 
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
-				{showRestartAlert && (
-					<div className="rounded-md bg-yellow-50 p-4 text-sm text-yellow-800">
-						⚠️ The settings below require a Bifrost service restart to take effect. Current connections will continue with existing settings
-						until restart.
-					</div>
+				{showRestartAlert && form.formState.isDirty && (
+					<Alert>
+						<AlertTriangle className="h-4 w-4" />
+						<AlertDescription>
+							The settings below require a Bifrost service restart to take effect. Current connections will continue with existing settings
+							until restart.
+						</AlertDescription>
+					</Alert>
 				)}
 
 				<div className="space-y-4">
@@ -114,131 +119,7 @@ export function ApiStructureFormFragment({ provider, showRestartAlert }: Props) 
 				</div>
 
 				{/* Allowed Requests Configuration */}
-				<div className="space-y-4">
-					<div>
-						<div className="text-sm font-medium">Allowed Request Types</div>
-						<p className="text-muted-foreground text-xs">Select which request types this custom provider can handle</p>
-					</div>
-
-					<div className="grid grid-cols-2 gap-4">
-						<div className="space-y-3">
-							<FormField
-								control={form.control}
-								name="allowed_requests.text_completion"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Text Completion</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="allowed_requests.chat_completion"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Chat Completion</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="allowed_requests.chat_completion_stream"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Chat Completion Stream</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="allowed_requests.embedding"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Embedding</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-						</div>
-						<div className="space-y-3">
-							<FormField
-								control={form.control}
-								name="allowed_requests.speech"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Speech</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="allowed_requests.speech_stream"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Speech Stream</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="allowed_requests.transcription"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Transcription</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="allowed_requests.transcription_stream"
-								render={({ field }) => (
-									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
-										<div className="space-y-0.5">
-											<FormLabel>Transcription Stream</FormLabel>
-										</div>
-										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} size="md" />
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-						</div>
-					</div>
-				</div>
+				<AllowedRequestsFields control={form.control} />
 
 				{/* Form Actions */}
 				<div className="flex justify-end space-x-2 py-2">

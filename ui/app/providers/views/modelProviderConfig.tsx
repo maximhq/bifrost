@@ -6,6 +6,7 @@ import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { keysRequired } from "./utils";
 
 interface Props {
 	provider: ModelProvider;
@@ -51,6 +52,8 @@ export default function ModelProviderConfig({ provider }: Props) {
 		setSelectedTab(tabs[0]?.id);
 	}, [tabs]);
 
+	const showApiKeys = keysRequired(provider.name);
+
 	return (
 		<div className="flex w-full flex-col gap-2">
 			<Accordion type="single" collapsible>
@@ -72,13 +75,13 @@ export default function ModelProviderConfig({ provider }: Props) {
 									))}
 								</TabsList>
 								<TabsContent value="api-structure">
-									<ApiStructureFormFragment provider={provider} />
+									<ApiStructureFormFragment provider={provider} showRestartAlert={true} />
 								</TabsContent>
 								<TabsContent value="network">
-									<NetworkFormFragment provider={provider} />
+									<NetworkFormFragment provider={provider} showRestartAlert={true} />
 								</TabsContent>
 								<TabsContent value="proxy">
-									<ProxyFormFragment provider={provider} />
+									<ProxyFormFragment provider={provider} showRestartAlert={true} />
 								</TabsContent>
 								<TabsContent value="performance">
 									<PerformanceFormFragment provider={provider} />
@@ -88,8 +91,12 @@ export default function ModelProviderConfig({ provider }: Props) {
 					</AccordionContent>
 				</AccordionItem>
 			</Accordion>
-			<div className="bg-accent h-[1px] w-full" />
-			<ModelProviderKeysTableView className="mt-4" provider={provider} />
+			{showApiKeys && (
+				<>
+					<div className="bg-accent h-[1px] w-full" />
+					<ModelProviderKeysTableView className="mt-4" provider={provider} />
+				</>
+			)}
 		</div>
 	);
 }

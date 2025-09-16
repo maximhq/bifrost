@@ -12,6 +12,10 @@ interface Props {
 }
 
 export default function AddNewKeyDialog({ show, onCancel, provider, keyIndex }: Props) {
+	const isEditing = keyIndex < provider.keys.length;
+	const dialogTitle = isEditing ? "Edit key" : "Add new key";
+	const successMessage = isEditing ? "Key updated successfully" : "Key added successfully";
+
 	return (
 		<Dialog open={show} onOpenChange={onCancel}>
 			<DialogContent className="custom-scrollbar max-h-[60vh] max-w-[400px] min-w-[35vw] overflow-y-scroll">
@@ -21,7 +25,7 @@ export default function AddNewKeyDialog({ show, onCancel, provider, keyIndex }: 
 							<div className={"flex items-center"}>
 								<Provider provider={provider.name} size={24} />:
 							</div>
-							Add new key
+							{dialogTitle}
 						</div>
 					</DialogTitle>
 				</DialogHeader>
@@ -31,7 +35,7 @@ export default function AddNewKeyDialog({ show, onCancel, provider, keyIndex }: 
 						keyIndex={keyIndex}
 						onCancel={onCancel}
 						onSave={() => {
-							toast.success("Key added successfully");
+							toast.success(successMessage);
 							onCancel();
 						}}
 					/>

@@ -81,7 +81,7 @@ export function ProxyFormFragment({ provider, showRestartAlert = false }: ProxyF
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
-				{showRestartAlert && (
+				{showRestartAlert && form.formState.isDirty && (
 					<Alert>
 						<AlertTriangle className="h-4 w-4" />
 						<AlertDescription>

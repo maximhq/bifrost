@@ -15,7 +15,7 @@ import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-const defaultConfig = {
+const defaultConfig: CoreConfig = {
 	drop_excess_requests: false,
 	initial_pool_size: 300,
 	prometheus_labels: [],
@@ -23,7 +23,6 @@ const defaultConfig = {
 	enable_governance: true,
 	enforce_governance_header: false,
 	allow_direct_keys: false,
-	plugins: [],
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 };

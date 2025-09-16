@@ -68,6 +68,7 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 									})
 										.unwrap()
 										.then(() => {
+											toast.success("Key deleted successfully");
 											setShowDeleteKeyDialog(undefined);
 										})
 										.catch((err) => {
