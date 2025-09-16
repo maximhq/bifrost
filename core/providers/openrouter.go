@@ -141,7 +141,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx context.Context, model st
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -193,6 +193,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx context.Context, model st
 		Usage:             response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.OpenRouter,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 
@@ -239,7 +240,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, model st
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -265,6 +266,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, model st
 	}
 
 	response.ExtraFields.Provider = schemas.OpenRouter
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse

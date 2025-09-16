@@ -146,7 +146,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model stri
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -209,6 +209,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model stri
 		Usage:             &usageCopy,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.Cerebras,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 
@@ -255,7 +256,7 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, model stri
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -285,6 +286,7 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, model stri
 
 	// Create final response
 	response.ExtraFields.Provider = schemas.Cerebras
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse

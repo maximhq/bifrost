@@ -137,20 +137,20 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 
 // completeRequest sends a request to Azure's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
-// Returns the response body or an error if the request fails.
-func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key schemas.Key, model string) ([]byte, *schemas.BifrostError) {
+// Returns the response body, request latency, or an error if the request fails.
+func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key schemas.Key, model string) ([]byte, time.Duration, *schemas.BifrostError) {
 	if key.AzureKeyConfig == nil {
-		return nil, newConfigurationError("azure key config not set", schemas.Azure)
+		return nil, 0, newConfigurationError("azure key config not set", schemas.Azure)
 	}
 
 	// Marshal the request body
 	jsonData, err := sonic.Marshal(requestBody)
 	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Azure)
+		return nil, 0, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Azure)
 	}
 
 	if key.AzureKeyConfig.Endpoint == "" {
-		return nil, newConfigurationError("endpoint not set", schemas.Azure)
+		return nil, 0, newConfigurationError("endpoint not set", schemas.Azure)
 	}
 
 	url := key.AzureKeyConfig.Endpoint
@@ -158,7 +158,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	if key.AzureKeyConfig.Deployments != nil {
 		deployment := key.AzureKeyConfig.Deployments[model]
 		if deployment == "" {
-			return nil, newConfigurationError(fmt.Sprintf("deployment not found for model %s", model), schemas.Azure)
+			return nil, 0, newConfigurationError(fmt.Sprintf("deployment not found for model %s", model), schemas.Azure)
 		}
 
 		apiVersion := key.AzureKeyConfig.APIVersion
@@ -168,7 +168,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 
 		url = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", url, deployment, path, *apiVersion)
 	} else {
-		return nil, newConfigurationError("deployments not set", schemas.Azure)
+		return nil, 0, newConfigurationError("deployments not set", schemas.Azure)
 	}
 
 	// Create the request with the JSON body
@@ -193,10 +193,10 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 
 	req.SetBody(jsonData)
 
-	// Send the request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	// Send the request and measure latency
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, latency, bifrostErr
 	}
 
 	// Handle error response
@@ -209,13 +209,13 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 		bifrostErr.Error.Type = &errorResp.Error.Code
 		bifrostErr.Error.Message = errorResp.Error.Message
 
-		return nil, bifrostErr
+		return nil, latency, bifrostErr
 	}
 
 	// Read the response body
 	body := resp.Body()
 
-	return body, nil
+	return body, latency, nil
 }
 
 // TextCompletion performs a text completion request to Azure's API.
@@ -230,7 +230,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 		"prompt": text,
 	}, preparedParams)
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, "completions", key, model)
+	responseBody, latency, err := provider.completeRequest(ctx, requestBody, "completions", key, model)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +275,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 		Usage:             &response.Usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.Azure,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 
@@ -302,7 +303,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 		"messages": formattedMessages,
 	}, preparedParams)
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, "chat/completions", key, model)
+	responseBody, latency, err := provider.completeRequest(ctx, requestBody, "chat/completions", key, model)
 	if err != nil {
 		return nil, err
 	}
@@ -319,6 +320,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 	}
 
 	response.ExtraFields.Provider = schemas.Azure
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
@@ -355,7 +357,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 		requestBody = mergeConfig(requestBody, params.ExtraParams)
 	}
 
-	responseBody, err := provider.completeRequest(ctx, requestBody, "embeddings", key, model)
+	responseBody, latency, err := provider.completeRequest(ctx, requestBody, "embeddings", key, model)
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +375,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 	}
 
 	response.ExtraFields.Provider = schemas.Azure
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if params != nil {
 		response.ExtraFields.Params = *params

@@ -125,7 +125,7 @@ func (provider *ParasailProvider) ChatCompletion(ctx context.Context, model stri
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -155,6 +155,7 @@ func (provider *ParasailProvider) ChatCompletion(ctx context.Context, model stri
 
 	// Create final response
 	response.ExtraFields.Provider = schemas.Parasail
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse

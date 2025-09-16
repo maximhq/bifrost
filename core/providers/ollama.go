@@ -128,7 +128,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model string
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -157,6 +157,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, model string
 	}
 
 	response.ExtraFields.Provider = schemas.Ollama
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse

@@ -413,6 +413,7 @@ func main() {
 		if !plugin.Enabled {
 			continue
 		}
+		logger.Info("initializing plugin: %s", plugin.Name)
 		switch strings.ToLower(plugin.Name) {
 		case maxim.PluginName:
 			if os.Getenv("MAXIM_LOG_REPO_ID") == "" {
@@ -428,6 +429,7 @@ func main() {
 			if err != nil {
 				logger.Warn("failed to initialize maxim plugin: %v", err)
 			} else {
+				logger.Info("successfully initialized maxim plugin")
 				loadedPlugins = append(loadedPlugins, maximPlugin)
 			}
 		case semanticcache.PluginName:

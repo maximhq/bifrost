@@ -141,7 +141,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -175,6 +175,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	}
 
 	response.ExtraFields.Provider = providerName
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	return response, nil
 }
@@ -303,7 +304,7 @@ func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, 
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -326,6 +327,7 @@ func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, 
 	}
 
 	response.ExtraFields.Provider = providerName
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if params != nil {
 		response.ExtraFields.Params = *params
@@ -586,7 +588,7 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, model string, key sc
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -611,6 +613,7 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, model string, key sc
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 
@@ -823,7 +826,7 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, model string,
 	req.SetBody(body.Bytes())
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -858,6 +861,7 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, model string,
 		Transcribe: transcribeResponse,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 

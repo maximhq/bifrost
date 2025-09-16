@@ -125,7 +125,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model strin
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -154,6 +154,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model strin
 	}
 
 	response.ExtraFields.Provider = schemas.Mistral
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
@@ -221,7 +222,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -250,6 +251,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 	}
 
 	response.ExtraFields.Provider = schemas.Mistral
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if params != nil {
 		response.ExtraFields.Params = *params

@@ -168,7 +168,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -207,6 +207,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 	}
 
 	response.ExtraFields.Provider = providerName
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
@@ -1086,7 +1087,7 @@ func (provider *GeminiProvider) completeRequest(ctx context.Context, model strin
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, nil, bifrostErr
 	}
@@ -1109,6 +1110,7 @@ func (provider *GeminiProvider) completeRequest(ctx context.Context, model strin
 		Model: model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 

@@ -134,7 +134,7 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, k
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -163,6 +163,7 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, k
 	}
 
 	response.ExtraFields.Provider = schemas.SGL
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse

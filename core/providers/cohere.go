@@ -243,7 +243,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -333,6 +333,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 		Model: model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
+			Latency:  latency.Milliseconds(),
 			BilledUsage: &schemas.BilledLLMUsage{
 				PromptTokens:     Ptr(response.Meta.BilledUnits.InputTokens),
 				CompletionTokens: Ptr(response.Meta.BilledUnits.OutputTokens),
@@ -662,7 +663,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 	req.SetBody(jsonBody)
 
 	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -713,6 +714,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, model string, key
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 

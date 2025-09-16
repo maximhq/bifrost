@@ -258,8 +258,8 @@ func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 
 // CompleteRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
-// Returns the response body or an error if the request fails.
-func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, config schemas.BedrockKeyConfig) ([]byte, *schemas.BifrostError) {
+// Returns the response body, request latency, or an error if the request fails.
+func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, config schemas.BedrockKeyConfig) ([]byte, time.Duration, *schemas.BifrostError) {
 	region := "us-east-1"
 	if config.Region != nil {
 		region = *config.Region
@@ -268,7 +268,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, &schemas.BifrostError{
+			return nil, 0, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: schemas.ErrorField{
 					Type:    Ptr(schemas.RequestCancelled),
@@ -277,7 +277,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 				},
 			}
 		}
-		return nil, &schemas.BifrostError{
+		return nil, 0, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
 				Message: schemas.ErrProviderJSONMarshaling,
@@ -289,7 +289,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	// Create the request with the JSON body
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, 0, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
 				Message: "error creating request",
@@ -303,13 +303,15 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 
 	// Sign the request using either explicit credentials or IAM role authentication
 	if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock", provider.GetProviderKey()); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	// Execute the request
+	// Execute the request and measure latency
+	startTime := time.Now()
 	resp, err := provider.client.Do(req)
+	latency := time.Since(startTime)
 	if err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, latency, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
 				Message: schemas.ErrProviderRequest,
@@ -322,7 +324,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, latency, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
 				Message: "error reading request",
@@ -335,7 +337,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		var errorResp BedrockError
 
 		if err := sonic.Unmarshal(body, &errorResp); err != nil {
-			return nil, &schemas.BifrostError{
+			return nil, latency, &schemas.BifrostError{
 				IsBifrostError: true,
 				StatusCode:     &resp.StatusCode,
 				Error: schemas.ErrorField{
@@ -345,7 +347,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 			}
 		}
 
-		return nil, &schemas.BifrostError{
+		return nil, latency, &schemas.BifrostError{
 			StatusCode: &resp.StatusCode,
 			Error: schemas.ErrorField{
 				Message: errorResp.Message,
@@ -353,7 +355,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		}
 	}
 
-	return body, nil
+	return body, latency, nil
 }
 
 // GetTextCompletionResult processes the text completion response from Bedrock.
@@ -834,7 +836,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 		"prompt": text,
 	}, preparedParams)
 
-	body, err := provider.completeRequest(ctx, requestBody, fmt.Sprintf("%s/invoke", model), *key.BedrockKeyConfig)
+	body, latency, err := provider.completeRequest(ctx, requestBody, fmt.Sprintf("%s/invoke", model), *key.BedrockKeyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -843,6 +845,9 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 	if err != nil {
 		return nil, err
 	}
+
+	// Add latency to response
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
 	// Parse raw response if enabled
 	if provider.sendBackRawResponse {
@@ -1030,7 +1035,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	}
 
 	// Create the signed request
-	responseBody, err := provider.completeRequest(ctx, requestBody, path, *key.BedrockKeyConfig)
+	responseBody, latency, err := provider.completeRequest(ctx, requestBody, path, *key.BedrockKeyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -1105,8 +1110,6 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		},
 	}
 
-	latency := float64(response.Metrics.Latency)
-
 	// Create final response
 	bifrostResponse := &schemas.BifrostResponse{
 		Choices: choices,
@@ -1117,7 +1120,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		},
 		Model: model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:  &latency,
+			Latency:  latency.Milliseconds(),
 			Provider: providerName,
 		},
 	}
@@ -1259,7 +1262,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 
 	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
 	path := url.PathEscape(model) + "/invoke"
-	rawResponse, err := provider.completeRequest(ctx, requestBody, path, config)
+	rawResponse, latency, err := provider.completeRequest(ctx, requestBody, path, config)
 	if err != nil {
 		return nil, err
 	}
@@ -1291,6 +1294,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 
@@ -1321,7 +1325,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 
 	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
 	path := url.PathEscape(model) + "/invoke"
-	rawResponse, err := provider.completeRequest(ctx, requestBody, path, config)
+	rawResponse, latency, err := provider.completeRequest(ctx, requestBody, path, config)
 	if err != nil {
 		return nil, err
 	}
@@ -1358,6 +1362,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
+			Latency:  latency.Milliseconds(),
 		},
 	}
 

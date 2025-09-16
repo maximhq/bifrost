@@ -32,19 +32,20 @@ type ChannelMessage struct {
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
 	ctx                 context.Context
-	account             schemas.Account  // account interface
-	plugins             []schemas.Plugin // list of plugins
-	requestQueues       sync.Map         // provider request queues (thread-safe)
-	waitGroups          sync.Map         // wait groups for each provider (thread-safe)
-	providerMutexes     sync.Map         // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool  sync.Pool        // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool sync.Pool        // Pool for response channels, initial pool size is set in Init
-	errorChannelPool    sync.Pool        // Pool for error channels, initial pool size is set in Init
-	responseStreamPool  sync.Pool        // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool  sync.Pool        // Pool for PluginPipeline objects
-	logger              schemas.Logger   // logger instance, default logger is used if not provided
-	mcpManager          *MCPManager      // MCP integration manager (nil if MCP not configured)
-	dropExcessRequests  atomic.Bool      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	account             schemas.Account     // account interface
+	plugins             []schemas.Plugin    // list of plugins
+	requestQueues       sync.Map            // provider request queues (thread-safe)
+	waitGroups          sync.Map            // wait groups for each provider (thread-safe)
+	providerMutexes     sync.Map            // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool  sync.Pool           // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool sync.Pool           // Pool for response channels, initial pool size is set in Init
+	errorChannelPool    sync.Pool           // Pool for error channels, initial pool size is set in Init
+	responseStreamPool  sync.Pool           // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool  sync.Pool           // Pool for PluginPipeline objects
+	logger              schemas.Logger      // logger instance, default logger is used if not provided
+	mcpManager          *MCPManager         // MCP integration manager (nil if MCP not configured)
+	dropExcessRequests  atomic.Bool         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	keySelector         schemas.KeySelector // Custom key selector function
 }
 
 // PluginPipeline encapsulates the execution of plugin PreHooks and PostHooks, tracks how many plugins ran, and manages short-circuiting and error aggregation.
@@ -85,8 +86,13 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		plugins:       config.Plugins,
 		requestQueues: sync.Map{},
 		waitGroups:    sync.Map{},
+		keySelector:   config.KeySelector,
 	}
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+
+	if bifrost.keySelector == nil {
+		bifrost.keySelector = WeightedRandomKeySelector
+	}
 
 	// Initialize object pools
 	bifrost.channelMessagePool = sync.Pool{
@@ -328,12 +334,12 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 		return bifrost.prepareProvider(providerKey, providerConfig)
 	}
 
-	oldQueue := oldQueueValue.(chan ChannelMessage)
+	oldQueue := oldQueueValue.(chan *ChannelMessage)
 
 	bifrost.logger.Debug("gracefully stopping existing workers for provider %s", providerKey)
 
 	// Step 1: Create new queue with updated buffer size
-	newQueue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize)
+	newQueue := make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize)
 
 	// Step 2: Transfer any buffered requests from old queue to new queue
 	// This prevents request loss during the transition
@@ -349,7 +355,7 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 				// New queue is full, handle this request in a goroutine
 				// This is unlikely with proper buffer sizing but provides safety
 				transferWaitGroup.Add(1)
-				go func(m ChannelMessage) {
+				go func(m *ChannelMessage) {
 					defer transferWaitGroup.Done()
 					select {
 					case newQueue <- m:
@@ -712,7 +718,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to get config for provider: %v", err)
 	}
 
-	queue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
+	queue := make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
 
 	bifrost.requestQueues.Store(providerKey, queue)
 
@@ -738,13 +744,13 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 // If the queue doesn't exist, it creates one at runtime and initializes the provider,
 // given the provider config is provided in the account interface implementation.
 // This function uses read locks to prevent race conditions during provider updates.
-func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (chan ChannelMessage, error) {
+func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (chan *ChannelMessage, error) {
 	// Use read lock to allow concurrent reads but prevent concurrent updates
 	providerMutex := bifrost.getProviderMutex(providerKey)
 	providerMutex.RLock()
 
 	if queueValue, exists := bifrost.requestQueues.Load(providerKey); exists {
-		queue := queueValue.(chan ChannelMessage)
+		queue := queueValue.(chan *ChannelMessage)
 		providerMutex.RUnlock()
 		return queue, nil
 	}
@@ -757,7 +763,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 
 	// Double-check after acquiring write lock (another goroutine might have created it)
 	if queueValue, exists := bifrost.requestQueues.Load(providerKey); exists {
-		queue := queueValue.(chan ChannelMessage)
+		queue := queueValue.(chan *ChannelMessage)
 		return queue, nil
 	}
 
@@ -773,7 +779,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 	}
 
 	queueValue, _ := bifrost.requestQueues.Load(providerKey)
-	queue := queueValue.(chan ChannelMessage)
+	queue := queueValue.(chan *ChannelMessage)
 
 	return queue, nil
 }
@@ -992,7 +998,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	msg.Context = ctx
 
 	select {
-	case queue <- *msg:
+	case queue <- msg:
 		// Message was sent successfully
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
@@ -1004,7 +1010,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 			return nil, newBifrostErrorFromMsg("request dropped: queue is full")
 		}
 		select {
-		case queue <- *msg:
+		case queue <- msg:
 			// Message was sent successfully
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
@@ -1016,7 +1022,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	var resp *schemas.BifrostResponse
 	select {
 	case result = <-msg.Response:
-		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(bifrost.plugins))
+		resp, bifrostErr := pipeline.RunPostHooks(&msg.Context, result, nil, len(bifrost.plugins))
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
@@ -1025,7 +1031,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
-		resp, bifrostErrPtr = pipeline.RunPostHooks(&ctx, nil, bifrostErrPtr, len(bifrost.plugins))
+		resp, bifrostErrPtr = pipeline.RunPostHooks(&msg.Context, nil, bifrostErrPtr, len(bifrost.plugins))
 		bifrost.releaseChannelMessage(msg)
 		if bifrostErrPtr != nil {
 			return nil, bifrostErrPtr
@@ -1110,7 +1116,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 	msg.Context = ctx
 
 	select {
-	case queue <- *msg:
+	case queue <- msg:
 		// Message was sent successfully
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
@@ -1122,7 +1128,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 			return nil, newBifrostErrorFromMsg("request dropped: queue is full")
 		}
 		select {
-		case queue <- *msg:
+		case queue <- msg:
 			// Message was sent successfully
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
@@ -1142,7 +1148,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
-func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, queue chan ChannelMessage) {
+func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, queue chan *ChannelMessage) {
 	defer func() {
 		if waitGroupValue, ok := bifrost.waitGroups.Load(provider.GetProviderKey()); ok {
 			waitGroup := waitGroupValue.(*sync.WaitGroup)
@@ -1177,6 +1183,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				continue
 			}
+			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKey, key.ID)
 		}
 
 		// Track attempts
@@ -1212,12 +1219,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 			// Attempt the request
 			if IsStreamRequestType(req.Type) {
-				stream, bifrostError = handleProviderStreamRequest(provider, &req, key, postHookRunner, req.Type)
+				stream, bifrostError = handleProviderStreamRequest(provider, req, key, postHookRunner, req.Type)
 				if bifrostError != nil && !bifrostError.IsBifrostError {
 					break // Don't retry client errors
 				}
 			} else {
-				result, bifrostError = handleProviderRequest(provider, &req, key, req.Type)
+				result, bifrostError = handleProviderRequest(provider, req, key, req.Type)
 				if bifrostError != nil {
 					break // Don't retry client errors
 				}
@@ -1518,9 +1525,19 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 		return supportedKeys[0], nil
 	}
 
+	selectedKey, err := bifrost.keySelector(ctx, supportedKeys, providerKey, model)
+	if err != nil {
+		return schemas.Key{}, err
+	}
+
+	return selectedKey, nil
+
+}
+
+func WeightedRandomKeySelector(ctx *context.Context, keys []schemas.Key, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
 	// Use a weighted random selection based on key weights
 	totalWeight := 0
-	for _, key := range supportedKeys {
+	for _, key := range keys {
 		totalWeight += int(key.Weight * 100) // Convert float to int for better performance
 	}
 
@@ -1530,7 +1547,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 
 	// Select key based on weight
 	currentWeight := 0
-	for _, key := range supportedKeys {
+	for _, key := range keys {
 		currentWeight += int(key.Weight * 100)
 		if randomValue < currentWeight {
 			return key, nil
@@ -1538,7 +1555,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 	}
 
 	// Fallback to first key if something goes wrong
-	return supportedKeys[0], nil
+	return keys[0], nil
 }
 
 // Shutdown gracefully stops all workers when triggered.
@@ -1548,7 +1565,7 @@ func (bifrost *Bifrost) Shutdown() {
 
 	// Close all provider queues to signal workers to stop
 	bifrost.requestQueues.Range(func(key, value interface{}) bool {
-		close(value.(chan ChannelMessage))
+		close(value.(chan *ChannelMessage))
 		return true
 	})
 
