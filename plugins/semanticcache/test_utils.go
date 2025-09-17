@@ -68,7 +68,6 @@ func getRedisConfigFromEnv() vectorstore.RedisConfig {
 		timeout = 10 * time.Second
 	}
 
-
 	return vectorstore.RedisConfig{
 		Addr:           addr,
 		Username:       username,
@@ -97,7 +96,12 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, provide
 
 func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	return &schemas.ProviderConfig{
-		NetworkConfig:            schemas.DefaultNetworkConfig,
+		NetworkConfig: schemas.NetworkConfig{
+			DefaultRequestTimeoutInSeconds: 60,
+			MaxRetries:                     5,
+			RetryBackoffInitial:            100 * time.Millisecond,
+			RetryBackoffMax:                10 * time.Second,
+		},
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 	}, nil
 }
@@ -162,65 +166,6 @@ func NewTestSetupWithConfig(t *testing.T, config Config) *TestSetup {
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
-	}
-
-	return &TestSetup{
-		Logger: logger,
-		Store:  store,
-		Plugin: plugin,
-		Client: client,
-		Config: config,
-	}
-}
-
-// NewRedisClusterTestSetup creates a test setup for Redis Cluster testing
-func NewRedisClusterTestSetup(t *testing.T) *TestSetup {
-	ctx := context.Background()
-
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping Redis Cluster test")
-	}
-
-	config := Config{
-		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-small",
-		Threshold:      0.8,
-		Keys: []schemas.Key{
-			{
-				Value:  os.Getenv("OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
-	}
-
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
-
-	store, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{
-		Type:   vectorstore.VectorStoreTypeWeaviate,
-		Config: getWeaviateConfigFromEnv(),
-	}, logger)
-	if err != nil {
-		t.Fatalf("Vector store not available or failed to connect: %v", err)
-	}
-
-	plugin, err := Init(ctx, config, logger, store)
-	if err != nil {
-		t.Fatalf("Failed to initialize plugin with vector store: %v", err)
-	}
-
-	// Clear test keys
-	pluginImpl := plugin.(*Plugin)
-	clearTestKeysWithStore(t, pluginImpl.store)
-
-	account := &BaseAccount{}
-	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  logger,
-	})
-	if err != nil {
-		t.Fatalf("Error initializing Bifrost with Redis Cluster: %v", err)
 	}
 
 	return &TestSetup{
