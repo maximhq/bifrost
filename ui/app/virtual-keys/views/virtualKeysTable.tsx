@@ -21,8 +21,8 @@ import { formatCurrency } from "@/lib/utils/governance";
 import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import VirtualKeyDetailDialog from "./virtual-key-detail-dialog";
-import VirtualKeyDialog from "./virtual-key-dialog";
+import VirtualKeyDetailDialog from "./virtualKeyDetailsDialog";
+import VirtualKeyDialog from "./virtualKeyDialog";
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
@@ -114,7 +114,6 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
-						<h3 className="text-lg font-semibold">Virtual Keys</h3>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
 					</div>
 					<Button onClick={handleAddVirtualKey}>

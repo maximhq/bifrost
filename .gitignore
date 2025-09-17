@@ -8,6 +8,10 @@ private.*
 .venv
 bifrost-data
 
+# Enterprise
+ui/app/enterprise
+ui/components/enterprise
+
 # Temporary directories
 **/temp/
 /transports/ui

@@ -49,8 +49,8 @@ func NewWebSocketHandler(ctx context.Context, logManager logging.LogManager, log
 }
 
 // RegisterRoutes registers all WebSocket-related routes
-func (h *WebSocketHandler) RegisterRoutes(r *router.Router) {
-	r.GET("/ws/logs", h.connectLogStream)
+func (h *WebSocketHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+	r.GET("/ws/logs", ChainMiddlewares(h.connectLogStream, middlewares...))
 }
 
 // getUpgrader returns a WebSocket upgrader configured with the current allowed origins
