@@ -30,14 +30,14 @@ func NewMCPHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.Co
 }
 
 // RegisterRoutes registers all MCP-related routes
-func (h *MCPHandler) RegisterRoutes(r *router.Router) {
+func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
 	// MCP tool execution endpoint
-	r.POST("/v1/mcp/tool/execute", h.executeTool)
-	r.GET("/api/mcp/clients", h.getMCPClients)
-	r.POST("/api/mcp/client", h.addMCPClient)
-	r.PUT("/api/mcp/client/{name}", h.editMCPClientTools)
-	r.DELETE("/api/mcp/client/{name}", h.removeMCPClient)
-	r.POST("/api/mcp/client/{name}/reconnect", h.reconnectMCPClient)
+	r.POST("/v1/mcp/tool/execute", ChainMiddlewares(h.executeTool, middlewares...))
+	r.GET("/api/mcp/clients", ChainMiddlewares(h.getMCPClients, middlewares...))
+	r.POST("/api/mcp/client", ChainMiddlewares(h.addMCPClient, middlewares...))
+	r.PUT("/api/mcp/client/{name}", ChainMiddlewares(h.editMCPClientTools, middlewares...))
+	r.DELETE("/api/mcp/client/{name}", ChainMiddlewares(h.removeMCPClient, middlewares...))
+	r.POST("/api/mcp/client/{name}/reconnect", ChainMiddlewares(h.reconnectMCPClient, middlewares...))
 }
 
 // executeTool handles POST /v1/mcp/tool/execute - Execute MCP tool

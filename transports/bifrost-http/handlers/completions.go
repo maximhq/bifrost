@@ -244,14 +244,14 @@ const (
 )
 
 // RegisterRoutes registers all completion-related routes
-func (h *CompletionHandler) RegisterRoutes(r *router.Router) {
+func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
 	// Completion endpoints
-	r.POST("/v1/completions", h.textCompletion)
-	r.POST("/v1/chat/completions", h.chatCompletion)
-	r.POST("/v1/responses", h.responses)
-	r.POST("/v1/embeddings", h.embeddings)
-	r.POST("/v1/audio/speech", h.speech)
-	r.POST("/v1/audio/transcriptions", h.transcription)
+	r.POST("/v1/completions", ChainMiddlewares(h.textCompletion, middlewares...))
+	r.POST("/v1/chat/completions", ChainMiddlewares(h.chatCompletion, middlewares...))
+	r.POST("/v1/responses", ChainMiddlewares(h.responses, middlewares...))
+	r.POST("/v1/embeddings", ChainMiddlewares(h.embeddings, middlewares...))
+	r.POST("/v1/audio/speech", ChainMiddlewares(h.speech, middlewares...))
+	r.POST("/v1/audio/transcriptions", ChainMiddlewares(h.transcription, middlewares...))
 }
 
 // textCompletion handles POST /v1/completions - Process text completion requests

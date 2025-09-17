@@ -734,7 +734,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
 	}
 
-	logger.Info("successfully loaded configuration")
 	return config, nil
 }
 

@@ -1,12 +1,11 @@
 "use client";
 
-import { BoxIcon, BugIcon, Puzzle, Settings2Icon, Shield, Telescope } from "lucide-react";
+import { BoxIcon, BugIcon, Hexagon, KeyRound, Puzzle, Settings2Icon, Shield, Telescope, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
 	Sidebar,
 	SidebarContent,
-	SidebarFooter,
 	SidebarGroup,
 	SidebarGroupContent,
 	SidebarHeader,
@@ -47,7 +46,7 @@ const MCPIcon = ({ className }: { className?: string }) => (
 );
 
 // Main navigation items
-const navigationItems = [
+const enterpriseItems = [
 	{
 		title: "Logs",
 		url: "/logs",
@@ -61,16 +60,34 @@ const navigationItems = [
 		description: "Configure models",
 	},
 	{
-		title: "MCP clients",
-		url: "/mcp-clients",
-		icon: MCPIcon,
-		description: "MCP configuration",
+		title: "Virtual Keys",
+		url: "/virtual-keys",
+		icon: KeyRound,
+		description: "Manage virtual keys & access",
+	},
+	{
+		title: "Teams & Customers",
+		url: "/teams-customers",
+		icon: Users,
+		description: "Manage teams & customers",
 	},
 	{
 		title: "Governance",
 		url: "/governance",
 		icon: Shield,
-		description: "Manage virtual keys & access",
+		description: "Manage governance",
+	},
+	{
+		title: "Cluster config",
+		url: "/cluster",
+		icon: Hexagon,
+		description: "Manage Bifrost cluster",
+	},
+	{
+		title: "MCP clients",
+		url: "/mcp-clients",
+		icon: MCPIcon,
+		description: "MCP configuration",
 	},
 	{
 		title: "Config",
@@ -158,7 +175,7 @@ export default function AppSidebar() {
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
 	return (
-		<Sidebar className="custom-scrollbar border-none bg-transparent">
+		<Sidebar className="border-none bg-transparent overflow-y-clip">
 			<SidebarHeader className="mt-1 ml-2 flex h-12 justify-between px-0">
 				<div className="flex h-full items-center justify-between gap-2 px-1.5">
 					<Link href="/" className="group flex items-center gap-2">
@@ -166,12 +183,11 @@ export default function AppSidebar() {
 					</Link>
 				</div>
 			</SidebarHeader>
-
-			<SidebarContent>
+			<SidebarContent className="custom-scrollbar pb-6">
 				<SidebarGroup>
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-1">
-							{navigationItems.map((item) => {
+							{enterpriseItems.map((item) => {
 								const isActive = isActiveRoute(item.url);
 								const isAllowed = item.title === "Governance" ? isGovernanceEnabled : true;
 								return (
@@ -249,8 +265,6 @@ export default function AppSidebar() {
 					<div className="mx-auto font-mono text-xs">{version ?? ""}</div>
 				</div>
 			</SidebarContent>
-
-			<SidebarFooter className="px-6 py-3"></SidebarFooter>
 		</Sidebar>
 	);
 }
