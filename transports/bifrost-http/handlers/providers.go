@@ -58,14 +58,14 @@ type ErrorResponse struct {
 }
 
 // RegisterRoutes registers all provider management routes
-func (h *ProviderHandler) RegisterRoutes(r *router.Router) {
+func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
 	// Provider CRUD operations
-	r.GET("/api/providers", h.listProviders)
-	r.GET("/api/providers/{provider}", h.getProvider)
-	r.POST("/api/providers", h.addProvider)
-	r.PUT("/api/providers/{provider}", h.updateProvider)
-	r.DELETE("/api/providers/{provider}", h.deleteProvider)
-	r.GET("/api/keys", h.listKeys)
+	r.GET("/api/providers", ChainMiddlewares(h.listProviders, middlewares...))
+	r.GET("/api/providers/{provider}", ChainMiddlewares(h.getProvider, middlewares...))
+	r.POST("/api/providers", ChainMiddlewares(h.addProvider, middlewares...))
+	r.PUT("/api/providers/{provider}", ChainMiddlewares(h.updateProvider, middlewares...))
+	r.DELETE("/api/providers/{provider}", ChainMiddlewares(h.deleteProvider, middlewares...))
+	r.GET("/api/keys", ChainMiddlewares(h.listKeys, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers

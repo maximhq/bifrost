@@ -29,3 +29,5 @@ export const DEFAULT_ALLOWED_REQUESTS = {
 	transcription: true,
 	transcription_stream: true,
 } as const satisfies Required<AllowedRequests>;
+
+export const IS_ENTERPRISE = process.env.NEXT_PUBLIC_IS_ENTERPRISE === "true";

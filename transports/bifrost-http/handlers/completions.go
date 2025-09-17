@@ -302,13 +302,13 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 }
 
 // RegisterRoutes registers all completion-related routes
-func (h *CompletionHandler) RegisterRoutes(r *router.Router) {
+func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
 	// Completion endpoints
-	r.POST("/v1/text/completions", h.textCompletion)
-	r.POST("/v1/chat/completions", h.chatCompletion)
-	r.POST("/v1/embeddings", h.embeddings)
-	r.POST("/v1/audio/speech", h.speechCompletion)
-	r.POST("/v1/audio/transcriptions", h.transcriptionCompletion)
+	r.POST("/v1/text/completions", ChainMiddlewares(h.textCompletion, middlewares...))
+	r.POST("/v1/chat/completions", ChainMiddlewares(h.chatCompletion, middlewares...))
+	r.POST("/v1/embeddings", ChainMiddlewares(h.embeddings, middlewares...))
+	r.POST("/v1/audio/speech", ChainMiddlewares(h.speechCompletion, middlewares...))
+	r.POST("/v1/audio/transcriptions", ChainMiddlewares(h.transcriptionCompletion, middlewares...))
 }
 
 // textCompletion handles POST /v1/text/completions - Process text completion requests

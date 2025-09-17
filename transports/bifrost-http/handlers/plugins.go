@@ -34,12 +34,12 @@ type UpdatePluginRequest struct {
 	Config  map[string]interface{} `json:"config"`
 }
 
-func (h *PluginsHandler) RegisterRoutes(r *router.Router) {
-	r.GET("/api/plugins", h.getPlugins)
-	r.GET("/api/plugins/{name}", h.getPlugin)
-	r.POST("/api/plugins", h.createPlugin)
-	r.PUT("/api/plugins/{name}", h.updatePlugin)
-	r.DELETE("/api/plugins/{name}", h.deletePlugin)
+func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+	r.GET("/api/plugins", ChainMiddlewares(h.getPlugins, middlewares...))
+	r.GET("/api/plugins/{name}", ChainMiddlewares(h.getPlugin, middlewares...))
+	r.POST("/api/plugins", ChainMiddlewares(h.createPlugin, middlewares...))
+	r.PUT("/api/plugins/{name}", ChainMiddlewares(h.updatePlugin, middlewares...))
+	r.DELETE("/api/plugins/{name}", ChainMiddlewares(h.deletePlugin, middlewares...))
 }
 
 func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {

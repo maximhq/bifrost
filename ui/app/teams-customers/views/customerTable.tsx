@@ -21,7 +21,7 @@ import { formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
 import { DollarSign, Edit, Key, Plus, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import CustomerDialog from "./customer-dialog";
+import CustomerDialog from "./customerDialog";
 
 interface CustomersTableProps {
 	customers: Customer[];
@@ -79,7 +79,6 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
-						<h3 className="text-lg font-semibold">Customers</h3>
 						<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
 					</div>
 					<Button onClick={handleAddCustomer}>
