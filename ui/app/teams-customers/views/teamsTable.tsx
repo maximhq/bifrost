@@ -22,7 +22,7 @@ import { formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
 import { Edit, Key, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import TeamDialog from "./team-dialog";
+import TeamDialog from "./teamDialog";
 
 interface TeamsTableProps {
 	teams: Team[];
@@ -83,7 +83,6 @@ export default function TeamsTable({ teams, customers, virtualKeys, onRefresh }:
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
 						<div>
-							<h3 className="text-lg font-semibold">Teams</h3>
 							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>
 						</div>
 						<Button onClick={handleAddTeam}>

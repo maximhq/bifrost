@@ -120,27 +120,27 @@ type UpdateCustomerRequest struct {
 }
 
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
-func (h *GovernanceHandler) RegisterRoutes(r *router.Router) {
+func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
 	// Virtual Key CRUD operations
-	r.GET("/api/governance/virtual-keys", h.getVirtualKeys)
-	r.POST("/api/governance/virtual-keys", h.createVirtualKey)
-	r.GET("/api/governance/virtual-keys/{vk_id}", h.getVirtualKey)
-	r.PUT("/api/governance/virtual-keys/{vk_id}", h.updateVirtualKey)
-	r.DELETE("/api/governance/virtual-keys/{vk_id}", h.deleteVirtualKey)
+	r.GET("/api/governance/virtual-keys", ChainMiddlewares(h.getVirtualKeys, middlewares...))
+	r.POST("/api/governance/virtual-keys", ChainMiddlewares(h.createVirtualKey, middlewares...))
+	r.GET("/api/governance/virtual-keys/{vk_id}", ChainMiddlewares(h.getVirtualKey, middlewares...))
+	r.PUT("/api/governance/virtual-keys/{vk_id}", ChainMiddlewares(h.updateVirtualKey, middlewares...))
+	r.DELETE("/api/governance/virtual-keys/{vk_id}", ChainMiddlewares(h.deleteVirtualKey, middlewares...))
 
 	// Team CRUD operations
-	r.GET("/api/governance/teams", h.getTeams)
-	r.POST("/api/governance/teams", h.createTeam)
-	r.GET("/api/governance/teams/{team_id}", h.getTeam)
-	r.PUT("/api/governance/teams/{team_id}", h.updateTeam)
-	r.DELETE("/api/governance/teams/{team_id}", h.deleteTeam)
+	r.GET("/api/governance/teams", ChainMiddlewares(h.getTeams, middlewares...))
+	r.POST("/api/governance/teams", ChainMiddlewares(h.createTeam, middlewares...))
+	r.GET("/api/governance/teams/{team_id}", ChainMiddlewares(h.getTeam, middlewares...))
+	r.PUT("/api/governance/teams/{team_id}", ChainMiddlewares(h.updateTeam, middlewares...))
+	r.DELETE("/api/governance/teams/{team_id}", ChainMiddlewares(h.deleteTeam, middlewares...))
 
 	// Customer CRUD operations
-	r.GET("/api/governance/customers", h.getCustomers)
-	r.POST("/api/governance/customers", h.createCustomer)
-	r.GET("/api/governance/customers/{customer_id}", h.getCustomer)
-	r.PUT("/api/governance/customers/{customer_id}", h.updateCustomer)
-	r.DELETE("/api/governance/customers/{customer_id}", h.deleteCustomer)
+	r.GET("/api/governance/customers", ChainMiddlewares(h.getCustomers, middlewares...))
+	r.POST("/api/governance/customers", ChainMiddlewares(h.createCustomer, middlewares...))
+	r.GET("/api/governance/customers/{customer_id}", ChainMiddlewares(h.getCustomer, middlewares...))
+	r.PUT("/api/governance/customers/{customer_id}", ChainMiddlewares(h.updateCustomer, middlewares...))
+	r.DELETE("/api/governance/customers/{customer_id}", ChainMiddlewares(h.deleteCustomer, middlewares...))
 }
 
 // Virtual Key CRUD Operations
