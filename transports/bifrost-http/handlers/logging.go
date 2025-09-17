@@ -30,11 +30,11 @@ func NewLoggingHandler(logManager logging.LogManager, logger schemas.Logger) *Lo
 }
 
 // RegisterRoutes registers all logging-related routes
-func (h *LoggingHandler) RegisterRoutes(r *router.Router) {
+func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
 	// Log retrieval with filtering, search, and pagination
-	r.GET("/api/logs", h.getLogs)
-	r.GET("/api/logs/dropped", h.getDroppedRequests)
-	r.GET("/api/logs/models", h.getAvailableModels)
+	r.GET("/api/logs", ChainMiddlewares(h.getLogs, middlewares...))
+	r.GET("/api/logs/dropped", ChainMiddlewares(h.getDroppedRequests, middlewares...))
+	r.GET("/api/logs/models", ChainMiddlewares(h.getAvailableModels, middlewares...))
 }
 
 // getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters

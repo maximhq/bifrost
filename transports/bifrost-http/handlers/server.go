@@ -265,10 +265,8 @@ func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (
 }
 
 // RegisterRoutes initializes the routes for the Bifrost HTTP server.
-func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context) error {
+func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...fasthttp.RequestHandler) error {
 	var err error
-	// Initialize routes
-	s.Router = router.New()
 	// Initializing plugin specific handlers
 	var loggingHandler *LoggingHandler
 	loggerPlugin, _ := FindPluginByName[*logging.LoggerPlugin](s.Plugins, logging.PluginName)
@@ -297,6 +295,8 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context) error {
 		// Start WebSocket heartbeat
 		wsHandler.StartHeartbeat()
 	}
+	// Chaining all middlewares
+	// ChainMiddlewares chains multiple middlewares together
 	// Initialize handlers
 	providerHandler := NewProviderHandler(s.Config, s.Client, logger)
 	completionHandler := NewCompletionHandler(s.Client, s.Config, logger)
@@ -305,23 +305,23 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context) error {
 	configHandler := NewConfigHandler(s.Client, logger, s.Config)
 	pluginsHandler := NewPluginsHandler(s.Config.ConfigStore, logger)
 	// Register all handler routes
-	providerHandler.RegisterRoutes(s.Router)
-	completionHandler.RegisterRoutes(s.Router)
-	mcpHandler.RegisterRoutes(s.Router)
+	providerHandler.RegisterRoutes(s.Router, middlewares...)
+	completionHandler.RegisterRoutes(s.Router, middlewares...)
+	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	integrationHandler.RegisterRoutes(s.Router)
-	configHandler.RegisterRoutes(s.Router)
-	pluginsHandler.RegisterRoutes(s.Router)
+	configHandler.RegisterRoutes(s.Router, middlewares...)
+	pluginsHandler.RegisterRoutes(s.Router, middlewares...)
 	if cacheHandler != nil {
-		cacheHandler.RegisterRoutes(s.Router)
+		cacheHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if governanceHandler != nil {
-		governanceHandler.RegisterRoutes(s.Router)
+		governanceHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if loggingHandler != nil {
-		loggingHandler.RegisterRoutes(s.Router)
+		loggingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if wsHandler != nil {
-		wsHandler.RegisterRoutes(s.Router)
+		wsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	//
 	// Add Prometheus /metrics endpoint
@@ -342,11 +342,11 @@ func (s *BifrostHTTPServer) InitializeTelemetry() {
 }
 
 // RegisterUIHandler registers the UI handler with the specified router
-func (s *BifrostHTTPServer) RegisterUIHandler() {
+func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...fasthttp.RequestHandler) {
 	// Register UI handlers
 	// Registering UI handlers
 	// WARNING: This UI handler needs to be registered after all the other handlers
-	NewUIHandler(s.UIContent).RegisterRoutes(s.Router)
+	NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
@@ -397,6 +397,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		logger.Fatal("failed to initialize bifrost: %v", err)
 	}
 	s.Config.SetBifrostClient(s.Client)
+	// Initialize routes
+	s.Router = router.New()
+	// Register routes
 	err = s.RegisterRoutes(s.ctx)
 	// Register UI handler
 	s.RegisterUIHandler()
