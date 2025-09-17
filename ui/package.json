@@ -1,5 +1,5 @@
 {
-	"name": "bifrost-ui",
+	"name": "@maximhq/bifrost-ui",
 	"version": "0.1.0",
 	"private": true,
 	"scripts": {
@@ -49,6 +49,7 @@
 		"next-themes": "0.4.6",
 		"nuqs": "2.6.0",
 		"react": "19.1.1",
+		"react-cookie": "^8.0.1",
 		"react-dom": "19.1.1",
 		"react-hook-form": "^7.62.0",
 		"recharts": "3.1.2",
