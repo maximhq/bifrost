@@ -780,6 +780,14 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 
 // CORE INTERNAL LOGIC
 
+// normalizeOpenRouterRouting ensures that requests with "openrouter/" model prefix
+// are correctly routed to the OpenRouter provider.
+func normalizeOpenRouterRouting(req *schemas.BifrostRequest) {
+	if strings.HasPrefix(req.Model, "openrouter/") {
+		req.Provider = schemas.OpenRouter
+	}
+}
+
 // shouldTryFallbacks handles the primary error and returns true if we should proceed with fallbacks, false if we should return immediately
 func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
 	// If no primary error, we succeeded
@@ -824,6 +832,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	fallbackReq := *req
 	fallbackReq.Provider = fallback.Provider
 	fallbackReq.Model = fallback.Model
+	normalizeOpenRouterRouting(&fallbackReq)
 	return &fallbackReq
 }
 
@@ -850,9 +859,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all non-streaming public API methods.
 func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if strings.HasPrefix(req.Model, "openrouter/") {
-		req.Provider = schemas.OpenRouter
-	}
+	normalizeOpenRouterRouting(req)
 
 	if err := validateRequest(req); err != nil {
 		err.Provider = req.Provider
@@ -903,6 +910,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all streaming public API methods.
 func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	normalizeOpenRouterRouting(req)
 	if err := validateRequest(req); err != nil {
 		err.Provider = req.Provider
 		return nil, err
