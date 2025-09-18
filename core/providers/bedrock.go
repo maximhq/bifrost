@@ -25,6 +25,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
+	cohere "github.com/maximhq/bifrost/core/schemas/providers/cohere"
 )
 
 // BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.
@@ -545,10 +547,10 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 									})
 								}
 								if block.ImageURL != nil {
-									sanitizedURL, _ := SanitizeImageURL(block.ImageURL.URL)
-									urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
+									sanitizedURL, _ := schemas.SanitizeImageURL(block.ImageURL.URL)
+									urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
 
-									formattedImgContent := AnthropicImageContent{
+									formattedImgContent := anthropic.AnthropicImageContent{
 										Type: urlTypeInfo.Type,
 									}
 
@@ -1331,7 +1333,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 		return nil, err
 	}
 
-	var cohereResp CohereEmbeddingResponse
+	var cohereResp cohere.CohereEmbeddingResponse
 	if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
 		return nil, newBifrostOperationError("error parsing embedding response", err, providerName)
 	}
