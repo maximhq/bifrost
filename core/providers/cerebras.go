@@ -12,13 +12,14 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/azure"
 	"github.com/valyala/fasthttp"
 )
 
 // cerebrasTextResponsePool provides a pool for Cerebras text completion response objects.
 var cerebrasTextResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &AzureTextResponse{}
+		return &azure.AzureTextResponse{}
 	},
 }
 
@@ -44,14 +45,14 @@ var cerebrasTextResponsePool = sync.Pool{
 // }
 
 // acquireCerebrasTextResponse gets a Cerebras text completion response from the pool and resets it.
-func acquireCerebrasTextResponse() *AzureTextResponse {
-	resp := cerebrasTextResponsePool.Get().(*AzureTextResponse)
-	*resp = AzureTextResponse{} // Reset the struct
+func acquireCerebrasTextResponse() *azure.AzureTextResponse {
+	resp := cerebrasTextResponsePool.Get().(*azure.AzureTextResponse)
+	*resp = azure.AzureTextResponse{} // Reset the struct
 	return resp
 }
 
 // releaseCerebrasTextResponse returns a Cerebras text completion response to the pool.
-func releaseCerebrasTextResponse(resp *AzureTextResponse) {
+func releaseCerebrasTextResponse(resp *azure.AzureTextResponse) {
 	if resp != nil {
 		cerebrasTextResponsePool.Put(resp)
 	}
@@ -86,7 +87,7 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		// cerebrasChatResponsePool.Put(&schemas.BifrostResponse{})
-		cerebrasTextResponsePool.Put(&AzureTextResponse{})
+		cerebrasTextResponsePool.Put(&azure.AzureTextResponse{})
 	}
 
 	// Configure proxy if provided
@@ -226,14 +227,16 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model stri
 
 // ChatCompletion performs a chat completion request to the Cerebras API.
 func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	// Use centralized OpenAI converter since Cerebras is OpenAI-compatible
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Cerebras,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
-
-	jsonBody, err := sonic.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Cerebras)
 	}
@@ -307,13 +310,15 @@ func (provider *CerebrasProvider) Embedding(ctx context.Context, model string, k
 // Uses Cerebras's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	// Use centralized OpenAI converter since Cerebras is OpenAI-compatible
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Cerebras,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq.Stream = schemas.Ptr(true)
 
 	// Prepare Cerebras headers
 	headers := map[string]string{
@@ -329,7 +334,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
-		requestBody,
+		openaiReq,
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Cerebras,
