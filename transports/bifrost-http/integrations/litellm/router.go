@@ -3,9 +3,7 @@ package litellm
 import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
+	genai "github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -22,10 +20,10 @@ func NewLiteLLMRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *L
 	routes := []integrations.RouteConfig{}
 
 	// Add OpenAI routes to LiteLLM for OpenAI API compatibility
-	routes = append(routes, openai.CreateOpenAIRouteConfigs("/litellm", handlerStore)...)
+	routes = append(routes, integrations.CreateOpenAIRouteConfigs("/litellm", handlerStore)...)
 
 	// Add Anthropic routes to LiteLLM for Anthropic API compatibility
-	routes = append(routes, anthropic.CreateAnthropicRouteConfigs("/litellm")...)
+	routes = append(routes, integrations.CreateAnthropicRouteConfigs("/litellm")...)
 
 	// Add GenAI routes to LiteLLM for Vertex AI compatibility
 	routes = append(routes, genai.CreateGenAIRouteConfigs("/litellm")...)
