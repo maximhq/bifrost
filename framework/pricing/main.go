@@ -220,8 +220,15 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 		return 0.0
 	}
 
-	// Fix model normalization to use the last path segment
-	if strings.Contains(model, "/") {
+	// Handle OpenRouter models, which have the provider in the model name
+	if provider == "openrouter" {
+		if !strings.HasPrefix(model, "openrouter/") {
+			model = "openrouter/" + model
+		}
+	} else if strings.HasPrefix(model, "openrouter/") {
+		provider = "openrouter"
+	} else if strings.Contains(model, "/") {
+		// Fix model normalization to use the last path segment for other providers
 		parts := strings.Split(model, "/")
 		if len(parts) > 0 {
 			model = parts[len(parts)-1]
@@ -340,7 +347,9 @@ func (pm *PricingManager) getPricing(model, provider string, requestType schemas
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
-	pricing, ok := pm.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
+	pricingKey := makeKey(model, provider, normalizeRequestType(requestType))
+
+	pricing, ok := pm.pricingData[pricingKey]
 	if !ok {
 		if provider == string(schemas.Gemini) {
 			pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]

@@ -73,13 +73,19 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 // convertPricingDataToTableModelPricing converts the pricing data to a TableModelPricing struct
 func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) configstore.TableModelPricing {
 	provider := normalizeProvider(entry.Provider)
-
-	// Handle provider/model format - extract just the model name
 	modelName := modelKey
-	if strings.Contains(modelKey, "/") {
+
+	// For openrouter, the model key from the pricing JSON is the canonical model name.
+	// e.g., "openrouter/google/gemini-2.5-flash"
+	// We should also ensure the provider is set correctly.
+	if strings.HasPrefix(modelKey, "openrouter/") {
+		provider = "openrouter"
+	} else if strings.Contains(modelKey, "/") {
+		// For other providers, e.g., "google/gemma-7b", the model name is "gemma-7b".
 		parts := strings.Split(modelKey, "/")
 		if len(parts) > 1 {
-			modelName = parts[1]
+			// Take the last part of the split.
+			modelName = parts[len(parts)-1]
 		}
 	}
 

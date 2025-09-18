@@ -850,6 +850,10 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all non-streaming public API methods.
 func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if strings.HasPrefix(req.Model, "openrouter/") {
+		req.Provider = schemas.OpenRouter
+	}
+
 	if err := validateRequest(req); err != nil {
 		err.Provider = req.Provider
 		return nil, err
