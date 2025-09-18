@@ -1,46 +1,46 @@
-package anthropic
+package integrations
 
 import (
 	"errors"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
 // AnthropicRouter handles Anthropic-compatible API endpoints
 type AnthropicRouter struct {
-	*integrations.GenericRouter
+	*GenericRouter
 }
 
 // CreateAnthropicRouteConfigs creates route configurations for Anthropic endpoints.
-func CreateAnthropicRouteConfigs(pathPrefix string) []integrations.RouteConfig {
-	return []integrations.RouteConfig{
+func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
+	return []RouteConfig{
 		{
 			Path:   pathPrefix + "/v1/messages",
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &AnthropicMessageRequest{}
+				return &anthropic.AnthropicMessageRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if anthropicReq, ok := req.(*AnthropicMessageRequest); ok {
-					return anthropicReq.ConvertToBifrostRequest(), nil
+				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					return anthropicReq.ConvertChatRequestToBifrost(), nil
 				}
 				return nil, errors.New("invalid request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return DeriveAnthropicFromBifrostResponse(resp), nil
+				return anthropic.ConvertChatResponseToAnthropic(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveAnthropicErrorFromBifrostError(err)
+				return anthropic.ConvertErrorToAnthropic(err)
 			},
-			StreamConfig: &integrations.StreamConfig{
+			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return DeriveAnthropicStreamFromBifrostResponse(resp), nil
+					return anthropic.ConvertStreamResponseToAnthropic(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return DeriveAnthropicStreamFromBifrostError(err)
+					return anthropic.ConvertStreamErrorToAnthropic(err)
 				},
 			},
 		},
@@ -50,6 +50,6 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []integrations.RouteConfig {
 // NewAnthropicRouter creates a new AnthropicRouter with the given bifrost client.
 func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *AnthropicRouter {
 	return &AnthropicRouter{
-		GenericRouter: integrations.NewGenericRouter(client, handlerStore, CreateAnthropicRouteConfigs("/anthropic")),
+		GenericRouter: NewGenericRouter(client, handlerStore, CreateAnthropicRouteConfigs("/anthropic")),
 	}
 }

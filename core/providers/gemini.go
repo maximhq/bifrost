@@ -14,6 +14,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
 
@@ -139,14 +140,16 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 
 	providerName := provider.GetProviderKey()
 
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Gemini,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
-
-	jsonBody, err := sonic.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
 	}
@@ -231,13 +234,15 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	providerName := provider.GetProviderKey()
 
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Gemini,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq.Stream = schemas.Ptr(true)
 
 	// Prepare Gemini headers
 	headers := map[string]string{
@@ -252,7 +257,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/openai/chat/completions",
-		requestBody,
+		openaiReq,
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		providerName,
@@ -984,9 +989,15 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 			{"parts": parts},
 		}
 	case []schemas.BifrostMessage:
-		// Chat completion request
-		formattedMessages, _ := prepareOpenAIChatRequest(v, params)
-		requestBody["contents"] = formattedMessages
+		// Chat completion request - use centralized OpenAI converter
+		bifrostReq := &schemas.BifrostRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-pro", // placeholder model
+			Input:    schemas.RequestInput{ChatCompletionInput: &v},
+			Params:   params,
+		}
+		openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+		requestBody["contents"] = openaiReq.Messages
 	}
 
 	return requestBody
