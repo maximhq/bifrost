@@ -11,6 +11,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
 
@@ -96,14 +97,16 @@ func (provider *ParasailProvider) TextCompletion(ctx context.Context, model stri
 
 // ChatCompletion performs a chat completion request to the Parasail API.
 func (provider *ParasailProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	// Use centralized OpenAI converter since Parasail is OpenAI-compatible
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Parasail,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
-
-	jsonBody, err := sonic.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Parasail)
 	}
@@ -177,13 +180,15 @@ func (provider *ParasailProvider) Embedding(ctx context.Context, model string, k
 // Uses Parasail's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	// Use centralized OpenAI converter since Parasail is OpenAI-compatible
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Parasail,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq.Stream = schemas.Ptr(true)
 
 	// Prepare Parasail headers
 	headers := map[string]string{
@@ -199,7 +204,7 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, post
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
-		requestBody,
+		openaiReq,
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Parasail,

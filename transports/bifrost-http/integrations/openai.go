@@ -1,4 +1,4 @@
-package openai
+package integrations
 
 import (
 	"errors"
@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -28,7 +28,7 @@ func setAzureModelName(currentModel, deploymentID string) string {
 // OpenAIRouter holds route registrations for OpenAI endpoints.
 // It supports standard chat completions, speech synthesis, audio transcription, and streaming capabilities with OpenAI-specific formatting.
 type OpenAIRouter struct {
-	*integrations.GenericRouter
+	*GenericRouter
 }
 
 func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, req interface{}) error {
@@ -45,13 +45,13 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 			}
 
 			switch r := req.(type) {
-			case *OpenAIChatRequest:
+			case *openai.OpenAIChatRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
-			case *OpenAISpeechRequest:
+			case *openai.OpenAISpeechRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
-			case *OpenAITranscriptionRequest:
+			case *openai.OpenAITranscriptionRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
-			case *OpenAIEmbeddingRequest:
+			case *openai.OpenAIEmbeddingRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			}
 
@@ -89,8 +89,8 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 }
 
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
-func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []integrations.RouteConfig {
-	var routes []integrations.RouteConfig
+func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
 
 	// Chat completions endpoint
 	for _, path := range []string{
@@ -98,30 +98,30 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/chat/completions",
 		"/openai/deployments/{deployment-id}/chat/completions",
 	} {
-		routes = append(routes, integrations.RouteConfig{
+		routes = append(routes, RouteConfig{
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &OpenAIChatRequest{}
+				return &openai.OpenAIChatRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if openaiReq, ok := req.(*OpenAIChatRequest); ok {
-					return openaiReq.ConvertToBifrostRequest(pathPrefix != "/openai"), nil
+				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
+					return openaiReq.ConvertChatRequestToBifrost(), nil
 				}
 				return nil, errors.New("invalid request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return DeriveOpenAIFromBifrostResponse(resp), nil
+				return openai.ConvertChatResponseToOpenAI(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveOpenAIErrorFromBifrostError(err)
+				return openai.ConvertErrorToOpenAI(err)
 			},
-			StreamConfig: &integrations.StreamConfig{
+			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return DeriveOpenAIStreamFromBifrostResponse(resp), nil
+					return openai.ConvertStreamResponseToOpenAI(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return DeriveOpenAIStreamFromBifrostError(err)
+					return openai.ConvertStreamErrorToOpenAI(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -134,23 +134,23 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/embeddings",
 		"/openai/deployments/{deployment-id}/embeddings",
 	} {
-		routes = append(routes, integrations.RouteConfig{
+		routes = append(routes, RouteConfig{
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &OpenAIEmbeddingRequest{}
+				return &openai.OpenAIEmbeddingRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if embeddingReq, ok := req.(*OpenAIEmbeddingRequest); ok {
-					return embeddingReq.ConvertToBifrostRequest(pathPrefix != "/openai"), nil
+				if embeddingReq, ok := req.(*openai.OpenAIEmbeddingRequest); ok {
+					return embeddingReq.ConvertEmbeddingRequestToBifrost(), nil
 				}
 				return nil, errors.New("invalid embedding request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return DeriveOpenAIEmbeddingFromBifrostResponse(resp), nil
+				return openai.ConvertEmbeddingResponseToOpenAI(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveOpenAIErrorFromBifrostError(err)
+				return openai.ConvertErrorToOpenAI(err)
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
 		})
@@ -162,20 +162,20 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/audio/speech",
 		"/openai/deployments/{deployment-id}/audio/speech",
 	} {
-		routes = append(routes, integrations.RouteConfig{
+		routes = append(routes, RouteConfig{
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &OpenAISpeechRequest{}
+				return &openai.OpenAISpeechRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if speechReq, ok := req.(*OpenAISpeechRequest); ok {
-					return speechReq.ConvertToBifrostRequest(pathPrefix != "/openai"), nil
+				if speechReq, ok := req.(*openai.OpenAISpeechRequest); ok {
+					return speechReq.ConvertSpeechRequestToBifrost(), nil
 				}
 				return nil, errors.New("invalid speech request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				speechResp := DeriveOpenAISpeechFromBifrostResponse(resp)
+				speechResp := openai.ConvertSpeechResponseToOpenAI(resp)
 				if speechResp == nil {
 					return nil, errors.New("failed to convert speech response")
 				}
@@ -183,14 +183,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return speechResp.Audio, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveOpenAIErrorFromBifrostError(err)
+				return openai.ConvertErrorToOpenAI(err)
 			},
-			StreamConfig: &integrations.StreamConfig{
+			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return DeriveOpenAISpeechFromBifrostResponse(resp), nil
+					return openai.ConvertStreamResponseToOpenAI(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return DeriveOpenAIErrorFromBifrostError(err)
+					return openai.ConvertStreamErrorToOpenAI(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -203,31 +203,31 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/audio/transcriptions",
 		"/openai/deployments/{deployment-id}/audio/transcriptions",
 	} {
-		routes = append(routes, integrations.RouteConfig{
+		routes = append(routes, RouteConfig{
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &OpenAITranscriptionRequest{}
+				return &openai.OpenAITranscriptionRequest{}
 			},
 			RequestParser: parseTranscriptionMultipartRequest, // Handle multipart form parsing
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if transcriptionReq, ok := req.(*OpenAITranscriptionRequest); ok {
-					return transcriptionReq.ConvertToBifrostRequest(pathPrefix != "/openai"), nil
+				if transcriptionReq, ok := req.(*openai.OpenAITranscriptionRequest); ok {
+					return transcriptionReq.ConvertTranscriptionRequestToBifrost(), nil
 				}
 				return nil, errors.New("invalid transcription request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return DeriveOpenAITranscriptionFromBifrostResponse(resp), nil
+				return openai.ConvertTranscriptionResponseToOpenAI(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveOpenAIErrorFromBifrostError(err)
+				return openai.ConvertErrorToOpenAI(err)
 			},
-			StreamConfig: &integrations.StreamConfig{
+			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return DeriveOpenAITranscriptionFromBifrostResponse(resp), nil
+					return openai.ConvertStreamResponseToOpenAI(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return DeriveOpenAIErrorFromBifrostError(err)
+					return openai.ConvertStreamErrorToOpenAI(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -240,13 +240,13 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *OpenAIRouter {
 	return &OpenAIRouter{
-		GenericRouter: integrations.NewGenericRouter(client, handlerStore, CreateOpenAIRouteConfigs("/openai", handlerStore)),
+		GenericRouter: NewGenericRouter(client, handlerStore, CreateOpenAIRouteConfigs("/openai", handlerStore)),
 	}
 }
 
 // parseTranscriptionMultipartRequest is a RequestParser that handles multipart/form-data for transcription requests
 func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
-	transcriptionReq, ok := req.(*OpenAITranscriptionRequest)
+	transcriptionReq, ok := req.(*openai.OpenAITranscriptionRequest)
 	if !ok {
 		return errors.New("invalid request type for transcription")
 	}

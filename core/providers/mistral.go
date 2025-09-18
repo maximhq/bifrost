@@ -11,6 +11,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
 
@@ -96,14 +97,16 @@ func (provider *MistralProvider) TextCompletion(ctx context.Context, model strin
 
 // ChatCompletion performs a chat completion request to the Mistral API.
 func (provider *MistralProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+	// Use centralized OpenAI converter since Mistral is OpenAI-compatible
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Mistral,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
-
-	jsonBody, err := sonic.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
@@ -267,13 +270,15 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 // Uses Mistral's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
-
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-		"stream":   true,
-	}, preparedParams)
+	// Use centralized OpenAI converter since Mistral is OpenAI-compatible
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.Mistral,
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
+	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq.Stream = schemas.Ptr(true)
 
 	// Prepare Mistral headers
 	headers := map[string]string{
@@ -288,7 +293,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postH
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
-		requestBody,
+		openaiReq,
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Mistral,

@@ -2,162 +2,11 @@ package openai
 
 import (
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 )
 
-// OpenAIChatRequest represents an OpenAI chat completion request
-type OpenAIChatRequest struct {
-	Model            string                   `json:"model"`
-	Messages         []schemas.BifrostMessage `json:"messages"`
-	MaxTokens        *int                     `json:"max_tokens,omitempty"`
-	Temperature      *float64                 `json:"temperature,omitempty"`
-	TopP             *float64                 `json:"top_p,omitempty"`
-	N                *int                     `json:"n,omitempty"`
-	Stop             interface{}              `json:"stop,omitempty"`
-	PresencePenalty  *float64                 `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64                 `json:"frequency_penalty,omitempty"`
-	LogitBias        map[string]float64       `json:"logit_bias,omitempty"`
-	User             *string                  `json:"user,omitempty"`
-	Tools            *[]schemas.Tool          `json:"tools,omitempty"` // Reuse schema type
-	ToolChoice       *schemas.ToolChoice      `json:"tool_choice,omitempty"`
-	Stream           *bool                    `json:"stream,omitempty"`
-	LogProbs         *bool                    `json:"logprobs,omitempty"`
-	TopLogProbs      *int                     `json:"top_logprobs,omitempty"`
-	ResponseFormat   interface{}              `json:"response_format,omitempty"`
-	Seed             *int                     `json:"seed,omitempty"`
-	MaxCompletionTokens *int                     `json:"max_completion_tokens,omitempty"`
-	ReasoningEffort *string                     `json:"reasoning_effort,omitempty"`
-	StreamOptions *map[string]interface{}                     `json:"stream_options,omitempty"`
-}
-
-// OpenAISpeechRequest represents an OpenAI speech synthesis request
-type OpenAISpeechRequest struct {
-	Model          string   `json:"model"`
-	Input          string   `json:"input"`
-	Voice          string   `json:"voice"`
-	ResponseFormat *string  `json:"response_format,omitempty"`
-	Speed          *float64 `json:"speed,omitempty"`
-	Instructions   *string  `json:"instructions,omitempty"`
-	StreamFormat   *string  `json:"stream_format,omitempty"`
-}
-
-// OpenAITranscriptionRequest represents an OpenAI transcription request
-// Note: This is used for JSON body parsing, actual form parsing is handled in the router
-type OpenAITranscriptionRequest struct {
-	Model                  string   `json:"model"`
-	File                   []byte   `json:"file"` // Binary audio data
-	Language               *string  `json:"language,omitempty"`
-	Prompt                 *string  `json:"prompt,omitempty"`
-	ResponseFormat         *string  `json:"response_format,omitempty"`
-	Temperature            *float64 `json:"temperature,omitempty"`
-	Include                []string `json:"include,omitempty"`
-	TimestampGranularities []string `json:"timestamp_granularities,omitempty"`
-	Stream                 *bool    `json:"stream,omitempty"`
-}
-
-// OpenAIEmbeddingRequest represents an OpenAI embedding request
-type OpenAIEmbeddingRequest struct {
-	Model          string      `json:"model"`
-	Input          interface{} `json:"input"` // Can be string or []string
-	EncodingFormat *string     `json:"encoding_format,omitempty"`
-	Dimensions     *int        `json:"dimensions,omitempty"`
-	User           *string     `json:"user,omitempty"`
-}
-
-// IsStreamingRequested implements the StreamingRequest interface
-func (r *OpenAIChatRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
-}
-
-// IsStreamingRequested implements the StreamingRequest interface for speech
-func (r *OpenAISpeechRequest) IsStreamingRequested() bool {
-	return r.StreamFormat != nil && *r.StreamFormat == "sse"
-}
-
-// IsStreamingRequested implements the StreamingRequest interface for transcription
-func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
-}
-
-// IsStreamingRequested implements the StreamingRequest interface for embeddings
-// Note: Embeddings don't support streaming in OpenAI API
-func (r *OpenAIEmbeddingRequest) IsStreamingRequested() bool {
-	return false
-}
-
-// OpenAIChatResponse represents an OpenAI chat completion response
-type OpenAIChatResponse struct {
-	ID                string                          `json:"id"`
-	Object            string                          `json:"object"`
-	Created           int                             `json:"created"`
-	Model             string                          `json:"model"`
-	Choices           []schemas.BifrostResponseChoice `json:"choices"`
-	Usage             *schemas.LLMUsage               `json:"usage,omitempty"` // Reuse schema type
-	ServiceTier       *string                         `json:"service_tier,omitempty"`
-	SystemFingerprint *string                         `json:"system_fingerprint,omitempty"`
-}
-
-// OpenAIEmbeddingResponse represents an OpenAI embedding response
-type OpenAIEmbeddingResponse struct {
-	Object            string                     `json:"object"`
-	Data              []schemas.BifrostEmbedding `json:"data"`
-	Model             string                     `json:"model"`
-	Usage             *schemas.LLMUsage          `json:"usage,omitempty"`
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
-}
-
-// OpenAIChatError represents an OpenAI chat completion error response
-type OpenAIChatError struct {
-	EventID string `json:"event_id"` // Unique identifier for the error event
-	Type    string `json:"type"`     // Type of error
-	Error   struct {
-		Type    string      `json:"type"`     // Error type
-		Code    string      `json:"code"`     // Error code
-		Message string      `json:"message"`  // Error message
-		Param   interface{} `json:"param"`    // Parameter that caused the error
-		EventID string      `json:"event_id"` // Event ID for tracking
-	} `json:"error"`
-}
-
-// OpenAIChatErrorStruct represents the error structure of an OpenAI chat completion error response
-type OpenAIChatErrorStruct struct {
-	Type    string      `json:"type"`     // Error type
-	Code    string      `json:"code"`     // Error code
-	Message string      `json:"message"`  // Error message
-	Param   interface{} `json:"param"`    // Parameter that caused the error
-	EventID string      `json:"event_id"` // Event ID for tracking
-}
-
-// OpenAIStreamChoice represents a choice in a streaming response chunk
-type OpenAIStreamChoice struct {
-	Index        int                `json:"index"`
-	Delta        *OpenAIStreamDelta `json:"delta,omitempty"`
-	FinishReason *string            `json:"finish_reason,omitempty"`
-	LogProbs     *schemas.LogProbs  `json:"logprobs,omitempty"`
-}
-
-// OpenAIStreamDelta represents the incremental content in a streaming chunk
-type OpenAIStreamDelta struct {
-	Role      *string             `json:"role,omitempty"`
-	Content   *string             `json:"content,omitempty"`
-	ToolCalls *[]schemas.ToolCall `json:"tool_calls,omitempty"`
-}
-
-// OpenAIStreamResponse represents a single chunk in the OpenAI streaming response
-type OpenAIStreamResponse struct {
-	ID                string               `json:"id"`
-	Object            string               `json:"object"`
-	Created           int                  `json:"created"`
-	Model             string               `json:"model"`
-	SystemFingerprint *string              `json:"system_fingerprint,omitempty"`
-	Choices           []OpenAIStreamChoice `json:"choices"`
-	Usage             *schemas.LLMUsage    `json:"usage,omitempty"`
-}
-
-// ConvertToBifrostRequest converts an OpenAI chat request to Bifrost format
-func (r *OpenAIChatRequest) ConvertToBifrostRequest(checkProviderFromModel bool) *schemas.BifrostRequest {
-	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI, checkProviderFromModel)
+// ConvertChatRequestToBifrost converts an OpenAI chat request to Bifrost format
+func (r *OpenAIChatRequest) ConvertChatRequestToBifrost() *schemas.BifrostRequest {
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
 
 	// Convert parameters first
 	params := r.convertParameters()
@@ -174,9 +23,9 @@ func (r *OpenAIChatRequest) ConvertToBifrostRequest(checkProviderFromModel bool)
 	return bifrostReq
 }
 
-// ConvertToBifrostRequest converts an OpenAI speech request to Bifrost format
-func (r *OpenAISpeechRequest) ConvertToBifrostRequest(checkProviderFromModel bool) *schemas.BifrostRequest {
-	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI, checkProviderFromModel)
+// ConvertSpeechRequestToBifrost converts an OpenAI speech request to Bifrost format
+func (r *OpenAISpeechRequest) ConvertSpeechRequestToBifrost() *schemas.BifrostRequest {
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
 
 	// Create speech input
 	speechInput := &schemas.SpeechInput{
@@ -213,9 +62,9 @@ func (r *OpenAISpeechRequest) ConvertToBifrostRequest(checkProviderFromModel boo
 	return bifrostReq
 }
 
-// ConvertToBifrostRequest converts an OpenAI transcription request to Bifrost format
-func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest(checkProviderFromModel bool) *schemas.BifrostRequest {
-	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI, checkProviderFromModel)
+// ConvertTranscriptionRequestToBifrost converts an OpenAI transcription request to Bifrost format
+func (r *OpenAITranscriptionRequest) ConvertTranscriptionRequestToBifrost() *schemas.BifrostRequest {
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
 
 	// Create transcription input
 	transcriptionInput := &schemas.TranscriptionInput{
@@ -250,9 +99,9 @@ func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest(checkProviderFromMo
 	return bifrostReq
 }
 
-// ConvertToBifrostRequest converts an OpenAI embedding request to Bifrost format
-func (r *OpenAIEmbeddingRequest) ConvertToBifrostRequest(checkProviderFromModel bool) *schemas.BifrostRequest {
-	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI, checkProviderFromModel)
+// ConvertEmbeddingRequestToBifrost converts an OpenAI embedding request to Bifrost format
+func (r *OpenAIEmbeddingRequest) ConvertEmbeddingRequestToBifrost() *schemas.BifrostRequest {
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
 
 	// Prepare input texts array
 	var texts []string
@@ -413,8 +262,8 @@ func (r *OpenAIEmbeddingRequest) convertEmbeddingParameters() *schemas.ModelPara
 	return params
 }
 
-// DeriveOpenAIFromBifrostResponse converts a Bifrost response to OpenAI format
-func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIChatResponse {
+// ConvertChatResponseToOpenAI converts a Bifrost response to OpenAI format
+func ConvertChatResponseToOpenAI(bifrostResp *schemas.BifrostResponse) *OpenAIChatResponse {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -433,8 +282,8 @@ func DeriveOpenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *Open
 	return openaiResp
 }
 
-// DeriveOpenAISpeechFromBifrostResponse converts a Bifrost speech response to OpenAI format
-func DeriveOpenAISpeechFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *schemas.BifrostSpeech {
+// ConvertSpeechResponseToOpenAI converts a Bifrost speech response to OpenAI format
+func ConvertSpeechResponseToOpenAI(bifrostResp *schemas.BifrostResponse) *schemas.BifrostSpeech {
 	if bifrostResp == nil || bifrostResp.Speech == nil {
 		return nil
 	}
@@ -442,16 +291,16 @@ func DeriveOpenAISpeechFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 	return bifrostResp.Speech
 }
 
-// DeriveOpenAITranscriptionFromBifrostResponse converts a Bifrost transcription response to OpenAI format
-func DeriveOpenAITranscriptionFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *schemas.BifrostTranscribe {
+// ConvertTranscriptionResponseToOpenAI converts a Bifrost transcription response to OpenAI format
+func ConvertTranscriptionResponseToOpenAI(bifrostResp *schemas.BifrostResponse) *schemas.BifrostTranscribe {
 	if bifrostResp == nil || bifrostResp.Transcribe == nil {
 		return nil
 	}
 	return bifrostResp.Transcribe
 }
 
-// DeriveOpenAIEmbeddingFromBifrostResponse converts a Bifrost embedding response to OpenAI format
-func DeriveOpenAIEmbeddingFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIEmbeddingResponse {
+// ConvertEmbeddingResponseToOpenAI converts a Bifrost embedding response to OpenAI format
+func ConvertEmbeddingResponseToOpenAI(bifrostResp *schemas.BifrostResponse) *OpenAIEmbeddingResponse {
 	if bifrostResp == nil || bifrostResp.Data == nil {
 		return nil
 	}
@@ -466,8 +315,8 @@ func DeriveOpenAIEmbeddingFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 	}
 }
 
-// DeriveOpenAIErrorFromBifrostError derives a OpenAIChatError from a BifrostError
-func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAIChatError {
+// ConvertErrorToOpenAI converts a BifrostError to OpenAIChatError
+func ConvertErrorToOpenAI(bifrostErr *schemas.BifrostError) *OpenAIChatError {
 	if bifrostErr == nil {
 		return nil
 	}
@@ -511,14 +360,14 @@ func DeriveOpenAIErrorFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAI
 	}
 }
 
-// DeriveOpenAIStreamFromBifrostError derives an OpenAI streaming error from a BifrostError
-func DeriveOpenAIStreamFromBifrostError(bifrostErr *schemas.BifrostError) *OpenAIChatError {
+// ConvertStreamErrorToOpenAI converts a BifrostError to OpenAI streaming error
+func ConvertStreamErrorToOpenAI(bifrostErr *schemas.BifrostError) *OpenAIChatError {
 	// For streaming, we use the same error format as regular OpenAI errors
-	return DeriveOpenAIErrorFromBifrostError(bifrostErr)
+	return ConvertErrorToOpenAI(bifrostErr)
 }
 
-// DeriveOpenAIStreamFromBifrostResponse converts a Bifrost response to OpenAI streaming format
-func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *OpenAIStreamResponse {
+// ConvertStreamResponseToOpenAI converts a Bifrost response to OpenAI streaming format
+func ConvertStreamResponseToOpenAI(bifrostResp *schemas.BifrostResponse) *OpenAIStreamResponse {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -599,7 +448,185 @@ func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 	return streamResp
 }
 
+// ConvertChatRequestToOpenAI converts a Bifrost chat completion request to OpenAI format
+func ConvertChatRequestToOpenAI(bifrostReq *schemas.BifrostRequest) *OpenAIChatRequest {
+	if bifrostReq == nil || bifrostReq.Input.ChatCompletionInput == nil {
+		return nil
+	}
+
+	messages := *bifrostReq.Input.ChatCompletionInput
+	params := bifrostReq.Params
+
+	openaiReq := &OpenAIChatRequest{
+		Model:    bifrostReq.Model,
+		Messages: messages,
+	}
+
+	// Map parameters
+	if params != nil {
+		openaiReq.MaxTokens = params.MaxTokens
+		openaiReq.Temperature = params.Temperature
+		openaiReq.TopP = params.TopP
+		openaiReq.PresencePenalty = params.PresencePenalty
+		openaiReq.FrequencyPenalty = params.FrequencyPenalty
+		openaiReq.Tools = params.Tools
+		openaiReq.ToolChoice = params.ToolChoice
+
+		// Map extra parameters
+		if params.ExtraParams != nil {
+			if n, ok := params.ExtraParams["n"].(int); ok {
+				openaiReq.N = &n
+			}
+			if logprobs, ok := params.ExtraParams["logprobs"].(bool); ok {
+				openaiReq.LogProbs = &logprobs
+			}
+			if topLogProbs, ok := params.ExtraParams["top_logprobs"].(int); ok {
+				openaiReq.TopLogProbs = &topLogProbs
+			}
+			if stop := params.ExtraParams["stop"]; stop != nil {
+				openaiReq.Stop = stop
+			}
+			if logitBias, ok := params.ExtraParams["logit_bias"].(map[string]float64); ok {
+				openaiReq.LogitBias = logitBias
+			}
+			if user, ok := params.ExtraParams["user"].(string); ok {
+				openaiReq.User = &user
+			}
+			if stream, ok := params.ExtraParams["stream"].(bool); ok {
+				openaiReq.Stream = &stream
+			}
+			if seed, ok := params.ExtraParams["seed"].(int); ok {
+				openaiReq.Seed = &seed
+			}
+			if streamOptions, ok := params.ExtraParams["stream_options"].(map[string]interface{}); ok {
+				openaiReq.StreamOptions = &streamOptions
+			}
+			if responseFormat := params.ExtraParams["response_format"]; responseFormat != nil {
+				openaiReq.ResponseFormat = responseFormat
+			}
+			if maxCompletionTokens, ok := params.ExtraParams["max_completion_tokens"].(int); ok {
+				openaiReq.MaxCompletionTokens = &maxCompletionTokens
+			}
+			if reasoningEffort, ok := params.ExtraParams["reasoning_effort"].(string); ok {
+				openaiReq.ReasoningEffort = &reasoningEffort
+			}
+		}
+	}
+
+	return openaiReq
+}
+
+// ConvertSpeechRequestToOpenAI converts a Bifrost speech request to OpenAI format
+func ConvertSpeechRequestToOpenAI(bifrostReq *schemas.BifrostRequest) *OpenAISpeechRequest {
+	if bifrostReq == nil || bifrostReq.Input.SpeechInput == nil {
+		return nil
+	}
+
+	speechInput := bifrostReq.Input.SpeechInput
+	params := bifrostReq.Params
+
+	openaiReq := &OpenAISpeechRequest{
+		Model: bifrostReq.Model,
+		Input: speechInput.Input,
+	}
+
+	// Set voice
+	if speechInput.VoiceConfig.Voice != nil {
+		openaiReq.Voice = *speechInput.VoiceConfig.Voice
+	}
+
+	// Set optional fields
+	if speechInput.ResponseFormat != "" {
+		openaiReq.ResponseFormat = &speechInput.ResponseFormat
+	}
+	if speechInput.Instructions != "" {
+		openaiReq.Instructions = &speechInput.Instructions
+	}
+
+	// Map parameters
+	if params != nil && params.ExtraParams != nil {
+		if speed, ok := params.ExtraParams["speed"].(float64); ok {
+			openaiReq.Speed = &speed
+		}
+		if streamFormat, ok := params.ExtraParams["stream_format"].(string); ok {
+			openaiReq.StreamFormat = &streamFormat
+		}
+	}
+
+	return openaiReq
+}
+
+// ConvertTranscriptionRequestToOpenAI converts a Bifrost transcription request to OpenAI format
+func ConvertTranscriptionRequestToOpenAI(bifrostReq *schemas.BifrostRequest) *OpenAITranscriptionRequest {
+	if bifrostReq == nil || bifrostReq.Input.TranscriptionInput == nil {
+		return nil
+	}
+
+	transcriptionInput := bifrostReq.Input.TranscriptionInput
+	params := bifrostReq.Params
+
+	openaiReq := &OpenAITranscriptionRequest{
+		Model: bifrostReq.Model,
+		File:  transcriptionInput.File,
+	}
+
+	// Set optional fields
+	openaiReq.Language = transcriptionInput.Language
+	openaiReq.Prompt = transcriptionInput.Prompt
+	openaiReq.ResponseFormat = transcriptionInput.ResponseFormat
+
+	// Map parameters
+	if params != nil && params.ExtraParams != nil {
+		if temperature, ok := params.ExtraParams["temperature"].(float64); ok {
+			openaiReq.Temperature = &temperature
+		}
+		if include, ok := params.ExtraParams["include"].([]string); ok {
+			openaiReq.Include = include
+		}
+		if timestampGranularities, ok := params.ExtraParams["timestamp_granularities"].([]string); ok {
+			openaiReq.TimestampGranularities = timestampGranularities
+		}
+		if stream, ok := params.ExtraParams["stream"].(bool); ok {
+			openaiReq.Stream = &stream
+		}
+	}
+
+	return openaiReq
+}
+
+// ConvertEmbeddingRequestToOpenAI converts a Bifrost embedding request to OpenAI format
+func ConvertEmbeddingRequestToOpenAI(bifrostReq *schemas.BifrostRequest) *OpenAIEmbeddingRequest {
+	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+		return nil
+	}
+
+	embeddingInput := bifrostReq.Input.EmbeddingInput
+	params := bifrostReq.Params
+
+	openaiReq := &OpenAIEmbeddingRequest{
+		Model: bifrostReq.Model,
+	}
+
+	// Set input - convert to interface{} for flexibility
+	if len(embeddingInput.Texts) == 1 {
+		openaiReq.Input = embeddingInput.Texts[0] // Single string
+	} else {
+		openaiReq.Input = embeddingInput.Texts // Array of strings
+	}
+
+	// Map parameters
+	if params != nil {
+		openaiReq.EncodingFormat = params.EncodingFormat
+		openaiReq.Dimensions = params.Dimensions
+		openaiReq.User = params.User
+	}
+
+	return openaiReq
+}
+
 func filterParams(provider schemas.ModelProvider, p *schemas.ModelParameters) *schemas.ModelParameters {
-	if p == nil { return nil }
-	return integrations.ValidateAndFilterParamsForProvider(provider, p)
+	if p == nil {
+		return nil
+	}
+	return schemas.ValidateAndFilterParamsForProvider(provider, p)
 }

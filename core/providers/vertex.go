@@ -18,6 +18,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
+	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 )
 
 type VertexError struct {
@@ -67,7 +69,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		// openAIResponsePool.Put(&schemas.BifrostResponse{})
-		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
+		anthropicChatResponsePool.Put(&anthropic.AnthropicChatResponse{})
 
 	}
 
@@ -143,19 +145,31 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 	}
 
 	// Format messages for Vertex API
-	var formattedMessages []map[string]interface{}
-	var preparedParams map[string]interface{}
 
-	if strings.Contains(model, "claude") {
-		formattedMessages, preparedParams = prepareAnthropicChatRequest(messages, params)
-	} else {
-		formattedMessages, preparedParams = prepareOpenAIChatRequest(messages, params)
+	var requestBody map[string]interface{}
+	bifrostReq := &schemas.BifrostRequest{
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
 	}
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":    model,
-		"messages": formattedMessages,
-	}, preparedParams)
+	if strings.Contains(model, "claude") {
+		// Use centralized Anthropic converter
+		bifrostReq.Provider = schemas.Anthropic
+		anthropicReq := anthropic.ConvertChatRequestToAnthropic(bifrostReq)
+
+		// Convert struct to map for Vertex API
+		reqBytes, _ := sonic.Marshal(anthropicReq)
+		sonic.Unmarshal(reqBytes, &requestBody)
+	} else {
+		// Use centralized OpenAI converter for non-Claude models
+		bifrostReq.Provider = schemas.OpenAI
+		openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+
+		// Convert struct to map for Vertex API
+		reqBytes, _ := sonic.Marshal(openaiReq)
+		sonic.Unmarshal(reqBytes, &requestBody)
+	}
 
 	if strings.Contains(model, "claude") {
 		if _, exists := requestBody["anthropic_version"]; !exists {
@@ -555,7 +569,7 @@ func (provider *VertexProvider) convertVertexEmbeddingResponse(vertexResponse ma
 				embeddingFloat32 = append(embeddingFloat32, float32(f64))
 			}
 		}
-		
+
 		// Create embedding object
 		embedding := schemas.BifrostEmbedding{
 			Object: "embedding",
@@ -624,14 +638,22 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		return nil, newBifrostOperationError("error creating auth client", err, schemas.Vertex)
 	}
 
-	if strings.Contains(model, "claude") {
-		// Use Anthropic-style streaming for Claude models
-		formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
+	bifrostReq := &schemas.BifrostRequest{
+		Model:    model,
+		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
+		Params:   params,
+	}
 
-		requestBody := mergeConfig(map[string]interface{}{
-			"messages": formattedMessages,
-			"stream":   true,
-		}, preparedParams)
+	if strings.Contains(model, "claude") {
+		bifrostReq.Provider = schemas.Anthropic
+		// Use Anthropic-style streaming for Claude models
+		anthropicReq := anthropic.ConvertChatRequestToAnthropic(bifrostReq)
+		anthropicReq.Stream = schemas.Ptr(true)
+
+		// Convert struct to map for Vertex API
+		reqBytes, _ := sonic.Marshal(anthropicReq)
+		var requestBody map[string]interface{}
+		sonic.Unmarshal(reqBytes, &requestBody)
 
 		if _, exists := requestBody["anthropic_version"]; !exists {
 			requestBody["anthropic_version"] = "vertex-2023-10-16"
@@ -664,13 +686,14 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		)
 	} else {
 		// Use OpenAI-style streaming for non-Claude models
-		formattedMessages, preparedParams := prepareOpenAIChatRequest(messages, params)
+		bifrostReq.Provider = schemas.OpenAI
+		openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+		openaiReq.Stream = schemas.Ptr(true)
 
-		requestBody := mergeConfig(map[string]interface{}{
-			"model":    model,
-			"messages": formattedMessages,
-			"stream":   true,
-		}, preparedParams)
+		// Convert struct to map for Vertex API
+		reqBytes, _ := sonic.Marshal(openaiReq)
+		var requestBody map[string]interface{}
+		sonic.Unmarshal(reqBytes, &requestBody)
 
 		delete(requestBody, "region")
 
