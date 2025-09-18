@@ -3,9 +3,7 @@ package langchain
 import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -22,10 +20,10 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) 
 	routes := []integrations.RouteConfig{}
 
 	// Add OpenAI routes to LangChain for OpenAI API compatibility
-	routes = append(routes, openai.CreateOpenAIRouteConfigs("/langchain", handlerStore)...)
+	routes = append(routes, integrations.CreateOpenAIRouteConfigs("/langchain", handlerStore)...)
 
 	// Add Anthropic routes to LangChain for Anthropic API compatibility
-	routes = append(routes, anthropic.CreateAnthropicRouteConfigs("/langchain")...)
+	routes = append(routes, integrations.CreateAnthropicRouteConfigs("/langchain")...)
 
 	// Add GenAI routes to LangChain for Vertex AI compatibility
 	routes = append(routes, genai.CreateGenAIRouteConfigs("/langchain")...)

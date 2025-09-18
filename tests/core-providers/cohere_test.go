@@ -20,7 +20,7 @@ func TestCohere(t *testing.T) {
 		Provider:  schemas.Cohere,
 		ChatModel: "command-a-03-2025",
 		TextModel: "", // Cohere focuses on chat
-		EmbeddingModel: "embed-english-v3.0",
+		EmbeddingModel: "embed-v4.0",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,
