@@ -120,7 +120,7 @@ type TableClientConfig struct {
 	EnableGovernance        bool      `gorm:"" json:"enable_governance"`
 	EnforceGovernanceHeader bool      `gorm:"" json:"enforce_governance_header"`
 	AllowDirectKeys         bool      `gorm:"" json:"allow_direct_keys"`
-	MaxRequestBodySizeMB    int       `gorm:"" json:"max_request_body_size_mb"`
+	MaxRequestBodySizeMB    int       `gorm:"default:100" json:"max_request_body_size_mb"`
 	CreatedAt               time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt               time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -784,9 +784,9 @@ func (vk *TableVirtualKey) AfterAutoMigrate(tx *gorm.DB) error {
 			RETURN NEW;
 		END;
 		$$ LANGUAGE plpgsql;
-		
+
 		DROP TRIGGER IF EXISTS vk_exclusion_trigger ON governance_virtual_keys;
-		CREATE TRIGGER vk_exclusion_trigger 
+		CREATE TRIGGER vk_exclusion_trigger
 			BEFORE INSERT OR UPDATE ON governance_virtual_keys
 			FOR EACH ROW EXECUTE FUNCTION check_vk_exclusion();
 	`).Error
