@@ -238,14 +238,27 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 
 	providerName := provider.GetProviderKey()
 
-	if input == nil || len(input.Texts) == 0 {
-		return nil, newBifrostOperationError("invalid embedding input: at least one text is required", nil, providerName)
-	}
+	requestBody := prepareOpenAIEmbeddingRequest(input, params)
+	requestBody["model"] = model
 
-	// Prepare request body with base parameters
+	// Use the shared embedding request handler
+	return handleOpenAIEmbeddingRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/embeddings",
+		requestBody,
+		key,
+		params,
+		provider.networkConfig.ExtraHeaders,
+		providerName,
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}
+
+func prepareOpenAIEmbeddingRequest(input *schemas.EmbeddingInput, params *schemas.ModelParameters) map[string]interface{} {
 	requestBody := map[string]interface{}{
-		"model": model,
-		"input": input.Texts,
+		"input": input,
 	}
 
 	// Merge any additional parameters
@@ -265,19 +278,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 		requestBody = mergeConfig(requestBody, params.ExtraParams)
 	}
 
-	// Use the shared embedding request handler
-	return handleOpenAIEmbeddingRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+"/v1/embeddings",
-		requestBody,
-		key,
-		params,
-		provider.networkConfig.ExtraHeaders,
-		providerName,
-		provider.sendBackRawResponse,
-		provider.logger,
-	)
+	return requestBody
 }
 
 func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, url string, requestBody map[string]interface{}, key schemas.Key, params *schemas.ModelParameters, extraHeaders map[string]string, providerName schemas.ModelProvider, sendBackRawResponse bool, logger schemas.Logger) (*schemas.BifrostResponse, *schemas.BifrostError) {

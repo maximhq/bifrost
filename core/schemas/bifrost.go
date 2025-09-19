@@ -38,19 +38,19 @@ const (
 type ModelProvider string
 
 const (
-	OpenAI    ModelProvider = "openai"
-	Azure     ModelProvider = "azure"
-	Anthropic ModelProvider = "anthropic"
-	Bedrock   ModelProvider = "bedrock"
-	Cohere    ModelProvider = "cohere"
-	Vertex    ModelProvider = "vertex"
-	Mistral   ModelProvider = "mistral"
-	Ollama    ModelProvider = "ollama"
-	Groq      ModelProvider = "groq"
-	SGL       ModelProvider = "sgl"
-	Parasail  ModelProvider = "parasail"
-	Cerebras  ModelProvider = "cerebras"
-	Gemini    ModelProvider = "gemini"
+	OpenAI     ModelProvider = "openai"
+	Azure      ModelProvider = "azure"
+	Anthropic  ModelProvider = "anthropic"
+	Bedrock    ModelProvider = "bedrock"
+	Cohere     ModelProvider = "cohere"
+	Vertex     ModelProvider = "vertex"
+	Mistral    ModelProvider = "mistral"
+	Ollama     ModelProvider = "ollama"
+	Groq       ModelProvider = "groq"
+	SGL        ModelProvider = "sgl"
+	Parasail   ModelProvider = "parasail"
+	Cerebras   ModelProvider = "cerebras"
+	Gemini     ModelProvider = "gemini"
 	OpenRouter ModelProvider = "openrouter"
 )
 
@@ -124,7 +124,56 @@ type RequestInput struct {
 
 // EmbeddingInput represents the input for an embedding request.
 type EmbeddingInput struct {
-	Texts []string `json:"texts"`
+	Text       *string
+	Texts      []string
+	Embedding  []int
+	Embeddings [][]int
+}
+
+func (e *EmbeddingInput) MarshalJSON() ([]byte, error) {
+	if e.Text != nil {
+		return sonic.Marshal(*e.Text)
+	}
+	if e.Texts != nil {
+		return sonic.Marshal(e.Texts)
+	}
+	if e.Embedding != nil {
+		return sonic.Marshal(e.Embedding)
+	}
+	if e.Embeddings != nil {
+		return sonic.Marshal(e.Embeddings)
+	}
+
+	return nil, fmt.Errorf("embedding input is empty")
+}
+
+func (e *EmbeddingInput) UnmarshalJSON(data []byte) error {
+	// Try string
+	var s string
+	if err := sonic.Unmarshal(data, &s); err == nil {
+		e.Text = &s
+		return nil
+	}
+	// Try []string
+	var ss []string
+	if err := sonic.Unmarshal(data, &ss); err == nil {
+		e.Texts = ss
+		return nil
+	}
+	// Try []int
+	var i []int
+	if err := sonic.Unmarshal(data, &i); err == nil {
+		e.Embedding = i
+		return nil
+	}
+	// Try [][]int
+	var i2 [][]int
+	if err := sonic.Unmarshal(data, &i2); err == nil {
+		e.Embeddings = i2
+		return nil
+	}
+
+	return nil
 }
 
 // SpeechInput represents the input for a speech request.

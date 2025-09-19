@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 )
@@ -57,11 +58,11 @@ type OpenAITranscriptionRequest struct {
 
 // OpenAIEmbeddingRequest represents an OpenAI embedding request
 type OpenAIEmbeddingRequest struct {
-	Model          string      `json:"model"`
-	Input          interface{} `json:"input"` // Can be string or []string
-	EncodingFormat *string     `json:"encoding_format,omitempty"`
-	Dimensions     *int        `json:"dimensions,omitempty"`
-	User           *string     `json:"user,omitempty"`
+	Model          string  `json:"model"`
+	Input          any     `json:"input"` // Can be string, []string, []number, [][]number
+	EncodingFormat *string `json:"encoding_format,omitempty"`
+	Dimensions     *int    `json:"dimensions,omitempty"`
+	User           *string `json:"user,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -254,26 +255,34 @@ func (r *OpenAITranscriptionRequest) ConvertToBifrostRequest(checkProviderFromMo
 func (r *OpenAIEmbeddingRequest) ConvertToBifrostRequest(checkProviderFromModel bool) *schemas.BifrostRequest {
 	provider, model := integrations.ParseModelString(r.Model, schemas.OpenAI, checkProviderFromModel)
 
-	// Prepare input texts array
-	var texts []string
-	switch input := r.Input.(type) {
-	case string:
-		texts = []string{input}
-	case []string:
-		texts = input
-	case []interface{}:
-		// Handle JSON unmarshaling which converts arrays to []interface{}
-		texts = make([]string, len(input))
-		for i, v := range input {
-			if str, ok := v.(string); ok {
-				texts[i] = str
+	// Create embedding input
+	embeddingInput := &schemas.EmbeddingInput{}
+
+	// Cleaner coercion: marshal input and try to unmarshal into supported shapes
+	if raw, err := sonic.Marshal(r.Input); err == nil {
+		// 1) string
+		var s string
+		if err := sonic.Unmarshal(raw, &s); err == nil {
+			embeddingInput.Text = &s
+		} else {
+			// 2) []string
+			var ss []string
+			if err := sonic.Unmarshal(raw, &ss); err == nil {
+				embeddingInput.Texts = ss
+			} else {
+				// 3) []int
+				var i []int
+				if err := sonic.Unmarshal(raw, &i); err == nil {
+					embeddingInput.Embedding = i
+				} else {
+					// 4) [][]int
+					var ii [][]int
+					if err := sonic.Unmarshal(raw, &ii); err == nil {
+						embeddingInput.Embeddings = ii
+					}
+				}
 			}
 		}
-	}
-
-	// Create embedding input
-	embeddingInput := &schemas.EmbeddingInput{
-		Texts: texts,
 	}
 
 	bifrostReq := &schemas.BifrostRequest{
@@ -600,6 +609,8 @@ func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 }
 
 func filterParams(provider schemas.ModelProvider, p *schemas.ModelParameters) *schemas.ModelParameters {
-	if p == nil { return nil }
+	if p == nil {
+		return nil
+	}
 	return integrations.ValidateAndFilterParamsForProvider(provider, p)
 }

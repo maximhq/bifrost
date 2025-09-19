@@ -231,7 +231,7 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 	// Get pricing for the model
 	pricing, exists := pm.getPricing(model, provider, requestType)
 	if !exists {
-		pm.logger.Warn("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, requestType)
+		pm.logger.Warn("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, normalizeRequestType(requestType))
 		return 0.0
 	}
 

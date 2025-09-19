@@ -653,6 +653,10 @@ func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas
 		}
 	}
 	if input.EmbeddingInput != nil {
+		if len(input.EmbeddingInput.Texts) == 0 && input.EmbeddingInput.Text != nil {
+			input.EmbeddingInput.Texts = []string{*input.EmbeddingInput.Text}
+		}
+
 		contentBlocks := make([]schemas.ContentBlock, len(input.EmbeddingInput.Texts))
 		for i, text := range input.EmbeddingInput.Texts {
 			contentBlocks[i] = schemas.ContentBlock{

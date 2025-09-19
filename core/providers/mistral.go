@@ -172,7 +172,12 @@ func (provider *MistralProvider) Embedding(ctx context.Context, model string, ke
 	// Prepare request body with base parameters
 	requestBody := map[string]interface{}{
 		"model": model,
-		"input": input.Texts,
+	}
+
+	if input.Text != nil {
+		requestBody["texts"] = []string{*input.Text}
+	} else {
+		requestBody["texts"] = input.Texts
 	}
 
 	// Merge any additional parameters
