@@ -49,6 +49,9 @@ var (
 	// bifrostCostTotal tracks the total cost in USD for requests to upstream providers
 	bifrostCostTotal *prometheus.CounterVec
 
+	// bifrostRetriesTotal tracks the total number of retries performed by Bifrost.
+	bifrostRetriesTotal *prometheus.CounterVec
+
 	// customLabels stores the expected label names in order
 	customLabels  []string
 	isInitialized bool
@@ -167,6 +170,14 @@ func InitPrometheusMetrics(labels []string) {
 		prometheus.CounterOpts{
 			Name: "bifrost_cost_total",
 			Help: "Total cost in USD for requests to upstream providers.",
+		},
+		append(bifrostDefaultLabels, labels...),
+	)
+	
+	bifrostRetriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_retries_total",
+			Help: "Total number of retries performed by Bifrost.",
 		},
 		append(bifrostDefaultLabels, labels...),
 	)
