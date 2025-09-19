@@ -271,14 +271,19 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, model string, key
 
 	providerName := provider.GetProviderKey()
 
-	if input == nil || len(input.Texts) == 0 {
+	if input.Text == nil && len(input.Texts) == 0 {
 		return nil, newBifrostOperationError("invalid embedding input: at least one text is required", nil, providerName)
 	}
 
 	// Prepare request body with base parameters
 	requestBody := map[string]interface{}{
 		"model": model,
-		"input": input.Texts,
+	}
+
+	if input.Text != nil {
+		requestBody["texts"] = []string{*input.Text}
+	} else {
+		requestBody["texts"] = input.Texts
 	}
 
 	// Merge any additional parameters

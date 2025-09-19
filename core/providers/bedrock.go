@@ -1233,15 +1233,16 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, model string, ke
 // handleTitanEmbedding handles embedding requests for Amazon Titan models.
 func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters, providerName schemas.ModelProvider) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Titan Text Embeddings V1/V2 - only supports single text input
-	if len(input.Texts) == 0 {
+	if input.Text == nil && len(input.Texts) == 0 {
 		return nil, newConfigurationError("no input text provided for embedding", providerName)
 	}
-	if len(input.Texts) > 1 {
-		return nil, newConfigurationError("Amazon Titan embedding models support only single text input, received multiple texts", providerName)
-	}
 
-	requestBody := map[string]interface{}{
-		"inputText": input.Texts[0],
+	requestBody := map[string]interface{}{}
+
+	if input.Text != nil {
+		requestBody["inputText"] = *input.Text
+	} else if len(input.Texts) == 1 {
+		requestBody["inputText"] = input.Texts[0]
 	}
 
 	if params != nil {
@@ -1306,14 +1307,20 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 
 // handleCohereEmbedding handles embedding requests for Cohere models on Bedrock.
 func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters, providerName schemas.ModelProvider) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if len(input.Texts) == 0 {
+	if input.Text == nil && len(input.Texts) == 0 {
 		return nil, newConfigurationError("no input text provided for embedding", providerName)
 	}
 
 	requestBody := map[string]interface{}{
-		"texts":      input.Texts,
 		"input_type": "search_document",
 	}
+
+	if input.Text != nil {
+		requestBody["texts"] = []string{*input.Text}
+	} else {
+		requestBody["texts"] = input.Texts
+	}
+
 	if params != nil && params.ExtraParams != nil {
 		maps.Copy(requestBody, params.ExtraParams)
 	}
@@ -1325,50 +1332,12 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 		return nil, err
 	}
 
-	// Parse Cohere response
-	var cohereResp struct {
-		Embeddings [][]float32 `json:"embeddings"`
-		ID         string      `json:"id"`
-		Texts      []string    `json:"texts"`
-	}
+	var cohereResp CohereEmbeddingResponse
 	if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
 		return nil, newBifrostOperationError("error parsing embedding response", err, providerName)
 	}
 
-	// Calculate token usage based on input texts (approximation since Cohere doesn't provide this)
-	totalInputTokens := approximateTokenCount(input.Texts)
-
-	bifrostResponse := &schemas.BifrostResponse{
-		Object: "list",
-		Data: []schemas.BifrostEmbedding{
-			{
-				Index:  0,
-				Object: "embedding",
-				Embedding: schemas.BifrostEmbeddingResponse{
-					Embedding2DArray: &cohereResp.Embeddings,
-				},
-			},
-		},
-		ID:    cohereResp.ID,
-		Model: model,
-		Usage: &schemas.LLMUsage{
-			PromptTokens: totalInputTokens,
-			TotalTokens:  totalInputTokens,
-		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: providerName,
-		},
-	}
-
-	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
-	}
-
-	return bifrostResponse, nil
+	return handleCohereEmbeddingResponse(cohereResp, model, params, providerName, rawResponse, provider.sendBackRawResponse)
 }
 
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.

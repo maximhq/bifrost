@@ -74,7 +74,7 @@ type CompletionRequest struct {
 	Stream    *bool                    `json:"stream"`    // Whether to stream the response
 
 	// Speech inputs
-	Input          VoiceInput               `json:"input"`
+	Input          schemas.EmbeddingInput   `json:"input"` // string can be used for voice input as well
 	Voice          schemas.SpeechVoiceInput `json:"voice"`
 	Instructions   string                   `json:"instructions"`
 	ResponseFormat string                   `json:"response_format"`
@@ -93,6 +93,7 @@ type CompletionRequest struct {
 	EncodingFormat    *string             `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
 	Dimensions        *int                `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
 	User              *string             `json:"user,omitempty"`                // User identifier for tracking
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -131,45 +132,6 @@ func (cr *CompletionRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
-}
-
-type VoiceInput struct {
-	InputString *string   `json:"input_string,omitempty"`
-	InputArray  *[]string `json:"input_array,omitempty"`
-}
-
-// MarshalJSON implements custom JSON marshaling
-func (i VoiceInput) MarshalJSON() ([]byte, error) {
-	if i.InputString != nil {
-		return sonic.Marshal(*i.InputString)
-	}
-	if i.InputArray != nil {
-		return sonic.Marshal(*i.InputArray)
-	}
-	return nil, fmt.Errorf("input must be a string or array of strings")
-}
-
-// UnmarshalJSON implements custom JSON unmarshaling
-func (i *VoiceInput) UnmarshalJSON(data []byte) error {
-	// Reset fields
-	i.InputString = nil
-	i.InputArray = nil
-
-	// Try to unmarshal as string first
-	var str string
-	if err := sonic.Unmarshal(data, &str); err == nil {
-		i.InputString = &str
-		return nil
-	}
-
-	// If that fails, try to unmarshal as array of strings
-	var strArray []string
-	if err := sonic.Unmarshal(data, &strArray); err == nil {
-		i.InputArray = &strArray
-		return nil
-	}
-
-	return fmt.Errorf("input must be a string or array of strings")
 }
 
 func (cr *CompletionRequest) GetModelParameters() *schemas.ModelParameters {
@@ -501,25 +463,11 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 			ChatCompletionInput: &req.Messages,
 		}
 	case CompletionTypeEmbeddings:
-		if req.Input.InputString == nil && req.Input.InputArray == nil {
-			SendError(ctx, fasthttp.StatusBadRequest, "Input is required for embeddings completion", h.logger)
-			return
-		}
-
-		var texts []string
-		if req.Input.InputString != nil {
-			texts = []string{*req.Input.InputString}
-		}
-		if req.Input.InputArray != nil {
-			texts = *req.Input.InputArray
-		}
 		bifrostReq.Input = schemas.RequestInput{
-			EmbeddingInput: &schemas.EmbeddingInput{
-				Texts: texts,
-			},
+			EmbeddingInput: &req.Input,
 		}
 	case CompletionTypeSpeech:
-		if req.Input.InputString == nil {
+		if req.Input.Text == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "Input is required for speech completion", h.logger)
 			return
 		}
@@ -529,7 +477,7 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		}
 		bifrostReq.Input = schemas.RequestInput{
 			SpeechInput: &schemas.SpeechInput{
-				Input:          *req.Input.InputString,
+				Input:          *req.Input.Text,
 				VoiceConfig:    req.Voice,
 				Instructions:   req.Instructions,
 				ResponseFormat: req.ResponseFormat,

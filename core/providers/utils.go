@@ -673,29 +673,6 @@ func newProviderAPIError(message string, err error, statusCode int, providerType
 	}
 }
 
-// approximateTokenCount provides a rough approximation of token count for text.
-// WARNING: This is a best-effort approximation using 1 token per 4 characters.
-// This heuristic is particularly inaccurate for:
-// - Non-ASCII text (multi-byte characters)
-// - Short texts
-// - Different languages and tokenization methods
-// - Various model-specific tokenizers
-//
-// The actual token count may vary significantly based on tokenization method,
-// language, and text structure. Consider omitting token metrics when precise
-// counts are unavailable to avoid misleading usage information.
-//
-// For precise token usage tracking, implement a proper tokenizer that matches
-// the model's tokenization method.
-func approximateTokenCount(texts []string) int {
-	totalInputTokens := 0
-	for _, text := range texts {
-		// Rough approximation: 1 token per 4 characters
-		totalInputTokens += len(text) / 4
-	}
-	return totalInputTokens
-}
-
 // processAndSendResponse handles post-hook processing and sends the response to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
