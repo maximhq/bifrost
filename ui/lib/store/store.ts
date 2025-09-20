@@ -1,6 +1,6 @@
 import { configureStore } from "@reduxjs/toolkit";
 import { baseApi } from "./apis/baseApi";
-import { appReducer, providerReducer } from "./slices";
+import { appReducer, pluginReducer, providerReducer } from "./slices";
 
 export const store = configureStore({
 	reducer: {
@@ -10,6 +10,8 @@ export const store = configureStore({
 		app: appReducer,
 		// Provider state slice
 		provider: providerReducer,
+		// Plugin state slice
+		plugin: pluginReducer,
 	},
 	middleware: (getDefaultMiddleware) =>
 		getDefaultMiddleware({
