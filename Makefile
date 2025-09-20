@@ -37,7 +37,7 @@ help: ## Show this help message
 cleanup-enterprise: ## Clean up enterprise directories if present
 	@echo "$(GREEN)Cleaning up enterprise...$(NC)"
 	@if [ -d "ui/app/enterprise" ]; then rm -rf ui/app/enterprise; fi
-	@if [ -d "ui/app/_fallbacks/enterprise" ]; then rm -rf ui/app/_fallbacks/enterprise; fi
+	@if [ -d "ui/app/enterprise" ]; then rm -rf ui/app/enterprise; fi
 	@echo "$(GREEN)Enterprise cleaned up$(NC)"
 
 install-ui: cleanup-enterprise
