@@ -12,27 +12,9 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/openrouter"
 	"github.com/valyala/fasthttp"
 )
-
-// OpenRouter response structures
-
-// OpenRouterTextResponse represents the response from OpenRouter text completion API
-type OpenRouterTextResponse struct {
-	ID                string                 `json:"id"`
-	Model             string                 `json:"model"`
-	Created           int                    `json:"created"`
-	SystemFingerprint *string                `json:"system_fingerprint"`
-	Choices           []OpenRouterTextChoice `json:"choices"`
-	Usage             *schemas.LLMUsage      `json:"usage"`
-}
-
-// OpenRouterTextChoice represents a choice in the OpenRouter text completion response
-type OpenRouterTextChoice struct {
-	Text         string `json:"text"`
-	Index        int    `json:"index"`
-	FinishReason string `json:"finish_reason"`
-}
 
 // OpenRouterProvider implements the Provider interface for OpenRouter's API.
 type OpenRouterProvider struct {
@@ -46,19 +28,19 @@ type OpenRouterProvider struct {
 // openRouterTextCompletionResponsePool provides a pool for OpenRouter text completion response objects.
 var openRouterTextCompletionResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &OpenRouterTextResponse{}
+		return &openrouter.OpenRouterTextResponse{}
 	},
 }
 
 // acquireOpenRouterTextResponse gets an OpenRouter text completion response from the pool and resets it.
-func acquireOpenRouterTextResponse() *OpenRouterTextResponse {
-	resp := openRouterTextCompletionResponsePool.Get().(*OpenRouterTextResponse)
-	*resp = OpenRouterTextResponse{} // Reset the struct
+func acquireOpenRouterTextResponse() *openrouter.OpenRouterTextResponse {
+	resp := openRouterTextCompletionResponsePool.Get().(*openrouter.OpenRouterTextResponse)
+	*resp = openrouter.OpenRouterTextResponse{} // Reset the struct
 	return resp
 }
 
 // releaseOpenRouterTextResponse returns an OpenRouter text completion response to the pool.
-func releaseOpenRouterTextResponse(resp *OpenRouterTextResponse) {
+func releaseOpenRouterTextResponse(resp *openrouter.OpenRouterTextResponse) {
 	if resp != nil {
 		openRouterTextCompletionResponsePool.Put(resp)
 	}
@@ -83,7 +65,7 @@ func NewOpenRouterProvider(config *schemas.ProviderConfig, logger schemas.Logger
 
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
-		openRouterTextCompletionResponsePool.Put(&OpenRouterTextResponse{})
+		openRouterTextCompletionResponsePool.Put(&openrouter.OpenRouterTextResponse{})
 	}
 
 	// Configure proxy if provided
