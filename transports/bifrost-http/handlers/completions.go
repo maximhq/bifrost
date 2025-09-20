@@ -244,7 +244,7 @@ const (
 )
 
 // RegisterRoutes registers all completion-related routes
-func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	// Completion endpoints
 	r.POST("/v1/completions", ChainMiddlewares(h.textCompletion, middlewares...))
 	r.POST("/v1/chat/completions", ChainMiddlewares(h.chatCompletion, middlewares...))

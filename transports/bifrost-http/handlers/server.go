@@ -125,30 +125,6 @@ func RegisterCollectorSafely(collector prometheus.Collector) {
 	}
 }
 
-// CorsMiddleware handles CORS headers for localhost and configured allowed origins
-func CorsMiddleware(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		origin := string(ctx.Request.Header.Peek("Origin"))
-
-		// Check if origin is allowed (localhost always allowed + configured origins)
-		if IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins) {
-			ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
-		}
-
-		ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-		ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
-		ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
-
-		// Handle preflight OPTIONS requests
-		if string(ctx.Method()) == "OPTIONS" {
-			ctx.SetStatusCode(fasthttp.StatusOK)
-			return
-		}
-
-		next(ctx)
-	}
-}
 
 // LoadPlugins loads the plugins for the server.
 func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
@@ -265,7 +241,7 @@ func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (
 }
 
 // RegisterRoutes initializes the routes for the Bifrost HTTP server.
-func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...fasthttp.RequestHandler) error {
+func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...BifrostHTTPMiddleware) error {
 	var err error
 	// Initializing plugin specific handlers
 	var loggingHandler *LoggingHandler
@@ -342,7 +318,7 @@ func (s *BifrostHTTPServer) InitializeTelemetry() {
 }
 
 // RegisterUIHandler registers the UI handler with the specified router
-func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...fasthttp.RequestHandler) {
+func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...BifrostHTTPMiddleware) {
 	// Register UI handlers
 	// Registering UI handlers
 	// WARNING: This UI handler needs to be registered after all the other handlers

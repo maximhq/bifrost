@@ -30,7 +30,7 @@ func NewMCPHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.Co
 }
 
 // RegisterRoutes registers all MCP-related routes
-func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	// MCP tool execution endpoint
 	r.POST("/v1/mcp/tool/execute", ChainMiddlewares(h.executeTool, middlewares...))
 	r.GET("/api/mcp/clients", ChainMiddlewares(h.getMCPClients, middlewares...))
