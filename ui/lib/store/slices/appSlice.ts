@@ -49,15 +49,6 @@ export interface AppState {
 		enableCaching: boolean;
 		enableLogging: boolean;
 	};
-
-	// Current selected items (for bulk operations)
-	selectedItems: {
-		providers: string[];
-		virtualKeys: string[];
-		teams: string[];
-		customers: string[];
-		logs: string[];
-	};
 }
 
 // Define initial state
@@ -181,60 +172,6 @@ const appSlice = createSlice({
 		updateFeatures: (state, action: PayloadAction<Partial<AppState["features"]>>) => {
 			state.features = { ...state.features, ...action.payload };
 		},
-
-		// Selection Actions
-		setSelectedProviders: (state, action: PayloadAction<string[]>) => {
-			state.selectedItems.providers = action.payload;
-		},
-
-		toggleProviderSelection: (state, action: PayloadAction<string>) => {
-			const providerId = action.payload;
-			const isSelected = state.selectedItems.providers.includes(providerId);
-
-			if (isSelected) {
-				state.selectedItems.providers = state.selectedItems.providers.filter((id) => id !== providerId);
-			} else {
-				state.selectedItems.providers.push(providerId);
-			}
-		},
-
-		setSelectedVirtualKeys: (state, action: PayloadAction<string[]>) => {
-			state.selectedItems.virtualKeys = action.payload;
-		},
-
-		toggleVirtualKeySelection: (state, action: PayloadAction<string>) => {
-			const keyId = action.payload;
-			const isSelected = state.selectedItems.virtualKeys.includes(keyId);
-
-			if (isSelected) {
-				state.selectedItems.virtualKeys = state.selectedItems.virtualKeys.filter((id) => id !== keyId);
-			} else {
-				state.selectedItems.virtualKeys.push(keyId);
-			}
-		},
-
-		setSelectedTeams: (state, action: PayloadAction<string[]>) => {
-			state.selectedItems.teams = action.payload;
-		},
-
-		setSelectedCustomers: (state, action: PayloadAction<string[]>) => {
-			state.selectedItems.customers = action.payload;
-		},
-
-		setSelectedLogs: (state, action: PayloadAction<string[]>) => {
-			state.selectedItems.logs = action.payload;
-		},
-
-		clearAllSelections: (state) => {
-			state.selectedItems = {
-				providers: [],
-				virtualKeys: [],
-				teams: [],
-				customers: [],
-				logs: [],
-			};
-		},
-
 		// Reset app state (useful for logout)
 		resetAppState: () => initialState,
 	},
@@ -272,16 +209,6 @@ export const {
 	// Feature Flags Actions
 	updateFeatures,
 
-	// Selection Actions
-	setSelectedProviders,
-	toggleProviderSelection,
-	setSelectedVirtualKeys,
-	toggleVirtualKeySelection,
-	setSelectedTeams,
-	setSelectedCustomers,
-	setSelectedLogs,
-	clearAllSelections,
-
 	// Reset
 	resetAppState,
 } = appSlice.actions;
@@ -300,6 +227,3 @@ export const selectUnreadNotificationsCount = (state: { app: AppState }) => stat
 export const selectSettings = (state: { app: AppState }) => state.app.settings;
 export const selectGlobalError = (state: { app: AppState }) => state.app.globalError;
 export const selectFeatures = (state: { app: AppState }) => state.app.features;
-export const selectSelectedItems = (state: { app: AppState }) => state.app.selectedItems;
-export const selectSelectedProviders = (state: { app: AppState }) => state.app.selectedItems.providers;
-export const selectSelectedVirtualKeys = (state: { app: AppState }) => state.app.selectedItems.virtualKeys;

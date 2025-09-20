@@ -24,7 +24,7 @@ func NewUIHandler(uiContent embed.FS) *UIHandler {
 }
 
 // RegisterRoutes registers the UI routes with the provided router.
-func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...fasthttp.RequestHandler) {
+func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	router.GET("/", ChainMiddlewares(h.serveDashboard, middlewares...))
 	router.GET("/{filepath:*}", ChainMiddlewares(h.serveDashboard, middlewares...))
 }

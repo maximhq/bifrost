@@ -24,7 +24,7 @@ func NewCacheHandler(plugin schemas.Plugin, logger schemas.Logger) *CacheHandler
 	}
 }
 
-func (h *CacheHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+func (h *CacheHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	r.DELETE("/api/cache/clear/{requestId}", ChainMiddlewares(h.clearCache, middlewares...))
 	r.DELETE("/api/cache/clear-by-key/{cacheKey}", ChainMiddlewares(h.clearCacheByKey, middlewares...))
 }

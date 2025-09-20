@@ -11,11 +11,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// PluginsHandler is the handler for the plugins API
 type PluginsHandler struct {
 	logger      schemas.Logger
 	configStore configstore.ConfigStore
 }
 
+// NewPluginsHandler creates a new PluginsHandler
 func NewPluginsHandler(configStore configstore.ConfigStore, logger schemas.Logger) *PluginsHandler {
 	return &PluginsHandler{
 		configStore: configStore,
@@ -23,18 +25,21 @@ func NewPluginsHandler(configStore configstore.ConfigStore, logger schemas.Logge
 	}
 }
 
+// CreatePluginRequest is the request body for creating a plugin
 type CreatePluginRequest struct {
-	Name    string                 `json:"name"`
-	Enabled bool                   `json:"enabled"`
-	Config  map[string]interface{} `json:"config"`
+	Name    string         `json:"name"`
+	Enabled bool           `json:"enabled"`
+	Config  map[string]any `json:"config"`
 }
 
+// UpdatePluginRequest is the request body for updating a plugin
 type UpdatePluginRequest struct {
-	Enabled bool                   `json:"enabled"`
-	Config  map[string]interface{} `json:"config"`
+	Enabled bool           `json:"enabled"`
+	Config  map[string]any `json:"config"`
 }
 
-func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+// RegisterRoutes registers the routes for the PluginsHandler
+func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	r.GET("/api/plugins", ChainMiddlewares(h.getPlugins, middlewares...))
 	r.GET("/api/plugins/{name}", ChainMiddlewares(h.getPlugin, middlewares...))
 	r.POST("/api/plugins", ChainMiddlewares(h.createPlugin, middlewares...))
@@ -42,6 +47,7 @@ func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...fasthtt
 	r.DELETE("/api/plugins/{name}", ChainMiddlewares(h.deletePlugin, middlewares...))
 }
 
+// getPlugins gets all plugins
 func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 	plugins, err := h.configStore.GetPlugins()
 	if err != nil {
@@ -50,12 +56,13 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	SendJSON(ctx, map[string]any{
 		"plugins": plugins,
 		"count":   len(plugins),
 	}, h.logger)
 }
 
+// getPlugin gets a plugin by name
 func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
@@ -91,6 +98,7 @@ func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, plugin, h.logger)
 }
 
+// createPlugin creates a new plugin
 func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	var request CreatePluginRequest
 	if err := json.Unmarshal(ctx.PostBody(), &request); err != nil {
@@ -130,12 +138,13 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusCreated)
-	SendJSON(ctx, map[string]interface{}{
+	SendJSON(ctx, map[string]any{
 		"message": "Plugin created successfully",
 		"plugin":  plugin,
 	}, h.logger)
 }
 
+// updatePlugin updates an existing plugin
 func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
@@ -160,9 +169,16 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 
 	// Check if plugin exists
 	if _, err := h.configStore.GetPlugin(name); err != nil {
-		h.logger.Warn("plugin not found for update: %s", name)
-		SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
-		return
+		// If doesn't exist, create it
+		if err := h.configStore.CreatePlugin(&configstore.TablePlugin{
+			Name:    name,
+			Enabled: false,
+			Config:  map[string]any{},
+		}); err != nil {
+			h.logger.Error("failed to create plugin: %v", err)
+			SendError(ctx, 500, "Failed to create plugin", h.logger)
+			return
+		}
 	}
 
 	var request UpdatePluginRequest
@@ -199,6 +215,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
+// deletePlugin deletes an existing plugin
 func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
