@@ -2050,6 +2050,20 @@ func (s *Config) GetVectorStoreConfigRedacted() (*vectorstore.Config, error) {
 		redactedVectorStoreConfig := *vectorStoreConfig
 		redactedVectorStoreConfig.Config = &redactedWeaviateConfig
 		return &redactedVectorStoreConfig, nil
+	} else if vectorStoreConfig.Type == vectorstore.VectorStoreTypeRedis {
+		redisConfig, ok := vectorStoreConfig.Config.(*vectorstore.RedisConfig)
+		if !ok {
+			return nil, fmt.Errorf("failed to cast vector store config to redis config")
+		}
+		// Create a copy to avoid modifying the original
+		redactedRedisConfig := *redisConfig
+		// Redact details here
+		if redactedRedisConfig.Addr != "" {
+			redactedRedisConfig.Addr = RedactKey(redactedRedisConfig.Addr)
+		}
+		redactedVectorStoreConfig := *vectorStoreConfig
+		redactedVectorStoreConfig.Config = &redactedRedisConfig
+		return &redactedVectorStoreConfig, nil
 	}
 	return nil, nil
 }

@@ -1,6 +1,8 @@
 "use client";
 
 import PluginsForm from "@/app/config/views/pluginsForm";
+import VectorStoreForm from "@/app/config/views/vectorStoreForm";
+import LogStoreForm from "@/app/config/views/logStoreForm";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -363,6 +365,10 @@ export default function ConfigPage() {
 					</div>
 
 					<PluginsForm isVectorStoreEnabled={bifrostConfig?.is_cache_connected ?? false} />
+
+					<VectorStoreForm />
+
+					<LogStoreForm />
 
 					<div>
 						<div className="space-y-2 rounded-lg border p-4">
