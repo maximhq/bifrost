@@ -8,7 +8,6 @@ import (
 func (r *OpenAIChatRequest) ConvertChatRequestToBifrost() *schemas.BifrostRequest {
 	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
 
-	// Convert parameters first
 	params := r.convertParameters()
 
 	bifrostReq := &schemas.BifrostRequest{
@@ -169,40 +168,40 @@ func (r *OpenAIChatRequest) convertParameters() *schemas.ModelParameters {
 		params.FrequencyPenalty = r.FrequencyPenalty
 	}
 	if r.N != nil {
-		params.ExtraParams["n"] = *r.N
+		params.N = r.N
 	}
 	if r.LogProbs != nil {
-		params.ExtraParams["logprobs"] = *r.LogProbs
+		params.LogProbs = r.LogProbs
 	}
 	if r.TopLogProbs != nil {
-		params.ExtraParams["top_logprobs"] = *r.TopLogProbs
+		params.TopLogProbs = r.TopLogProbs
 	}
 	if r.Stop != nil {
-		params.ExtraParams["stop"] = r.Stop
+		params.Stop = r.Stop
 	}
 	if r.LogitBias != nil {
-		params.ExtraParams["logit_bias"] = r.LogitBias
+		params.LogitBias = r.LogitBias
 	}
 	if r.User != nil {
-		params.ExtraParams["user"] = *r.User
+		params.User = r.User
 	}
 	if r.Stream != nil {
-		params.ExtraParams["stream"] = *r.Stream
+		params.Stream = r.Stream
 	}
 	if r.Seed != nil {
-		params.ExtraParams["seed"] = *r.Seed
+		params.Seed = r.Seed
 	}
 	if r.StreamOptions != nil {
-		params.ExtraParams["stream_options"] = r.StreamOptions
+		params.StreamOptions = r.StreamOptions
 	}
 	if r.ResponseFormat != nil {
-		params.ExtraParams["response_format"] = r.ResponseFormat
+		params.ResponseFormat = r.ResponseFormat
 	}
 	if r.MaxCompletionTokens != nil {
-		params.ExtraParams["max_completion_tokens"] = *r.MaxCompletionTokens
+		params.MaxCompletionTokens = r.MaxCompletionTokens
 	}
 	if r.ReasoningEffort != nil {
-		params.ExtraParams["reasoning_effort"] = *r.ReasoningEffort
+		params.ReasoningEffort = r.ReasoningEffort
 	}
 
 	return params

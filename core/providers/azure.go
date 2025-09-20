@@ -315,26 +315,17 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *AzureProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Prepare request body - Azure uses deployment-scoped URLs, so model is not needed in body
-	requestBody := map[string]interface{}{
-		"input": input.Texts,
+
+	// Use centralized converter
+	bifrostReq := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    model,
+		Input:    schemas.RequestInput{EmbeddingInput: input},
+		Params:   params,
 	}
 
-	// Merge any additional parameters
-	if params != nil {
-		if params.EncodingFormat != nil {
-			requestBody["encoding_format"] = *params.EncodingFormat
-		}
-		if params.Dimensions != nil {
-			requestBody["dimensions"] = *params.Dimensions
-		}
-		if params.User != nil {
-			requestBody["user"] = *params.User
-		}
-		requestBody = mergeConfig(requestBody, params.ExtraParams)
-	}
-
-	responseBody, err := provider.completeRequest(ctx, requestBody, "embeddings", key, model)
+	azureReq := openai.ConvertEmbeddingRequestToOpenAI(bifrostReq)
+	responseBody, err := provider.completeRequest(ctx, azureReq, "embeddings", key, model)
 	if err != nil {
 		return nil, err
 	}

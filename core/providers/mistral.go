@@ -12,6 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
+	"github.com/maximhq/bifrost/core/schemas/providers/mistral"
 	"github.com/valyala/fasthttp"
 )
 
@@ -172,37 +173,17 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, model strin
 // Embedding generates embeddings for the given input text(s) using the Mistral API.
 // Supports Mistral's embedding models and returns a BifrostResponse containing the embedding(s).
 func (provider *MistralProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Prepare request body with base parameters
-	requestBody := map[string]interface{}{
-		"model": model,
-		"input": input.Texts,
+	bifrostRequest := &schemas.BifrostRequest{
+		Model: model,
+		Input: schemas.RequestInput{
+			EmbeddingInput: input,
+		},
+		Params: params,
 	}
 
-	// Merge any additional parameters
-	if params != nil {
-		// Validate encoding format - Mistral API supports multiple formats, but our provider only implements float
-		if params.EncodingFormat != nil {
-			if *params.EncodingFormat != "float" {
-				return nil, newConfigurationError(fmt.Sprintf("Mistral provider currently only supports 'float' encoding format, received: %s", *params.EncodingFormat), schemas.Mistral)
-			}
-			// Map to Mistral's parameter name
-			requestBody["output_dtype"] = *params.EncodingFormat
-		}
+	mistralRequest := mistral.ConvertEmbeddingRequestToMistral(bifrostRequest)
 
-		// Map dimensions to Mistral's parameter name
-		if params.Dimensions != nil {
-			requestBody["output_dimension"] = *params.Dimensions
-		}
-
-		// Merge any extra parameters
-		if params.ExtraParams != nil {
-			for k, v := range params.ExtraParams {
-				requestBody[k] = v
-			}
-		}
-	}
-
-	jsonBody, err := sonic.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(mistralRequest)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
