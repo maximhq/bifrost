@@ -81,33 +81,30 @@ export const networkConfigSchema = z
 	});
 
 // Network form schema - more lenient for form inputs
-export const networkFormConfigSchema = z.object({
-	base_url: z
-		.url("Must be a valid URL")
-		.refine((url) => url.startsWith("https://"), {
-			message: "Only HTTPS URLs are supported",
-		})
-		.optional(),
-	extra_headers: z.record(z.string(), z.string()).optional(),
-	default_request_timeout_in_seconds: z.coerce
-		.number("Timeout must be a number")
-		.min(1, "Timeout must be greater than 0 seconds")
-		.max(300, "Timeout must be less than 300 seconds"),
-	max_retries: z.coerce
-		.number("Max retries must be a number")
-		.min(0, "Max retries must be greater than 0")
-		.max(10, "Max retries must be less than 10"),
-	retry_backoff_initial: z.coerce
-		.number("Retry backoff initial must be a number")
-		.min(0, "Retry backoff initial must be greater than 0"),
-	retry_backoff_max: z.coerce
-		.number("Retry backoff max must be a number")
-		.min(0, "Retry backoff max must be greater than 0"),
-})
-.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
-	message: "Initial backoff must be less than or equal to max backoff",
-	path: ["retry_backoff_initial"],
-});
+export const networkFormConfigSchema = z
+	.object({
+		base_url: z
+			.url("Must be a valid URL")
+			.refine((url) => url.startsWith("https://"), {
+				message: "Only HTTPS URLs are supported",
+			})
+			.optional(),
+		extra_headers: z.record(z.string(), z.string()).optional(),
+		default_request_timeout_in_seconds: z.coerce
+			.number("Timeout must be a number")
+			.min(1, "Timeout must be greater than 0 seconds")
+			.max(300, "Timeout must be less than 300 seconds"),
+		max_retries: z.coerce
+			.number("Max retries must be a number")
+			.min(0, "Max retries must be greater than 0")
+			.max(10, "Max retries must be less than 10"),
+		retry_backoff_initial: z.coerce.number("Retry backoff initial must be a number").min(0, "Retry backoff initial must be greater than 0"),
+		retry_backoff_max: z.coerce.number("Retry backoff max must be a number").min(0, "Retry backoff max must be greater than 0"),
+	})
+	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
+		message: "Initial backoff must be less than or equal to max backoff",
+		path: ["retry_backoff_initial"],
+	});
 
 // Concurrency and buffer size schema
 export const concurrencyAndBufferSizeSchema = z.object({
@@ -331,6 +328,32 @@ export const performanceFormSchema = z.object({
 	send_back_raw_response: z.boolean(),
 });
 
+// OTEL Configuration Schema
+export const otelConfigSchema = z.object({
+	push_url: z.url("Must be a valid URL").refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
+		message: "Must be a valid HTTP or HTTPS URL",
+	}),
+	trace_type: z.enum(["traditional", "genai", "vercel", "arize_otel"], {
+		message: "Please select a trace type",
+	}),
+});
+
+// OTEL form schema for the OtelFormFragment
+export const otelFormSchema = z.object({
+	otel_config: otelConfigSchema,
+});
+
+// Maxim Configuration Schema
+export const maximConfigSchema = z.object({
+	api_key: z.string().min(1, "API key is required"),
+	log_repo_id: z.string().optional(),
+});
+
+// Maxim form schema for the MaximFormFragment
+export const maximFormSchema = z.object({
+	maxim_config: maximConfigSchema,
+});
+
 // Export type inference helpers
 
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
@@ -339,6 +362,10 @@ export type NetworkFormConfigSchema = z.infer<typeof networkFormConfigSchema>;
 export type ProxyFormConfigSchema = z.infer<typeof proxyFormConfigSchema>;
 export type NetworkAndProxyFormSchema = z.infer<typeof networkAndProxyFormSchema>;
 export type ProxyOnlyFormSchema = z.infer<typeof proxyOnlyFormSchema>;
+export type OtelConfigSchema = z.infer<typeof otelConfigSchema>;
+export type OtelFormSchema = z.infer<typeof otelFormSchema>;
+export type MaximConfigSchema = z.infer<typeof maximConfigSchema>;
+export type MaximFormSchema = z.infer<typeof maximFormSchema>;
 export type NetworkOnlyFormSchema = z.infer<typeof networkOnlyFormSchema>;
 export type PerformanceFormSchema = z.infer<typeof performanceFormSchema>;
 export type CustomProviderConfigSchema = z.infer<typeof customProviderConfigSchema>;

@@ -58,7 +58,7 @@ type ErrorResponse struct {
 }
 
 // RegisterRoutes registers all provider management routes
-func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	// Provider CRUD operations
 	r.GET("/api/providers", ChainMiddlewares(h.listProviders, middlewares...))
 	r.GET("/api/providers/{provider}", ChainMiddlewares(h.getProvider, middlewares...))

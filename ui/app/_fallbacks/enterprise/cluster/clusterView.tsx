@@ -1,3 +1,5 @@
-export default function ClusterView() {
-	return <div>Enterprise cluster view not available</div>;
+
+
+export default function ClusterPage() {
+	return <div>Enterprise cluster page not available</div>;
 }

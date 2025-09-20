@@ -49,7 +49,7 @@ func NewWebSocketHandler(ctx context.Context, logManager logging.LogManager, log
 }
 
 // RegisterRoutes registers all WebSocket-related routes
-func (h *WebSocketHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+func (h *WebSocketHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	r.GET("/ws/logs", ChainMiddlewares(h.connectLogStream, middlewares...))
 }
 
