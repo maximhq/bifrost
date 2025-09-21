@@ -127,12 +127,12 @@ func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Gemini provider.
-func (provider *GeminiProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", string(provider.GetProviderKey()))
 }
 
 // ChatCompletion performs a chat completion request to the Gemini API.
-func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
 		return nil, err
@@ -141,13 +141,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 	providerName := provider.GetProviderKey()
 
 	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.Gemini,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 
 	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
@@ -215,8 +209,8 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		response.ExtraFields.Params = *params
+	if input.Params != nil {
+		response.ExtraFields.Params = *input.Params
 	}
 
 	return response, nil
@@ -226,7 +220,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Gemini's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
 		return nil, err
@@ -235,13 +229,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 	providerName := provider.GetProviderKey()
 
 	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.Gemini,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 	openaiReq.Stream = schemas.Ptr(true)
 
 	// Prepare Gemini headers
@@ -261,52 +249,53 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		providerName,
-		params,
+		input.Params,
 		postHookRunner,
 		provider.logger,
 	)
 }
 
 // Embedding performs an embedding request to the Gemini API.
-func (provider *GeminiProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
+	embeddingInput := input.Input.EmbeddingInput
 
-	if input.Text == nil && len(input.Texts) == 0 {
+	if embeddingInput.Text == nil && len(embeddingInput.Texts) == 0 {
 		return nil, newBifrostOperationError("invalid embedding input: at least one text is required", nil, providerName)
 	}
 
 	// Prepare request body with base parameters
 	requestBody := map[string]interface{}{
-		"model": model,
+		"model": input.Model,
 	}
 
-	if input.Text != nil {
-		requestBody["input"] = []string{*input.Text}
+	if embeddingInput.Text != nil {
+		requestBody["input"] = []string{*embeddingInput.Text}
 	} else {
-		requestBody["input"] = input.Texts
+		requestBody["input"] = embeddingInput.Texts
 	}
 
 	// Merge any additional parameters
-	if params != nil {
+	if input.Params != nil {
 		// Map standard parameters
-		if params.EncodingFormat != nil {
-			requestBody["encoding_format"] = *params.EncodingFormat
+		if input.Params.EncodingFormat != nil {
+			requestBody["encoding_format"] = *input.Params.EncodingFormat
 		}
-		if params.Dimensions != nil {
-			requestBody["dimensions"] = *params.Dimensions
+		if input.Params.Dimensions != nil {
+			requestBody["dimensions"] = *input.Params.Dimensions
 		}
-		if params.User != nil {
-			requestBody["user"] = *params.User
+		if input.Params.User != nil {
+			requestBody["user"] = *input.Params.User
 		}
 
 		// Merge any extra parameters
-		if params.ExtraParams != nil {
-			requestBody = mergeConfig(requestBody, params.ExtraParams)
+		if input.Params.ExtraParams != nil {
+			requestBody = mergeConfig(requestBody, input.Params.ExtraParams)
 		}
 	}
 
@@ -317,7 +306,7 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, model string, key
 		provider.networkConfig.BaseURL+"/openai/embeddings",
 		requestBody,
 		key,
-		params,
+		input.Params,
 		provider.networkConfig.ExtraHeaders,
 		providerName,
 		provider.sendBackRawResponse,
@@ -325,7 +314,7 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, model string, key
 	)
 }
 
-func (provider *GeminiProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if speech is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationSpeech); err != nil {
 		return nil, err
@@ -334,15 +323,15 @@ func (provider *GeminiProvider) Speech(ctx context.Context, model string, key sc
 	providerName := provider.GetProviderKey()
 
 	// Validate input
-	if input == nil || input.Input == "" {
+	if input == nil || input.Input.SpeechInput == nil || input.Input.SpeechInput.Input == "" {
 		return nil, newBifrostOperationError("invalid speech input: no text provided", fmt.Errorf("empty text input"), providerName)
 	}
 
 	// Prepare request body using shared function
-	requestBody := prepareGeminiGenerationRequest(input, params, []string{"AUDIO"})
+	requestBody := prepareGeminiGenerationRequest(input.Input.SpeechInput, input.Params, []string{"AUDIO"})
 
 	// Use common request function
-	bifrostResponse, geminiResponse, bifrostErr := provider.completeRequest(ctx, model, key, requestBody, ":generateContent", params)
+	bifrostResponse, geminiResponse, bifrostErr := provider.completeRequest(ctx, input.Model, key, requestBody, ":generateContent", input.Params)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -375,14 +364,14 @@ func (provider *GeminiProvider) Speech(ctx context.Context, model string, key sc
 		},
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+	if input.Params != nil {
+		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
 }
 
-func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if speech stream is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationSpeechStream); err != nil {
 		return nil, err
@@ -391,12 +380,12 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	providerName := provider.GetProviderKey()
 
 	// Validate input
-	if input == nil || input.Input == "" {
+	if input == nil || input.Input.SpeechInput == nil || input.Input.SpeechInput.Input == "" {
 		return nil, newBifrostOperationError("invalid speech input: no text provided", fmt.Errorf("empty text input"), providerName)
 	}
 
 	// Prepare request body using shared function
-	requestBody := prepareGeminiGenerationRequest(input, params, []string{"AUDIO"})
+	requestBody := prepareGeminiGenerationRequest(input.Input.SpeechInput, input.Params, []string{"AUDIO"})
 
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
@@ -404,7 +393,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+input.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
@@ -521,7 +510,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				// Create Bifrost speech response for streaming
 				response := &schemas.BifrostResponse{
 					Object: "audio.speech.chunk",
-					Model:  model,
+					Model:  input.Model,
 					Speech: &schemas.BifrostSpeech{
 						Audio: audioChunk,
 						BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
@@ -555,8 +544,8 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				},
 			}
 
-			if params != nil {
-				response.ExtraFields.Params = *params
+			if input.Params != nil {
+				response.ExtraFields.Params = *input.Params
 			}
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 		}
@@ -565,7 +554,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	return responseChan, nil
 }
 
-func (provider *GeminiProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if transcription is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationTranscription); err != nil {
 		return nil, err
@@ -573,21 +562,23 @@ func (provider *GeminiProvider) Transcription(ctx context.Context, model string,
 
 	providerName := provider.GetProviderKey()
 
+	transcriptionInput := input.Input.TranscriptionInput
+
 	// Check file size limit (Gemini has a 20MB limit for inline data)
 	const maxFileSize = 20 * 1024 * 1024 // 20MB
-	if len(input.File) > maxFileSize {
-		return nil, newBifrostOperationError("audio file too large for inline transcription", fmt.Errorf("file size %d bytes exceeds 20MB limit", len(input.File)), providerName)
+	if len(transcriptionInput.File) > maxFileSize {
+		return nil, newBifrostOperationError("audio file too large for inline transcription", fmt.Errorf("file size %d bytes exceeds 20MB limit", len(transcriptionInput.File)), providerName)
 	}
 
-	if input.Prompt == nil {
-		input.Prompt = Ptr("Generate a transcript of the speech.")
+	if transcriptionInput.Prompt == nil {
+		input.Input.TranscriptionInput.Prompt = Ptr("Generate a transcript of the speech.")
 	}
 
 	// Prepare request body using shared function
-	requestBody := prepareGeminiGenerationRequest(input, params, nil)
+	requestBody := prepareGeminiGenerationRequest(transcriptionInput, input.Params, nil)
 
 	// Use common request function
-	bifrostResponse, geminiResponse, bifrostErr := provider.completeRequest(ctx, model, key, requestBody, ":generateContent", params)
+	bifrostResponse, geminiResponse, bifrostErr := provider.completeRequest(ctx, input.Model, key, requestBody, ":generateContent", input.Params)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -622,39 +613,40 @@ func (provider *GeminiProvider) Transcription(ctx context.Context, model string,
 		},
 		BifrostTranscribeNonStreamResponse: &schemas.BifrostTranscribeNonStreamResponse{
 			Task:     Ptr("transcribe"),
-			Language: input.Language,
+			Language: transcriptionInput.Language,
 		},
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+	if input.Params != nil {
+		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
 }
 
-func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if transcription stream is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.OperationTranscriptionStream); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
+	transcriptionInput := input.Input.TranscriptionInput
 
 	// Check file size limit (Gemini has a 20MB limit for inline data)
-	if input.File != nil {
+	if transcriptionInput.File != nil {
 		const maxFileSize = 20 * 1024 * 1024 // 20MB
-		if len(input.File) > maxFileSize {
-			return nil, newBifrostOperationError("audio file too large for inline transcription", fmt.Errorf("file size %d bytes exceeds 20MB limit", len(input.File)), providerName)
+		if len(transcriptionInput.File) > maxFileSize {
+			return nil, newBifrostOperationError("audio file too large for inline transcription", fmt.Errorf("file size %d bytes exceeds 20MB limit", len(transcriptionInput.File)), providerName)
 		}
 	}
 
-	if input.Prompt == nil {
-		input.Prompt = Ptr("Generate a transcript of the speech.")
+	if transcriptionInput.Prompt == nil {
+		transcriptionInput.Prompt = Ptr("Generate a transcript of the speech.")
 	}
 
 	// Prepare request body using shared function
-	requestBody := prepareGeminiGenerationRequest(input, params, nil)
+	requestBody := prepareGeminiGenerationRequest(transcriptionInput, input.Params, nil)
 
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
@@ -662,7 +654,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+input.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
@@ -791,7 +783,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 							Delta: &deltaText, // Delta text for this chunk
 						},
 					},
-					Model: model,
+					Model: input.Model,
 					ExtraFields: schemas.BifrostResponseExtraFields{
 						Provider:   providerName,
 						ChunkIndex: chunkIndex,
@@ -825,8 +817,8 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				},
 			}
 
-			if params != nil {
-				response.ExtraFields.Params = *params
+			if input.Params != nil {
+				response.ExtraFields.Params = *input.Params
 			}
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 		}

@@ -93,13 +93,13 @@ func (provider *OpenRouterProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion performs a text completion request to the OpenRouter API.
-func (provider *OpenRouterProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	preparedParams := prepareParams(params)
+func (provider *OpenRouterProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	preparedParams := prepareParams(input.Params)
 
 	// Merge additional parameters
 	requestBody := mergeConfig(map[string]interface{}{
-		"model":  model,
-		"prompt": text,
+		"model":  input.Model,
+		"prompt": *input.Input.TextCompletionInput,
 	}, preparedParams)
 
 	jsonBody, err := sonic.Marshal(requestBody)
@@ -184,23 +184,17 @@ func (provider *OpenRouterProvider) TextCompletion(ctx context.Context, model st
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+	if input.Params != nil {
+		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
 }
 
 // ChatCompletion performs a chat completion request to the OpenRouter API.
-func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since OpenRouter is OpenAI-compatible
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.OpenRouter,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 
 	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
@@ -255,8 +249,8 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, model st
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		response.ExtraFields.Params = *params
+	if input.Params != nil {
+		response.ExtraFields.Params = *input.Params
 	}
 
 	return response, nil
@@ -266,15 +260,9 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, model st
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses OpenRouter's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since OpenRouter is OpenAI-compatible
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.OpenRouter,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 	openaiReq.Stream = schemas.Ptr(true)
 
 
@@ -295,28 +283,28 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		schemas.OpenRouter,
-		params,
+		input.Params,
 		postHookRunner,
 		provider.logger,
 	)
 }
 
-func (provider *OpenRouterProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "openrouter")
 }
 
-func (provider *OpenRouterProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "openrouter")
 }
 
-func (provider *OpenRouterProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "openrouter")
 }
 
-func (provider *OpenRouterProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "openrouter")
 }
 
-func (provider *OpenRouterProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "openrouter")
 }

@@ -312,7 +312,7 @@ func (provider *BedrockProvider) prepareTextCompletionParams(params map[string]i
 // TextCompletion performs a text completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *BedrockProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationTextCompletion); err != nil {
 		return nil, err
 	}
@@ -322,20 +322,20 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 	if key.BedrockKeyConfig == nil {
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
-
-	preparedParams := provider.prepareTextCompletionParams(prepareParams(params), model)
+	
+	preparedParams := provider.prepareTextCompletionParams(prepareParams(input.Params), input.Model)
 
 	requestBody := mergeConfig(map[string]interface{}{
-		"prompt": text,
+		"prompt": *input.Input.TextCompletionInput,
 	}, preparedParams)
 
-	path := provider.getModelPath("invoke", model, key)
+	path := provider.getModelPath("invoke", input.Model, key)
 	body, err := provider.completeRequest(ctx, requestBody, path, key)
 	if err != nil {
 		return nil, err
 	}
 
-	bifrostResponse, err := provider.getTextCompletionResult(body, model, providerName)
+	bifrostResponse, err := provider.getTextCompletionResult(body, input.Model, providerName)
 	if err != nil {
 		return nil, err
 	}
@@ -349,8 +349,8 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+	if input.Params != nil {
+		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
@@ -359,7 +359,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 // ChatCompletion performs a chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
 		return nil, err
 	}
@@ -370,15 +370,8 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.Bedrock,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-
 	// pool the request
-	bedrockReq, err := bedrock.ConvertBifrostRequestToBedrock(bifrostReq)
+	bedrockReq, err := bedrock.ConvertBifrostRequestToBedrock(input)
 	if err != nil {
 		return nil, newBifrostOperationError("failed to convert request", err, providerName)
 	}
@@ -388,7 +381,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	}
 
 	// Format the path with proper model identifier
-	path := provider.getModelPath("converse", model, key)
+	path := provider.getModelPath("converse", input.Model, key)
 
 	// Create the signed request
 	responseBody, bifrostErr := provider.completeRequest(ctx, bedrockReq, path, key)
@@ -406,7 +399,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	}
 
 	// Convert using the new response converter
-	bifrostResponse, err := bedrock.ConvertBedrockResponseToBifrost(bedrockResponse, model, providerName)
+	bifrostResponse, err := bedrock.ConvertBedrockResponseToBifrost(bedrockResponse, input.Model, providerName)
 	if err != nil {
 		return nil, newBifrostOperationError("failed to convert bedrock response", err, providerName)
 	}
@@ -419,8 +412,8 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		}
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+	if input.Params != nil {
+		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
@@ -502,22 +495,23 @@ func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey
 
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
 // Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *BedrockProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
+	embeddingInput := input.Input.EmbeddingInput
 
 	if key.BedrockKeyConfig == nil {
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
 
 	switch {
-	case strings.Contains(model, "amazon.titan-embed-text"):
-		return provider.handleTitanEmbedding(ctx, model, key, input, params, providerName)
-	case strings.Contains(model, "cohere.embed"):
-		return provider.handleCohereEmbedding(ctx, model, key, input, params, providerName)
+	case strings.Contains(input.Model, "amazon.titan-embed-text"):
+		return provider.handleTitanEmbedding(ctx, input.Model, key, embeddingInput, input.Params, providerName)
+	case strings.Contains(input.Model, "cohere.embed"):
+		return provider.handleCohereEmbedding(ctx, input.Model, key, embeddingInput, input.Params, providerName)
 	default:
 		return nil, newConfigurationError("embedding is not supported for this Bedrock model", providerName)
 	}
@@ -641,7 +635,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the streaming response.
 // Returns a channel for streaming BifrostResponse objects or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
 		return nil, err
 	}
@@ -652,21 +646,13 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	bifrostReq := &schemas.BifrostRequest{
-		Model: model,
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &messages,
-		},
-		Params: params,
-	}
-
-	bedrockReq, err := bedrock.ConvertBifrostRequestToBedrock(bifrostReq)
+	bedrockReq, err := bedrock.ConvertBifrostRequestToBedrock(input)
 	if err != nil {
 		return nil, newBifrostOperationError("failed to convert request", err, providerName)
 	}
 
 	// Format the path with proper model identifier for streaming
-	path := provider.getModelPath("converse-stream", model, key)
+	path := provider.getModelPath("converse-stream", input.Model, key)
 
 	region := "us-east-1"
 	if key.BedrockKeyConfig.Region != nil {
@@ -736,7 +722,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 				if err == io.EOF {
 					// Process any remaining data in the accumulator
 					if len(accumulator) > 0 {
-						_ = provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, model, providerName, responseChan)
+						_ = provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, input.Model, providerName, responseChan)
 					}
 					break
 				}
@@ -753,14 +739,14 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 			accumulator = append(accumulator, buffer[:n]...)
 
 			// Process the accumulated data and get the remaining unprocessed part
-			remaining := provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, model, providerName, responseChan)
+			remaining := provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, input.Model, providerName, responseChan)
 
 			// Reset accumulator with remaining data
 			accumulator = remaining
 		}
 
 		// Send final response
-		response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerName)
+		response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, input.Params, providerName)
 		handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 	}()
 
@@ -1017,19 +1003,19 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 	}
 }
 
-func (provider *BedrockProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "bedrock")
 }
 
-func (provider *BedrockProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "bedrock")
 }
 
-func (provider *BedrockProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "bedrock")
 }
 
-func (provider *BedrockProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "bedrock")
 }
 

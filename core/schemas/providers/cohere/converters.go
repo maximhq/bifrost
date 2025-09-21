@@ -311,60 +311,6 @@ func ConvertEmbeddingRequestToCohere(bifrostReq *schemas.BifrostRequest) *Cohere
 		if truncate, ok := bifrostReq.Params.ExtraParams["truncate"].(string); ok {
 			cohereReq.Truncate = &truncate
 		}
-
-		// Images (if provided)
-		if images, ok := bifrostReq.Params.ExtraParams["images"].([]interface{}); ok {
-			var imageStrs []string
-			for _, img := range images {
-				if imgStr, ok := img.(string); ok {
-					imageStrs = append(imageStrs, imgStr)
-				}
-			}
-			if len(imageStrs) > 0 {
-				cohereReq.Images = &imageStrs
-			}
-		}
-
-		// Mixed inputs (if provided)
-		if inputs, ok := bifrostReq.Params.ExtraParams["inputs"].([]interface{}); ok {
-			var cohereInputs []CohereEmbeddingInput
-			for _, input := range inputs {
-				if inputMap, ok := input.(map[string]interface{}); ok {
-					if content, ok := inputMap["content"].([]interface{}); ok {
-						var contentBlocks []CohereContentBlock
-						for _, block := range content {
-							if blockMap, ok := block.(map[string]interface{}); ok {
-								contentBlock := CohereContentBlock{}
-
-								if blockType, ok := blockMap["type"].(string); ok {
-									contentBlock.Type = blockType
-								}
-
-								if text, ok := blockMap["text"].(string); ok {
-									contentBlock.Text = &text
-								}
-
-								if imageURL, ok := blockMap["image_url"].(map[string]interface{}); ok {
-									if url, ok := imageURL["url"].(string); ok {
-										contentBlock.ImageURL = &CohereImageURL{URL: url}
-									}
-								}
-
-								contentBlocks = append(contentBlocks, contentBlock)
-							}
-						}
-						if len(contentBlocks) > 0 {
-							cohereInputs = append(cohereInputs, CohereEmbeddingInput{
-								Content: contentBlocks,
-							})
-						}
-					}
-				}
-			}
-			if len(cohereInputs) > 0 {
-				cohereReq.Inputs = &cohereInputs
-			}
-		}
 	}
 
 	return cohereReq

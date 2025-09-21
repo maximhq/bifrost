@@ -92,20 +92,14 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the SGL provider.
-func (provider *SGLProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "sgl")
 }
 
 // ChatCompletion performs a chat completion request to the SGL API.
-func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since SGL is OpenAI-compatible
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.SGL,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 
 	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
@@ -171,15 +165,15 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, model string, k
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		response.ExtraFields.Params = *params
+	if input.Params != nil {
+		response.ExtraFields.Params = *input.Params
 	}
 
 	return response, nil
 }
 
 // Embedding is not supported by the SGL provider.
-func (provider *SGLProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "sgl")
 }
 
@@ -187,15 +181,9 @@ func (provider *SGLProvider) Embedding(ctx context.Context, model string, key sc
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses SGL's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since SGL is OpenAI-compatible
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.SGL,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 	openaiReq.Stream = schemas.Ptr(true)
 
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
@@ -219,24 +207,24 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		schemas.SGL,
-		params,
+		input.Params,
 		postHookRunner,
 		provider.logger,
 	)
 }
 
-func (provider *SGLProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "sgl")
 }
 
-func (provider *SGLProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *SGLProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "sgl")
 }
 
-func (provider *SGLProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *SGLProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "sgl")
 }
 
-func (provider *SGLProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *SGLProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "sgl")
 }
