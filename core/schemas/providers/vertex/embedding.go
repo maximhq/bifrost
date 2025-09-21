@@ -1,0 +1,127 @@
+package vertex
+
+import (
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+// ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI format
+func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *VertexEmbeddingRequest {
+	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
+		return nil
+	}
+
+	embeddingInput := bifrostReq.Input.EmbeddingInput
+	texts := embeddingInput.Texts
+
+	// Handle single text input
+	if len(texts) == 0 && embeddingInput.Text != nil {
+		texts = []string{*embeddingInput.Text}
+	}
+
+	if len(texts) == 0 {
+		return nil
+	}
+
+	// Create instances for each text
+	instances := make([]VertexEmbeddingInstance, 0, len(texts))
+	for _, text := range texts {
+		instance := VertexEmbeddingInstance{
+			Content: text,
+		}
+
+		// Add optional task_type and title from params
+		if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+			if taskTypeStr, exists := bifrostReq.Params.ExtraParams["task_type"].(string); exists {
+				instance.TaskType = &taskTypeStr
+			}
+			if title, exists := bifrostReq.Params.ExtraParams["title"].(string); exists {
+				instance.Title = &title
+			}
+		}
+
+		instances = append(instances, instance)
+	}
+
+	// Create the request
+	vertexReq := &VertexEmbeddingRequest{
+		Instances: instances,
+	}
+
+	// Add parameters if present
+	if bifrostReq.Params != nil {
+		parameters := &VertexEmbeddingParameters{}
+
+		// Set autoTruncate (defaults to true)
+		autoTruncate := true
+		if bifrostReq.Params.ExtraParams != nil {
+			if autoTruncateVal, exists := bifrostReq.Params.ExtraParams["autoTruncate"].(bool); exists {
+				autoTruncate = autoTruncateVal
+			}
+		}
+		parameters.AutoTruncate = &autoTruncate
+
+		// Add outputDimensionality if specified
+		if bifrostReq.Params.Dimensions != nil {
+			parameters.OutputDimensionality = bifrostReq.Params.Dimensions
+		}
+
+		vertexReq.Parameters = parameters
+	}
+
+	return vertexReq
+}
+
+// ToBifrostResponse converts a Vertex AI embedding response to Bifrost format
+func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostResponse {
+	if vertexResp == nil || len(vertexResp.Predictions) == 0 {
+		return nil
+	}
+
+	// Convert predictions to Bifrost embeddings
+	embeddings := make([]schemas.BifrostEmbedding, 0, len(vertexResp.Predictions))
+	var usage *schemas.LLMUsage
+
+	for i, prediction := range vertexResp.Predictions {
+		if prediction.Embeddings == nil || len(prediction.Embeddings.Values) == 0 {
+			continue
+		}
+
+		// Convert float64 values to float32 for Bifrost format
+		embeddingFloat32 := make([]float32, 0, len(prediction.Embeddings.Values))
+		for _, v := range prediction.Embeddings.Values {
+			embeddingFloat32 = append(embeddingFloat32, float32(v))
+		}
+
+		// Create embedding object
+		embedding := schemas.BifrostEmbedding{
+			Object: "embedding",
+			Embedding: schemas.BifrostEmbeddingResponse{
+				EmbeddingArray: &embeddingFloat32,
+			},
+			Index: i,
+		}
+
+		// Extract statistics if available
+		if prediction.Embeddings.Statistics != nil {
+			if usage == nil {
+				usage = &schemas.LLMUsage{}
+			}
+			usage.TotalTokens += prediction.Embeddings.Statistics.TokenCount
+			usage.PromptTokens += prediction.Embeddings.Statistics.TokenCount
+		}
+
+		embeddings = append(embeddings, embedding)
+	}
+
+	// Create final response
+	response := &schemas.BifrostResponse{
+		Object: "list",
+		Data:   embeddings,
+		Usage:  usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Vertex,
+		},
+	}
+
+	return response
+}
