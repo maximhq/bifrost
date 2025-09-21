@@ -20,6 +20,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
+	"github.com/maximhq/bifrost/core/schemas/providers/vertex"
 )
 
 type VertexError struct {
@@ -132,14 +133,14 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the Vertex provider.
 // Returns an error indicating that text completion is not available.
-func (provider *VertexProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *VertexProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "vertex")
 }
 
 // ChatCompletion performs a chat completion request to the Vertex API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
 		return nil, newConfigurationError("vertex key config is not set", schemas.Vertex)
 	}
@@ -147,31 +148,24 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 	// Format messages for Vertex API
 
 	var requestBody map[string]interface{}
-	bifrostReq := &schemas.BifrostRequest{
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
 
-	if strings.Contains(model, "claude") {
+	if strings.Contains(input.Model, "claude") {
 		// Use centralized Anthropic converter
-		bifrostReq.Provider = schemas.Anthropic
-		anthropicReq := anthropic.ConvertChatRequestToAnthropic(bifrostReq)
+		anthropicReq := anthropic.ToAnthropicChatCompletionRequest(input)
 
 		// Convert struct to map for Vertex API
 		reqBytes, _ := sonic.Marshal(reqBody)
 		sonic.Unmarshal(reqBytes, &requestBody)
 	} else {
 		// Use centralized OpenAI converter for non-Claude models
-		bifrostReq.Provider = schemas.OpenAI
-		openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+		openaiReq := openai.ToOpenAIChatCompletionRequest(input)
 
 		// Convert struct to map for Vertex API
 		reqBytes, _ := sonic.Marshal(reqBody)
 		sonic.Unmarshal(reqBytes, &requestBody)
 	}
 
-	if strings.Contains(model, "claude") {
+	if strings.Contains(input.Model, "claude") {
 		if _, exists := requestBody["anthropic_version"]; !exists {
 			requestBody["anthropic_version"] = "vertex-2023-10-16"
 		}
@@ -198,8 +192,8 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 
 	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
 
-	if strings.Contains(model, "claude") {
-		url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, model)
+	if strings.Contains(input.Model, "claude") {
+		url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, input.Model)
 	}
 
 	// Create request
@@ -275,7 +269,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		return nil, newProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode, schemas.Vertex, nil, nil)
 	}
 
-	if strings.Contains(model, "claude") {
+	if strings.Contains(input.Model, "claude") {
 		// Create response object from pool
 		response := acquireAnthropicChatResponse()
 		defer releaseAnthropicChatResponse(response)
@@ -286,12 +280,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 		}
 
 		// Create final response
-		bifrostResponse := &schemas.BifrostResponse{}
-		var err *schemas.BifrostError
-		bifrostResponse, err = parseAnthropicResponse(response, bifrostResponse)
-		if err != nil {
-			return nil, err
-		}
+		bifrostResponse := response.ToBifrostResponse()
 
 		bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 			Provider: schemas.Vertex,
@@ -301,8 +290,8 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 			bifrostResponse.ExtraFields.RawResponse = rawResponse
 		}
 
-		if params != nil {
-			bifrostResponse.ExtraFields.Params = *params
+		if input.Params != nil {
+			bifrostResponse.ExtraFields.Params = *input.Params
 		}
 
 		return bifrostResponse, nil
@@ -324,8 +313,8 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 			response.ExtraFields.RawResponse = rawResponse
 		}
 
-		if params != nil {
-			response.ExtraFields.Params = *params
+		if input.Params != nil {
+			response.ExtraFields.Params = *input.Params
 		}
 
 		return response, nil
@@ -335,7 +324,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, model string
 // Embedding generates embeddings for the given input text(s) using Vertex AI.
 // All Vertex AI embedding models use the same response format regardless of the model type.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *VertexProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
 		return nil, newConfigurationError("vertex key config is not set", schemas.Vertex)
 	}
@@ -351,80 +340,22 @@ func (provider *VertexProvider) Embedding(ctx context.Context, model string, key
 	}
 
 	// Validate input
-	if input.Text == nil && len(input.Texts) == 0 {
+	if input.Input.EmbeddingInput == nil || len(input.Input.EmbeddingInput.Texts) == 0 {
 		return nil, newConfigurationError("embedding input texts are empty", schemas.Vertex)
 	}
 
+	// Use centralized Vertex converter
+	reqBody := vertex.ToVertexEmbeddingRequest(input)
+
 	// All Vertex AI embedding models use the same native Vertex embedding API
-	return provider.handleVertexEmbedding(ctx, model, key, input, params)
+	return provider.handleVertexEmbedding(ctx, input.Model, key, reqBody, input.Params)
 }
 
 // handleVertexEmbedding handles embedding requests using Vertex's native embedding API
 // This is used for all Vertex AI embedding models as they all use the same response format
-func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Prepare request body for Vertex's native embedding API
-	texts := input.Texts
-
-	if len(texts) == 0 && input.Text != nil {
-		texts = []string{*input.Text}
-	}
-
-	instances := make([]map[string]interface{}, 0, len(texts))
-	requestBody := map[string]interface{}{
-		"instances": instances,
-	}
-
-	// Add text instances
-	for _, text := range texts {
-		instance := map[string]interface{}{
-			"content": text,
-		}
-
-		// Add optional task_type if specified in params
-		if params != nil && params.ExtraParams != nil {
-			if taskType, exists := params.ExtraParams["task_type"]; exists {
-				instance["task_type"] = taskType
-			}
-			if title, exists := params.ExtraParams["title"]; exists {
-				instance["title"] = title
-			}
-		}
-
-		requestBody["instances"] = append(requestBody["instances"].([]map[string]interface{}), instance)
-	}
-
-	// Add parameters
-	parameters := make(map[string]interface{})
-
-	// Set autoTruncate (defaults to true)
-	autoTruncate := true
-	if params != nil && params.ExtraParams != nil {
-		if autoTruncateVal, exists := params.ExtraParams["autoTruncate"]; exists {
-			if autoTruncateBool, ok := autoTruncateVal.(bool); ok {
-				autoTruncate = autoTruncateBool
-			}
-		}
-	}
-	parameters["autoTruncate"] = autoTruncate
-
-	// Add outputDimensionality if specified
-	if params != nil && params.Dimensions != nil {
-		parameters["outputDimensionality"] = *params.Dimensions
-	}
-
-	// Add any other extra parameters
-	if params != nil && params.ExtraParams != nil {
-		for k, v := range params.ExtraParams {
-			// Skip parameters we've already handled
-			if k != "task_type" && k != "title" && k != "autoTruncate" && k != "outputDimensionality" {
-				parameters[k] = v
-			}
-		}
-	}
-
-	requestBody["parameters"] = parameters
-
-	jsonBody, err := sonic.Marshal(requestBody)
+func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model string, key schemas.Key, vertexReq *vertex.VertexEmbeddingRequest, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Use the typed request directly
+	jsonBody, err := sonic.Marshal(vertexReq)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Vertex)
 	}
@@ -503,126 +434,31 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 		return nil, newProviderAPIError(errorMessage, nil, resp.StatusCode, schemas.Vertex, nil, nil)
 	}
 
-	// Parse Vertex's native embedding response
-	var vertexResponse map[string]interface{}
+	// Parse Vertex's native embedding response using typed response
+	var vertexResponse vertex.VertexEmbeddingResponse
 	if err := sonic.Unmarshal(body, &vertexResponse); err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
 	}
 
-	// Convert Vertex's response format to Bifrost format
-	bifrostResponse, bifrostErr := provider.convertVertexEmbeddingResponse(vertexResponse, model, params)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
+	// Use centralized Vertex converter
+	bifrostResponse := vertexResponse.ToBifrostResponse()
 
-	// Set provider and raw response
-	bifrostResponse.ExtraFields.Provider = schemas.Vertex
+	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = vertexResponse
+		// Convert back to map for raw response
+		rawResponseBytes, _ := sonic.Marshal(&vertexResponse)
+		var rawResponseMap map[string]interface{}
+		sonic.Unmarshal(rawResponseBytes, &rawResponseMap)
+		bifrostResponse.ExtraFields.RawResponse = rawResponseMap
 	}
 
 	return bifrostResponse, nil
 }
 
-// convertVertexEmbeddingResponse converts Vertex's native embedding response to Bifrost format
-func (provider *VertexProvider) convertVertexEmbeddingResponse(vertexResponse map[string]interface{}, model string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Extract predictions from Vertex's response
-	predictions, exists := vertexResponse["predictions"]
-	if !exists {
-		return nil, newBifrostOperationError("missing predictions in response", fmt.Errorf("no predictions field"), schemas.Vertex)
-	}
-
-	predictionsArray, ok := predictions.([]interface{})
-	if !ok {
-		return nil, newBifrostOperationError("invalid predictions format", fmt.Errorf("predictions is not an array"), schemas.Vertex)
-	}
-
-	// Convert to Bifrost embedding format
-	var embeddings []schemas.BifrostEmbedding
-	var usage *schemas.LLMUsage
-
-	for i, pred := range predictionsArray {
-		predMap, ok := pred.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		embeddingsObj, exists := predMap["embeddings"]
-		if !exists {
-			continue
-		}
-
-		embMap, ok := embeddingsObj.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Extract values
-		values, exists := embMap["values"]
-		if !exists {
-			continue
-		}
-
-		valuesArray, ok := values.([]interface{})
-		if !ok {
-			continue
-		}
-
-		// Convert to float32 in a single pass
-		embeddingFloat32 := make([]float32, 0, len(valuesArray))
-		for _, v := range valuesArray {
-			if f64, ok := v.(float64); ok {
-				embeddingFloat32 = append(embeddingFloat32, float32(f64))
-			}
-		}
-
-		// Create embedding object
-		embedding := schemas.BifrostEmbedding{
-			Object: "embedding",
-			Embedding: schemas.BifrostEmbeddingResponse{
-				EmbeddingArray: &embeddingFloat32,
-			},
-			Index: i,
-		}
-
-		// Extract statistics if available
-		if stats, exists := embMap["statistics"]; exists {
-			if statsMap, ok := stats.(map[string]interface{}); ok {
-				if tokenCount, exists := statsMap["token_count"]; exists {
-					if count, ok := tokenCount.(float64); ok {
-						if usage == nil {
-							usage = &schemas.LLMUsage{}
-						}
-						usage.TotalTokens += int(count)
-						usage.PromptTokens += int(count)
-					}
-				}
-			}
-		}
-
-		embeddings = append(embeddings, embedding)
-	}
-
-	// Create final response
-	response := &schemas.BifrostResponse{
-		Object:      "list",
-		Model:       model,
-		Data:        embeddings,
-		Usage:       usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{},
-	}
-
-	if params != nil {
-		response.ExtraFields.Params = *params
-	}
-
-	return response, nil
-}
-
 // ChatCompletionStream performs a streaming chat completion request to the Vertex API.
 // It supports both OpenAI-style streaming (for non-Claude models) and Anthropic-style streaming (for Claude models).
 // Returns a channel of BifrostResponse objects for streaming results or an error if the request fails.
-func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
 		return nil, newConfigurationError("vertex key config is not set", schemas.Vertex)
 	}
@@ -644,16 +480,9 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		return nil, newBifrostOperationError("error creating auth client", err, schemas.Vertex)
 	}
 
-	bifrostReq := &schemas.BifrostRequest{
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-
-	if strings.Contains(model, "claude") {
-		bifrostReq.Provider = schemas.Anthropic
+	if strings.Contains(input.Model, "claude") {
 		// Use Anthropic-style streaming for Claude models
-		anthropicReq := anthropic.ConvertChatRequestToAnthropic(bifrostReq)
+		anthropicReq := anthropic.ToAnthropicChatCompletionRequest(input)
 		anthropicReq.Stream = schemas.Ptr(true)
 
 		// Convert struct to map for Vertex API
@@ -668,7 +497,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		delete(requestBody, "model")
 		delete(requestBody, "region")
 
-		url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, model)
+		url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, input.Model)
 
 		// Prepare headers for Vertex Anthropic
 		headers := map[string]string{
@@ -686,14 +515,13 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			schemas.Vertex,
-			params,
+			input.Params,
 			postHookRunner,
 			provider.logger,
 		)
 	} else {
 		// Use OpenAI-style streaming for non-Claude models
-		bifrostReq.Provider = schemas.OpenAI
-		openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+		openaiReq := openai.ToOpenAIChatCompletionRequest(input)
 		openaiReq.Stream = schemas.Ptr(true)
 
 		// Convert struct to map for Vertex API
@@ -721,25 +549,25 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			schemas.Vertex,
-			params,
+			input.Params,
 			postHookRunner,
 			provider.logger,
 		)
 	}
 }
 
-func (provider *VertexProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *VertexProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "vertex")
 }
 
-func (provider *VertexProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *VertexProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "vertex")
 }
 
-func (provider *VertexProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *VertexProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "vertex")
 }
 
-func (provider *VertexProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *VertexProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "vertex")
 }
