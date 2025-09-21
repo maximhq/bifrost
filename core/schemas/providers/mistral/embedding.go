@@ -4,14 +4,19 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func ConvertEmbeddingRequestToMistral(bifrostReq *schemas.BifrostRequest) *MistralEmbeddingRequest {
+func ToMistralEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *MistralEmbeddingRequest {
 	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
 		return nil
 	}
 
+	texts := bifrostReq.Input.EmbeddingInput.Texts
+	if len(texts) == 0 && bifrostReq.Input.EmbeddingInput.Text != nil {
+		texts = []string{*bifrostReq.Input.EmbeddingInput.Text}
+	}
+
 	mistralReq := &MistralEmbeddingRequest{
 		Model: bifrostReq.Model,
-		Input: bifrostReq.Input.EmbeddingInput.Texts,
+		Input: texts,
 	}
 
 	// Map parameters
