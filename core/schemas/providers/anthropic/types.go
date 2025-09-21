@@ -7,6 +7,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// Since Anthropic always needs to have a max_tokens parameter, we set a default value if not provided.
+const (
+	AnthropicDefaultMaxTokens = 4096
+)
+
 // ==================== REQUEST TYPES ====================
 
 // AnthropicTextRequest represents an Anthropic text completion request
