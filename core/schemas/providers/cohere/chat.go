@@ -1,11 +1,9 @@
 package cohere
 
-import (
-	"github.com/maximhq/bifrost/core/schemas"
-)
+import "github.com/maximhq/bifrost/core/schemas"
 
 // ConvertChatRequestToCohere converts a Bifrost request to Cohere v2 format
-func ConvertChatRequestToCohere(bifrostReq *schemas.BifrostRequest) *CohereChatRequest {
+func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostRequest) *CohereChatRequest {
 	if bifrostReq == nil || bifrostReq.Input.ChatCompletionInput == nil {
 		return nil
 	}
@@ -150,8 +148,8 @@ func ConvertChatRequestToCohere(bifrostReq *schemas.BifrostRequest) *CohereChatR
 	return cohereReq
 }
 
-// ConvertChatResponseToBifrost converts a Cohere v2 response to Bifrost format
-func ConvertChatResponseToBifrost(cohereResp *CohereChatResponse) *schemas.BifrostResponse {
+// ToBifrostResponse converts a Cohere v2 response to Bifrost format
+func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	if cohereResp == nil {
 		return nil
 	}
@@ -168,6 +166,9 @@ func ConvertChatResponseToBifrost(cohereResp *CohereChatResponse) *schemas.Bifro
 					},
 				},
 			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Cohere,
 		},
 	}
 
@@ -256,188 +257,6 @@ func ConvertChatResponseToBifrost(cohereResp *CohereChatResponse) *schemas.Bifro
 			}
 			if cohereResp.Usage.BilledUnits.OutputTokens != nil {
 				bifrostResponse.ExtraFields.BilledUsage.CompletionTokens = cohereResp.Usage.BilledUnits.OutputTokens
-			}
-		}
-	}
-
-	return bifrostResponse
-}
-
-// ConvertEmbeddingRequestToCohere converts a Bifrost embedding request to Cohere format
-func ConvertEmbeddingRequestToCohere(bifrostReq *schemas.BifrostRequest) *CohereEmbeddingRequest {
-	if bifrostReq == nil || bifrostReq.Input.EmbeddingInput == nil {
-		return nil
-	}
-
-	embeddingInput := bifrostReq.Input.EmbeddingInput
-	cohereReq := &CohereEmbeddingRequest{
-		Model: bifrostReq.Model,
-	}
-
-	// Convert texts from Bifrost format
-	if len(embeddingInput.Texts) > 0 {
-		cohereReq.Texts = &embeddingInput.Texts
-	}
-
-	// Set default input type if not specified in extra params
-	cohereReq.InputType = "search_document" // Default value
-
-	if bifrostReq.Params != nil {
-		cohereReq.OutputDimension = bifrostReq.Params.Dimensions
-		cohereReq.MaxTokens = bifrostReq.Params.MaxTokens
-	}
-
-	// Handle extra params
-	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
-		// Input type
-		if inputType, ok := bifrostReq.Params.ExtraParams["input_type"].(string); ok {
-			cohereReq.InputType = inputType
-		}
-
-		// Embedding types
-		if embeddingTypes, ok := bifrostReq.Params.ExtraParams["embedding_types"].([]interface{}); ok {
-			var types []string
-			for _, t := range embeddingTypes {
-				if typeStr, ok := t.(string); ok {
-					types = append(types, typeStr)
-				}
-			}
-			if len(types) > 0 {
-				cohereReq.EmbeddingTypes = &types
-			}
-		}
-
-		// Truncate
-		if truncate, ok := bifrostReq.Params.ExtraParams["truncate"].(string); ok {
-			cohereReq.Truncate = &truncate
-		}
-
-		// Images (if provided)
-		if images, ok := bifrostReq.Params.ExtraParams["images"].([]interface{}); ok {
-			var imageStrs []string
-			for _, img := range images {
-				if imgStr, ok := img.(string); ok {
-					imageStrs = append(imageStrs, imgStr)
-				}
-			}
-			if len(imageStrs) > 0 {
-				cohereReq.Images = &imageStrs
-			}
-		}
-
-		// Mixed inputs (if provided)
-		if inputs, ok := bifrostReq.Params.ExtraParams["inputs"].([]interface{}); ok {
-			var cohereInputs []CohereEmbeddingInput
-			for _, input := range inputs {
-				if inputMap, ok := input.(map[string]interface{}); ok {
-					if content, ok := inputMap["content"].([]interface{}); ok {
-						var contentBlocks []CohereContentBlock
-						for _, block := range content {
-							if blockMap, ok := block.(map[string]interface{}); ok {
-								contentBlock := CohereContentBlock{}
-
-								if blockType, ok := blockMap["type"].(string); ok {
-									contentBlock.Type = blockType
-								}
-
-								if text, ok := blockMap["text"].(string); ok {
-									contentBlock.Text = &text
-								}
-
-								if imageURL, ok := blockMap["image_url"].(map[string]interface{}); ok {
-									if url, ok := imageURL["url"].(string); ok {
-										contentBlock.ImageURL = &CohereImageURL{URL: url}
-									}
-								}
-
-								contentBlocks = append(contentBlocks, contentBlock)
-							}
-						}
-						if len(contentBlocks) > 0 {
-							cohereInputs = append(cohereInputs, CohereEmbeddingInput{
-								Content: contentBlocks,
-							})
-						}
-					}
-				}
-			}
-			if len(cohereInputs) > 0 {
-				cohereReq.Inputs = &cohereInputs
-			}
-		}
-	}
-
-	return cohereReq
-}
-
-// ConvertEmbeddingResponseToBifrost converts a Cohere embedding response to Bifrost format
-func ConvertEmbeddingResponseToBifrost(cohereResp *CohereEmbeddingResponse) *schemas.BifrostResponse {
-	if cohereResp == nil {
-		return nil
-	}
-
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:     cohereResp.ID,
-		Object: "list",
-	}
-
-	// Convert embeddings data
-	if cohereResp.Embeddings != nil {
-		var bifrostEmbeddings []schemas.BifrostEmbedding
-
-		// Handle different embedding types - prioritize float embeddings
-		if cohereResp.Embeddings.Float != nil {
-			for i, embedding := range *cohereResp.Embeddings.Float {
-				bifrostEmbedding := schemas.BifrostEmbedding{
-					Object: "embedding",
-					Index:  i,
-					Embedding: schemas.BifrostEmbeddingResponse{
-						EmbeddingArray: &embedding,
-					},
-				}
-				bifrostEmbeddings = append(bifrostEmbeddings, bifrostEmbedding)
-			}
-		} else if cohereResp.Embeddings.Base64 != nil {
-			// Handle base64 embeddings as strings
-			for i, embedding := range *cohereResp.Embeddings.Base64 {
-				bifrostEmbedding := schemas.BifrostEmbedding{
-					Object: "embedding",
-					Index:  i,
-					Embedding: schemas.BifrostEmbeddingResponse{
-						EmbeddingStr: &embedding,
-					},
-				}
-				bifrostEmbeddings = append(bifrostEmbeddings, bifrostEmbedding)
-			}
-		}
-		// Note: Int8, Uint8, Binary, Ubinary types would need special handling
-		// depending on how Bifrost wants to represent them
-
-		bifrostResponse.Data = bifrostEmbeddings
-	}
-
-	// Convert usage information
-	if cohereResp.Meta != nil {
-		if cohereResp.Meta.Tokens != nil {
-			usage := &schemas.LLMUsage{}
-			if cohereResp.Meta.Tokens.InputTokens != nil {
-				usage.PromptTokens = int(*cohereResp.Meta.Tokens.InputTokens)
-			}
-			if cohereResp.Meta.Tokens.OutputTokens != nil {
-				usage.CompletionTokens = int(*cohereResp.Meta.Tokens.OutputTokens)
-			}
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-			bifrostResponse.Usage = usage
-		}
-
-		// Convert billed usage
-		if cohereResp.Meta.BilledUnits != nil {
-			bifrostResponse.ExtraFields.BilledUsage = &schemas.BilledLLMUsage{}
-			if cohereResp.Meta.BilledUnits.InputTokens != nil {
-				bifrostResponse.ExtraFields.BilledUsage.PromptTokens = cohereResp.Meta.BilledUnits.InputTokens
-			}
-			if cohereResp.Meta.BilledUnits.OutputTokens != nil {
-				bifrostResponse.ExtraFields.BilledUsage.CompletionTokens = cohereResp.Meta.BilledUnits.OutputTokens
 			}
 		}
 	}

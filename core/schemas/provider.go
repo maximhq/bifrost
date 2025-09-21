@@ -203,19 +203,19 @@ type Provider interface {
 	// GetProviderKey returns the provider's identifier
 	GetProviderKey() ModelProvider
 	// TextCompletion performs a text completion request
-	TextCompletion(ctx context.Context, model string, key Key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	TextCompletion(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
 	// ChatCompletion performs a chat completion request
-	ChatCompletion(ctx context.Context, model string, key Key, messages []BifrostMessage, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	ChatCompletion(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
-	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, messages []BifrostMessage, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, input *BifrostRequest) (chan *BifrostStream, *BifrostError)
 	// Embedding performs an embedding request
-	Embedding(ctx context.Context, model string, key Key, input *EmbeddingInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	Embedding(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
 	// Speech performs a text to speech request
-	Speech(ctx context.Context, model string, key Key, input *SpeechInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	Speech(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
-	SpeechStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, input *SpeechInput, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	SpeechStream(ctx context.Context, postHookRunner PostHookRunner, key Key, input *BifrostRequest) (chan *BifrostStream, *BifrostError)
 	// Transcription performs a transcription request
-	Transcription(ctx context.Context, model string, key Key, input *TranscriptionInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	Transcription(ctx context.Context, key Key, input *BifrostRequest) (*BifrostResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
-	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, input *TranscriptionInput, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, input *BifrostRequest) (chan *BifrostStream, *BifrostError)
 }

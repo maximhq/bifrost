@@ -7,8 +7,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ConvertBifrostRequestToBedrock converts a Bifrost request to Bedrock Converse API format
-func ConvertBifrostRequestToBedrock(bifrostReq *schemas.BifrostRequest) (*BedrockConverseRequest, error) {
+// ToBedrockChatCompletionRequest converts a Bifrost request to Bedrock Converse API format
+func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostRequest) (*BedrockConverseRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
@@ -30,7 +30,7 @@ func ConvertBifrostRequestToBedrock(bifrostReq *schemas.BifrostRequest) (*Bedroc
 	if len(systemMessages) > 0 {
 		bedrockReq.System = &systemMessages
 	}
-	
+
 	// Convert parameters and configurations
 	convertParameters(bifrostReq, bedrockReq)
 
@@ -40,8 +40,8 @@ func ConvertBifrostRequestToBedrock(bifrostReq *schemas.BifrostRequest) (*Bedroc
 	return bedrockReq, nil
 }
 
-// ConvertBedrockResponseToBifrost converts a Bedrock Converse API response to Bifrost format
-func ConvertBedrockResponseToBifrost(bedrockResp *BedrockConverseResponse, model string, providerName schemas.ModelProvider) (*schemas.BifrostResponse, error) {
+// ToBifrostResponse converts a Bedrock Converse API response to Bifrost format
+func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.BifrostResponse, error) {
 	if bedrockResp == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
@@ -129,10 +129,9 @@ func ConvertBedrockResponseToBifrost(bedrockResp *BedrockConverseResponse, model
 	bifrostResponse := &schemas.BifrostResponse{
 		Choices: choices,
 		Usage:   usage,
-		Model:   model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:  &latency,
-			Provider: providerName,
+			Provider: schemas.Bedrock,
 		},
 	}
 
