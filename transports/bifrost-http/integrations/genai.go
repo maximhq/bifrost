@@ -1,4 +1,4 @@
-package genai
+package integrations
 
 import (
 	"errors"
@@ -7,45 +7,45 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/core/schemas/providers/gemini"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
-	*integrations.GenericRouter
+	*GenericRouter
 }
 
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
-func CreateGenAIRouteConfigs(pathPrefix string) []integrations.RouteConfig {
-	var routes []integrations.RouteConfig
+func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
+	var routes []RouteConfig
 
 	// Chat completions endpoint
-	routes = append(routes, integrations.RouteConfig{
+	routes = append(routes, RouteConfig{
 		Path:   pathPrefix + "/v1beta/models/{model:*}",
 		Method: "POST",
 		GetRequestTypeInstance: func() interface{} {
-			return &GeminiChatRequest{}
+			return &gemini.GeminiGenerationRequest{}
 		},
 		RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-			if geminiReq, ok := req.(*GeminiChatRequest); ok {
-				return geminiReq.ConvertToBifrostRequest(), nil
+			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
+				return geminiReq.ToBifrostRequest(), nil
 			}
 			return nil, errors.New("invalid request type")
 		},
 		ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-			return DeriveGenAIFromBifrostResponse(resp), nil
+			return gemini.ToGeminiGenerationResponse(resp), nil
 		},
 		ErrorConverter: func(err *schemas.BifrostError) interface{} {
-			return DeriveGeminiErrorFromBifrostError(err)
+			return gemini.ToGeminiError(err)
 		},
-		StreamConfig: &integrations.StreamConfig{
+		StreamConfig: &StreamConfig{
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return DeriveGeminiStreamFromBifrostResponse(resp), nil
+				return gemini.ToGeminiGenerationResponse(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveGeminiStreamFromBifrostError(err)
+				return gemini.ToGeminiError(err)
 			},
 		},
 		PreCallback: extractAndSetModelFromURL,
@@ -57,7 +57,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []integrations.RouteConfig {
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.
 func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *GenAIRouter {
 	return &GenAIRouter{
-		GenericRouter: integrations.NewGenericRouter(client, handlerStore, CreateGenAIRouteConfigs("/genai")),
+		GenericRouter: NewGenericRouter(client, handlerStore, CreateGenAIRouteConfigs("/genai")),
 	}
 }
 
@@ -106,7 +106,7 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, req interface{}) error 
 	}
 
 	// Set the model and flags in the request
-	if geminiReq, ok := req.(*GeminiChatRequest); ok {
+	if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 		geminiReq.Model = modelStr
 		geminiReq.Stream = isStreaming
 		geminiReq.IsEmbedding = isEmbedding

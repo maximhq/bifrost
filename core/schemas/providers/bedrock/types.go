@@ -2,6 +2,26 @@ package bedrock
 
 // ==================== REQUEST TYPES ====================
 
+// BedrockTextCompletionRequest represents a Bedrock text completion request
+// Combines both Anthropic-style and standard completion parameters
+type BedrockTextCompletionRequest struct {
+	// Required field
+	Prompt string `json:"prompt"` // The text prompt to complete
+
+	// Token control parameters (both naming conventions supported)
+	MaxTokens         *int `json:"max_tokens,omitempty"`           // Maximum number of tokens to generate (standard format)
+	MaxTokensToSample *int `json:"max_tokens_to_sample,omitempty"` // Maximum number of tokens to generate (Anthropic format)
+
+	// Sampling parameters
+	Temperature *float64 `json:"temperature,omitempty"` // Controls randomness in generation (0.0-1.0)
+	TopP        *float64 `json:"top_p,omitempty"`       // Nucleus sampling parameter (0.0-1.0)
+	TopK        *int     `json:"top_k,omitempty"`       // Top-k sampling parameter
+
+	// Stop sequences (both naming conventions supported)
+	Stop          *[]string `json:"stop,omitempty"`           // Stop sequences (standard format)
+	StopSequences *[]string `json:"stop_sequences,omitempty"` // Stop sequences (Anthropic format)
+}
+
 // BedrockConverseRequest represents a Bedrock Converse API request
 type BedrockConverseRequest struct {
 	ModelID                           string                            `json:"-"`                                           // Model ID (sent in URL path, not body)
@@ -191,6 +211,23 @@ type BedrockPromptVariable struct {
 
 // ==================== RESPONSE TYPES ====================
 
+// BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.
+// It includes the completion text and stop reason information.
+type BedrockAnthropicTextResponse struct {
+	Completion string `json:"completion"`  // Generated completion text
+	StopReason string `json:"stop_reason"` // Reason for completion termination
+	Stop       string `json:"stop"`        // Stop sequence that caused completion to stop
+}
+
+// BedrockMistralTextResponse represents the response structure from Bedrock's Mistral text completion API.
+// It includes multiple output choices with their text and stop reasons.
+type BedrockMistralTextResponse struct {
+	Outputs []struct {
+		Text       string `json:"text"`        // Generated text
+		StopReason string `json:"stop_reason"` // Reason for completion termination
+	} `json:"outputs"` // Array of output choices
+}
+
 // BedrockConverseResponse represents a Bedrock Converse API response
 type BedrockConverseResponse struct {
 	Output                        BedrockConverseOutput     `json:"output"`                                  // Required: Response output
@@ -334,8 +371,6 @@ type BedrockStreamEvent struct {
 
 	// Start field for tool use events
 	Start *BedrockContentBlockStart `json:"start,omitempty"` // For contentBlockStart events
-	
-
 
 	// Metadata and usage (can appear at top level)
 	Usage   *BedrockTokenUsage      `json:"usage,omitempty"`   // Usage information

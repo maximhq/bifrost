@@ -316,7 +316,7 @@ type ModelParameters struct {
 	TopLogProbs         *int                    `json:"top_logprobs,omitempty"`
 	ResponseFormat      interface{}             `json:"response_format,omitempty"`
 	Seed                *int                    `json:"seed,omitempty"`
-	LogitBias           map[string]float64       `json:"logit_bias,omitempty"`
+	LogitBias           map[string]float64      `json:"logit_bias,omitempty"`
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -623,9 +623,10 @@ type TextCompletionLogProb struct {
 
 // LogProbs represents the log probabilities for different aspects of a response.
 type LogProbs struct {
-	Content []ContentLogProb      `json:"content,omitempty"`
-	Refusal []LogProb             `json:"refusal,omitempty"`
-	Text    TextCompletionLogProb `json:"text,omitempty"`
+	Content []ContentLogProb `json:"content,omitempty"`
+	Refusal []LogProb        `json:"refusal,omitempty"`
+
+	*TextCompletionLogProb
 }
 
 // FunctionCall represents a call to a function.
@@ -712,18 +713,24 @@ func (be *BifrostEmbeddingResponse) UnmarshalJSON(data []byte) error {
 // IMPORTANT: Only one of BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
-	Index        int     `json:"index"`
-	FinishReason *string `json:"finish_reason,omitempty"`
+	Index        int       `json:"index"`
+	FinishReason *string   `json:"finish_reason,omitempty"`
+	LogProbs     *LogProbs `json:"log_probs,omitempty"`
+
+	*BifrostTextCompletionResponseChoice
 
 	*BifrostNonStreamResponseChoice
 	*BifrostStreamResponseChoice
+}
+
+type BifrostTextCompletionResponseChoice struct {
+	Text *string `json:"text,omitempty"`
 }
 
 // BifrostNonStreamResponseChoice represents a choice in the non-stream response
 type BifrostNonStreamResponseChoice struct {
 	Message    BifrostMessage `json:"message"`
 	StopString *string        `json:"stop,omitempty"`
-	LogProbs   *LogProbs      `json:"log_probs,omitempty"`
 }
 
 // BifrostStreamResponseChoice represents a choice in the stream response

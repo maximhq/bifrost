@@ -1286,15 +1286,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, reqType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	switch reqType {
 	case schemas.TextCompletionRequest:
-		return provider.TextCompletion(req.Context, req.Model, key, *req.Input.TextCompletionInput, req.Params)
+		return provider.TextCompletion(req.Context, key, &req.BifrostRequest)
 	case schemas.ChatCompletionRequest:
-		return provider.ChatCompletion(req.Context, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+		return provider.ChatCompletion(req.Context, key, &req.BifrostRequest)
 	case schemas.EmbeddingRequest:
-		return provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
+		return provider.Embedding(req.Context, key, &req.BifrostRequest)
 	case schemas.SpeechRequest:
-		return provider.Speech(req.Context, req.Model, key, req.Input.SpeechInput, req.Params)
+		return provider.Speech(req.Context, key, &req.BifrostRequest)
 	case schemas.TranscriptionRequest:
-		return provider.Transcription(req.Context, req.Model, key, req.Input.TranscriptionInput, req.Params)
+		return provider.Transcription(req.Context, key, &req.BifrostRequest)
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1309,11 +1309,11 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, reqType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	switch reqType {
 	case schemas.ChatCompletionStreamRequest:
-		return provider.ChatCompletionStream(req.Context, postHookRunner, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+		return provider.ChatCompletionStream(req.Context, postHookRunner, key, &req.BifrostRequest)
 	case schemas.SpeechStreamRequest:
-		return provider.SpeechStream(req.Context, postHookRunner, req.Model, key, req.Input.SpeechInput, req.Params)
+		return provider.SpeechStream(req.Context, postHookRunner, key, &req.BifrostRequest)
 	case schemas.TranscriptionStreamRequest:
-		return provider.TranscriptionStream(req.Context, postHookRunner, req.Model, key, req.Input.TranscriptionInput, req.Params)
+		return provider.TranscriptionStream(req.Context, postHookRunner, key, &req.BifrostRequest)
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,

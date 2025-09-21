@@ -25,22 +25,22 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
-					return anthropicReq.ConvertChatRequestToBifrost(), nil
+					return anthropicReq.ToBifrostRequest(), nil
 				}
 				return nil, errors.New("invalid request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return anthropic.ConvertChatResponseToAnthropic(resp), nil
+				return anthropic.ToAnthropicChatCompletionResponse(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return anthropic.ConvertErrorToAnthropic(err)
+				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 			StreamConfig: &StreamConfig{
 				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return anthropic.ConvertStreamResponseToAnthropic(resp), nil
+					return anthropic.ToAnthropicChatCompletionStreamResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return anthropic.ConvertStreamErrorToAnthropic(err)
+					return anthropic.ToAnthropicChatCompletionStreamError(err)
 				},
 			},
 		},
