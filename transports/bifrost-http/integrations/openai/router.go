@@ -2,6 +2,8 @@ package openai
 
 import (
 	"errors"
+	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -234,6 +236,64 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
+	// Add management endpoints 
+	routes = append(routes, createOpenAIManagementRoutes(pathPrefix)...)
+
+	return routes
+}
+
+// createOpenAIManagementRoutes creates route configurations for OpenAI management endpoints
+func createOpenAIManagementRoutes(pathPrefix string) []integrations.RouteConfig {
+	var routes []integrations.RouteConfig
+	log.Printf("createOpenAIManagementRoutes called with pathPrefix: %s", pathPrefix)
+	
+	// Management endpoints - following the same for-loop pattern as other routes
+	for _, path := range []string{
+		"/v1/models",
+		"/v1/organizations", 
+		"/v1/usage",
+		"/v1/models/{model}",
+	} {
+		fullPath := pathPrefix + path
+		log.Printf("Creating management route: %s", fullPath)
+		routes = append(routes, integrations.RouteConfig{
+			Path:   fullPath,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &integrations.ManagementRequest{}
+			},
+			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				return &schemas.BifrostRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-3.5-turbo",
+					Input: schemas.RequestInput{
+						ChatCompletionInput: &[]schemas.BifrostMessage{
+							{
+								Role: "user",
+								Content: schemas.MessageContent{
+									ContentStr: &[]string{"dummy"}[0],
+								},
+							},
+						},
+					},
+				}, nil
+			},
+			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}, nil
+			},
+			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}
+			},
+			PreCallback: handleOpenAIManagementRequest,
+		})
+	}
+
 	return routes
 }
 
@@ -342,5 +402,65 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		transcriptionReq.Stream = &stream
 	}
 
+	return nil
+}
+
+
+// handleOpenAIManagementRequest handles management endpoint requests by forwarding directly to OpenAI API
+func handleOpenAIManagementRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	log.Printf("handleOpenAIManagementRequest called with path: %s", string(ctx.Path()))
+	log.Printf("Request method: %s", string(ctx.Method()))
+	
+	// Extract API key from request
+	apiKey, err := integrations.ExtractAPIKeyFromContext(ctx)
+	if err != nil {
+		integrations.SendManagementError(ctx, err, 401)
+		ctx.SetUserValue("management_handled", true)
+		return nil // Don't return error, we've handled the request
+	}
+
+	// Extract query parameters
+	queryParams := integrations.ExtractQueryParams(ctx)
+
+	// Determine the endpoint based on the path
+	var endpoint string
+	path := string(ctx.Path())
+	
+	// Remove the path prefix to get the actual endpoint
+	if strings.HasPrefix(path, "/openai") {
+		endpoint = strings.TrimPrefix(path, "/openai")
+	} else if strings.HasPrefix(path, "/litellm") {
+		endpoint = strings.TrimPrefix(path, "/litellm")
+	} else if strings.HasPrefix(path, "/langchain") {
+		endpoint = strings.TrimPrefix(path, "/langchain")
+	} else {
+		endpoint = path
+	}
+	
+	log.Println("endpoint", endpoint)
+	// Validate that it's a known management endpoint
+	switch {
+	case endpoint == "/v1/models":
+	case strings.HasPrefix(endpoint, "/v1/models/"):
+	case endpoint == "/v1/organizations":
+	case endpoint == "/v1/usage":
+	default:
+		integrations.SendManagementError(ctx, fmt.Errorf("unknown management endpoint: %s", endpoint), 404)
+		ctx.SetUserValue("management_handled", true)
+		return nil // Don't return error, we've handled the request
+	}
+	log.Println("endpoint", endpoint)
+
+	// Create management client and forward the request
+	client := integrations.NewManagementAPIClient()
+	response, err := client.ForwardRequest(ctx, schemas.OpenAI, endpoint, apiKey, queryParams)
+	//log.Println("response", response)
+	if err != nil {
+		integrations.SendManagementError(ctx, err, 500)
+		ctx.SetUserValue("management_handled", true)
+		return nil // Don't return error, we've handled the request
+	}
+	integrations.SendManagementResponse(ctx, response.Data, response.StatusCode)
+	ctx.SetUserValue("management_handled", true)
 	return nil
 }
