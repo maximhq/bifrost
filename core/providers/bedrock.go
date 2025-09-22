@@ -196,7 +196,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationTextCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -255,7 +255,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -391,7 +391,7 @@ func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
 // Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
 
@@ -545,7 +545,7 @@ func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, mode
 // It formats the request, sends it to Bedrock, and processes the streaming response.
 // Returns a channel for streaming BifrostResponse objects or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 

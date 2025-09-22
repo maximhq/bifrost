@@ -96,27 +96,27 @@ type AllowedRequests struct {
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
-func (ar *AllowedRequests) IsOperationAllowed(operation Operation) bool {
+func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	if ar == nil {
 		return true // Default to allowed if no restrictions
 	}
 
 	switch operation {
-	case OperationTextCompletion:
+	case TextCompletionRequest:
 		return ar.TextCompletion
-	case OperationChatCompletion:
+	case ChatCompletionRequest:
 		return ar.ChatCompletion
-	case OperationChatCompletionStream:
+	case ChatCompletionStreamRequest:
 		return ar.ChatCompletionStream
-	case OperationEmbedding:
+	case EmbeddingRequest:
 		return ar.Embedding
-	case OperationSpeech:
+	case SpeechRequest:
 		return ar.Speech
-	case OperationSpeechStream:
+	case SpeechStreamRequest:
 		return ar.SpeechStream
-	case OperationTranscription:
+	case TranscriptionRequest:
 		return ar.Transcription
-	case OperationTranscriptionStream:
+	case TranscriptionStreamRequest:
 		return ar.TranscriptionStream
 	default:
 		return false // Default to not allowed for unknown operations
@@ -130,7 +130,7 @@ type CustomProviderConfig struct {
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
-func (cpc *CustomProviderConfig) IsOperationAllowed(operation Operation) bool {
+func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool {
 	if cpc == nil || cpc.AllowedRequests == nil {
 		return true // Default to allowed if no restrictions
 	}
@@ -149,19 +149,6 @@ type ProviderConfig struct {
 	SendBackRawResponse  bool                  `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
 	CustomProviderConfig *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 }
-
-type Operation string
-
-const (
-	OperationTextCompletion       Operation = "text_completion"
-	OperationChatCompletion       Operation = "chat_completion"
-	OperationChatCompletionStream Operation = "chat_completion_stream"
-	OperationEmbedding            Operation = "embedding"
-	OperationSpeech               Operation = "speech"
-	OperationSpeechStream         Operation = "speech_stream"
-	OperationTranscription        Operation = "transcription"
-	OperationTranscriptionStream  Operation = "transcription_stream"
-)
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
 	if config.ConcurrencyAndBufferSize.Concurrency == 0 {

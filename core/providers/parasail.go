@@ -4,12 +4,10 @@ package providers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
@@ -97,71 +95,17 @@ func (provider *ParasailProvider) TextCompletion(ctx context.Context, key schema
 
 // ChatCompletion performs a chat completion request to the Parasail API.
 func (provider *ParasailProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Use centralized OpenAI converter since Parasail is OpenAI-compatible
-	reqBody := openai.ToOpenAIChatCompletionRequest(input)
-
-	jsonBody, err := sonic.Marshal(reqBody)
-	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Parasail)
-	}
-
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from parasail provider: %s", string(resp.Body())))
-
-		var errorResp map[string]interface{}
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("Parasail error: %v", errorResp)
-		return nil, bifrostErr
-	}
-
-	responseBody := resp.Body()
-
-	// Pre-allocate response structs from pools
-	// response := acquireParasailResponse()
-	// defer releaseParasailResponse(response)
-	response := &schemas.BifrostResponse{}
-
-	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Create final response
-	response.ExtraFields.Provider = schemas.Parasail
-
-	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	if input.Params != nil {
-		response.ExtraFields.Params = *input.Params
-	}
-
-	return response, nil
+	return handleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		input,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
 }
 
 // Embedding is not supported by the Parasail provider.

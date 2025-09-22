@@ -105,7 +105,7 @@ func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -206,7 +206,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 // Supports Cohere's embedding models and returns a BifrostResponse containing the embedding(s).
 func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
 
@@ -288,7 +288,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 

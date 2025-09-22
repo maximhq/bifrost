@@ -421,7 +421,7 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 // Behavior:
 // - If no gating is configured (config == nil or AllowedRequests == nil), the operation is allowed.
 // - If gating is configured, returns an error when the operation is not explicitly allowed.
-func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.Operation) *schemas.BifrostError {
+func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.RequestType) *schemas.BifrostError {
 	// No gating configured => allowed
 	if config == nil || config.AllowedRequests == nil {
 		return nil

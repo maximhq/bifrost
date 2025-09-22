@@ -176,7 +176,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationTextCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -219,7 +219,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -263,7 +263,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -315,7 +315,7 @@ func (provider *AnthropicProvider) Embedding(ctx context.Context, key schemas.Ke
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 

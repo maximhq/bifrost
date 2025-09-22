@@ -4,7 +4,6 @@ package providers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -98,76 +97,22 @@ func (provider *MistralProvider) TextCompletion(ctx context.Context, key schemas
 
 // ChatCompletion performs a chat completion request to the Mistral API.
 func (provider *MistralProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Use centralized OpenAI converter since Mistral is OpenAI-compatible
-	reqBody := openai.ToOpenAIChatCompletionRequest(input)
-
-	jsonBody, err := sonic.Marshal(reqBody)
-	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
-	}
-
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/chat/completions")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from mistral provider: %s", string(resp.Body())))
-
-		var errorResp map[string]interface{}
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("Mistral error: %v", errorResp)
-		return nil, bifrostErr
-	}
-
-	responseBody := resp.Body()
-
-	// Pre-allocate response structs from pools
-	// response := acquireMistralResponse()
-	// defer releaseMistralResponse(response)
-	response := &schemas.BifrostResponse{}
-
-	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	response.ExtraFields.Provider = schemas.Mistral
-
-	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	if input.Params != nil {
-		response.ExtraFields.Params = *input.Params
-	}
-
-	return response, nil
+	return handleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		input,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
 }
 
 // Embedding generates embeddings for the given input text(s) using the Mistral API.
 // Supports Mistral's embedding models and returns a BifrostResponse containing the embedding(s).
 func (provider *MistralProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-
 	mistralRequest := mistral.ToMistralEmbeddingRequest(input)
 
 	jsonBody, err := sonic.Marshal(mistralRequest)
@@ -175,62 +120,19 @@ func (provider *MistralProvider) Embedding(ctx context.Context, key schemas.Key,
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Mistral)
 	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/embeddings")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from mistral embedding provider: %s", string(resp.Body())))
-
-		var errorResp map[string]interface{}
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("Mistral embedding error: %v", errorResp)
-		return nil, bifrostErr
-	}
-
-	responseBody := resp.Body()
-
-	// Pre-allocate response structs from pools
-	// response := acquireMistralResponse()
-	response := &schemas.BifrostResponse{}
-	// defer releaseMistralResponse(response)
-
-	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	response.ExtraFields.Provider = schemas.Mistral
-
-	if input.Params != nil {
-		response.ExtraFields.Params = *input.Params
-	}
-
-	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	return response, nil
+	// Use the shared embedding request handler
+	return handleOpenAIEmbeddingRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/embeddings",
+		jsonBody,
+		key,
+		input.Params,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Mistral,
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Mistral API.
