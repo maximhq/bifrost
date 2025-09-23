@@ -1098,7 +1098,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		},
 	}
 
-	latency := float64(response.Metrics.Latency)
+	latency := int64(response.Metrics.Latency)
 
 	// Create final response
 	bifrostResponse := &schemas.BifrostResponse{

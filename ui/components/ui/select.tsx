@@ -79,22 +79,36 @@ function SelectLabel({ className, ...props }: React.ComponentProps<typeof Select
 	);
 }
 
-function SelectItem({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Item>) {
+interface SelectItemProps extends React.ComponentProps<typeof SelectPrimitive.Item> {
+	disabled?: boolean;
+	disabledReason?: string;
+}
+
+function SelectItem({ className, children, disabled, disabledReason, ...props }: SelectItemProps) {
 	return (
 		<SelectPrimitive.Item
+			data-disabled={disabled}
+			data-disabled-reason={disabledReason}
 			data-slot="select-item"
 			className={cn(
-				"focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+				"focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground data-[disabled]:text-muted-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
 				className,
+				!disabled && "pr-8",
+				disabled && "pr-1",
 			)}
 			{...props}
 		>
-			<span className="absolute right-2 flex size-3.5 items-center justify-center">
-				<SelectPrimitive.ItemIndicator>
-					<CheckIcon className="size-4" />
-				</SelectPrimitive.ItemIndicator>
-			</span>
+			{!disabled && (
+				<span className="absolute right-2 flex size-3.5 items-center justify-center">
+					<SelectPrimitive.ItemIndicator>
+						<CheckIcon className="size-4" />
+					</SelectPrimitive.ItemIndicator>
+				</span>
+			)}
 			<SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+			{disabled && disabledReason && (
+				<span className="text-muted-foreground bg-accent ml-auto rounded-sm p-1 text-xs">{disabledReason}</span>
+			)}
 		</SelectPrimitive.Item>
 	);
 }
@@ -143,5 +157,6 @@ export {
 	SelectScrollUpButton,
 	SelectSeparator,
 	SelectTrigger,
-	SelectValue,
+	SelectValue
 };
+

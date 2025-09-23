@@ -276,7 +276,6 @@ type BifrostRequest struct {
 	Model    string           `json:"model"`
 	Input    RequestInput     `json:"input"`
 	Params   *ModelParameters `json:"params,omitempty"`
-
 	// Fallbacks are tried in order, the first one to succeed is returned
 	// Provider config must be available for each fallback's provider in account's GetConfigForProvider,
 	// else it will be skipped.
@@ -334,7 +333,7 @@ type Tool struct {
 	Function Function `json:"function"`     // Function definition
 }
 
-// Combined tool choices for all providers, make sure to check the provider's
+// ToolChoiceType is combined tool choices for all providers, make sure to check the provider's
 // documentation to see which tool choices are supported.
 type ToolChoiceType string
 
@@ -793,7 +792,7 @@ type TranscriptionUsage struct {
 type BifrostResponseExtraFields struct {
 	Provider    ModelProvider      `json:"provider"`
 	Params      ModelParameters    `json:"model_params"`
-	Latency     *float64           `json:"latency,omitempty"`
+	Latency     *int64              `json:"latency,omitempty"`
 	ChatHistory *[]BifrostMessage  `json:"chat_history,omitempty"`
 	BilledUsage *BilledLLMUsage    `json:"billed_usage,omitempty"`
 	ChunkIndex  int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses

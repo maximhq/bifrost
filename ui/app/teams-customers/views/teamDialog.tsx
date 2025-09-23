@@ -213,10 +213,13 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 								<div className="flex items-center gap-2">
 									<span className="text-sm">Current Usage:</span>
 									<div className="flex items-center gap-2">
-										<span className="font-mono text-sm">
-											{formatCurrency(team.budget.current_usage)} / {formatCurrency(team.budget.max_limit)}
+										<span className="text-sm">
+											<span className="font-mono">{formatCurrency(team.budget.current_usage)}</span> / <span className="font-mono">{formatCurrency(team.budget.max_limit)}</span>
 										</span>
-										<Badge variant={team.budget.current_usage >= team.budget.max_limit ? "destructive" : "default"} className="text-xs">
+										<Badge
+											variant={team.budget.current_usage >= team.budget.max_limit ? "destructive" : "default"}
+											className="font-mono text-xs"
+										>
 											{Math.round((team.budget.current_usage / team.budget.max_limit) * 100)}%
 										</Badge>
 									</div>
@@ -224,7 +227,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 								<div className="flex items-center gap-2">
 									<span className="text-sm">Last Reset:</span>
 									<div className="flex items-center gap-2">
-										<span className="font-mono text-sm">{formatDistanceToNow(new Date(team.budget.last_reset), { addSuffix: true })}</span>
+										<span className="mono text-sm">{formatDistanceToNow(new Date(team.budget.last_reset), { addSuffix: true })}</span>
 									</div>
 								</div>
 							</div>
