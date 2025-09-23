@@ -1313,6 +1313,7 @@ func (c *ManagementAPIClient) ForwardRequest(
 
 	// Read the response body
 	body, err := io.ReadAll(resp.Body)
+	log.Printf("Response body: %s", string(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -1324,7 +1325,8 @@ func (c *ManagementAPIClient) ForwardRequest(
 			headers[key] = values[0]
 		}
 	}
-
+	log.Printf("Response status code: %d", resp.StatusCode)
+	log.Printf("Response headers: %v", resp.Header)
 	return &ManagementResponse{
 		Data:       body,
 		StatusCode: resp.StatusCode,

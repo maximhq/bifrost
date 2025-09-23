@@ -3,6 +3,7 @@ package anthropic
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -50,8 +51,10 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []integrations.RouteConfig {
 		},
 	})
 
-	// Add management endpoints 
-	routes = append(routes, createAnthropicManagementRoutes(pathPrefix)...)
+	// Add management endpoints only for primary Anthropic integration
+	if pathPrefix == "/anthropic" {
+		routes = append(routes, createAnthropicManagementRoutes(pathPrefix)...)
+	}
 
 	return routes
 }
@@ -69,9 +72,10 @@ func createAnthropicManagementRoutes(pathPrefix string) []integrations.RouteConf
 
 	// Management endpoints - following the same for-loop pattern as other routes
 	for _, path := range []string{
-		// "/v1/models",
-		// "/v1/usage",
+		"/v1/models",
+		"/v1/usage",
 	} {
+		log.Printf("Creating management route: %s", pathPrefix + path)
 		routes = append(routes, integrations.RouteConfig{
 			Path:   pathPrefix + path,
 			Method: "GET",
@@ -79,15 +83,25 @@ func createAnthropicManagementRoutes(pathPrefix string) []integrations.RouteConf
 				return &integrations.ManagementRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				
-				return nil, nil
+				// For management endpoints, we create a minimal BifrostRequest
+				// The actual API call is handled by the PreCallback (handleAnthropicManagementRequest)
+				return &schemas.BifrostRequest{
+					Provider: schemas.Anthropic,
+					Model:    "management", // Special model type for management requests
+					Input:    schemas.RequestInput{}, // Empty input - management doesn't need chat data
+				}, nil
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				
-				return nil, nil
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveAnthropicErrorFromBifrostError(err)
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}
 			},
 			PreCallback: handleAnthropicManagementRequest,
 		})
@@ -125,11 +139,15 @@ func handleAnthropicManagementRequest(ctx *fasthttp.RequestCtx, req interface{})
 	client := integrations.NewManagementAPIClient()
 	response, err := client.ForwardRequest(ctx, schemas.Anthropic, endpoint, apiKey, queryParams)
 	if err != nil {
+		log.Printf("Failed to forward request to Anthropic: %v", err)
 		integrations.SendManagementError(ctx, err, 500)
-		return err
+		ctx.SetUserValue("management_handled", true)
+		return nil  
 	}
+    log.Printf("Response status code: %v", response.StatusCode)
 
-	// Send the response
+	// Send the successful response
 	integrations.SendManagementResponse(ctx, response.Data, response.StatusCode)
+	ctx.SetUserValue("management_handled", true)
 	return nil
 }

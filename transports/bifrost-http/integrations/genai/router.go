@@ -3,6 +3,7 @@ package genai
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -51,8 +52,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []integrations.RouteConfig {
 		PreCallback: extractAndSetModelFromURL,
 	})
 
-	// Add management endpoints 
-	routes = append(routes, createGenAIManagementRoutes(pathPrefix)...)
+	// Add management endpoints only for primary GenAI integration
+	if pathPrefix == "/genai" {
+		routes = append(routes, createGenAIManagementRoutes(pathPrefix)...)
+	}
 
 	return routes
 }
@@ -125,9 +128,10 @@ func createGenAIManagementRoutes(pathPrefix string) []integrations.RouteConfig {
 
 	// Management endpoints - following the same for-loop pattern as other routes
 	for _, path := range []string{
-		// "/v1beta/models",
-		// "/v1beta/models/{model:*}",
+		"/v1beta/models",
+		"/v1beta/models/{model:*}",
 	} {
+		log.Printf("Creating management route: %s", pathPrefix + path)
 		routes = append(routes, integrations.RouteConfig{
 			Path:   pathPrefix + path,
 			Method: "GET",
@@ -135,15 +139,25 @@ func createGenAIManagementRoutes(pathPrefix string) []integrations.RouteConfig {
 				return &integrations.ManagementRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				
-				return nil, nil
+				// For management endpoints, we create a minimal BifrostRequest
+				// The actual API call is handled by the PreCallback (handleGenAIManagementRequest)
+				return &schemas.BifrostRequest{
+					Provider: schemas.Gemini,
+					Model:    "management", // Special model type for management requests
+					Input:    schemas.RequestInput{}, // Empty input - management doesn't need chat data
+				}, nil
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				
-				return nil, nil
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return DeriveGeminiErrorFromBifrostError(err)
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}
 			},
 			PreCallback: handleGenAIManagementRequest,
 		})
@@ -190,10 +204,12 @@ func handleGenAIManagementRequest(ctx *fasthttp.RequestCtx, req interface{}) err
 	response, err := client.ForwardRequest(ctx, schemas.Gemini, endpoint, apiKey, queryParams)
 	if err != nil {
 		integrations.SendManagementError(ctx, err, 500)
-		return err
+		ctx.SetUserValue("management_handled", true)
+		return nil
 	}
 
-	// Send the response
+	// Send the successful response
 	integrations.SendManagementResponse(ctx, response.Data, response.StatusCode)
+	ctx.SetUserValue("management_handled", true)
 	return nil
 }

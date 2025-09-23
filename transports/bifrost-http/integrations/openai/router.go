@@ -236,8 +236,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
-	// Add management endpoints 
-	routes = append(routes, createOpenAIManagementRoutes(pathPrefix)...)
+	// Add management endpoints only for primary OpenAI integration
+	if pathPrefix == "/openai" {
+		routes = append(routes, createOpenAIManagementRoutes(pathPrefix)...)
+	}
 
 	return routes
 }
@@ -263,19 +265,12 @@ func createOpenAIManagementRoutes(pathPrefix string) []integrations.RouteConfig 
 				return &integrations.ManagementRequest{}
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				// For management endpoints, we create a minimal BifrostRequest
+				// The actual API call is handled by the PreCallback (handleOpenAIManagementRequest)
 				return &schemas.BifrostRequest{
 					Provider: schemas.OpenAI,
-					Model:    "gpt-3.5-turbo",
-					Input: schemas.RequestInput{
-						ChatCompletionInput: &[]schemas.BifrostMessage{
-							{
-								Role: "user",
-								Content: schemas.MessageContent{
-									ContentStr: &[]string{"dummy"}[0],
-								},
-							},
-						},
-					},
+					Model:    "management", // Special model type for management requests
+					Input:    schemas.RequestInput{}, // Empty input - management doesn't need chat data
 				}, nil
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
@@ -454,12 +449,21 @@ func handleOpenAIManagementRequest(ctx *fasthttp.RequestCtx, req interface{}) er
 	// Create management client and forward the request
 	client := integrations.NewManagementAPIClient()
 	response, err := client.ForwardRequest(ctx, schemas.OpenAI, endpoint, apiKey, queryParams)
-	//log.Println("response", response)
 	if err != nil {
 		integrations.SendManagementError(ctx, err, 500)
 		ctx.SetUserValue("management_handled", true)
-		return nil // Don't return error, we've handled the request
+		return nil
 	}
+
+	// Check if the response indicates an error (4xx, 5xx status codes)
+	if response.StatusCode >= 400 {
+		log.Printf("OpenAI API returned error status %d: %s", response.StatusCode, string(response.Data))
+		integrations.SendManagementResponse(ctx, response.Data, response.StatusCode)
+		ctx.SetUserValue("management_handled", true)
+		return nil
+	}
+
+	// Send the successful response
 	integrations.SendManagementResponse(ctx, response.Data, response.StatusCode)
 	ctx.SetUserValue("management_handled", true)
 	return nil
