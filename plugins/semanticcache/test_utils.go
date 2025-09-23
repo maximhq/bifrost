@@ -115,7 +115,7 @@ type TestSetup struct {
 	Store  vectorstore.VectorStore
 	Plugin schemas.Plugin
 	Client *bifrost.Bifrost
-	Config Config
+	Config *Config
 }
 
 // NewTestSetup creates a new test setup with default configuration
@@ -140,7 +140,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 }
 
 // NewTestSetupWithConfig creates a new test setup with custom configuration
-func NewTestSetupWithConfig(t *testing.T, config Config) *TestSetup {
+func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
@@ -370,7 +370,7 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
-	config := Config{
+	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		CleanUpOnShutdown:            true,
@@ -394,7 +394,7 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
-	config := Config{
+	config := &Config{
 		Provider:            schemas.OpenAI,
 		EmbeddingModel:      "text-embedding-3-small",
 		CleanUpOnShutdown:   true,
@@ -418,7 +418,7 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
-	config := Config{
+	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		CleanUpOnShutdown:            true,

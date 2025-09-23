@@ -328,12 +328,12 @@ func TestNoCacheScenarios(t *testing.T) {
 func TestCacheConfiguration(t *testing.T) {
 	tests := []struct {
 		name             string
-		config           Config
+		config           *Config
 		expectedBehavior string
 	}{
 		{
 			name: "High Threshold",
-			config: Config{
+			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.95, // Very high threshold
@@ -345,7 +345,7 @@ func TestCacheConfiguration(t *testing.T) {
 		},
 		{
 			name: "Low Threshold",
-			config: Config{
+			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.1, // Very low threshold
@@ -357,7 +357,7 @@ func TestCacheConfiguration(t *testing.T) {
 		},
 		{
 			name: "Custom TTL",
-			config: Config{
+			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.8,

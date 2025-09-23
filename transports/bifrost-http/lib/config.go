@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/pricing"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"gorm.io/gorm"
@@ -134,6 +135,9 @@ type Config struct {
 
 	// Plugin configs
 	Plugins []*schemas.PluginConfig
+
+	// Pricing manager
+	PricingManager *pricing.PricingManager
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
@@ -351,6 +355,12 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to update env keys: %w", err)
 			}
+			// Initializing pricing manager
+			pricingManager, err := pricing.Init(config.ConfigStore, logger)
+			if err != nil {
+				logger.Warn("failed to initialize pricing manager: %v", err)
+			}
+			config.PricingManager = pricingManager
 			return config, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -733,6 +743,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if config.EnvKeys == nil {
 		config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
 	}
+
+	// Initializing pricing manager
+	pricingManager, err := pricing.Init(config.ConfigStore, logger)
+	if err != nil {
+		logger.Warn("failed to initialize pricing manager: %v", err)
+	}
+	config.PricingManager = pricingManager
 
 	return config, nil
 }

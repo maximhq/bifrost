@@ -23,8 +23,8 @@ const PluginName = "maxim"
 //   - apiKey: API key for Maxim SDK authentication
 //   - logRepoId: Optional default ID for the Maxim logger instance
 type Config struct {
-	LogRepoId string `json:"log_repo_id,omitempty"` // Optional - can be empty
-	ApiKey    string `json:"api_key"`
+	LogRepoID string `json:"log_repo_id,omitempty"` // Optional - can be empty
+	APIKey    string `json:"api_key"`
 }
 
 // Init initializes and returns a Plugin instance for Maxim's logger.
@@ -37,26 +37,26 @@ type Config struct {
 //   - error: Any error that occurred during plugin initialization
 func Init(config Config) (schemas.Plugin, error) {
 	// check if Maxim Logger variables are set
-	if config.ApiKey == "" {
+	if config.APIKey == "" {
 		return nil, fmt.Errorf("apiKey is not set")
 	}
 
-	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: config.ApiKey})
+	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: config.APIKey})
 
 	plugin := &Plugin{
 		mx:               mx,
-		defaultLogRepoId: config.LogRepoId,
+		defaultLogRepoId: config.LogRepoID,
 		loggers:          make(map[string]*logging.Logger),
 		loggerMutex:      &sync.RWMutex{},
 	}
 
 	// Initialize default logger if LogRepoId is provided
-	if config.LogRepoId != "" {
-		logger, err := mx.GetLogger(&logging.LoggerConfig{Id: config.LogRepoId})
+	if config.LogRepoID != "" {
+		logger, err := mx.GetLogger(&logging.LoggerConfig{Id: config.LogRepoID})
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize default logger: %w", err)
 		}
-		plugin.loggers[config.LogRepoId] = logger
+		plugin.loggers[config.LogRepoID] = logger
 	}
 
 	return plugin, nil

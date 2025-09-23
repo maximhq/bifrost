@@ -1,25 +1,22 @@
-// server package wraps http server implementation behind simple interface
 package handlers
 
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/pricing"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -125,37 +122,110 @@ func RegisterCollectorSafely(collector prometheus.Collector) {
 	}
 }
 
+// LoadPlugin loads a plugin by name and returns it as type T.
+func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
+	var zero T
+	switch name {
+	case telemetry.PluginName:
+		plugin, err := telemetry.Init(bifrostConfig.PricingManager, logger)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("telemetry plugin type mismatch")
+	case logging.PluginName:
+		plugin, err := logging.Init(logger, bifrostConfig.LogsStore, bifrostConfig.PricingManager)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("logging plugin type mismatch")
+	case governance.PluginName:
+		if governanceConfig, ok := pluginConfig.(*governance.Config); ok {
+			plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager)
+			if err != nil {
+				return zero, err
+			}
+			if p, ok := any(plugin).(T); ok {
+				return p, nil
+			}
+			return zero, fmt.Errorf("governance plugin type mismatch")
+		}
+		return zero, fmt.Errorf("governance plugin config is not a governance.Config")
+	case maxim.PluginName:
+		// And keep backward compatibility for ENV variables
+		if maximConfig, ok := pluginConfig.(maxim.Config); ok {
+			plugin, err := maxim.Init(maximConfig)
+			if err != nil {
+				return zero, err
+			}
+			if p, ok := any(plugin).(T); ok {
+				return p, nil
+			}
+			return zero, fmt.Errorf("maxim plugin type mismatch")
+		}
+		return zero, fmt.Errorf("maxim plugin config is not a maxim.Config")
+	case semanticcache.PluginName:
+		if semanticcacheConfig, ok := pluginConfig.(*semanticcache.Config); ok {
+			plugin, err := semanticcache.Init(ctx, semanticcacheConfig, logger, bifrostConfig.VectorStore)
+			if err != nil {
+				return zero, err
+			}
+			if p, ok := any(plugin).(T); ok {
+				return p, nil
+			}
+			return zero, fmt.Errorf("semantic cache plugin type mismatch")
+		}
+		return zero, fmt.Errorf("semantic cache plugin config is not a semanticcache.Config")
+	case otel.PluginName:
+		if otelConfig, ok := pluginConfig.(*otel.Config); ok {
+			plugin, err := otel.Init(ctx, otelConfig, logger)
+			if err != nil {
+				return zero, err
+			}
+			if p, ok := any(plugin).(T); ok {
+				return p, nil
+			}
+			return zero, fmt.Errorf("otel plugin type mismatch")
+		}
+	}
+	return zero, fmt.Errorf("plugin %s not found", name)
+}
 
 // LoadPlugins loads the plugins for the server.
 func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
+	var err error
 	plugins := []schemas.Plugin{}
-	// Initialize pricing manager
-	pricingManager, err := pricing.Init(config.ConfigStore, logger)
+
+	// Initialize telemetry plugin
+	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, config)
 	if err != nil {
-		logger.Error("failed to initialize pricing manager: %v", err)
+		logger.Fatal("failed to initialize telemetry plugin: %v", err)
+	} else {
+		plugins = append(plugins, promPlugin)
 	}
-	promPlugin := telemetry.Init(pricingManager, logger)
-
-	plugins = append(plugins, promPlugin)
-
+	// Initializing logger plugin
 	var loggingPlugin *logging.LoggerPlugin
-
 	if config.ClientConfig.EnableLogging && config.LogsStore != nil {
 		// Use dedicated logs database with high-scale optimizations
-		loggingPlugin, err = logging.Init(logger, config.LogsStore, pricingManager)
+		loggingPlugin, err = LoadPlugin[*logging.LoggerPlugin](ctx, logging.PluginName, nil, config)
 		if err != nil {
 			logger.Fatal("failed to initialize logging plugin: %v", err)
+		} else {
+			plugins = append(plugins, loggingPlugin)
 		}
-		plugins = append(plugins, loggingPlugin)
 	}
-
+	// Initializing governance plugin
 	var governancePlugin *governance.GovernancePlugin
-
 	if config.ClientConfig.EnableGovernance {
 		// Initialize governance plugin
-		governancePlugin, err = governance.Init(ctx, &governance.Config{
+		governancePlugin, err = LoadPlugin[*governance.GovernancePlugin](ctx, governance.PluginName, &governance.Config{
 			IsVkMandatory: &config.ClientConfig.EnforceGovernanceHeader,
-		}, logger, config.ConfigStore, config.GovernanceConfig, pricingManager)
+		}, config)
 		if err != nil {
 			logger.Error("failed to initialize governance plugin: %s", err.Error())
 		} else {
@@ -163,62 +233,17 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 
 		}
 	}
-
 	// Currently we support first party plugins only
 	// Eventually same flow will be used for third party plugins
 	for _, plugin := range config.Plugins {
 		if !plugin.Enabled {
 			continue
 		}
-		switch strings.ToLower(plugin.Name) {
-		case maxim.PluginName:
-			if os.Getenv("MAXIM_LOG_REPO_ID") == "" {
-				logger.Warn("maxim log repo id is required to initialize maxim plugin")
-				continue
-			}
-			if os.Getenv("MAXIM_API_KEY") == "" {
-				logger.Warn("maxim api key is required in environment variable MAXIM_API_KEY to initialize maxim plugin")
-				continue
-			}
-			maximPlugin, err := maxim.Init(maxim.Config{
-				ApiKey:    os.Getenv("MAXIM_API_KEY"),
-				LogRepoId: os.Getenv("MAXIM_LOG_REPO_ID"),
-			})
-			if err != nil {
-				logger.Warn("failed to initialize maxim plugin: %v", err)
-			} else {
-				plugins = append(plugins, maximPlugin)
-			}
-		case semanticcache.PluginName:
-			if !plugin.Enabled {
-				logger.Debug("semantic cache plugin is disabled, skipping initialization")
-				continue
-			}
-
-			if config.VectorStore == nil {
-				logger.Error("vector store is required to initialize semantic cache plugin, skipping initialization")
-				continue
-			}
-
-			// Convert config map to semanticcache.Config struct
-			var semCacheConfig semanticcache.Config
-			if plugin.Config != nil {
-				configBytes, err := json.Marshal(plugin.Config)
-				if err != nil {
-					logger.Fatal("failed to marshal semantic cache config: %v", err)
-				}
-				if err := json.Unmarshal(configBytes, &semCacheConfig); err != nil {
-					logger.Fatal("failed to unmarshal semantic cache config: %v", err)
-				}
-			}
-
-			semanticCachePlugin, err := semanticcache.Init(ctx, semCacheConfig, logger, config.VectorStore)
-			if err != nil {
-				logger.Error("failed to initialize semantic cache: %v", err)
-			} else {
-				plugins = append(plugins, semanticCachePlugin)
-				logger.Info("successfully initialized semantic cache")
-			}
+		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Config, config)
+		if err != nil {
+			logger.Error("failed to load plugin %s: %v", plugin.Name, err)
+		} else {
+			plugins = append(plugins, pluginInstance)
 		}
 	}
 	return plugins, nil
@@ -238,6 +263,18 @@ func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (
 	}
 	var zero T
 	return zero, fmt.Errorf("plugin %q not found", name)
+}
+
+// ReloadPlugin reloads a plugin with new instance and updates Bifrost core
+func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, pluginConfig any) error {
+	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, pluginConfig, s.Config)
+	if err != nil {
+		return err
+	}
+	if err := s.Client.ReloadPlugin(newPlugin); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RegisterRoutes initializes the routes for the Bifrost HTTP server.
@@ -279,7 +316,7 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...B
 	mcpHandler := NewMCPHandler(s.Client, logger, s.Config)
 	integrationHandler := NewIntegrationHandler(s.Client, s.Config)
 	configHandler := NewConfigHandler(s.Client, logger, s.Config)
-	pluginsHandler := NewPluginsHandler(s.Config.ConfigStore, logger)
+	pluginsHandler := NewPluginsHandler(s, s.Config.ConfigStore, logger)
 	// Register all handler routes
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	completionHandler.RegisterRoutes(s.Router, middlewares...)
