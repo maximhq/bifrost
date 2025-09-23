@@ -21,9 +21,9 @@ func TestOpenRouter(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.OpenRouter,
-		ChatModel: "openai/gpt-4o",
-		TextModel: "google/gemini-2.5-flash",
+		Provider:       schemas.OpenRouter,
+		ChatModel:      "openai/gpt-4o",
+		TextModel:      "google/gemini-2.5-flash",
 		EmbeddingModel: "",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        true,
@@ -38,7 +38,6 @@ func TestOpenRouter(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 		},
 	}
 

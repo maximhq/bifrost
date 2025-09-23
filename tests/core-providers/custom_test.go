@@ -38,7 +38,6 @@ func TestCustomProvider(t *testing.T) {
 			ImageBase64:           false,
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
