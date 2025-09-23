@@ -116,6 +116,7 @@ cacheConfig := semanticcache.Config{
     // Cache behavior
     TTL:       5 * time.Minute,  // Time to live for cached responses (default: 5 minutes)
     Threshold: 0.8,              // Similarity threshold for cache lookup (default: 0.8)
+    CleanUpOnShutdown: true,     // Clean up cache on shutdown (default: false)
     
     // Conversation behavior
     ConversationHistoryThreshold: 5,    // Skip caching if conversation has > N messages (default: 3)
@@ -175,6 +176,7 @@ bifrostConfig := schemas.BifrostConfig{
         "provider": "openai",
         "embedding_model": "text-embedding-3-small",
         
+        "cleanup_on_shutdown": true,
         "ttl": "5m",
         "threshold": 0.8,
         
@@ -503,7 +505,11 @@ The semantic cache automatically handles cleanup to prevent storage bloat:
 - Restart Bifrost to clear all cache data
 
 <Warning>
-The semantic cache namespace and all its cache entries are deleted when Bifrost client shuts down, so DO NOT use the plugin's namespace for external purposes.
+The semantic cache namespace and all its cache entries are deleted when Bifrost client shuts down **only if `cleanup_on_shutdown` is set to `true`**. By default (`cleanup_on_shutdown: false`), cache data persists between restarts. DO NOT use the plugin's namespace for external purposes.
+</Warning>
+
+<Warning>
+**Dimension Changes**: If you update the `dimension` config, the existing namespace will contain data with mixed dimensions, causing retrieval issues. To avoid this, either use a different `vector_store_namespace` or set `cleanup_on_shutdown: true` before restarting.
 </Warning>
 
 ---

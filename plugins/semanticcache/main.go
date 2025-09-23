@@ -29,10 +29,11 @@ type Config struct {
 	EmbeddingModel string                `json:"embedding_model,omitempty"` // Model to use for generating embeddings (optional)
 
 	// Plugin behavior settings
+	CleanUpOnShutdown    bool          `json:"cleanup_on_shutdown,omitempty"`    // Clean up cache on shutdown (default: false)
 	TTL                  time.Duration `json:"ttl,omitempty"`                    // Time-to-live for cached responses (default: 5min)
 	Threshold            float64       `json:"threshold,omitempty"`              // Cosine similarity threshold for semantic matching (default: 0.8)
 	VectorStoreNamespace string        `json:"vector_store_namespace,omitempty"` // Namespace for vector store (optional)
-	Dimension            int             `json:"dimension"`                        // Dimension for vector store
+	Dimension            int           `json:"dimension"`                        // Dimension for vector store
 
 	// Advanced caching behavior
 	ConversationHistoryThreshold int   `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
@@ -49,6 +50,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		Provider                     string        `json:"provider"`
 		Keys                         []schemas.Key `json:"keys"`
 		EmbeddingModel               string        `json:"embedding_model,omitempty"`
+		CleanUpOnShutdown            bool          `json:"cleanup_on_shutdown,omitempty"`
 		Dimension                    int           `json:"dimension"`
 		TTL                          interface{}   `json:"ttl,omitempty"`
 		Threshold                    float64       `json:"threshold,omitempty"`
@@ -68,6 +70,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.Provider = schemas.ModelProvider(temp.Provider)
 	c.Keys = temp.Keys
 	c.EmbeddingModel = temp.EmbeddingModel
+	c.CleanUpOnShutdown = temp.CleanUpOnShutdown
 	c.Dimension = temp.Dimension
 	c.CacheByModel = temp.CacheByModel
 	c.CacheByProvider = temp.CacheByProvider
@@ -589,25 +592,32 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 }
 
 // Cleanup performs cleanup operations for the semantic cache plugin.
-// It removes all cached entries created by this plugin from the VectorStore.
+// It removes all cached entries created by this plugin from the VectorStore only if CleanUpOnShutdown is true.
 // Identifies cache entries by the presence of semantic cache-specific fields (request_hash, cache_key).
 //
 // The function performs the following operations:
-// 1. Retrieves all entries and filters client-side to identify cache entries
-// 2. Deletes all matching cache entries from the VectorStore in batches
+// 1. Checks if cleanup is enabled via CleanUpOnShutdown config
+// 2. Retrieves all entries and filters client-side to identify cache entries
+// 3. Deletes all matching cache entries from the VectorStore in batches
 //
 // This method should be called when shutting down the application to ensure
-// proper resource cleanup.
+// proper resource cleanup if configured to do so.
 //
 // Returns:
 //   - error: Any error that occurred during cleanup operations
 func (plugin *Plugin) Cleanup() error {
+	// Clean up old stream accumulators first
+	plugin.cleanupOldStreamAccumulators()
+
+	// Only clean up cache entries if configured to do so
+	if !plugin.config.CleanUpOnShutdown {
+		plugin.logger.Debug(PluginLoggerPrefix + " Cleanup on shutdown is disabled, skipping cache cleanup")
+		return nil
+	}
+
 	// Clean up all cache entries created by this plugin
 	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 	defer cancel()
-
-	// Clean up old stream accumulators first
-	plugin.cleanupOldStreamAccumulators()
 
 	plugin.logger.Debug(PluginLoggerPrefix + " Starting cleanup of cache entries...")
 
