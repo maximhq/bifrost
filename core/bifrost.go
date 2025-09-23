@@ -1278,6 +1278,26 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 	}
 }
 
+// shouldRetry checks if the error is retryable
+func shouldRetry(bifrostError *schemas.BifrostError) bool {
+	if bifrostError == nil || bifrostError.IsBifrostError {
+		return false
+	}
+
+	errorMessage := bifrostError.Error.Message
+
+	if strings.Contains(errorMessage, "timeout") ||
+		strings.Contains(errorMessage, "rate limit") ||
+		strings.Contains(errorMessage, "too many requests") ||
+		strings.Contains(errorMessage, "overloaded") {
+		return true
+	}
+
+	return !bifrostError.IsBifrostError &&
+		(bifrostError.StatusCode != nil && retryableStatusCodes[*bifrostError.StatusCode]) ||
+		(bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled)
+}
+
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, queue chan ChannelMessage) {
@@ -1351,23 +1371,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			// Attempt the request
 			if IsStreamRequestType(req.Type) {
 				stream, bifrostError = handleProviderStreamRequest(provider, &req, key, postHookRunner, req.Type)
-				if bifrostError != nil && !bifrostError.IsBifrostError {
-					break // Don't retry client errors
-				}
 			} else {
 				result, bifrostError = handleProviderRequest(provider, &req, key, req.Type)
-				if bifrostError != nil {
-					break // Don't retry client errors
-				}
 			}
 
 			bifrost.logger.Debug("request for provider %s completed", provider.GetProviderKey())
 
 			// Check if successful or if we should retry
-			if bifrostError == nil ||
-				bifrostError.IsBifrostError ||
-				(bifrostError.StatusCode != nil && !retryableStatusCodes[*bifrostError.StatusCode]) ||
-				(bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
+			if !shouldRetry(bifrostError) {
 				break
 			}
 		}

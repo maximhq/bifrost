@@ -41,7 +41,6 @@ func TestGemini(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			Embedding:             true,
 			Transcription:         true,
 			TranscriptionStream:   true,

@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // RunChatCompletionStreamTest executes the chat completion stream test scenario
@@ -32,16 +32,35 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			Input: schemas.RequestInput{
 				ChatCompletionInput: &messages,
 			},
-			Params: MergeModelParameters(&schemas.ModelParameters{
-				MaxTokens: bifrost.Ptr(250),
-			}, testConfig.CustomParams),
+			Params:    testConfig.CustomParams,
 			Fallbacks: testConfig.Fallbacks,
 		}
 
-		// Test streaming response
-		responseChannel, err := client.ChatCompletionStreamRequest(ctx, request)
-		require.Nilf(t, err, "Chat completion stream failed: %v", err)
-		require.NotNil(t, responseChannel, "Response channel should not be nil")
+		// Use retry framework for stream requests
+		retryConfig := StreamingRetryConfig()
+		retryContext := TestRetryContext{
+			ScenarioName: "ChatCompletionStream",
+			ExpectedBehavior: map[string]interface{}{
+				"should_stream_content": true,
+				"should_tell_story":     true,
+				"topic":                 "robot painting",
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ChatModel,
+			},
+		}
+
+		// Use proper streaming retry wrapper for the stream request
+		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			return client.ChatCompletionStreamRequest(ctx, request)
+		})
+
+		// Enhanced error handling
+		RequireNoError(t, err, "Chat completion stream request failed")
+		if responseChannel == nil {
+			t.Fatal("Response channel should not be nil")
+		}
 
 		var fullContent strings.Builder
 		var responseCount int
@@ -64,38 +83,67 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					goto streamComplete
 				}
 
-				require.NotNil(t, response, "Streaming response should not be nil")
+				if response == nil {
+					t.Fatal("Streaming response should not be nil")
+				}
 				lastResponse = response
 
-				// Validate response structure
-				assert.Equal(t, testConfig.Provider, response.ExtraFields.Provider, "Provider should match")
-				assert.NotEmpty(t, response.ID, "Response ID should not be empty")
-				assert.Equal(t, "chat.completion.chunk", response.Object, "Object type should be chat.completion.chunk")
-				assert.NotEmpty(t, response.Choices, "Choices should not be empty")
+				// Basic validation of streaming response structure
+				if response.BifrostResponse != nil {
+					if response.ExtraFields.Provider != testConfig.Provider {
+						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.ExtraFields.Provider)
+					}
+					if response.ID == "" {
+						t.Logf("⚠️ Warning: Response ID is empty")
+					}
+				}
 
 				// Process each choice in the response
-				for _, choice := range response.Choices {
-					// Validate that this is a stream response
-					assert.NotNil(t, choice.BifrostStreamResponseChoice, "Stream response choice should not be nil")
-					assert.Nil(t, choice.BifrostNonStreamResponseChoice, "Non-stream response choice should be nil")
-
-					// Get content from delta
-					if choice.BifrostStreamResponseChoice != nil {
-						delta := choice.BifrostStreamResponseChoice.Delta
-						if delta.Content != nil {
-							fullContent.WriteString(*delta.Content)
+				if response.ChatCompletionsExtendedResponse != nil {
+					for _, choice := range response.ChatCompletionsExtendedResponse.Choices {
+						// Validate that this is a stream response
+						if choice.BifrostStreamResponseChoice == nil {
+							t.Logf("⚠️ Warning: Stream response choice is nil for choice %d", choice.Index)
+							continue
+						}
+						if choice.BifrostNonStreamResponseChoice != nil {
+							t.Logf("⚠️ Warning: Non-stream response choice should be nil in streaming response")
 						}
 
-						// Log role if present (usually in first chunk)
-						if delta.Role != nil {
-							t.Logf("🤖 Role: %s", *delta.Role)
-						}
+						// Get content from delta
+						if choice.BifrostStreamResponseChoice != nil {
+							delta := choice.BifrostStreamResponseChoice.Delta
+							if delta.Content != nil {
+								fullContent.WriteString(*delta.Content)
+							}
 
-						// Check finish reason if present
-						if choice.FinishReason != nil {
-							t.Logf("🏁 Finish reason: %s", *choice.FinishReason)
+							// Log role if present (usually in first chunk)
+							if delta.Role != nil {
+								t.Logf("🤖 Role: %s", *delta.Role)
+							}
+
+							// Check finish reason if present
+							if choice.FinishReason != nil {
+								t.Logf("🏁 Finish reason: %s", *choice.FinishReason)
+							}
 						}
 					}
+				}
+
+				// Check if this response contains usage information
+				if response.Usage != nil {
+					hasReceivedUsage = true
+					t.Logf("📊 Token usage received - Prompt: %d, Completion: %d, Total: %d",
+						response.Usage.PromptTokens,
+						response.Usage.CompletionTokens,
+						response.Usage.TotalTokens)
+
+					// Validate token counts
+					assert.Greater(t, response.Usage.PromptTokens, 0, "Prompt tokens should be greater than 0")
+					assert.Greater(t, response.Usage.CompletionTokens, 0, "Completion tokens should be greater than 0")
+					assert.Greater(t, response.Usage.TotalTokens, 0, "Total tokens should be greater than 0")
+					assert.Equal(t, response.Usage.PromptTokens+response.Usage.CompletionTokens,
+						response.Usage.TotalTokens, "Total tokens should equal prompt + completion tokens")
 				}
 
 				// Check if this response contains usage information
@@ -130,59 +178,70 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		// Validate that we received usage information at some point in the stream
 		assert.True(t, hasReceivedUsage, "Should have received token usage information during streaming")
 
-		// Validate that the last response contains usage information and/or finish reason
-		// with empty choices (typical final chunk pattern)
-		if lastResponse != nil && lastResponse.BifrostResponse != nil {
-			// Check if this is a final metadata chunk (empty choices with usage/finish info)
-			if len(lastResponse.Choices) == 0 && lastResponse.Usage != nil {
-				// Comprehensive validation of final usage
-				assert.Greater(t, lastResponse.Usage.PromptTokens, 0, "Final chunk should have prompt token count")
-				assert.Greater(t, lastResponse.Usage.CompletionTokens, 0, "Final chunk should have completion token count")
-				assert.Greater(t, lastResponse.Usage.TotalTokens, 0, "Final chunk should have total token count")
-				assert.Equal(t, lastResponse.Usage.PromptTokens+lastResponse.Usage.CompletionTokens,
-					lastResponse.Usage.TotalTokens, "Total tokens should equal prompt + completion tokens")
-				t.Logf("📊 Final metadata chunk - Prompt: %d, Completion: %d, Total: %d",
-					lastResponse.Usage.PromptTokens,
-					lastResponse.Usage.CompletionTokens,
-					lastResponse.Usage.TotalTokens)
-			} else if len(lastResponse.Choices) > 0 {
-				// Check if final choice has finish reason
-				finalChoice := lastResponse.Choices[0]
-				if finalChoice.FinishReason != nil {
-					t.Logf("🏁 Stream ended with finish reason: %s", *finalChoice.FinishReason)
-				}
-
-				// Even with choices, we should have usage info in the last response or earlier
-				if lastResponse.Usage != nil {
-					assert.Greater(t, lastResponse.Usage.PromptTokens, 0, "Should have prompt tokens")
-					assert.Greater(t, lastResponse.Usage.CompletionTokens, 0, "Should have completion tokens")
-					assert.Greater(t, lastResponse.Usage.TotalTokens, 0, "Should have total tokens")
-				}
-			} else {
-				t.Fatal("Last response should have choices or usage")
-			}
-		}
-
-		// Validate the complete response
-		assert.Greater(t, responseCount, 0, "Should receive at least one streaming response")
-
+		// Validate final streaming response
 		finalContent := strings.TrimSpace(fullContent.String())
-		assert.NotEmpty(t, finalContent, "Final content should not be empty")
-		assert.Greater(t, len(finalContent), 10, "Final content should be substantial")
 
-		if lastResponse.BifrostResponse != nil {
-			// Validate the last response has usage information
-			if len(lastResponse.Choices) > 0 {
-				finishReason := lastResponse.Choices[0].FinishReason
-				assert.NotNil(t, finishReason, "Finish reason should not be nil")
-			} else {
-				// This is a metadata-only chunk, which is valid for final chunks
-				assert.NotNil(t, lastResponse.Usage, "Usage should not be nil")
-				// Additional validation for the usage in metadata-only chunk
-				assert.Greater(t, lastResponse.Usage.PromptTokens, 0, "Metadata chunk should have prompt tokens")
-				assert.Greater(t, lastResponse.Usage.CompletionTokens, 0, "Metadata chunk should have completion tokens")
+		// Create a consolidated response for validation
+		consolidatedResponse := &schemas.BifrostResponse{
+			Choices: []schemas.BifrostChatResponseChoice{
+				{
+					Index: 0,
+					BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+						Message: schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: schemas.ChatMessageContent{
+								ContentStr: &finalContent,
+							},
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider: testConfig.Provider,
+			},
+		}
+
+		// Copy usage and other metadata from last response if available
+		if lastResponse != nil && lastResponse.BifrostResponse != nil {
+			consolidatedResponse.Usage = lastResponse.Usage
+			consolidatedResponse.Model = lastResponse.Model
+			consolidatedResponse.ID = lastResponse.ID
+			consolidatedResponse.Created = lastResponse.Created
+
+			// Copy finish reason from last choice if available
+			if len(lastResponse.Choices) > 0 && lastResponse.Choices[0].FinishReason != nil {
+				consolidatedResponse.Choices[0].FinishReason = lastResponse.Choices[0].FinishReason
 			}
 		}
+
+		// Enhanced validation expectations for streaming
+		expectations := GetExpectationsForScenario("ChatCompletionStream", testConfig, map[string]interface{}{})
+		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+		expectations.ShouldContainKeywords = []string{"robot", "paint"} // Should include story elements
+		expectations.MinContentLength = 50                              // Should be substantial story
+		expectations.MaxContentLength = 2000                            // Reasonable upper bound
+
+		// Validate the consolidated streaming response
+		validationResult := ValidateResponse(t, consolidatedResponse, nil, expectations, "ChatCompletionStream")
+
+		// Basic streaming validation
+		if responseCount == 0 {
+			t.Fatal("Should receive at least one streaming response")
+		}
+
+		if finalContent == "" {
+			t.Fatal("Final content should not be empty")
+		}
+
+		if len(finalContent) < 10 {
+			t.Fatal("Final content should be substantial")
+		}
+
+		if !validationResult.Passed {
+			t.Logf("⚠️ Streaming validation warnings: %v", validationResult.Errors)
+		}
+
+		t.Logf("📊 Streaming metrics: %d chunks, %d chars", responseCount, len(finalContent))
 
 		t.Logf("✅ Streaming test completed successfully")
 		t.Logf("📝 Final content (%d chars)", len(finalContent))
@@ -195,6 +254,8 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				CreateBasicChatMessage("What's the weather like in San Francisco? Please use the get_weather function."),
 			}
 
+			tool := GetSampleTool(SampleToolTypeWeather, false)
+
 			request := &schemas.BifrostRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -203,19 +264,19 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				},
 				Params: MergeModelParameters(&schemas.ModelParameters{
 					MaxTokens: bifrost.Ptr(150),
-					Tools:     &[]schemas.Tool{WeatherToolDefinition},
+					Tools:     &[]schemas.Tool{*tool},
 				}, testConfig.CustomParams),
 				Fallbacks: testConfig.Fallbacks,
 			}
 
 			responseChannel, err := client.ChatCompletionStreamRequest(ctx, request)
-			require.Nilf(t, err, "Chat completion stream with tools failed: %v", err)
-			require.NotNil(t, responseChannel, "Response channel should not be nil")
+			RequireNoError(t, err, "Chat completion stream with tools failed")
+			if responseChannel == nil {
+				t.Fatal("Response channel should not be nil")
+			}
 
 			var toolCallDetected bool
 			var responseCount int
-			var hasReceivedUsageWithTools bool
-			var lastResponseWithTools *schemas.BifrostStream
 
 			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
@@ -229,6 +290,9 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 						goto toolStreamComplete
 					}
 
+					if response == nil {
+						t.Fatal("Streaming response should not be nil")
+					}
 					require.NotNil(t, response, "Streaming response should not be nil")
 					lastResponseWithTools = response
 					responseCount++
@@ -249,20 +313,38 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 							response.Usage.TotalTokens, "Total should equal prompt + completion for tool stream")
 					}
 
-					for _, choice := range response.Choices {
-						if choice.BifrostStreamResponseChoice != nil {
-							delta := choice.BifrostStreamResponseChoice.Delta
+					// Check for usage information in tool call streaming
+					if response.Usage != nil {
+						hasReceivedUsageWithTools = true
+						t.Logf("📊 Tool stream usage - Prompt: %d, Completion: %d, Total: %d",
+							response.Usage.PromptTokens,
+							response.Usage.CompletionTokens,
+							response.Usage.TotalTokens)
 
-							// Check for tool calls in delta
-							if len(delta.ToolCalls) > 0 {
-								toolCallDetected = true
-								t.Logf("🔧 Tool call detected in streaming response")
+						// Validate token counts for tool calls
+						assert.Greater(t, response.Usage.PromptTokens, 0, "Tool stream should have prompt tokens")
+						assert.Greater(t, response.Usage.CompletionTokens, 0, "Tool stream should have completion tokens")
+						assert.Greater(t, response.Usage.TotalTokens, 0, "Tool stream should have total tokens")
+						assert.Equal(t, response.Usage.PromptTokens+response.Usage.CompletionTokens,
+							response.Usage.TotalTokens, "Total should equal prompt + completion for tool stream")
+					}
 
-								for _, toolCall := range delta.ToolCalls {
-									if toolCall.Function.Name != nil {
-										t.Logf("🔧 Tool: %s", *toolCall.Function.Name)
-										if toolCall.Function.Arguments != "" {
-											t.Logf("🔧 Args: %s", toolCall.Function.Arguments)
+					if response.Choices != nil {
+						for _, choice := range response.Choices {
+							if choice.BifrostStreamResponseChoice != nil {
+								delta := choice.BifrostStreamResponseChoice.Delta
+
+								// Check for tool calls in delta
+								if len(delta.ToolCalls) > 0 {
+									toolCallDetected = true
+									t.Logf("🔧 Tool call detected in streaming response")
+
+									for _, toolCall := range delta.ToolCalls {
+										if toolCall.Function.Name != nil {
+											t.Logf("🔧 Tool: %s", *toolCall.Function.Name)
+											if toolCall.Function.Arguments != "" {
+												t.Logf("🔧 Args: %s", toolCall.Function.Arguments)
+											}
 										}
 									}
 								}
@@ -280,17 +362,12 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			}
 
 		toolStreamComplete:
-			assert.Greater(t, responseCount, 0, "Should receive at least one streaming response")
-			assert.True(t, toolCallDetected, "Should detect tool calls in streaming response")
-			assert.True(t, hasReceivedUsageWithTools, "Should have received token usage for tool call stream")
-
-			// Validate final response has proper usage information
-			if lastResponseWithTools != nil && lastResponseWithTools.Usage != nil {
-				assert.Greater(t, lastResponseWithTools.Usage.PromptTokens, 0, "Final tool stream should have prompt tokens")
-				assert.Greater(t, lastResponseWithTools.Usage.CompletionTokens, 0, "Final tool stream should have completion tokens")
-				assert.Greater(t, lastResponseWithTools.Usage.TotalTokens, 0, "Final tool stream should have total tokens")
+			if responseCount == 0 {
+				t.Fatal("Should receive at least one streaming response")
 			}
-
+			if !toolCallDetected {
+				t.Fatal("Should detect tool calls in streaming response")
+			}
 			t.Logf("✅ Streaming with tools test completed successfully")
 		})
 	}

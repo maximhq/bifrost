@@ -8,11 +8,11 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // RunTranscriptionTest executes the transcription test scenario
@@ -75,10 +75,10 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				}
 
 				ttsResponse, err := client.SpeechRequest(ctx, ttsRequest)
-				require.Nilf(t, err, "TTS generation failed for round-trip test: %v", err)
-				require.NotNil(t, ttsResponse.Speech)
-				require.NotNil(t, ttsResponse.Speech.Audio)
-				require.Greater(t, len(ttsResponse.Speech.Audio), 0, "TTS returned empty audio")
+				RequireNoError(t, err, "TTS generation failed for round-trip test")
+				if ttsResponse.Speech == nil || ttsResponse.Speech.Audio == nil || len(ttsResponse.Speech.Audio) == 0 {
+					t.Fatal("TTS returned invalid or empty audio for round-trip test")
+				}
 
 				// Save temp audio file
 				tempDir := os.TempDir()
@@ -106,19 +106,48 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						},
 					},
 					Params: MergeModelParameters(&schemas.ModelParameters{
-						Temperature: bifrost.Ptr(0.0), // Deterministic
+						CommonParameters: schemas.CommonParameters{
+							Temperature: bifrost.Ptr(0.0), // Deterministic
+						},
 					}, testConfig.CustomParams),
 					Fallbacks: testConfig.Fallbacks,
 				}
 
-				transcriptionResponse, err := client.TranscriptionRequest(ctx, transcriptionRequest)
-				require.Nilf(t, err, "Transcription failed for round-trip test: %v", err)
-				require.NotNil(t, transcriptionResponse)
-				require.NotNil(t, transcriptionResponse.Transcribe)
+				retryConfig := GetTestRetryConfigForScenario("Transcription_RoundTrip", testConfig)
+				retryContext := TestRetryContext{
+					ScenarioName: "Transcription_RoundTrip_" + tc.name,
+					ExpectedBehavior: map[string]interface{}{
+						"transcribe_audio": true,
+						"round_trip_test":  true,
+						"original_text":    tc.text,
+					},
+					TestMetadata: map[string]interface{}{
+						"provider":     testConfig.Provider,
+						"model":        testConfig.TranscriptionModel,
+						"audio_format": tc.format,
+					},
+				}
+
+				// Enhanced validation for transcription
+				expectations := TranscriptionExpectations(10) // Expect at least some content
+				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+				transcriptionResponse, bifrostErr := WithTestRetry(t, retryConfig, retryContext, expectations, "Transcription_RoundTrip_"+tc.name, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return client.TranscriptionRequest(ctx, transcriptionRequest)
+				})
+				if bifrostErr != nil {
+					t.Fatalf("❌ Transcription_RoundTrip_"+tc.name+" request failed after retries: %v", GetErrorMessage(bifrostErr))
+				}
 
 				// Validate round-trip: check if transcribed text contains key words from original
+				if transcriptionResponse.Transcribe == nil {
+					t.Fatal("Transcription response missing transcribe data")
+				}
+
 				transcribedText := transcriptionResponse.Transcribe.Text
-				require.NotEmpty(t, transcribedText, "Transcribed text should not be empty")
+				if transcribedText == "" {
+					t.Fatal("Transcribed text should not be empty")
+				}
 
 				// Normalize for comparison (lowercase, remove punctuation)
 				originalWords := strings.Fields(strings.ToLower(tc.text))
@@ -210,7 +239,9 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 							},
 						},
 						Params: MergeModelParameters(&schemas.ModelParameters{
-							Temperature: bifrost.Ptr(0.0),
+							CommonParameters: schemas.CommonParameters{
+								Temperature: bifrost.Ptr(0.0),
+							},
 						}, testConfig.CustomParams),
 						Fallbacks: testConfig.Fallbacks,
 					}
@@ -290,7 +321,9 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					},
 				},
 				Params: MergeModelParameters(&schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.2),
+					CommonParameters: schemas.CommonParameters{
+						Temperature: bifrost.Ptr(0.2),
+					},
 				}, testConfig.CustomParams),
 				Fallbacks: testConfig.Fallbacks,
 			}
