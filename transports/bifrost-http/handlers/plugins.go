@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
@@ -11,17 +12,23 @@ import (
 	"gorm.io/gorm"
 )
 
+type PluginsLoader interface {
+	ReloadPlugin(ctx context.Context, name string, pluginConfig any) error
+}
+
 // PluginsHandler is the handler for the plugins API
 type PluginsHandler struct {
-	logger      schemas.Logger
-	configStore configstore.ConfigStore
+	logger        schemas.Logger
+	configStore   configstore.ConfigStore
+	pluginsLoader PluginsLoader
 }
 
 // NewPluginsHandler creates a new PluginsHandler
-func NewPluginsHandler(configStore configstore.ConfigStore, logger schemas.Logger) *PluginsHandler {
+func NewPluginsHandler(pluginsLoader PluginsLoader, configStore configstore.ConfigStore, logger schemas.Logger) *PluginsHandler {
 	return &PluginsHandler{
-		configStore: configStore,
-		logger:      logger,
+		pluginsLoader: pluginsLoader,
+		configStore:   configStore,
+		logger:        logger,
 	}
 }
 
@@ -137,6 +144,12 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Config); err != nil {
+		h.logger.Error("failed to load plugin: %v", err)
+		SendError(ctx, 500, "Failed to load plugin", h.logger)
+		return
+	}
+
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]any{
 		"message": "Plugin created successfully",
@@ -206,6 +219,12 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		}
 		h.logger.Error("failed to get plugin: %v", err)
 		SendError(ctx, 500, "Failed to retrieve plugin", h.logger)
+		return
+	}
+
+	if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Config); err != nil {
+		h.logger.Error("failed to load plugin: %v", err)
+		SendError(ctx, 500, "Failed to load plugin", h.logger)
 		return
 	}
 

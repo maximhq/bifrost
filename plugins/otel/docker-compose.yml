@@ -1,0 +1,110 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    environment:
+      OTEL_CONFIG: |
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+              http:
+        processors:
+          batch:
+        exporters:
+          prometheus:
+            endpoint: "0.0.0.0:9464"
+            namespace: "otel"
+          debug:
+            verbosity: detailed
+        service:
+          telemetry:
+            metrics:
+              level: detailed
+          pipelines:
+            traces:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [debug]
+            metrics:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [debug, prometheus]
+            logs:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [debug]
+    command: ["--config=env:OTEL_CONFIG"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Collector /metrics
+      - "9464:9464"   # Prometheus scrape endpoint
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    depends_on:
+      - otel-collector
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "4000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    configs:
+      - source: grafana-datasource
+        target: /etc/grafana/provisioning/datasources/datasource.yml
+    restart: unless-stopped
+
+configs:
+  prometheus-config:
+    content: |
+      global:
+        scrape_interval: 15s
+      scrape_configs:
+        - job_name: "otelcol-internal"
+          static_configs:
+            - targets: ["otel-collector:8888"]
+        - job_name: "otelcol-exporter"
+          static_configs:
+            - targets: ["otel-collector:9464"]
+
+  grafana-datasource:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          orgId: 1
+          url: http://prometheus:9090
+          isDefault: true
+          editable: true
+
+volumes:
+  prometheus-data:
+  grafana-data:
