@@ -16,6 +16,7 @@ interface OtelFormFragmentProps {
 		enabled?: boolean;
 		push_url?: string;
 		type?: "otel" | "genai_extension" | "vercel" | "arize_otel";
+		protocol?: "http" | "grpc";
 	};
 	onSave: (config: OtelFormSchema) => Promise<void>;
 	isLoading?: boolean;
@@ -32,6 +33,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 			otel_config: {
 				push_url: initialConfig?.push_url || "",
 				type: initialConfig?.type || "otel",
+				protocol: initialConfig?.protocol || "http",
 			},
 		},
 	});
@@ -48,15 +50,19 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 			otel_config: {
 				push_url: initialConfig?.push_url || "",
 				type: initialConfig?.type || "otel",
+				protocol: initialConfig?.protocol || "http",
 			},
 		});
 	}, [form, initialConfig]);
 
-	const traceTypeOptions = [
-		{ value: "otel", label: "OTEL" },
+	const traceTypeOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
 		{ value: "genai_extension", label: "OTEL - GenAI Extension" },
-		{ value: "vercel", label: "Vercel Style" },
-		{ value: "arize_otel", label: "Arize OTEL" },
+		{ value: "vercel", label: "Vercel Style", disabled: true, disabledReason: "Coming soon" },
+		{ value: "open_inference", label: "Open Inference", disabled: true, disabledReason: "Coming soon" },
+	];
+	const protocolOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
+		{ value: "http", label: "HTTP" },
+		{ value: "grpc", label: "GRPC" },
 	];
 
 	return (
@@ -64,13 +70,13 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
 				{/* OTEL Configuration */}
 				<div className="space-y-4">
-					<div className="flex flex-row gap-4">
+					<div className="flex flex-col gap-4">
 						<FormField
 							control={form.control}
 							name="otel_config.push_url"
 							render={({ field }) => (
 								<FormItem className="w-full">
-									<FormLabel>Push URL</FormLabel>
+									<FormLabel>Collector URL</FormLabel>
 									<FormControl>
 										<Input placeholder="https://otel-collector.example.com:4318/v1/traces" {...field} />
 									</FormControl>
@@ -78,31 +84,67 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 								</FormItem>
 							)}
 						/>
+						<div className="flex flex-row gap-4">
+							<FormField
+								control={form.control}
+								name="otel_config.type"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Format</FormLabel>
+										<Select onValueChange={field.onChange} defaultValue={field.value}>
+											<FormControl>
+												<SelectTrigger className="w-full">
+													<SelectValue placeholder="Select trace type" />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												{traceTypeOptions.map((option) => (
+													<SelectItem
+														key={option.value}
+														value={option.value}
+														disabled={option.disabled}
+														disabledReason={option.disabledReason}
+													>
+														{option.label}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 
-						<FormField
-							control={form.control}
-							name="otel_config.type"
-							render={({ field }) => (
-								<FormItem>
-									<FormLabel>Format</FormLabel>
-									<Select onValueChange={field.onChange} defaultValue={field.value}>
-										<FormControl>
-											<SelectTrigger className="w-[200px]">
-												<SelectValue placeholder="Select trace type" />
-											</SelectTrigger>
-										</FormControl>
-										<SelectContent>
-											{traceTypeOptions.map((option) => (
-												<SelectItem key={option.value} value={option.value}>
-													{option.label}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
+							<FormField
+								control={form.control}
+								name="otel_config.protocol"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Protocol</FormLabel>
+										<Select onValueChange={field.onChange} defaultValue={field.value}>
+											<FormControl>
+												<SelectTrigger className="w-full">
+													<SelectValue placeholder="Select protocol" />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												{protocolOptions.map((option) => (
+													<SelectItem
+														key={option.value}
+														value={option.value}
+														disabled={option.disabled}
+														disabledReason={option.disabledReason}
+													>
+														{option.label}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</div>
 					</div>
 				</div>
 

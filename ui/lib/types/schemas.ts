@@ -338,6 +338,9 @@ export const otelConfigSchema = z.object({
 	type: z.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
 		message: "Please select a trace type",
 	}),
+	protocol: z.enum(["http", "grpc"], {
+		message: "Please select a protocol",
+	}),
 });
 
 // OTEL form schema for the OtelFormFragment
