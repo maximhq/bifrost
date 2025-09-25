@@ -846,3 +846,36 @@ func getProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 	}
 	return defaultProvider
 }
+
+// messageContentPool provides a pool for MessageContent objects.
+var messageContentPool = sync.Pool{
+	New: func() interface{} {
+		return &schemas.MessageContent{}
+	},
+}
+
+// acquireMessageContent gets a MessageContent from the pool and resets it.
+func acquireMessageContent() *schemas.MessageContent {
+	mc := messageContentPool.Get().(*schemas.MessageContent)
+	*mc = schemas.MessageContent{} // Reset the struct
+	return mc
+}
+
+// releaseMessageContent returns a MessageContent to the pool.
+func releaseMessageContent(mc *schemas.MessageContent) {
+	if mc != nil {
+		messageContentPool.Put(mc)
+	}
+}
+
+// BuildMessageContent returns a pooled MessageContent.
+// If there is only one text block, the message is set to ContentStr instead ContentBlocks.
+func BuildMessageContent(contentBlocks []schemas.ContentBlock) *schemas.MessageContent {
+	mc := acquireMessageContent()
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == "text" && contentBlocks[0].Text != nil {
+		mc.ContentStr = contentBlocks[0].Text
+	} else {
+		mc.ContentBlocks = &contentBlocks
+	}
+	return mc
+}
