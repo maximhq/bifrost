@@ -100,6 +100,7 @@ type BifrostContextKey string
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
+	BifrostContextKeyRequestID          BifrostContextKey = "request-id"
 	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
 	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
 	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
@@ -792,7 +793,7 @@ type TranscriptionUsage struct {
 type BifrostResponseExtraFields struct {
 	Provider    ModelProvider      `json:"provider"`
 	Params      ModelParameters    `json:"model_params"`
-	Latency     *int64              `json:"latency,omitempty"`
+	Latency     *int64             `json:"latency,omitempty"`
 	ChatHistory *[]BifrostMessage  `json:"chat_history,omitempty"`
 	BilledUsage *BilledLLMUsage    `json:"billed_usage,omitempty"`
 	ChunkIndex  int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses

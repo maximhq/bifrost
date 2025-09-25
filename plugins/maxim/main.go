@@ -34,7 +34,7 @@ type Config struct {
 // Returns:
 //   - schemas.Plugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func Init(config Config) (schemas.Plugin, error) {
+func Init(config *Config) (schemas.Plugin, error) {
 	// check if Maxim Logger variables are set
 	if config.APIKey == "" {
 		return nil, fmt.Errorf("apiKey is not set")

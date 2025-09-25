@@ -14,15 +14,15 @@ import { useForm, type Resolver } from "react-hook-form";
 interface OtelFormFragmentProps {
 	currentConfig?: {
 		enabled?: boolean;
-		push_url?: string;
-		type?: "otel" | "genai_extension" | "vercel" | "arize_otel";
+		collector_url?: string;
+		trace_type?: "otel" | "genai_extension" | "vercel" | "arize_otel";
 		protocol?: "http" | "grpc";
 	};
 	onSave: (config: OtelFormSchema) => Promise<void>;
 	isLoading?: boolean;
 }
 
-export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoading = false }: OtelFormFragmentProps) {
+export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoading = false }: OtelFormFragmentProps) {	
 	const [isSaving, setIsSaving] = useState(false);
 	const form = useForm<OtelFormSchema, any, OtelFormSchema>({
 		resolver: zodResolver(otelFormSchema) as Resolver<OtelFormSchema, any, OtelFormSchema>,
@@ -31,9 +31,9 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 		defaultValues: {
 			enabled: initialConfig?.enabled || false,
 			otel_config: {
-				push_url: initialConfig?.push_url || "",
-				type: initialConfig?.type || "otel",
-				protocol: initialConfig?.protocol || "http",
+				collector_url: initialConfig?.collector_url ?? "",
+				trace_type: initialConfig?.trace_type ?? "otel",
+				protocol: initialConfig?.protocol ?? "http",
 			},
 		},
 	});
@@ -48,15 +48,15 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 		form.reset({
 			enabled: initialConfig?.enabled || false,
 			otel_config: {
-				push_url: initialConfig?.push_url || "",
-				type: initialConfig?.type || "otel",
+				collector_url: initialConfig?.collector_url || "",
+				trace_type: initialConfig?.trace_type || "otel",
 				protocol: initialConfig?.protocol || "http",
 			},
 		});
 	}, [form, initialConfig]);
 
 	const traceTypeOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
-		{ value: "genai_extension", label: "OTEL - GenAI Extension" },
+		{ value: "otel", label: "OTEL - GenAI Extension" },
 		{ value: "vercel", label: "Vercel Style", disabled: true, disabledReason: "Coming soon" },
 		{ value: "open_inference", label: "Open Inference", disabled: true, disabledReason: "Coming soon" },
 	];
@@ -73,10 +73,10 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 					<div className="flex flex-col gap-4">
 						<FormField
 							control={form.control}
-							name="otel_config.push_url"
+							name="otel_config.collector_url"
 							render={({ field }) => (
 								<FormItem className="w-full">
-									<FormLabel>Collector URL</FormLabel>
+									<FormLabel>OLTP Collector URL</FormLabel>
 									<FormControl>
 										<Input placeholder="https://otel-collector.example.com:4318/v1/traces" {...field} />
 									</FormControl>
@@ -87,11 +87,11 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 						<div className="flex flex-row gap-4">
 							<FormField
 								control={form.control}
-								name="otel_config.type"
+								name="otel_config.trace_type"
 								render={({ field }) => (
 									<FormItem className="flex-1">
 										<FormLabel>Format</FormLabel>
-										<Select onValueChange={field.onChange} defaultValue={field.value}>
+										<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value}>
 											<FormControl>
 												<SelectTrigger className="w-full">
 													<SelectValue placeholder="Select trace type" />
@@ -121,7 +121,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 								render={({ field }) => (
 									<FormItem className="flex-1">
 										<FormLabel>Protocol</FormLabel>
-										<Select onValueChange={field.onChange} defaultValue={field.value}>
+										<Select onValueChange={field.onChange} value={field.value}>
 											<FormControl>
 												<SelectTrigger className="w-full">
 													<SelectValue placeholder="Select protocol" />

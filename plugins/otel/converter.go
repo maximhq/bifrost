@@ -161,7 +161,7 @@ func requestToResourceSpan(traceID, spanID string, timestamp time.Time, req *sch
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
 			Attributes: []*commonpb.KeyValue{
-				kvStr("service,name", "bifrost"),
+				kvStr("service.name", "bifrost"),
 				kvStr("service.version", "1.0.0"),
 			},
 		},
@@ -187,7 +187,7 @@ func requestToResourceSpan(traceID, spanID string, timestamp time.Time, req *sch
 }
 
 // responseToResourceSpan converts a Bifrost response to an OpenTelemetry resource span
-func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time.Time, resp *schemas.BifrostResponse) *ResourceSpan {
+func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time.Time, resp *schemas.BifrostResponse) *ResourceSpan {	
 	spanName := "genai.response"
 	params := []*commonpb.KeyValue{}
 	params = append(params, kvStr("genai.response.id", resp.ID))
@@ -220,7 +220,7 @@ func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
 			Attributes: []*commonpb.KeyValue{
-				kvStr("service,name", "bifrost"),
+				kvStr("service.name", "bifrost"),
 				kvStr("service.version", "1.0.0"),
 			},
 		},

@@ -13,7 +13,7 @@ import (
 // OtelClientHTTP is the implementation of the OpenTelemetry client for HTTP
 type OtelClientHTTP struct {
 	client   *http.Client
-	endpoint string
+	endpoint string	
 }
 
 // NewOtelClientHTTP creates a new OpenTelemetry client for HTTP
@@ -27,6 +27,7 @@ func (c *OtelClientHTTP) Emit(ctx context.Context, rs []*ResourceSpan) error {
 	if err != nil {
 		return err
 	}
+	logger.Debug("[otel] emitting resource spans: %v", rs)
 	var body bytes.Buffer
 	body.Write(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, &body)

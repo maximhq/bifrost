@@ -308,6 +308,7 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 		found := false
 		for i, p := range newPlugins {
 			if p.GetName() == plugin.GetName() {
+				bifrost.logger.Debug("replacing plugin %s with new instance", plugin.GetName())
 				newPlugins[i] = plugin
 				found = true
 				break
@@ -315,6 +316,7 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 		}
 		if !found{
 			// This means that user is adding a new plugin
+			bifrost.logger.Debug("adding new plugin %s", plugin.GetName())
 			newPlugins = append(newPlugins, plugin)
 		}
 		// Atomic compare-and-swap
@@ -995,9 +997,9 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
-	pipeline := bifrost.getPluginPipeline()
+	pipeline := bifrost.getPluginPipeline()	
 	defer bifrost.releasePluginPipeline(pipeline)
-
+	
 	preReq, shortCircuit, preCount := pipeline.RunPreHooks(&ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
@@ -1023,7 +1025,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 
 	msg := bifrost.getChannelMessage(*preReq, requestType)
 	msg.Context = ctx
-
+	startTime := time.Now()
 	select {
 	case queue <- *msg:
 		// Message was sent successfully
@@ -1049,6 +1051,10 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	var resp *schemas.BifrostResponse
 	select {
 	case result = <-msg.Response:
+		latency := time.Since(startTime).Milliseconds()
+		if result.ExtraFields.Latency == nil {
+			result.ExtraFields.Latency = &latency
+		}
 		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(*bifrost.plugins.Load()))
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
@@ -1360,10 +1366,11 @@ func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage,
 // PLUGIN MANAGEMENT
 
 // RunPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
-func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, int) {
+func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, int) {	
 	var shortCircuit *schemas.PluginShortCircuit
 	var err error
 	for i, plugin := range p.plugins {
+		p.logger.Debug("running PreHook for plugin %s", plugin.GetName())
 		req, shortCircuit, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			p.preHookErrors = append(p.preHookErrors, err)

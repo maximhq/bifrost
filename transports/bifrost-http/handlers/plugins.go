@@ -183,13 +183,19 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	// Check if plugin exists
 	if _, err := h.configStore.GetPlugin(name); err != nil {
 		// If doesn't exist, create it
-		if err := h.configStore.CreatePlugin(&configstore.TablePlugin{
-			Name:    name,
-			Enabled: false,
-			Config:  map[string]any{},
-		}); err != nil {
-			h.logger.Error("failed to create plugin: %v", err)
-			SendError(ctx, 500, "Failed to create plugin", h.logger)
+		if errors.Is(err, configstore.ErrNotFound) {
+			if err := h.configStore.CreatePlugin(&configstore.TablePlugin{
+				Name:    name,
+				Enabled: false,
+				Config:  map[string]any{},
+			}); err != nil {
+				h.logger.Error("failed to create plugin: %v", err)
+				SendError(ctx, 500, "Failed to create plugin", h.logger)
+				return
+			}
+		} else {
+			h.logger.Error("failed to get plugin: %v", err)
+			SendError(ctx, 404, "Plugin not found", h.logger)
 			return
 		}
 	}

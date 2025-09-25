@@ -3,10 +3,12 @@ package jsonparser
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -80,6 +82,48 @@ func Init(config PluginConfig) (*JsonParserPlugin, error) {
 // GetName returns the plugin name
 func (p *JsonParserPlugin) GetName() string {
 	return PluginName
+}
+
+// MarshalConfig marshals the plugin configuration
+func (p *JsonParserPlugin) MarshalConfig(config any, target any) error {
+	// Checking if its a string, then we will JSON parse and confirm
+	if configStr, ok := config.(string); ok {
+		if err := sonic.Unmarshal([]byte(configStr), &target); err != nil {
+			return err
+		}
+	}
+	// Checking if its a map[string]any, then we will JSON parse and confirm
+	if configMap, ok := config.(map[string]any); ok {
+		configString, err := sonic.Marshal(configMap)
+		if err != nil {
+			return err
+		}
+		if err := sonic.Unmarshal([]byte(configString), &target); err != nil {
+			return err
+		}
+	}
+	// Checking if its a Config, then we will confirm
+	if config, ok := config.(*PluginConfig); ok {
+		target = *config
+	}
+	if pluginConfig, ok := target.(*PluginConfig); ok {
+		// Validating fields
+		if pluginConfig.Usage == "" {
+			return fmt.Errorf("usage is required, it should be either all_requests or per_request")
+		}
+		if pluginConfig.CleanupInterval <= 0 {
+			return fmt.Errorf("cleanup interval is required, it should be a positive duration")
+		}
+		if pluginConfig.MaxAge <= 0 {
+			return fmt.Errorf("max age is required, it should be a positive duration")
+		}
+		if pluginConfig.Usage != AllRequests && pluginConfig.Usage != PerRequest {
+			return fmt.Errorf("usage is required, it should be either all_requests or per_request")
+		}
+		return nil
+	}
+	return fmt.Errorf("invalid config type")
+
 }
 
 // PreHook is not used for this plugin as we only process responses
