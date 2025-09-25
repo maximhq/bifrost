@@ -84,7 +84,7 @@ func TestToolVariations(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -104,7 +104,7 @@ func TestToolVariations(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -116,7 +116,7 @@ func TestToolVariations(t *testing.T) {
 		Params: &schemas.ModelParameters{
 			Temperature: bifrost.Ptr(0.5),
 			MaxTokens:   bifrost.Ptr(100),
-			Tools: &[]schemas.Tool{
+			Tools: []schemas.Tool{
 				{
 					Type: "function",
 					Function: schemas.Function{
@@ -142,7 +142,7 @@ func TestToolVariations(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -154,7 +154,7 @@ func TestToolVariations(t *testing.T) {
 		Params: &schemas.ModelParameters{
 			Temperature: bifrost.Ptr(0.5),
 			MaxTokens:   bifrost.Ptr(100),
-			Tools: &[]schemas.Tool{
+			Tools: []schemas.Tool{
 				{
 					Type: "function",
 					Function: schemas.Function{
@@ -233,7 +233,7 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{
@@ -254,11 +254,11 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{
-								ContentBlocks: &[]schemas.ContentBlock{
+								ContentBlocks: []schemas.ContentBlock{
 									{
 										Type: "text",
 										Text: bifrost.Ptr("Analyze this image"),
@@ -286,11 +286,11 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{
-								ContentBlocks: &[]schemas.ContentBlock{
+								ContentBlocks: []schemas.ContentBlock{
 									{
 										Type: "text",
 										Text: bifrost.Ptr("Compare these images"),
@@ -324,7 +324,7 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{
@@ -345,7 +345,7 @@ func TestContentVariations(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{
@@ -417,7 +417,7 @@ func TestBoundaryParameterValues(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{
@@ -441,7 +441,7 @@ func TestBoundaryParameterValues(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{
@@ -465,7 +465,7 @@ func TestBoundaryParameterValues(t *testing.T) {
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
 				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
+					ChatCompletionInput: []schemas.BifrostMessage{
 						{
 							Role: "user",
 							Content: schemas.MessageContent{

@@ -30,10 +30,10 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			enabled: initialConfig?.enabled || false,
+			enabled: initialConfig?.enabled ?? false,
 			maxim_config: {
-				api_key: initialConfig?.api_key || "",
-				log_repo_id: initialConfig?.log_repo_id || "",
+				api_key: initialConfig?.api_key ?? "",
+				log_repo_id: initialConfig?.log_repo_id ?? "",
 			},
 		},
 	});
@@ -46,10 +46,10 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 	useEffect(() => {
 		// Reset form with new initial config when it changes
 		form.reset({
-			enabled: initialConfig?.enabled || false,
+			enabled: initialConfig?.enabled ?? false,
 			maxim_config: {
-				api_key: initialConfig?.api_key || "",
-				log_repo_id: initialConfig?.log_repo_id || "",
+				api_key: initialConfig?.api_key ?? "",
+				log_repo_id: initialConfig?.log_repo_id ?? "",
 			},
 		});
 	}, [form, initialConfig]);
@@ -91,7 +91,7 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 								<FormItem>
 									<FormLabel>Log Repository ID (Optional)</FormLabel>
 									<FormControl>
-										<Input placeholder="Enter log repository ID" {...field} value={field.value || ""} />
+										<Input placeholder="Enter log repository ID" {...field} value={field.value ?? ""} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -108,7 +108,7 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 						render={({ field }) => (
 							<FormItem className="flex flex-row items-center gap-2">
 								<FormLabel>Enabled</FormLabel>
-								<Switch checked={field.value} onCheckedChange={field.onChange} disabled={isLoading || !form.formState.isValid} />
+								<Switch checked={form.watch("enabled")} onCheckedChange={field.onChange} disabled={isLoading || !form.formState.isValid} />
 							</FormItem>
 						)}
 					/>
@@ -118,9 +118,10 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 							variant="outline"
 							onClick={() => {
 								form.reset({
+									enabled: initialConfig?.enabled ?? false,
 									maxim_config: {
-										api_key: "",
-										log_repo_id: "",
+										api_key: initialConfig?.api_key ?? "",
+										log_repo_id: initialConfig?.log_repo_id ?? "",
 									},
 								});
 							}}

@@ -87,7 +87,7 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -187,7 +187,7 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{

@@ -192,7 +192,7 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 				"content": msg.Content,
 			}
 			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-				assistantMessage["tool_calls"] = *msg.AssistantMessage.ToolCalls
+				assistantMessage["tool_calls"] = msg.AssistantMessage.ToolCalls
 			}
 			formattedMessages = append(formattedMessages, assistantMessage)
 		} else {
@@ -203,7 +203,7 @@ func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas
 			if msg.Content.ContentStr != nil {
 				message["content"] = *msg.Content.ContentStr
 			} else if msg.Content.ContentBlocks != nil {
-				contentBlocks := *msg.Content.ContentBlocks
+				contentBlocks := msg.Content.ContentBlocks
 				for i := range contentBlocks {
 					if contentBlocks[i].Type == schemas.ContentBlockTypeImage && contentBlocks[i].ImageURL != nil {
 						sanitizedURL, _ := SanitizeImageURL(contentBlocks[i].ImageURL.URL)

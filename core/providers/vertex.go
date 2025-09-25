@@ -566,7 +566,7 @@ func (provider *VertexProvider) convertVertexEmbeddingResponse(vertexResponse ma
 		embedding := schemas.BifrostEmbedding{
 			Object: "embedding",
 			Embedding: schemas.BifrostEmbeddingResponse{
-				EmbeddingArray: &embeddingFloat32,
+				EmbeddingArray: embeddingFloat32,
 			},
 			Index: i,
 		}

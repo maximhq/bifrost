@@ -146,7 +146,7 @@ type CohereStreamTextEvent struct {
 	Text      string `json:"text"`       // Text content being generated
 }
 
-// CohereStreamToolEvent represents the tool use event.
+// CohereStreamToolCallEvent represents the tool use event.
 type CohereStreamToolCallEvent struct {
 	EventType string `json:"event_type"` // tool-use
 	ToolCall  struct {
@@ -338,7 +338,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, model string
 							ContentStr: &content,
 						},
 						AssistantMessage: &schemas.AssistantMessage{
-							ToolCalls: &toolCalls,
+							ToolCalls: toolCalls,
 						},
 					},
 				},
@@ -391,7 +391,7 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 		if msg.Role == schemas.ModelChatMessageRoleAssistant {
 			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
 				var toolCalls []map[string]interface{}
-				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+				for _, toolCall := range msg.AssistantMessage.ToolCalls {
 					var arguments map[string]interface{}
 					var parsedJSON interface{}
 					err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &parsedJSON)
@@ -424,7 +424,7 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 					prevMsg.AssistantMessage.ToolCalls != nil {
 
 					// Search through tool calls in this assistant message
-					for _, toolCall := range *prevMsg.AssistantMessage.ToolCalls {
+					for _, toolCall := range prevMsg.AssistantMessage.ToolCalls {
 						if toolCall.ID != nil && msg.ToolMessage != nil && msg.ToolMessage.ToolCallID != nil &&
 							*toolCall.ID == *msg.ToolMessage.ToolCallID {
 
@@ -476,7 +476,7 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 			contentArray := []map[string]interface{}{}
 
 			// Iterate over ContentBlocks to build the content array
-			for _, block := range *msg.Content.ContentBlocks {
+			for _, block := range msg.Content.ContentBlocks {
 				if block.Text != nil {
 					contentArray = append(contentArray, map[string]interface{}{
 						"type": "text",
@@ -513,7 +513,7 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 		requestBody["message"] = *lastMessage.Content.ContentStr
 	} else if lastMessage.Content.ContentBlocks != nil {
 		message := ""
-		for _, block := range *lastMessage.Content.ContentBlocks {
+		for _, block := range lastMessage.Content.ContentBlocks {
 			if block.Text != nil {
 				message += *block.Text + "\n"
 			}
@@ -522,9 +522,9 @@ func prepareCohereChatRequest(messages []schemas.BifrostMessage, params *schemas
 	}
 
 	// Add tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+	if params != nil && params.Tools != nil && len(params.Tools) > 0 {
 		var tools []CohereTool
-		for _, tool := range *params.Tools {
+		for _, tool := range params.Tools {
 			parameterDefinitions := make(map[string]CohereParameterDefinition)
 			params := tool.Function.Parameters
 			for name, prop := range tool.Function.Parameters.Properties {
@@ -588,7 +588,7 @@ func convertChatHistory(history []struct {
 	Role      schemas.ModelChatMessageRole `json:"role"`
 	Message   string                       `json:"message"`
 	ToolCalls []CohereToolCall             `json:"tool_calls"`
-}) *[]schemas.BifrostMessage {
+}) []schemas.BifrostMessage {
 	converted := make([]schemas.BifrostMessage, len(history))
 	for i, msg := range history {
 		var toolCalls []schemas.ToolCall
@@ -617,11 +617,11 @@ func convertChatHistory(history []struct {
 				ContentStr: &msg.Message,
 			},
 			AssistantMessage: &schemas.AssistantMessage{
-				ToolCalls: &toolCalls,
+				ToolCalls: toolCalls,
 			},
 		}
 	}
-	return &converted
+	return converted
 }
 
 // Embedding generates embeddings for the given input text(s) using the Cohere API.
@@ -730,7 +730,7 @@ func handleCohereEmbeddingResponse(cohereResp CohereEmbeddingResponse, model str
 				Index:  0,
 				Object: "embedding",
 				Embedding: schemas.BifrostEmbeddingResponse{
-					Embedding2DArray: &cohereResp.Embeddings.Float,
+					Embedding2DArray: cohereResp.Embeddings.Float,
 				},
 			},
 		},

@@ -640,7 +640,7 @@ func (p *MockerPlugin) extractMessageContentFast(req *schemas.BifrostRequest) st
 
 	// Handle chat completion input - optimized for common cases
 	if req.Input.ChatCompletionInput != nil {
-		messages := *req.Input.ChatCompletionInput
+		messages := req.Input.ChatCompletionInput
 		if len(messages) == 0 {
 			return ""
 		}
@@ -680,7 +680,7 @@ func (p *MockerPlugin) calculateRequestSizeFast(req *schemas.BifrostRequest) int
 	}
 
 	if req.Input.ChatCompletionInput != nil {
-		for _, message := range *req.Input.ChatCompletionInput {
+		for _, message := range req.Input.ChatCompletionInput {
 			if message.Content.ContentStr != nil {
 				size += len(*message.Content.ContentStr)
 			}

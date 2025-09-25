@@ -210,7 +210,7 @@ const (
 	AnthropicDefaultMaxTokens = 4096
 )
 
-// mapAnthropicFinishReasonToOpenAI maps Anthropic finish reasons to OpenAI-compatible ones
+// MapAnthropicFinishReason maps Anthropic finish reasons to OpenAI-compatible ones
 func MapAnthropicFinishReason(anthropicReason string) string {
 	switch anthropicReason {
 	case "end_turn":
@@ -516,7 +516,7 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 					Text: *msg.Content.ContentStr,
 				})
 			} else if msg.Content.ContentBlocks != nil {
-				for _, block := range *msg.Content.ContentBlocks {
+				for _, block := range msg.Content.ContentBlocks {
 					if block.Text != nil {
 						systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
 							Text: *block.Text,
@@ -547,7 +547,7 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 						"text": *msg.Content.ContentStr,
 					})
 				} else if msg.Content.ContentBlocks != nil {
-					for _, block := range *msg.Content.ContentBlocks {
+					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
 							toolCallResultContent = append(toolCallResultContent, map[string]interface{}{
 								"type": "text",
@@ -567,7 +567,7 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 						"text": *msg.Content.ContentStr,
 					})
 				} else if msg.Content.ContentBlocks != nil {
-					for _, block := range *msg.Content.ContentBlocks {
+					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil && *block.Text != "" {
 							content = append(content, map[string]interface{}{
 								"type": "text",
@@ -596,7 +596,7 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 
 				// Add tool calls as content if present
 				if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-					for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+					for _, toolCall := range msg.AssistantMessage.ToolCalls {
 						if toolCall.Function.Name != nil {
 							var input map[string]interface{}
 							if toolCall.Function.Arguments != "" {
@@ -639,9 +639,9 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 	}
 
 	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+	if params != nil && params.Tools != nil && len(params.Tools) > 0 {
 		var tools []map[string]interface{}
-		for _, tool := range *params.Tools {
+		for _, tool := range params.Tools {
 			tools = append(tools, map[string]interface{}{
 				"name":         tool.Function.Name,
 				"description":  tool.Function.Description,
@@ -791,7 +791,7 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 	if len(toolCalls) > 0 || thinking != "" {
 		assistantMessage = &schemas.AssistantMessage{}
 		if len(toolCalls) > 0 {
-			assistantMessage.ToolCalls = &toolCalls
+			assistantMessage.ToolCalls = toolCalls
 		}
 		if thinking != "" {
 			assistantMessage.Thought = &thinking
@@ -807,7 +807,7 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 				Message: schemas.BifrostMessage{
 					Role: schemas.ModelChatMessageRoleAssistant,
 					Content: schemas.MessageContent{
-						ContentBlocks: &contentBlocks,
+						ContentBlocks: contentBlocks,
 					},
 					AssistantMessage: assistantMessage,
 				},

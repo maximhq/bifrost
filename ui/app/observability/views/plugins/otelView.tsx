@@ -1,11 +1,18 @@
+"use client";
+
 import { Input } from "@/components/ui/input";
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { OtelConfigSchema, OtelFormSchema } from "@/lib/types/schemas";
+import { useMemo } from "react";
 import { toast } from "sonner";
 import { OtelFormFragment } from "../../fragments/otelFormFragment";
 
 export default function OtelView() {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
+	const currentConfig = useMemo(
+		() => ({ ...((selectedPlugin?.config as OtelConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
+		[selectedPlugin],
+	);
 	const [updatePlugin, { isLoading: isUpdatingPlugin }] = useUpdatePluginMutation();
 	const baseUrl = `${window.location.protocol}//${window.location.host}`;
 
@@ -31,8 +38,6 @@ export default function OtelView() {
 				});
 		});
 	};
-
-	const currentConfig = { ...((selectedPlugin?.config as OtelConfigSchema) ?? {}), enabled: selectedPlugin?.enabled };
 
 	return (
 		<div className="flex w-full flex-col gap-4">

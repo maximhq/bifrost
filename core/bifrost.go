@@ -294,10 +294,52 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *sch
 	return bifrost.handleStreamRequest(ctx, req, schemas.TranscriptionStreamRequest)
 }
 
+// RemovePlugin removes a plugin from the server.
+func (bifrost *Bifrost) RemovePlugin(name string) error {
+
+	for {
+		oldPlugins := bifrost.plugins.Load()
+		if oldPlugins == nil {
+			return nil
+		}
+		var pluginToCleanup schemas.Plugin
+		found := false
+		// Create new slice with replaced plugin
+		newPlugins := make([]schemas.Plugin, len(*oldPlugins))
+		copy(newPlugins, *oldPlugins)
+		for i, p := range newPlugins {
+			if p.GetName() == name {
+				pluginToCleanup = p
+				bifrost.logger.Debug("removing plugin %s", name)
+				newPlugins = append(newPlugins[:i], newPlugins[i+1:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+		if pluginToCleanup != nil {
+			// Atomic compare-and-swap
+			if bifrost.plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+				// Cleanup the old plugin
+				err := pluginToCleanup.Cleanup()
+				if err != nil {
+					bifrost.logger.Warn("failed to cleanup old plugin %s: %v", pluginToCleanup.GetName(), err)
+				}
+				return nil
+			}			
+		}
+		// Retrying as swapping did not work
+	}
+}
+
 // ReloadPlugin reloads a plugin with new instance
 // During the reload - it's stop the world phase where we take a global lock on the plugin mutex
-func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {	
+func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 	for {
+		var pluginToCleanup schemas.Plugin
+		found := false
 		oldPlugins := bifrost.plugins.Load()
 		if oldPlugins == nil {
 			return nil
@@ -305,25 +347,34 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 		// Create new slice with replaced plugin
 		newPlugins := make([]schemas.Plugin, len(*oldPlugins))
 		copy(newPlugins, *oldPlugins)
-		found := false
 		for i, p := range newPlugins {
 			if p.GetName() == plugin.GetName() {
+				// Cleaning up old plugin before replacing it
+				pluginToCleanup = p
+				bifrost.logger.Debug("replacing plugin %s with new instance", plugin.GetName())
 				newPlugins[i] = plugin
 				found = true
 				break
 			}
 		}
-		if !found{
+		if !found {
 			// This means that user is adding a new plugin
+			bifrost.logger.Debug("adding new plugin %s", plugin.GetName())
 			newPlugins = append(newPlugins, plugin)
 		}
 		// Atomic compare-and-swap
 		if bifrost.plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			// Cleanup the old plugin
+			if found && pluginToCleanup != nil {
+				err := pluginToCleanup.Cleanup()
+				if err != nil {
+					bifrost.logger.Warn("failed to cleanup old plugin %s: %v", pluginToCleanup.GetName(), err)
+				}
+			}
 			return nil
 		}
 		// Retrying as swapping did not work
 	}
-
 }
 
 // UpdateProviderConcurrency dynamically updates the queue size and concurrency for an existing provider.
@@ -1023,7 +1074,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 
 	msg := bifrost.getChannelMessage(*preReq, requestType)
 	msg.Context = ctx
-
+	startTime := time.Now()
 	select {
 	case queue <- *msg:
 		// Message was sent successfully
@@ -1047,9 +1098,14 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 
 	var result *schemas.BifrostResponse
 	var resp *schemas.BifrostResponse
+	pluginCount := len(*bifrost.plugins.Load())
 	select {
 	case result = <-msg.Response:
-		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(*bifrost.plugins.Load()))
+		latency := time.Since(startTime).Milliseconds()
+		if result.ExtraFields.Latency == nil {
+			result.ExtraFields.Latency = &latency
+		}
+		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, pluginCount)
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
@@ -1058,7 +1114,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
-		resp, bifrostErrPtr = pipeline.RunPostHooks(&ctx, nil, bifrostErrPtr, len(*bifrost.plugins.Load()))
+		resp, bifrostErrPtr = pipeline.RunPostHooks(&ctx, nil, bifrostErrPtr, pluginCount)
 		bifrost.releaseChannelMessage(msg)
 		if bifrostErrPtr != nil {
 			return nil, bifrostErrPtr
@@ -1172,7 +1228,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 		// Marking final chunk
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
-		recoveredResp, recoveredErr := pipeline.RunPostHooks(&ctx, nil, &bifrostErrVal, len(bifrost.plugins))
+		recoveredResp, recoveredErr := pipeline.RunPostHooks(&ctx, nil, &bifrostErrVal, len(*bifrost.plugins.Load()))
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
 			return nil, recoveredErr
@@ -1332,7 +1388,7 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 	case schemas.TextCompletionRequest:
 		return provider.TextCompletion(req.Context, req.Model, key, *req.Input.TextCompletionInput, req.Params)
 	case schemas.ChatCompletionRequest:
-		return provider.ChatCompletion(req.Context, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+		return provider.ChatCompletion(req.Context, req.Model, key, req.Input.ChatCompletionInput, req.Params)
 	case schemas.EmbeddingRequest:
 		return provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
 	case schemas.SpeechRequest:
@@ -1353,7 +1409,7 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, reqType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	switch reqType {
 	case schemas.ChatCompletionStreamRequest:
-		return provider.ChatCompletionStream(req.Context, postHookRunner, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
+		return provider.ChatCompletionStream(req.Context, postHookRunner, req.Model, key, req.Input.ChatCompletionInput, req.Params)
 	case schemas.SpeechStreamRequest:
 		return provider.SpeechStream(req.Context, postHookRunner, req.Model, key, req.Input.SpeechInput, req.Params)
 	case schemas.TranscriptionStreamRequest:
@@ -1375,6 +1431,7 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 	var shortCircuit *schemas.PluginShortCircuit
 	var err error
 	for i, plugin := range p.plugins {
+		p.logger.Debug("running pre-hook for plugin %s", plugin.GetName())
 		req, shortCircuit, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			p.preHookErrors = append(p.preHookErrors, err)
@@ -1391,17 +1448,19 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 // RunPostHooks executes PostHooks in reverse order for the plugins whose PreHook ran.
 // Accepts the response and error, and allows plugins to transform either (e.g., recover from error, or invalidate a response).
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
-func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, count int) (*schemas.BifrostResponse, *schemas.BifrostError) {
+// runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
+func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Defensive: ensure count is within valid bounds
-	if count < 0 {
-		count = 0
+	if runFrom < 0 {
+		runFrom = 0
 	}
-	if count > len(p.plugins) {
-		count = len(p.plugins)
+	if runFrom > len(p.plugins) {
+		runFrom = len(p.plugins)
 	}
 	var err error
-	for i := count - 1; i >= 0; i-- {
+	for i := runFrom - 1; i >= 0; i-- {
 		plugin := p.plugins[i]
+		p.logger.Debug("running post-hook for plugin %s", plugin.GetName())
 		resp, bifrostErr, err = plugin.PostHook(ctx, resp, bifrostErr)
 		if err != nil {
 			p.postHookErrors = append(p.postHookErrors, err)
@@ -1618,4 +1677,5 @@ func (bifrost *Bifrost) Shutdown() {
 			bifrost.logger.Warn(fmt.Sprintf("Error cleaning up plugin: %s", err.Error()))
 		}
 	}
+	bifrost.logger.Info("all request channels closed")
 }

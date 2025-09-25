@@ -65,8 +65,8 @@ type ProxyType string
 const (
 	// NoProxy indicates no proxy should be used
 	NoProxy ProxyType = "none"
-	// HttpProxy indicates an HTTP proxy should be used
-	HttpProxy ProxyType = "http"
+	// HTTPProxy indicates an HTTP proxy should be used
+	HTTPProxy ProxyType = "http"
 	// Socks5Proxy indicates a SOCKS5 proxy should be used
 	Socks5Proxy ProxyType = "socks5"
 	// EnvProxy indicates the proxy should be read from environment variables

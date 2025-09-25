@@ -27,7 +27,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		header: "Type",
 		cell: ({ row }) => {
 			return (
-				<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-sm`}>
+				<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-xs`}>
 					{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
 				</Badge>
 			);
@@ -39,7 +39,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		cell: ({ row }) => {
 			const provider = row.original.provider as ProviderName;
 			return (
-				<Badge variant="secondary" className={`font-mono text-sm uppercase`}>
+				<Badge variant="secondary" className={`font-mono text-xs uppercase`}>
 					<RenderProviderIcon provider={provider as ProviderIconType} size="sm" />
 					{provider}
 				</Badge>
@@ -49,7 +49,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 	{
 		accessorKey: "model",
 		header: "Model",
-		cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-sm font-normal">{row.original.model}</div>,
+		cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-xs font-normal">{row.original.model}</div>,
 	},
 	{
 		accessorKey: "latency",

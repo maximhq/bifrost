@@ -39,7 +39,7 @@ type AnthropicMessage struct {
 
 type AnthropicContent struct {
 	ContentStr    *string
-	ContentBlocks *[]AnthropicContentBlock
+	ContentBlocks []AnthropicContentBlock
 }
 
 // AnthropicTool represents a tool in Anthropic format
@@ -69,9 +69,9 @@ type AnthropicMessageRequest struct {
 	Temperature   *float64             `json:"temperature,omitempty"`
 	TopP          *float64             `json:"top_p,omitempty"`
 	TopK          *int                 `json:"top_k,omitempty"`
-	StopSequences *[]string            `json:"stop_sequences,omitempty"`
+	StopSequences []string            `json:"stop_sequences,omitempty"`
 	Stream        *bool                `json:"stream,omitempty"`
-	Tools         *[]AnthropicTool     `json:"tools,omitempty"`
+	Tools         []AnthropicTool     `json:"tools,omitempty"`
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
@@ -157,7 +157,7 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 		return json.Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return json.Marshal(*mc.ContentBlocks)
+		return json.Marshal(mc.ContentBlocks)
 	}
 	// If both are nil, return null
 	return json.Marshal(nil)
@@ -177,7 +177,7 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []AnthropicContentBlock
 	if err := json.Unmarshal(data, &arrayContent); err == nil {
-		mc.ContentBlocks = &arrayContent
+		mc.ContentBlocks = arrayContent
 		return nil
 	}
 
@@ -206,7 +206,7 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 			})
 		} else if r.System.ContentBlocks != nil {
 			contentBlocks := []schemas.ContentBlock{}
-			for _, block := range *r.System.ContentBlocks {
+			for _, block := range r.System.ContentBlocks {
 				contentBlocks = append(contentBlocks, schemas.ContentBlock{
 					Type: schemas.ContentBlockTypeText,
 					Text: block.Text,
@@ -215,7 +215,7 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 			messages = append(messages, schemas.BifrostMessage{
 				Role: schemas.ModelChatMessageRoleSystem,
 				Content: schemas.MessageContent{
-					ContentBlocks: &contentBlocks,
+					ContentBlocks: contentBlocks,
 				},
 			})
 		}
@@ -235,7 +235,7 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 			var toolCalls []schemas.ToolCall
 			var contentBlocks []schemas.ContentBlock
 
-			for _, content := range *msg.Content.ContentBlocks {
+			for _, content := range msg.Content.ContentBlocks {
 				switch content.Type {
 				case "text":
 					if content.Text != nil {
@@ -288,7 +288,7 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 								Text: content.Content.ContentStr,
 							})
 						} else if content.Content.ContentBlocks != nil {
-							for _, block := range *content.Content.ContentBlocks {
+							for _, block := range content.Content.ContentBlocks {
 								if block.Text != nil {
 									contentBlocks = append(contentBlocks, schemas.ContentBlock{
 										Type: schemas.ContentBlockTypeText,
@@ -323,20 +323,20 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 			// Concatenate all text contents
 			if len(contentBlocks) > 0 {
 				bifrostMsg.Content = schemas.MessageContent{
-					ContentBlocks: &contentBlocks,
+					ContentBlocks: contentBlocks,
 				}
 			}
 
 			if len(toolCalls) > 0 && msg.Role == string(schemas.ModelChatMessageRoleAssistant) {
 				bifrostMsg.AssistantMessage = &schemas.AssistantMessage{
-					ToolCalls: &toolCalls,
+					ToolCalls: toolCalls,
 				}
 			}
 		}
 		messages = append(messages, bifrostMsg)
 	}
 
-	bifrostReq.Input.ChatCompletionInput = &messages
+	bifrostReq.Input.ChatCompletionInput = messages
 
 	// Convert parameters
 	if r.MaxTokens > 0 || r.Temperature != nil || r.TopP != nil || r.TopK != nil || r.StopSequences != nil {
@@ -364,7 +364,7 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 	// Convert tools
 	if r.Tools != nil {
 		tools := []schemas.Tool{}
-		for _, tool := range *r.Tools {
+		for _, tool := range r.Tools {
 			// Convert input_schema to FunctionParameters
 			params := schemas.FunctionParameters{
 				Type: "object",
@@ -387,7 +387,7 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 		if bifrostReq.Params == nil {
 			bifrostReq.Params = &schemas.ModelParameters{}
 		}
-		bifrostReq.Params.Tools = &tools
+		bifrostReq.Params.Tools = tools
 	}
 
 	// Convert tool choice
@@ -482,7 +482,7 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 				Text: choice.Message.Content.ContentStr,
 			})
 		} else if choice.Message.Content.ContentBlocks != nil {
-			for _, block := range *choice.Message.Content.ContentBlocks {
+			for _, block := range choice.Message.Content.ContentBlocks {
 				if block.Text != nil {
 					content = append(content, AnthropicContentBlock{
 						Type: "text",
@@ -494,7 +494,7 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 
 		// Add tool calls as tool_use content
 		if choice.Message.AssistantMessage != nil && choice.Message.AssistantMessage.ToolCalls != nil {
-			for _, toolCall := range *choice.Message.AssistantMessage.ToolCalls {
+			for _, toolCall := range choice.Message.AssistantMessage.ToolCalls {
 				// Parse arguments JSON string back to map
 				var input map[string]interface{}
 				if toolCall.Function.Arguments != "" {

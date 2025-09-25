@@ -19,7 +19,7 @@ type OpenAIChatRequest struct {
 	FrequencyPenalty    *float64                 `json:"frequency_penalty,omitempty"`
 	LogitBias           map[string]float64       `json:"logit_bias,omitempty"`
 	User                *string                  `json:"user,omitempty"`
-	Tools               *[]schemas.Tool          `json:"tools,omitempty"` // Reuse schema type
+	Tools               []schemas.Tool          `json:"tools,omitempty"` // Reuse schema type
 	ToolChoice          *schemas.ToolChoice      `json:"tool_choice,omitempty"`
 	Stream              *bool                    `json:"stream,omitempty"`
 	LogProbs            *bool                    `json:"logprobs,omitempty"`
@@ -142,7 +142,7 @@ type OpenAIStreamChoice struct {
 type OpenAIStreamDelta struct {
 	Role      *string             `json:"role,omitempty"`
 	Content   *string             `json:"content,omitempty"`
-	ToolCalls *[]schemas.ToolCall `json:"tool_calls,omitempty"`
+	ToolCalls []schemas.ToolCall `json:"tool_calls,omitempty"`
 }
 
 // OpenAIStreamResponse represents a single chunk in the OpenAI streaming response
@@ -167,7 +167,7 @@ func (r *OpenAIChatRequest) ConvertToBifrostRequest(checkProviderFromModel bool)
 		Provider: provider,
 		Model:    model,
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &r.Messages,
+			ChatCompletionInput: r.Messages,
 		},
 		Params: filterParams(provider, params),
 	}
@@ -563,7 +563,7 @@ func DeriveOpenAIStreamFromBifrostResponse(bifrostResp *schemas.BifrostResponse)
 				delta.Content = choice.BifrostStreamResponseChoice.Delta.Content
 			}
 			if len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0 {
-				delta.ToolCalls = &choice.BifrostStreamResponseChoice.Delta.ToolCalls
+				delta.ToolCalls = choice.BifrostStreamResponseChoice.Delta.ToolCalls
 			}
 		} else if choice.BifrostNonStreamResponseChoice != nil {
 			// This is a non-streaming response - convert message to delta format

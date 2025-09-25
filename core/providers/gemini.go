@@ -17,7 +17,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// Response message for PredictionService.GenerateContent.
+// GenerateContentResponse represents the response message for PredictionService.GenerateContent.
 type GenerateContentResponse struct {
 	// Response variations returned by the model.
 	Candidates []*Candidate `json:"candidates,omitempty"`
@@ -25,7 +25,7 @@ type GenerateContentResponse struct {
 	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"`
 }
 
-// A response candidate generated from the model.
+// Candidate represents a response candidate generated from the model.
 type Candidate struct {
 	// Optional. Contains the multi-part content of the response.
 	Content *Content `json:"content,omitempty"`
@@ -36,7 +36,7 @@ type Candidate struct {
 	Index int32 `json:"index,omitempty"`
 }
 
-// Contains the multi-part content of a message.
+// Content represents the multi-part content of a message.
 type Content struct {
 	// Optional. List of parts that constitute a single message. Each part may have
 	// a different IANA MIME type.
@@ -47,7 +47,7 @@ type Content struct {
 	Role string `json:"role,omitempty"`
 }
 
-// A datatype containing media content.
+// Part represents a datatype containing media content.
 // Exactly one field within a Part should be set, representing the specific type
 // of content being conveyed. Using multiple fields within the same `Part`
 // instance is considered invalid.
@@ -58,13 +58,13 @@ type Part struct {
 	Text string `json:"text,omitempty"`
 }
 
-// Content blob.
+// Blob represents a content blob.
 type Blob struct {
 	// Required. Raw bytes.
 	Data []byte `json:"data,omitempty"`
 }
 
-// Usage metadata about response(s).
+// GenerateContentResponseUsageMetadata represents usage metadata about response(s).
 type GenerateContentResponseUsageMetadata struct {
 	// Number of tokens in the response(s). This includes all the generated response candidates.
 	CandidatesTokenCount int32 `json:"candidatesTokenCount,omitempty"`
@@ -198,10 +198,10 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, model string
 		if choice.Message.AssistantMessage == nil || choice.Message.AssistantMessage.ToolCalls == nil {
 			continue
 		}
-		for i, toolCall := range *choice.Message.AssistantMessage.ToolCalls {
+		for i, toolCall := range choice.Message.AssistantMessage.ToolCalls {
 			if (toolCall.ID == nil || *toolCall.ID == "") && toolCall.Function.Name != nil && *toolCall.Function.Name != "" {
 				id := *toolCall.Function.Name
-				(*choice.Message.AssistantMessage.ToolCalls)[i].ID = &id
+				choice.Message.AssistantMessage.ToolCalls[i].ID = &id
 			}
 		}
 	}
@@ -847,7 +847,7 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 
 		// Map standard parameters to Gemini generationConfig
 		if params.StopSequences != nil {
-			generationConfig["stopSequences"] = *params.StopSequences
+			generationConfig["stopSequences"] = params.StopSequences
 		}
 		if params.MaxTokens != nil {
 			generationConfig["maxOutputTokens"] = *params.MaxTokens
@@ -869,10 +869,10 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 		}
 
 		// Handle tool-related parameters
-		if params.Tools != nil && len(*params.Tools) > 0 {
+		if len(params.Tools) > 0 {
 			// Transform Bifrost tools to Gemini format
 			var geminiTools []map[string]interface{}
-			for _, tool := range *params.Tools {
+			for _, tool := range params.Tools {
 				if tool.Type == "function" {
 					geminiTool := map[string]interface{}{
 						"functionDeclarations": []map[string]interface{}{

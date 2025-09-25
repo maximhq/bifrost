@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -29,6 +30,8 @@ type PricingManager struct {
 	syncTicker *time.Ticker
 	done       chan struct{}
 	wg         sync.WaitGroup
+	syncCtx    context.Context
+	syncCancel context.CancelFunc
 }
 
 // PricingData represents the structure of the pricing.json file
@@ -66,7 +69,8 @@ type PricingEntry struct {
 	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
 }
 
-func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingManager, error) {
+// Init initializes the pricing manager
+func Init(ctx context.Context, configStore configstore.ConfigStore, logger schemas.Logger) (*PricingManager, error) {
 	pm := &PricingManager{
 		configStore: configStore,
 		logger:      logger,
@@ -76,24 +80,25 @@ func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingM
 
 	if configStore != nil {
 		// Load initial pricing data
-		if err := pm.loadPricingFromDatabase(); err != nil {
+		if err := pm.loadPricingFromDatabase(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
 		}
 
 		// For the bootup we sync pricing data from file to database
-		if err := pm.syncPricing(); err != nil {
+		if err := pm.syncPricing(ctx); err != nil {
 			return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 		}
 		
 	} else {
 		// Load pricing data from config memory
-		if err := pm.loadPricingIntoMemory(); err != nil {
+		if err := pm.loadPricingIntoMemory(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load pricing data from config memory: %w", err)
 		}
 	}
 
 	// Start background sync worker
-	pm.startSyncWorker()
+	pm.syncCtx, pm.syncCancel = context.WithCancel(ctx)
+	pm.startSyncWorker(pm.syncCtx)
 	pm.configStore = configStore
 	pm.logger = logger
 
@@ -201,6 +206,9 @@ func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostRes
 }
 
 func (pm *PricingManager) Cleanup() error {
+	if pm.syncCancel != nil {
+		pm.syncCancel()
+	}
 	if pm.syncTicker != nil {
 		pm.syncTicker.Stop()
 	}

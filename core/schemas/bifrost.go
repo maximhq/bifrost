@@ -100,6 +100,8 @@ type BifrostContextKey string
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
+	BifrostContextKeyRequestID          BifrostContextKey = "request-id"
+	BifrostContextKeyVirtualKeyHeader   BifrostContextKey = "x-bf-vk"
 	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
 	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
 	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
@@ -116,7 +118,7 @@ const (
 // a text completion, a chat completion, an embedding request, a speech request, or a transcription request.
 type RequestInput struct {
 	TextCompletionInput *string             `json:"text_completion_input,omitempty"`
-	ChatCompletionInput *[]BifrostMessage   `json:"chat_completion_input,omitempty"`
+	ChatCompletionInput []BifrostMessage   `json:"chat_completion_input,omitempty"`
 	EmbeddingInput      *EmbeddingInput     `json:"embedding_input,omitempty"`
 	SpeechInput         *SpeechInput        `json:"speech_input,omitempty"`
 	TranscriptionInput  *TranscriptionInput `json:"transcription_input,omitempty"`
@@ -293,12 +295,12 @@ type Fallback struct {
 // mapped to the provider's parameters.
 type ModelParameters struct {
 	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
-	Tools             *[]Tool     `json:"tools,omitempty"`               // Tools to use
+	Tools             []Tool     `json:"tools,omitempty"`               // Tools to use
 	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
 	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
 	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
 	MaxTokens         *int        `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
-	StopSequences     *[]string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	StopSequences     []string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
 	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
 	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
 	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
@@ -316,7 +318,7 @@ type FunctionParameters struct {
 	Description *string                `json:"description,omitempty"` // Description of the parameters
 	Required    []string               `json:"required,omitempty"`    // Required parameter names
 	Properties  map[string]interface{} `json:"properties,omitempty"`  // Parameter properties
-	Enum        *[]string              `json:"enum,omitempty"`        // Enum values for the parameters
+	Enum        []string              `json:"enum,omitempty"`        // Enum values for the parameters
 }
 
 // Function represents a function that can be called by the model.
@@ -424,7 +426,7 @@ type BifrostMessage struct {
 
 type MessageContent struct {
 	ContentStr    *string
-	ContentBlocks *[]ContentBlock
+	ContentBlocks []ContentBlock
 }
 
 // MarshalJSON implements custom JSON marshalling for MessageContent.
@@ -439,7 +441,7 @@ func (mc MessageContent) MarshalJSON() ([]byte, error) {
 		return sonic.Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return sonic.Marshal(*mc.ContentBlocks)
+		return sonic.Marshal(mc.ContentBlocks)
 	}
 	// If both are nil, return null
 	return sonic.Marshal(nil)
@@ -459,7 +461,7 @@ func (mc *MessageContent) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ContentBlock
 	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
-		mc.ContentBlocks = &arrayContent
+		mc.ContentBlocks = arrayContent
 		return nil
 	}
 
@@ -490,11 +492,11 @@ type ToolMessage struct {
 type AssistantMessage struct {
 	Refusal     *string      `json:"refusal,omitempty"`
 	Annotations []Annotation `json:"annotations,omitempty"`
-	ToolCalls   *[]ToolCall  `json:"tool_calls,omitempty"`
+	ToolCalls   []ToolCall  `json:"tool_calls,omitempty"`
 	Thought     *string      `json:"thought,omitempty"`
 }
 
-// ImageContent represents image data in a message.
+// ImageURLStruct represents image data in a message.
 type ImageURLStruct struct {
 	URL    string  `json:"url"`
 	Detail *string `json:"detail,omitempty"`
@@ -638,8 +640,8 @@ type BifrostEmbedding struct {
 
 type BifrostEmbeddingResponse struct {
 	EmbeddingStr     *string
-	EmbeddingArray   *[]float32
-	Embedding2DArray *[][]float32
+	EmbeddingArray   []float32
+	Embedding2DArray [][]float32
 }
 
 func (be BifrostEmbeddingResponse) MarshalJSON() ([]byte, error) {
@@ -666,14 +668,14 @@ func (be *BifrostEmbeddingResponse) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct array of float32
 	var arrayContent []float32
 	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
-		be.EmbeddingArray = &arrayContent
+		be.EmbeddingArray = arrayContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct 2D array of float32
 	var arrayContent2D [][]float32
 	if err := sonic.Unmarshal(data, &arrayContent2D); err == nil {
-		be.Embedding2DArray = &arrayContent2D
+		be.Embedding2DArray = arrayContent2D
 		return nil
 	}
 
@@ -792,8 +794,8 @@ type TranscriptionUsage struct {
 type BifrostResponseExtraFields struct {
 	Provider    ModelProvider      `json:"provider"`
 	Params      ModelParameters    `json:"model_params"`
-	Latency     *int64              `json:"latency,omitempty"`
-	ChatHistory *[]BifrostMessage  `json:"chat_history,omitempty"`
+	Latency     *int64             `json:"latency,omitempty"`
+	ChatHistory []BifrostMessage  `json:"chat_history,omitempty"`
 	BilledUsage *BilledLLMUsage    `json:"billed_usage,omitempty"`
 	ChunkIndex  int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse interface{}        `json:"raw_response,omitempty"`

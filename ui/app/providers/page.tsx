@@ -49,7 +49,6 @@ export default function Providers() {
 
 	useEffect(() => {
 		if (!provider) return;
-		console.log("provider", provider);
 		const newSelectedProvider = allProviders.find((p) => p.name === provider) ?? customProviders.find((p) => p.name === provider);
 		if (newSelectedProvider) {
 			dispatch(setSelectedProvider(newSelectedProvider));
@@ -82,7 +81,7 @@ export default function Providers() {
 	}, [provider]);
 
 	useEffect(() => {
-		if (selectedProvider || !allProviders || allProviders.length === 0) return;
+		if (selectedProvider || !allProviders || allProviders.length === 0 || provider) return;
 		setProvider(allProviders[0].name);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [selectedProvider, allProviders]);

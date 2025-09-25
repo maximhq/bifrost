@@ -1,6 +1,7 @@
 package logstore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -23,13 +24,13 @@ type SQLiteLogStore struct {
 }
 
 // Create inserts a new log entry into the database.
-func (s *SQLiteLogStore) Create(entry *Log) error {
-	return s.db.Create(entry).Error
+func (s *SQLiteLogStore) Create(ctx context.Context, entry *Log) error {
+	return s.db.WithContext(ctx).Create(entry).Error
 }
 
 // Update updates a log entry in the database.
-func (s *SQLiteLogStore) Update(id string, entry any) error {
-	tx := s.db.Model(&Log{}).Where("id = ?", id).Updates(entry)
+func (s *SQLiteLogStore) Update(ctx context.Context, id string, entry any) error {
+	tx := s.db.WithContext(ctx).Model(&Log{}).Where("id = ?", id).Updates(entry)
 	if errors.Is(tx.Error, gorm.ErrRecordNotFound) {
 		return ErrNotFound
 	}
@@ -40,8 +41,8 @@ func (s *SQLiteLogStore) Update(id string, entry any) error {
 }
 
 // SearchLogs searches for logs in the database.
-func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
-	baseQuery := s.db.Model(&Log{})
+func (s *SQLiteLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 
 	// Apply filters efficiently
 	if len(filters.Providers) > 0 {
@@ -179,7 +180,7 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 		}
 		return nil, err
 	}
-	
+
 	return &SearchResult{
 		Logs:       logs,
 		Pagination: pagination,
@@ -188,9 +189,9 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 }
 
 // FindFirst gets a log entry from the database.
-func (s *SQLiteLogStore) FindFirst(query any, fields ...string) (*Log, error) {
+func (s *SQLiteLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
 	var log Log
-	if err := s.db.Select(fields).Where(query).First(&log).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select(fields).Where(query).First(&log).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -199,9 +200,9 @@ func (s *SQLiteLogStore) FindFirst(query any, fields ...string) (*Log, error) {
 	return &log, nil
 }
 
-// CleanupLogs deletes old log entries from the database.
-func (s *SQLiteLogStore) CleanupLogs(since time.Time) error {
-	result := s.db.Where("status = ? AND created_at < ?", "processing", since).Delete(&Log{})
+// Flush deletes old log entries from the database.
+func (s *SQLiteLogStore) Flush(ctx context.Context, since time.Time) error {
+	result := s.db.WithContext(ctx).Where("status = ? AND created_at < ?", "processing", since).Delete(&Log{})
 	if result.Error != nil {
 		return fmt.Errorf("failed to cleanup old processing logs: %w", result.Error)
 	}
@@ -209,9 +210,9 @@ func (s *SQLiteLogStore) CleanupLogs(since time.Time) error {
 }
 
 // FindAll finds all log entries from the database.
-func (s *SQLiteLogStore) FindAll(query any, fields ...string) ([]*Log, error) {
+func (s *SQLiteLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
-	if err := s.db.Select(fields).Where(query).Find(&logs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select(fields).Where(query).Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}
@@ -220,14 +221,23 @@ func (s *SQLiteLogStore) FindAll(query any, fields ...string) ([]*Log, error) {
 	return logs, nil
 }
 
-func newSqliteLogStore(config *SQLiteConfig, logger schemas.Logger) (*SQLiteLogStore, error) {
+// Close closes the SQLite log store.
+func (s *SQLiteLogStore) Close(ctx context.Context) error {
+	sqlDB, err := s.db.WithContext(ctx).DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
+}
+
+func newSqliteLogStore(ctx context.Context, config *SQLiteConfig, logger schemas.Logger) (*SQLiteLogStore, error) {
 	// Configure SQLite with proper settings to handle concurrent access
-	dsn := fmt.Sprintf("%s??_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000", config.Path)
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000", config.Path)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&Log{}); err != nil {
+	if err := db.WithContext(ctx).AutoMigrate(&Log{}); err != nil {
 		return nil, err
 	}
 	return &SQLiteLogStore{db: db, logger: logger}, nil

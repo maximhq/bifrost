@@ -186,7 +186,7 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	switch proxyConfig.Type {
 	case schemas.NoProxy:
 		return client
-	case schemas.HttpProxy:
+	case schemas.HTTPProxy:
 		if proxyConfig.URL == "" {
 			logger.Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
@@ -197,7 +197,7 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			logger.Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
 			return client
 		}
-		proxyUrl := proxyConfig.URL
+		proxyURL := proxyConfig.URL
 		// Add authentication if provided
 		if proxyConfig.Username != "" && proxyConfig.Password != "" {
 			parsedURL, err := url.Parse(proxyConfig.URL)
@@ -207,9 +207,9 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			}
 			// Set user and password in the parsed URL
 			parsedURL.User = url.UserPassword(proxyConfig.Username, proxyConfig.Password)
-			proxyUrl = parsedURL.String()
+			proxyURL = parsedURL.String()
 		}
-		dialFunc = fasthttpproxy.FasthttpSocksDialer(proxyUrl)
+		dialFunc = fasthttpproxy.FasthttpSocksDialer(proxyURL)
 	case schemas.EnvProxy:
 		// Use environment variables for proxy configuration
 		dialFunc = fasthttpproxy.FasthttpProxyHTTPDialer()
@@ -231,7 +231,7 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 // The Authorization header is excluded for security reasons.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders *[]string) {
+func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
 	if extraHeaders == nil {
 		return
 	}
@@ -243,7 +243,7 @@ func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skip
 			continue
 		}
 		if skipHeaders != nil {
-			if slices.Contains(*skipHeaders, key) {
+			if slices.Contains(skipHeaders, key) {
 				continue
 			}
 		}
@@ -259,7 +259,7 @@ func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skip
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skipHeaders *[]string) {
+func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
 	if extraHeaders == nil {
 		return
 	}
@@ -271,7 +271,7 @@ func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skip
 			continue
 		}
 		if skipHeaders != nil {
-			if slices.Contains(*skipHeaders, key) {
+			if slices.Contains(skipHeaders, key) {
 				continue
 			}
 		}

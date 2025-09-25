@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -79,7 +82,7 @@ func NewBifrostHTTPServer(version string, uiContent embed.FS) *BifrostHTTPServer
 // - If appDir is provided (non-empty), it returns that instead
 func GetDefaultConfigDir(appDir string) string {
 	// If appDir is provided, use it directly
-	if appDir != "" && appDir != "./bifrost-data" {
+	if appDir != "" {
 		return appDir
 	}
 
@@ -122,6 +125,35 @@ func RegisterCollectorSafely(collector prometheus.Collector) {
 	}
 }
 
+// MarshalPluginConfig marshals the plugin configuration
+func MarshalPluginConfig[T any](source any) (*T, error) {
+	// If its a *T, then we will confirm
+	if config, ok := source.(*T); ok {
+		return config, nil
+	}
+	// Initialize a new instance for unmarshaling
+	config := new(T)
+	// If its a map[string]any, then we will JSON parse and confirm
+	if configMap, ok := source.(map[string]any); ok {
+		configString, err := sonic.Marshal(configMap)
+		if err != nil {
+			return nil, err
+		}
+		if err := sonic.Unmarshal([]byte(configString), config); err != nil {
+			return nil, err
+		}
+		return config, nil
+	}
+	// If its a string, then we will JSON parse and confirm
+	if configStr, ok := source.(string); ok {
+		if err := sonic.Unmarshal([]byte(configStr), config); err != nil {
+			return nil, err
+		}
+		return config, nil
+	}
+	return nil, fmt.Errorf("invalid config type")
+}
+
 // LoadPlugin loads a plugin by name and returns it as type T.
 func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
 	var zero T
@@ -136,7 +168,7 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 		}
 		return zero, fmt.Errorf("telemetry plugin type mismatch")
 	case logging.PluginName:
-		plugin, err := logging.Init(logger, bifrostConfig.LogsStore, bifrostConfig.PricingManager)
+		plugin, err := logging.Init(ctx, logger, bifrostConfig.LogsStore, bifrostConfig.PricingManager)
 		if err != nil {
 			return zero, err
 		}
@@ -145,53 +177,58 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 		}
 		return zero, fmt.Errorf("logging plugin type mismatch")
 	case governance.PluginName:
-		if governanceConfig, ok := pluginConfig.(*governance.Config); ok {
-			plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("governance plugin type mismatch")
+		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal governance plugin config: %v", err)
 		}
-		return zero, fmt.Errorf("governance plugin config is not a governance.Config")
+		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("governance plugin type mismatch")
 	case maxim.PluginName:
 		// And keep backward compatibility for ENV variables
-		if maximConfig, ok := pluginConfig.(maxim.Config); ok {
-			plugin, err := maxim.Init(maximConfig)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("maxim plugin type mismatch")
+		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal maxim plugin config: %v", err)
 		}
-		return zero, fmt.Errorf("maxim plugin config is not a maxim.Config")
+		plugin, err := maxim.Init(maximConfig)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("maxim plugin type mismatch")
 	case semanticcache.PluginName:
-		if semanticcacheConfig, ok := pluginConfig.(*semanticcache.Config); ok {
-			plugin, err := semanticcache.Init(ctx, semanticcacheConfig, logger, bifrostConfig.VectorStore)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("semantic cache plugin type mismatch")
+		semanticcacheConfig, err := MarshalPluginConfig[semanticcache.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal semantic cache plugin config: %v", err)
 		}
-		return zero, fmt.Errorf("semantic cache plugin config is not a semanticcache.Config")
+		plugin, err := semanticcache.Init(ctx, semanticcacheConfig, logger, bifrostConfig.VectorStore)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("semantic cache plugin type mismatch")
 	case otel.PluginName:
-		if otelConfig, ok := pluginConfig.(*otel.Config); ok {
-			plugin, err := otel.Init(ctx, otelConfig, logger)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("otel plugin type mismatch")
+		otelConfig, err := MarshalPluginConfig[otel.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal otel plugin config: %v", err)
 		}
+		plugin, err := otel.Init(ctx, otelConfig, logger, bifrostConfig.PricingManager)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("otel plugin type mismatch")
 	}
 	return zero, fmt.Errorf("plugin %s not found", name)
 }
@@ -200,11 +237,10 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
 	var err error
 	plugins := []schemas.Plugin{}
-
 	// Initialize telemetry plugin
 	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, config)
 	if err != nil {
-		logger.Fatal("failed to initialize telemetry plugin: %v", err)
+		logger.Error("failed to initialize telemetry plugin: %v", err)
 	} else {
 		plugins = append(plugins, promPlugin)
 	}
@@ -214,7 +250,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 		// Use dedicated logs database with high-scale optimizations
 		loggingPlugin, err = LoadPlugin[*logging.LoggerPlugin](ctx, logging.PluginName, nil, config)
 		if err != nil {
-			logger.Fatal("failed to initialize logging plugin: %v", err)
+			logger.Error("failed to initialize logging plugin: %v", err)
 		} else {
 			plugins = append(plugins, loggingPlugin)
 		}
@@ -267,11 +303,20 @@ func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (
 
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, pluginConfig any) error {
+	logger.Debug("reloading plugin %s", name)
 	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, pluginConfig, s.Config)
 	if err != nil {
 		return err
 	}
 	if err := s.Client.ReloadPlugin(newPlugin); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RemovePlugin removes a plugin from the server.
+func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error {
+	if err := s.Client.RemovePlugin(name); err != nil {
 		return err
 	}
 	return nil
@@ -380,19 +425,19 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	configDir := GetDefaultConfigDir(s.AppDir)
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
-		logger.Fatal("failed to create app directory %s: %v", configDir, err)
+		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
 	}
 	// Initialize high-performance configuration store with dedicated database
 	s.Config, err = lib.LoadConfig(ctx, configDir)
 	if err != nil {
-		logger.Fatal("failed to load config %v", err)
+		return fmt.Errorf("failed to load config %v", err)
 	}
 	s.InitializeTelemetry()
 	logger.Debug("prometheus Go/Process collectors registered.")
 	// Load plugins
 	s.Plugins, err = LoadPlugins(ctx, s.Config)
 	if err != nil {
-		logger.Fatal("failed to load plugins %v", err)
+		return fmt.Errorf("failed to load plugins %v", err)
 	}
 	// Initialize bifrost client
 	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
@@ -407,7 +452,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Logger:             logger,
 	})
 	if err != nil {
-		logger.Fatal("failed to initialize bifrost: %v", err)
+		return fmt.Errorf("failed to initialize bifrost: %v", err)
 	}
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes
@@ -421,7 +466,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            CorsMiddleware(s.Config, s.Router.Handler),
+		Handler:            CorsMiddleware(s.Config)(s.Router.Handler),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 	}
 	return nil
@@ -433,7 +478,8 @@ func (s *BifrostHTTPServer) Start() error {
 	// Create channels for signal and error handling
 	sigChan := make(chan os.Signal, 1)
 	errChan := make(chan error, 1)
-	// Initializing server		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// Watching for signals
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	// Start server in a goroutine
 	serverAddr := net.JoinHostPort(s.Host, s.Port)
 	go func() {
@@ -461,7 +507,24 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()
+			logger.Info("bifrost client shutdown completed")
+			logger.Info("cleaning up storage engines...")
+			// Cleaning up storage engines
+			if s.Config != nil && s.Config.PricingManager != nil {
+				s.Config.PricingManager.Cleanup()
+			}
+			if s.Config != nil && s.Config.ConfigStore != nil {
+				s.Config.ConfigStore.Close(shutdownCtx)
+			}
+			if s.Config != nil && s.Config.LogsStore != nil {
+				s.Config.LogsStore.Close(shutdownCtx)
+			}
+			if s.Config != nil && s.Config.VectorStore != nil {
+				s.Config.VectorStore.Close(shutdownCtx, "")
+			}
+			logger.Info("storage engines cleanup completed")
 		}()
 		select {
 		case <-done:

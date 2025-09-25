@@ -74,7 +74,6 @@ export default function TranscriptionView({ transcriptionInput, transcriptionOut
 							<>
 								{/* Main Transcription Text */}
 								<div>
-									<div className="text-muted-foreground mb-2 text-xs font-medium">TRANSCRIBED TEXT</div>
 									<div className="font-mono text-xs">{transcriptionOutput?.text}</div>
 								</div>
 
