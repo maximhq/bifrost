@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -122,6 +123,34 @@ func RegisterCollectorSafely(collector prometheus.Collector) {
 	}
 }
 
+// MarshalPluginConfig marshals the plugin configuration
+func MarshalPluginConfig[T any](source any) (*T, error) {
+	var config *T
+	// If its a *T, then we will confirm
+	if config, ok := source.(*T); ok {
+		return config, nil
+	}
+	// If its a map[string]any, then we will JSON parse and confirm
+	if configMap, ok := source.(map[string]any); ok {
+		configString, err := sonic.Marshal(configMap)
+		if err != nil {
+			return nil, err
+		}
+		if err := sonic.Unmarshal([]byte(configString), &config); err != nil {
+			return nil, err
+		}
+		return config, nil
+	}
+	// If its a string, then we will JSON parse and confirm
+	if configStr, ok := source.(string); ok {
+		if err := sonic.Unmarshal([]byte(configStr), &config); err != nil {
+			return nil, err
+		}
+		return config, nil
+	}
+	return nil, fmt.Errorf("invalid config type")
+}
+
 // LoadPlugin loads a plugin by name and returns it as type T.
 func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
 	var zero T
@@ -145,53 +174,57 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 		}
 		return zero, fmt.Errorf("logging plugin type mismatch")
 	case governance.PluginName:
-		if governanceConfig, ok := pluginConfig.(*governance.Config); ok {
-			plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("governance plugin type mismatch")
+		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal governance plugin config: %v", err)
 		}
-		return zero, fmt.Errorf("governance plugin config is not a governance.Config")
+		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
 	case maxim.PluginName:
 		// And keep backward compatibility for ENV variables
-		if maximConfig, ok := pluginConfig.(maxim.Config); ok {
-			plugin, err := maxim.Init(maximConfig)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("maxim plugin type mismatch")
+		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal maxim plugin config: %v", err)
 		}
-		return zero, fmt.Errorf("maxim plugin config is not a maxim.Config")
+		plugin, err := maxim.Init(maximConfig)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("maxim plugin type mismatch")
 	case semanticcache.PluginName:
-		if semanticcacheConfig, ok := pluginConfig.(*semanticcache.Config); ok {
-			plugin, err := semanticcache.Init(ctx, semanticcacheConfig, logger, bifrostConfig.VectorStore)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("semantic cache plugin type mismatch")
+		semanticcacheConfig, err := MarshalPluginConfig[semanticcache.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal semantic cache plugin config: %v", err)
 		}
-		return zero, fmt.Errorf("semantic cache plugin config is not a semanticcache.Config")
+		plugin, err := semanticcache.Init(ctx, semanticcacheConfig, logger, bifrostConfig.VectorStore)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("semantic cache plugin type mismatch")
 	case otel.PluginName:
-		if otelConfig, ok := pluginConfig.(*otel.Config); ok {
-			plugin, err := otel.Init(ctx, otelConfig, logger)
-			if err != nil {
-				return zero, err
-			}
-			if p, ok := any(plugin).(T); ok {
-				return p, nil
-			}
-			return zero, fmt.Errorf("otel plugin type mismatch")
+		otelConfig, err := MarshalPluginConfig[otel.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal otel plugin config: %v", err)
 		}
+		plugin, err := otel.Init(ctx, otelConfig, logger)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("otel plugin type mismatch")
 	}
 	return zero, fmt.Errorf("plugin %s not found", name)
 }
@@ -200,7 +233,6 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
 	var err error
 	plugins := []schemas.Plugin{}
-
 	// Initialize telemetry plugin
 	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, config)
 	if err != nil {
@@ -267,6 +299,7 @@ func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (
 
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, pluginConfig any) error {
+	logger.Debug("reloading plugin %s", name)
 	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, pluginConfig, s.Config)
 	if err != nil {
 		return err

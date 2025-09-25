@@ -308,6 +308,7 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 		found := false
 		for i, p := range newPlugins {
 			if p.GetName() == plugin.GetName() {
+				bifrost.logger.Debug("replacing plugin %s with new instance", plugin.GetName())
 				newPlugins[i] = plugin
 				found = true
 				break
@@ -315,6 +316,7 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 		}
 		if !found{
 			// This means that user is adding a new plugin
+			bifrost.logger.Debug("adding new plugin %s", plugin.GetName())
 			newPlugins = append(newPlugins, plugin)
 		}
 		// Atomic compare-and-swap
@@ -995,9 +997,9 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
-	pipeline := bifrost.getPluginPipeline()
+	pipeline := bifrost.getPluginPipeline()	
 	defer bifrost.releasePluginPipeline(pipeline)
-
+	
 	preReq, shortCircuit, preCount := pipeline.RunPreHooks(&ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
@@ -1023,7 +1025,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 
 	msg := bifrost.getChannelMessage(*preReq, requestType)
 	msg.Context = ctx
-
+	startTime := time.Now()
 	select {
 	case queue <- *msg:
 		// Message was sent successfully
@@ -1049,6 +1051,10 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	var resp *schemas.BifrostResponse
 	select {
 	case result = <-msg.Response:
+		latency := time.Since(startTime).Milliseconds()
+		if result.ExtraFields.Latency == nil {
+			result.ExtraFields.Latency = &latency
+		}
 		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(*bifrost.plugins.Load()))
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
@@ -1172,7 +1178,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 		// Marking final chunk
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
-		recoveredResp, recoveredErr := pipeline.RunPostHooks(&ctx, nil, &bifrostErrVal, len(bifrost.plugins))
+		recoveredResp, recoveredErr := pipeline.RunPostHooks(&ctx, nil, &bifrostErrVal, len(*bifrost.plugins.Load()))
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
 			return nil, recoveredErr
@@ -1371,10 +1377,11 @@ func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage,
 // PLUGIN MANAGEMENT
 
 // RunPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
-func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, int) {
+func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, int) {	
 	var shortCircuit *schemas.PluginShortCircuit
 	var err error
 	for i, plugin := range p.plugins {
+		p.logger.Debug("running PreHook for plugin %s", plugin.GetName())
 		req, shortCircuit, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			p.preHookErrors = append(p.preHookErrors, err)
@@ -1391,16 +1398,17 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 // RunPostHooks executes PostHooks in reverse order for the plugins whose PreHook ran.
 // Accepts the response and error, and allows plugins to transform either (e.g., recover from error, or invalidate a response).
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
-func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, count int) (*schemas.BifrostResponse, *schemas.BifrostError) {
+// runFrom is the index of the first plugin to run and it runs until the first plugin in the array i.e. 0
+func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Defensive: ensure count is within valid bounds
-	if count < 0 {
-		count = 0
+	if runFrom < 0 {
+		runFrom = 0
 	}
-	if count > len(p.plugins) {
-		count = len(p.plugins)
+	if runFrom > len(p.plugins) {
+		runFrom = len(p.plugins)
 	}
 	var err error
-	for i := count - 1; i >= 0; i-- {
+	for i := runFrom - 1; i >= 0; i-- {
 		plugin := p.plugins[i]
 		resp, bifrostErr, err = plugin.PostHook(ctx, resp, bifrostErr)
 		if err != nil {

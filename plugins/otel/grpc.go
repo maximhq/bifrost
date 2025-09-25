@@ -5,6 +5,7 @@ import (
 
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // OtelClientGRPC is the implementation of the OpenTelemetry client for gRPC
@@ -14,7 +15,7 @@ type OtelClientGRPC struct {
 
 // NewOtelClientGRPC creates a new OpenTelemetry client for gRPC
 func NewOtelClientGRPC(endpoint string) (*OtelClientGRPC, error) {
-	conn, err := grpc.NewClient(endpoint)
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
