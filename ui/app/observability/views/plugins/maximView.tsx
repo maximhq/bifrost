@@ -1,11 +1,16 @@
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { MaximConfigSchema, MaximFormSchema } from "@/lib/types/schemas";
+import { useMemo } from "react";
 import { toast } from "sonner";
 import { MaximFormFragment } from "../../fragments/maximFormFragment";
 
 export default function MaximView() {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const [updatePlugin, { isLoading: isUpdatingPlugin }] = useUpdatePluginMutation();
+	const currentConfig = useMemo(
+		() => ({ ...((selectedPlugin?.config as MaximConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
+		[selectedPlugin],
+	);
 
 	const handleMaximConfigSave = (config: MaximFormSchema): Promise<void> => {
 		return new Promise((resolve, reject) => {
@@ -29,8 +34,6 @@ export default function MaximView() {
 				});
 		});
 	};
-
-	const currentConfig = { ...((selectedPlugin?.config as MaximConfigSchema) ?? {}), enabled: selectedPlugin?.enabled };
 
 	return (
 		<div className="flex w-full flex-col gap-4">

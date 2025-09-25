@@ -1,0 +1,36 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "config_store": {
+      "enabled": true,
+      "type": "sqlite",
+      "config": {
+        "path": "../../tests/configs/withobservability/config.db"
+      }
+    },
+    "logs_store": {
+      "enabled": true,
+      "type": "sqlite",
+      "config": {
+        "path": "../../tests/configs/withobservability/logs.db"
+      }
+    },
+    "plugins": [
+      {
+        "enabled": true,
+        "name": "maxim",
+        "config": {
+          "api_key": "",
+          "log_repo_id": ""
+        }
+      },
+      {
+        "enabled": true,
+        "name": "otel",
+        "config": {
+          "collector_url": "http://localhost:4318/v1/traces",
+          "trace_type": "otel",
+          "protocol": "http"
+        }
+      }
+    ]
+  }

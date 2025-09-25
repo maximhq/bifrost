@@ -58,11 +58,11 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 		}
 		return vals, inputTokens, nil
 	} else if embedding.EmbeddingArray != nil {
-		return *embedding.EmbeddingArray, inputTokens, nil
-	} else if embedding.Embedding2DArray != nil && len(*embedding.Embedding2DArray) > 0 {
+		return embedding.EmbeddingArray, inputTokens, nil
+	} else if embedding.Embedding2DArray != nil && len(embedding.Embedding2DArray) > 0 {
 		// Flatten 2D array into single embedding
 		var flattened []float32
-		for _, arr := range *embedding.Embedding2DArray {
+		for _, arr := range embedding.Embedding2DArray {
 			flattened = append(flattened, arr...)
 		}
 		return flattened, inputTokens, nil
@@ -138,7 +138,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 			metadata["max_tokens"] = *req.Params.MaxTokens
 		}
 		if req.Params.StopSequences != nil {
-			metadata["stop_sequences"] = *req.Params.StopSequences
+			metadata["stop_sequences"] = req.Params.StopSequences
 		}
 		if req.Params.PresencePenalty != nil {
 			metadata["presence_penalty"] = *req.Params.PresencePenalty
@@ -161,7 +161,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 	metadata["stream"] = plugin.isStreamingRequest(requestType)
 
 	if req.Params != nil && req.Params.Tools != nil {
-		if toolsJSON, err := json.Marshal(*req.Params.Tools); err != nil {
+		if toolsJSON, err := json.Marshal(req.Params.Tools); err != nil {
 			plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err))
 		} else {
 			toolHash := xxhash.Sum64(toolsJSON)
@@ -183,7 +183,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 
 		// Serialize chat messages for embedding
 		var textParts []string
-		for _, msg := range *reqInput.ChatCompletionInput {
+		for _, msg := range reqInput.ChatCompletionInput {
 			// Extract content as string
 			var content string
 			if msg.Content.ContentStr != nil {
@@ -191,7 +191,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 			} else if msg.Content.ContentBlocks != nil {
 				// For content blocks, extract text parts
 				var blockTexts []string
-				for _, block := range *msg.Content.ContentBlocks {
+				for _, block := range msg.Content.ContentBlocks {
 					if block.Text != nil {
 						blockTexts = append(blockTexts, *block.Text)
 					}
@@ -392,7 +392,7 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.R
 
 	// Handle chat completion normalization
 	if reqInput.ChatCompletionInput != nil {
-		originalMessages := *reqInput.ChatCompletionInput
+		originalMessages := reqInput.ChatCompletionInput
 		normalizedMessages := make([]schemas.BifrostMessage, 0, len(originalMessages))
 
 		for _, msg := range originalMessages {
@@ -410,21 +410,21 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.R
 				normalizedMsg.Content.ContentStr = &normalizedContent
 			} else if msg.Content.ContentBlocks != nil {
 				// Create a copy of content blocks with normalized text
-				normalizedBlocks := make([]schemas.ContentBlock, len(*msg.Content.ContentBlocks))
-				for i, block := range *msg.Content.ContentBlocks {
+				normalizedBlocks := make([]schemas.ContentBlock, len(msg.Content.ContentBlocks))
+				for i, block := range msg.Content.ContentBlocks {
 					normalizedBlocks[i] = block
 					if block.Text != nil {
 						normalizedText := normalizeText(*block.Text)
 						normalizedBlocks[i].Text = &normalizedText
 					}
 				}
-				normalizedMsg.Content.ContentBlocks = &normalizedBlocks
+				normalizedMsg.Content.ContentBlocks = normalizedBlocks
 			}
 
 			normalizedMessages = append(normalizedMessages, normalizedMsg)
 		}
 
-		reqInput.ChatCompletionInput = &normalizedMessages
+		reqInput.ChatCompletionInput = normalizedMessages
 	}
 
 	if reqInput.SpeechInput != nil {
@@ -451,7 +451,7 @@ func (plugin *Plugin) isConversationHistoryThresholdExceeded(req *schemas.Bifros
 	switch {
 	case req.Input.ChatCompletionInput != nil:
 		input := plugin.getInputForCaching(req)
-		if len(*input.ChatCompletionInput) > plugin.config.ConversationHistoryThreshold {
+		if len(input.ChatCompletionInput) > plugin.config.ConversationHistoryThreshold {
 			return true
 		}
 		return false

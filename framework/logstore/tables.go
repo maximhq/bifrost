@@ -75,10 +75,10 @@ type Log struct {
 	Model               string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.BifrostMessage
 	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostMessage
-	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *[][]float32
+	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
 	Params              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
-	Tools               string    `gorm:"type:text" json:"-"` // JSON serialized *[]schemas.Tool
-	ToolCalls           string    `gorm:"type:text" json:"-"` // JSON serialized *[]schemas.ToolCall
+	Tools               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
+	ToolCalls           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall
 	SpeechInput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
 	TranscriptionInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
 	SpeechOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
@@ -102,10 +102,10 @@ type Log struct {
 	// Virtual fields for JSON output - these will be populated when needed
 	InputHistoryParsed        []schemas.BifrostMessage    `gorm:"-" json:"input_history,omitempty"`
 	OutputMessageParsed       *schemas.BifrostMessage     `gorm:"-" json:"output_message,omitempty"`
-	EmbeddingOutputParsed     *[]schemas.BifrostEmbedding `gorm:"-" json:"embedding_output,omitempty"`
+	EmbeddingOutputParsed     []schemas.BifrostEmbedding `gorm:"-" json:"embedding_output,omitempty"`
 	ParamsParsed              *schemas.ModelParameters    `gorm:"-" json:"params,omitempty"`
-	ToolsParsed               *[]schemas.Tool             `gorm:"-" json:"tools,omitempty"`
-	ToolCallsParsed           *[]schemas.ToolCall         `gorm:"-" json:"tool_calls,omitempty"`
+	ToolsParsed               []schemas.Tool             `gorm:"-" json:"tools,omitempty"`
+	ToolCallsParsed           []schemas.ToolCall         `gorm:"-" json:"tool_calls,omitempty"`
 	TokenUsageParsed          *schemas.LLMUsage           `gorm:"-" json:"token_usage,omitempty"`
 	ErrorDetailsParsed        *schemas.BifrostError       `gorm:"-" json:"error_details,omitempty"`
 	SpeechInputParsed         *schemas.SpeechInput        `gorm:"-" json:"speech_input,omitempty"`
@@ -364,7 +364,7 @@ func (l *Log) BuildContentSummary() string {
 		}
 		// If content blocks exist, extract text from them
 		if msg.Content.ContentBlocks != nil {
-			for _, block := range *msg.Content.ContentBlocks {
+			for _, block := range msg.Content.ContentBlocks {
 				if block.Text != nil && *block.Text != "" {
 					parts = append(parts, *block.Text)
 				}
@@ -379,7 +379,7 @@ func (l *Log) BuildContentSummary() string {
 		}
 		// If content blocks exist, extract text from them
 		if l.OutputMessageParsed.Content.ContentBlocks != nil {
-			for _, block := range *l.OutputMessageParsed.Content.ContentBlocks {
+			for _, block := range l.OutputMessageParsed.Content.ContentBlocks {
 				if block.Text != nil && *block.Text != "" {
 					parts = append(parts, *block.Text)
 				}

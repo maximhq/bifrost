@@ -77,7 +77,7 @@ func TestMockerPlugin_Disabled(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -121,7 +121,7 @@ func TestMockerPlugin_DefaultMockRule(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -199,7 +199,7 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -280,7 +280,7 @@ func TestMockerPlugin_ErrorResponse(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -345,7 +345,7 @@ func TestMockerPlugin_MessageTemplate(t *testing.T) {
 		Provider: schemas.Anthropic,
 		Model:    "claude-3",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -419,7 +419,7 @@ func TestMockerPlugin_Statistics(t *testing.T) {
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4",
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
+				ChatCompletionInput: []schemas.BifrostMessage{
 					{
 						Role: schemas.ModelChatMessageRoleUser,
 						Content: schemas.MessageContent{

@@ -263,6 +263,9 @@ const (
 //   - schemas.Plugin: A configured semantic cache plugin instance
 //   - error: Any error that occurred during plugin initialization
 func Init(ctx context.Context, config *Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.Plugin, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
 	// Set plugin-specific defaults
 	if config.VectorStoreNamespace == "" {
 		logger.Debug(PluginLoggerPrefix + " Vector store namespace is not set, using default of " + DefaultVectorStoreNamespace)

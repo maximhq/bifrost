@@ -3,22 +3,23 @@ package otel
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// logger is the logger for the OTEL plugin
+var logger schemas.Logger
 
 // ContextKey is a custom type for context keys to prevent collisions
 type ContextKey string
 
-// objectPool is the pool for the OTEL plugin
-var objectPool *ObjectPool
-
 // Context keys for otel plugin
 const (
-	TraceIDKey      ContextKey = "plugin-otel-trace-id"
-	SpanIDKey       ContextKey = "plugin-otel-span-id"
+	TraceIDKey ContextKey = "plugin-otel-trace-id"
+	SpanIDKey  ContextKey = "plugin-otel-span-id"
 )
 
 const PluginName = "otel"
@@ -45,9 +46,9 @@ const ProtocolHTTP Protocol = "http"
 const ProtocolGRPC Protocol = "grpc"
 
 type Config struct {
-	CollectorURL string
-	TraceType    TraceType
-	Protocol     Protocol
+	CollectorURL string    `json:"collector_url"`
+	TraceType    TraceType `json:"trace_type"`
+	Protocol     Protocol  `json:"protocol"`
 }
 
 // OtelPlugin is the plugin for OpenTelemetry
@@ -56,20 +57,23 @@ type OtelPlugin struct {
 	traceType TraceType
 	protocol  Protocol
 
-	client OtelClient
+	ongoingSpans TTLSyncMap
 
-	logger schemas.Logger
+	client OtelClient
 }
 
 // Init function for the OTEL plugin
-func Init(ctx context.Context, config *Config, logger schemas.Logger) (*OtelPlugin, error) {
+func Init(ctx context.Context, config *Config, _logger schemas.Logger) (*OtelPlugin, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	logger = _logger
 	var err error
-	objectPool = NewObjectPool(2000)
 	p := &OtelPlugin{
-		url:       config.CollectorURL,
-		traceType: config.TraceType,
-		protocol:  config.Protocol,
-		logger:    logger,
+		url:          config.CollectorURL,
+		traceType:    config.TraceType,
+		ongoingSpans: *NewTTLSyncMap(20*time.Minute, 1*time.Minute),
+		protocol:     config.Protocol,
 	}
 	if config.Protocol == ProtocolGRPC {
 		p.client, err = NewOtelClientGRPC(config.CollectorURL)
@@ -83,6 +87,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger) (*OtelPlug
 			return nil, err
 		}
 	}
+	if p.client == nil {
+		return nil, fmt.Errorf("otel client is not initialized. invalid protocol type")
+	}
 	return p, nil
 }
 
@@ -91,42 +98,91 @@ func (p *OtelPlugin) GetName() string {
 	return PluginName
 }
 
+// ValidateConfig function for the OTEL plugin
+func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
+	var otelConfig Config
+	// Checking if its a string, then we will JSON parse and confirm
+	if configStr, ok := config.(string); ok {
+		if err := sonic.Unmarshal([]byte(configStr), &otelConfig); err != nil {
+			return nil, err
+		}
+	}
+	// Checking if its a map[string]any, then we will JSON parse and confirm
+	if configMap, ok := config.(map[string]any); ok {
+		configString, err := sonic.Marshal(configMap)
+		if err != nil {
+			return nil, err
+		}
+		if err := sonic.Unmarshal([]byte(configString), &otelConfig); err != nil {
+			return nil, err
+		}
+	}
+	// Checking if its a Config, then we will confirm
+	if config, ok := config.(*Config); ok {
+		otelConfig = *config
+	}
+	// Validating fields
+	if otelConfig.CollectorURL == "" {
+		return nil, fmt.Errorf("collector url is required")
+	}
+	if otelConfig.TraceType == "" {
+		return nil, fmt.Errorf("trace type is required")
+	}
+	if otelConfig.Protocol == "" {
+		return nil, fmt.Errorf("protocol is required")
+	}
+	return &otelConfig, nil
+}
+
 // PreHook function for the OTEL plugin
 func (p *OtelPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	if p.client == nil {
-		p.logger.Warn("otel client is not initialized")
+		logger.Warn("otel client is not initialized")
 		return req, nil, nil
 	}
-	traceID := uuid.New().String()
-	spanID := uuid.New().String()
-	*ctx = context.WithValue(*ctx, TraceIDKey, traceID)
-	*ctx = context.WithValue(*ctx, SpanIDKey, spanID)
-	// We just fire on a go routine to avoid blocking the request
-	go p.client.Emit(*ctx, []*ResourceSpan{requestToResourceSpan(traceID, spanID, time.Now(), req)})
+	traceIDValue := (*ctx).Value(schemas.BifrostContextKeyRequestID)
+	if traceIDValue == nil {
+		logger.Warn("trace id not found in context")
+		return req, nil, nil
+	}
+	traceID, ok := traceIDValue.(string)
+	if !ok {
+		logger.Warn("trace id not found in context")
+		return req, nil, nil
+	}
+	spanID := fmt.Sprintf("%s-root-span", traceID)
+	p.ongoingSpans.Set(traceID, createResourceSpan(traceID, spanID, time.Now(), req))
 	return req, nil, nil
 }
 
 // PostHook function for the OTEL plugin
 func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	if bifrostErr != nil {
+	traceIDValue := (*ctx).Value(schemas.BifrostContextKeyRequestID)
+	if traceIDValue == nil {
+		logger.Warn("trace id not found in context")
 		return resp, bifrostErr, nil
 	}
-	traceID, ok := (*ctx).Value(TraceIDKey).(string)
+	traceID, ok := traceIDValue.(string)
 	if !ok {
-		p.logger.Warn("otel trace id is not found in context")
-		return resp, nil, nil
+		logger.Warn("trace id not found in context")
+		return resp, bifrostErr, nil
 	}
-	spanID, ok := (*ctx).Value(SpanIDKey).(string)
+	span, ok := p.ongoingSpans.Get(traceID)
 	if !ok {
-		p.logger.Warn("otel span id is not found in context")
-		return resp, nil, nil
+		logger.Warn("span not found in ongoing spans")
+		return resp, bifrostErr, nil
 	}
-	childSpanID := uuid.New().String()
-	go p.client.Emit(*ctx, []*ResourceSpan{responseToResourceSpan(traceID, spanID, childSpanID, time.Now(), resp)})
-	return resp, nil, nil
+	defer p.ongoingSpans.Delete(traceID)
+	if span, ok := span.(*ResourceSpan); ok {
+		p.client.Emit(*ctx, []*ResourceSpan{completeResourceSpan(span, time.Now(), resp, bifrostErr)})
+	}
+	return resp, bifrostErr, nil
 }
 
 // Cleanup function for the OTEL plugin
 func (p *OtelPlugin) Cleanup() error {
+	if p.client != nil {
+		return p.client.Close()
+	}
 	return nil
 }

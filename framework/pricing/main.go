@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -66,7 +67,8 @@ type PricingEntry struct {
 	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
 }
 
-func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingManager, error) {
+// Init initializes the pricing manager
+func Init(ctx context.Context, configStore configstore.ConfigStore, logger schemas.Logger) (*PricingManager, error) {
 	pm := &PricingManager{
 		configStore: configStore,
 		logger:      logger,
@@ -76,12 +78,12 @@ func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingM
 
 	if configStore != nil {
 		// Load initial pricing data
-		if err := pm.loadPricingFromDatabase(); err != nil {
+		if err := pm.loadPricingFromDatabase(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
 		}
 
 		// For the bootup we sync pricing data from file to database
-		if err := pm.syncPricing(); err != nil {
+		if err := pm.syncPricing(ctx); err != nil {
 			return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 		}
 		
@@ -93,7 +95,7 @@ func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingM
 	}
 
 	// Start background sync worker
-	pm.startSyncWorker()
+	pm.startSyncWorker(ctx)
 	pm.configStore = configStore
 	pm.logger = logger
 

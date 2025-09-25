@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -14,6 +15,7 @@ import (
 
 type PluginsLoader interface {
 	ReloadPlugin(ctx context.Context, name string, pluginConfig any) error
+	RemovePlugin(ctx context.Context, name string) error
 }
 
 // PluginsHandler is the handler for the plugins API
@@ -56,7 +58,7 @@ func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...Bifrost
 
 // getPlugins gets all plugins
 func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
-	plugins, err := h.configStore.GetPlugins()
+	plugins, err := h.configStore.GetPlugins(ctx)
 	if err != nil {
 		h.logger.Error("failed to get plugins: %v", err)
 		SendError(ctx, 500, "Failed to retrieve plugins", h.logger)
@@ -92,7 +94,7 @@ func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	plugin, err := h.configStore.GetPlugin(name)
+	plugin, err := h.configStore.GetPlugin(ctx, name)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
@@ -121,13 +123,12 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if plugin already exists
-	existingPlugin, err := h.configStore.GetPlugin(request.Name)
+	existingPlugin, err := h.configStore.GetPlugin(ctx, request.Name)
 	if err == nil && existingPlugin != nil {
 		SendError(ctx, fasthttp.StatusConflict, "Plugin already exists", h.logger)
 		return
 	}
-
-	if err := h.configStore.CreatePlugin(&configstore.TablePlugin{
+	if err := h.configStore.CreatePlugin(ctx, &configstore.TablePlugin{
 		Name:    request.Name,
 		Enabled: request.Enabled,
 		Config:  request.Config,
@@ -137,17 +138,23 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	plugin, err := h.configStore.GetPlugin(request.Name)
+	plugin, err := h.configStore.GetPlugin(ctx, request.Name)
 	if err != nil {
 		h.logger.Error("failed to get plugin: %v", err)
 		SendError(ctx, 500, "Failed to retrieve plugin", h.logger)
 		return
 	}
 
-	if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Config); err != nil {
-		h.logger.Error("failed to load plugin: %v", err)
-		SendError(ctx, 500, "Failed to load plugin", h.logger)
-		return
+	// We reload the plugin if its enabled
+	if request.Enabled {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Config); err != nil {
+			h.logger.Error("failed to load plugin: %v", err)
+			SendJSON(ctx, map[string]any{
+				"message": fmt.Sprintf("Plugin created successfully; but failed to load plugin with new config: %v", err),
+				"plugin":  plugin,
+			}, h.logger)
+			return
+		}
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusCreated)
@@ -181,15 +188,21 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if plugin exists
-	if _, err := h.configStore.GetPlugin(name); err != nil {
+	if _, err := h.configStore.GetPlugin(ctx, name); err != nil {
 		// If doesn't exist, create it
-		if err := h.configStore.CreatePlugin(&configstore.TablePlugin{
-			Name:    name,
-			Enabled: false,
-			Config:  map[string]any{},
-		}); err != nil {
-			h.logger.Error("failed to create plugin: %v", err)
-			SendError(ctx, 500, "Failed to create plugin", h.logger)
+		if errors.Is(err, configstore.ErrNotFound) {
+			if err := h.configStore.CreatePlugin(ctx, &configstore.TablePlugin{
+				Name:    name,
+				Enabled: false,
+				Config:  map[string]any{},
+			}); err != nil {
+				h.logger.Error("failed to create plugin: %v", err)
+				SendError(ctx, 500, "Failed to create plugin", h.logger)
+				return
+			}
+		} else {
+			h.logger.Error("failed to get plugin: %v", err)
+			SendError(ctx, 404, "Plugin not found", h.logger)
 			return
 		}
 	}
@@ -201,7 +214,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.configStore.UpdatePlugin(&configstore.TablePlugin{
+	if err := h.configStore.UpdatePlugin(ctx, &configstore.TablePlugin{
 		Name:    name,
 		Enabled: request.Enabled,
 		Config:  request.Config,
@@ -211,7 +224,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	plugin, err := h.configStore.GetPlugin(name)
+	plugin, err := h.configStore.GetPlugin(ctx, name)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
@@ -221,11 +234,25 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugin", h.logger)
 		return
 	}
-
-	if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Config); err != nil {
-		h.logger.Error("failed to load plugin: %v", err)
-		SendError(ctx, 500, "Failed to load plugin", h.logger)
-		return
+	// We reload the plugin if its enabled, otherwise we stop it
+	if request.Enabled {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Config); err != nil {
+			h.logger.Error("failed to load plugin: %v", err)
+			SendJSON(ctx, map[string]any{
+				"message": fmt.Sprintf("Plugin updated successfully; but failed to load plugin with new config: %v", err),
+				"plugin":  plugin,
+			}, h.logger)
+			return
+		}
+	} else {
+		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
+			h.logger.Error("failed to stop plugin: %v", err)
+			SendJSON(ctx, map[string]any{
+				"message": fmt.Sprintf("Plugin updated successfully; but failed to stop plugin: %v", err),
+				"plugin":  plugin,
+			}, h.logger)
+			return
+		}
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -257,7 +284,7 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.configStore.DeletePlugin(name); err != nil {
+	if err := h.configStore.DeletePlugin(ctx, name); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found", h.logger)
 			return
@@ -266,6 +293,16 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to delete plugin", h.logger)
 		return
 	}
+
+	if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
+		h.logger.Error("failed to stop plugin: %v", err)
+		SendJSON(ctx, map[string]any{
+			"message": fmt.Sprintf("Plugin deleted successfully; but failed to stop plugin: %v", err),
+			"plugin":  name,
+		}, h.logger)
+		return
+	}
+
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin deleted successfully",
 	}, h.logger)

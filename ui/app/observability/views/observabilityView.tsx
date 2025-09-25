@@ -1,6 +1,7 @@
 "use client";
 
 import FullPageLoader from "@/components/fullPageLoader";
+import { Badge } from "@/components/ui/badge";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useQueryState } from "nuqs";
@@ -26,6 +27,7 @@ const supportedPlatforms = [
 				/>
 			</svg>
 		),
+		tag: "Beta",
 	},
 	{
 		id: "maxim",
@@ -73,6 +75,7 @@ export default function ObservabilityView() {
 				),
 			);
 		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [plugins]);
 
 	useEffect(() => {
@@ -98,20 +101,24 @@ export default function ObservabilityView() {
 	return (
 		<div className="flex h-full flex-row gap-4">
 			<div className="flex flex-col">
-				<div className="flex w-[250px] flex-col gap-2 pb-10">
+				<div className="flex w-[270px] flex-col gap-2 pb-10">
 					<div className="rounded-md bg-zinc-100/10 p-4 dark:bg-zinc-800/20">
 						<div className="flex flex-col gap-1">
 							<div className="text-muted-foreground mb-2 text-xs font-medium">Providers</div>
 							{supportedPlatforms.map((tab) => (
-								<div
+								<button
+									type="button"
 									key={tab.id}
+									disabled={!!tab.disabled}
+									aria-disabled={tab.disabled ? true : undefined}
+									aria-current={selectedPlugin?.name === tab.id ? "page" : undefined}
 									className={cn(
 										"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
 										tab.disabled ? "opacity-50" : "",
 										selectedPlugin?.name === tab.id
 											? "bg-secondary opacity-100 hover:opacity-100"
 											: tab.disabled
-												? ""
+												? "border-none"
 												: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
 									)}
 									onClick={() => {
@@ -122,8 +129,17 @@ export default function ObservabilityView() {
 									}}
 								>
 									<div className="w-[24px]">{tab.icon}</div> {tab.name}
-									{tab.disabled && <div className="text-muted-foreground text-[10px] font-medium">{"Coming soon".toUpperCase()}</div>}
-								</div>
+									{tab.tag && (
+										<Badge variant="secondary" className="text-muted-foreground ml-auto text-[10px] font-medium">
+											{tab.tag.toUpperCase()}
+										</Badge>
+									)}
+									{tab.disabled && (
+										<Badge variant="secondary" className="text-muted-foreground ml-auto text-[10px] font-medium">
+											{"Coming soon".toUpperCase()}
+										</Badge>
+									)}
+								</button>
 							))}
 						</div>
 					</div>

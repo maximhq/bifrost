@@ -147,7 +147,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.AddMCPClient(req); err != nil {
+	if err := h.store.AddMCPClient(ctx, req); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add MCP client: %v", err), h.logger)
 		return
 	}
@@ -175,7 +175,7 @@ func (h *MCPHandler) editMCPClientTools(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.EditMCPClientTools(name, req.ToolsToExecute, req.ToolsToSkip); err != nil {
+	if err := h.store.EditMCPClientTools(ctx, name, req.ToolsToExecute, req.ToolsToSkip); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to edit MCP client tools: %v", err), h.logger)
 		return
 	}
@@ -194,7 +194,7 @@ func (h *MCPHandler) removeMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.RemoveMCPClient(name); err != nil {
+	if err := h.store.RemoveMCPClient(ctx, name); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove MCP client: %v", err), h.logger)
 		return
 	}

@@ -198,7 +198,7 @@ func CreateBasicChatRequest(content string, temperature float64, maxTokens int) 
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -403,7 +403,7 @@ func CreateConversationRequest(messages []schemas.BifrostMessage, temperature fl
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &messages,
+			ChatCompletionInput: messages,
 		},
 		Params: &schemas.ModelParameters{
 			Temperature: &temperature,

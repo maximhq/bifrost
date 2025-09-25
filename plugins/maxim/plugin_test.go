@@ -29,7 +29,7 @@ func getPlugin() (schemas.Plugin, error) {
 		return nil, fmt.Errorf("MAXIM_API_KEY is not set, please set it in your environment variables")
 	}
 
-	plugin, err := Init(Config{
+	plugin, err := Init(&Config{
 		APIKey:    os.Getenv("MAXIM_API_KEY"),
 		LogRepoID: os.Getenv("MAXIM_LOG_REPO_ID"),
 	})
@@ -107,7 +107,7 @@ func TestMaximLoggerPlugin(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -170,7 +170,7 @@ func TestLogRepoIDSelection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create plugin with default repo
 			plugin := &Plugin{
-				defaultLogRepoId: tt.defaultRepo,
+				defaultLogRepoID: tt.defaultRepo,
 			}
 
 			// Create context with header repo if provided
@@ -231,7 +231,7 @@ func TestPluginInitialization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Skip actual Maxim SDK initialization in tests
 			if tt.expectError {
-				_, err := Init(tt.config)
+				_, err := Init(&tt.config)
 				if err == nil {
 					t.Error("Expected error but got none")
 				}

@@ -140,4 +140,5 @@ func main() {
 		logger.Error("failed to start server: %v", err)
 		os.Exit(1)
 	}
+	logger.Info("🏁 server stopped")
 }

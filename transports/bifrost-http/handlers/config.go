@@ -54,7 +54,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available", h.logger)
 			return
 		}
-		cc, err := h.store.ConfigStore.GetClientConfig()
+		cc, err := h.store.ConfigStore.GetClientConfig(ctx)
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError,
 				fmt.Sprintf("failed to fetch config from db: %v", err), h.logger)
@@ -117,7 +117,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Update the store with the new config
 	h.store.ClientConfig = updatedConfig
 
-	if err := h.store.ConfigStore.UpdateClientConfig(&updatedConfig); err != nil {
+	if err := h.store.ConfigStore.UpdateClientConfig(ctx, &updatedConfig); err != nil {
 		h.logger.Warn(fmt.Sprintf("failed to save configuration: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err), h.logger)
 		return

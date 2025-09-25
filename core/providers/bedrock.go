@@ -88,7 +88,7 @@ type BedrockMistralContent struct {
 type BedrockMistralChatMessage struct {
 	Role       schemas.ModelChatMessageRole `json:"role"`                   // Role of the message sender
 	Content    []BedrockMistralContent      `json:"content"`                // Array of message content
-	ToolCalls  *[]BedrockAnthropicToolCall  `json:"tool_calls,omitempty"`   // Optional tool calls
+	ToolCalls  []BedrockAnthropicToolCall  `json:"tool_calls,omitempty"`   // Optional tool calls
 	ToolCallID *string                      `json:"tool_call_id,omitempty"` // Optional tool call ID
 }
 
@@ -477,7 +477,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 						Text: *msg.Content.ContentStr,
 					})
 				} else if msg.Content.ContentBlocks != nil {
-					for _, block := range *msg.Content.ContentBlocks {
+					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
 							systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
 								Text: *block.Text,
@@ -501,7 +501,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 					if msg.Content.ContentStr != nil {
 						toolResultContentBlocks = append(toolResultContentBlocks, parseBedrockAnthropicMessageToolCallContent(*msg.Content.ContentStr))
 					} else if msg.Content.ContentBlocks != nil {
-						for _, block := range *msg.Content.ContentBlocks {
+						for _, block := range msg.Content.ContentBlocks {
 							if block.Text != nil {
 								toolResultContentBlocks = append(toolResultContentBlocks, parseBedrockAnthropicMessageToolCallContent(*block.Text))
 							}
@@ -514,7 +514,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 				} else {
 					// Bedrock wants only toolUse block on content, text blocks are not allowed when tools are called.
 					if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-						for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+						for _, toolCall := range msg.AssistantMessage.ToolCalls {
 							var input map[string]interface{}
 							if toolCall.Function.Arguments != "" {
 								if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
@@ -537,7 +537,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 								Text: *msg.Content.ContentStr,
 							})
 						} else if msg.Content.ContentBlocks != nil {
-							for _, block := range *msg.Content.ContentBlocks {
+							for _, block := range msg.Content.ContentBlocks {
 								if block.Text != nil {
 									content = append(content, BedrockAnthropicTextMessage{
 										Type: "text",
@@ -685,7 +685,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 
 			var filteredToolCalls []BedrockAnthropicToolCall
 			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+				for _, toolCall := range msg.AssistantMessage.ToolCalls {
 					if toolCall.ID != nil && toolCall.Function.Name != nil {
 						// Parse the arguments to get parameters
 						var params interface{}
@@ -721,8 +721,8 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 			case msg.Content.ContentStr != nil && *msg.Content.ContentStr != "":
 				message.Content = []BedrockMistralContent{{Text: *msg.Content.ContentStr}}
 				hasValidContent = true
-			case msg.Content.ContentBlocks != nil && len(*msg.Content.ContentBlocks) > 0:
-				for _, b := range *msg.Content.ContentBlocks {
+			case msg.Content.ContentBlocks != nil && len(msg.Content.ContentBlocks) > 0:
+				for _, b := range msg.Content.ContentBlocks {
 					if b.Text != nil && *b.Text != "" {
 						message.Content = append(message.Content, BedrockMistralContent{Text: *b.Text})
 						hasValidContent = true
@@ -750,7 +750,7 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 			// Only add messages that have valid content or tool calls
 			if hasValidContent || len(filteredToolCalls) > 0 {
 				if len(filteredToolCalls) > 0 {
-					message.ToolCalls = &filteredToolCalls
+					message.ToolCalls = filteredToolCalls
 				}
 				bedrockMessages = append(bedrockMessages, message)
 			}
@@ -774,13 +774,13 @@ func (provider *BedrockProvider) getChatCompletionTools(params *schemas.ModelPar
 	case strings.Contains(model, "anthropic."), strings.Contains(model, "mistral."):
 		// Both Anthropic and Mistral models on Bedrock use toolConfig.tools with toolSpec structure
 		var tools []BedrockAnthropicToolCall
-		for _, tool := range *params.Tools {
+		for _, tool := range params.Tools {
 			tools = append(tools, BedrockAnthropicToolCall{
 				ToolSpec: BedrockAnthropicToolSpec{
 					Name:        tool.Function.Name,
 					Description: tool.Function.Description,
 					InputSchema: struct {
-						Json interface{} `json:"json"`
+						Json any `json:"json"`
 					}{
 						Json: tool.Function.Parameters,
 					},
@@ -880,7 +880,7 @@ func (provider *BedrockProvider) extractToolsFromHistory(messages []schemas.Bifr
 		if msg.Role == schemas.ModelChatMessageRoleAssistant && msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
 			hasToolContent = true
 			// Extract tool definitions from tool calls for toolConfig
-			for _, toolCall := range *msg.AssistantMessage.ToolCalls {
+			for _, toolCall := range msg.AssistantMessage.ToolCalls {
 				if toolCall.Function.Name != nil {
 					toolName := *toolCall.Function.Name
 					if _, exists := seenTools[toolName]; !exists {
@@ -985,7 +985,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	}
 
 	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+	if params != nil && params.Tools != nil && len(params.Tools) > 0 {
 		tools, err := provider.getChatCompletionTools(params, model)
 		if err != nil {
 			return nil, err
@@ -1077,7 +1077,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 	// Create AssistantMessage if we have tool calls
 	if len(toolCalls) > 0 {
 		assistantMessage = &schemas.AssistantMessage{
-			ToolCalls: &toolCalls,
+			ToolCalls: toolCalls,
 		}
 	}
 
@@ -1089,7 +1089,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 				Message: schemas.BifrostMessage{
 					Role: schemas.ModelChatMessageRoleAssistant,
 					Content: schemas.MessageContent{
-						ContentBlocks: &contentBlocks,
+						ContentBlocks: contentBlocks,
 					},
 					AssistantMessage: assistantMessage,
 				},
@@ -1279,7 +1279,7 @@ func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model
 				Index:  0,
 				Object: "embedding",
 				Embedding: schemas.BifrostEmbeddingResponse{
-					Embedding2DArray: &[][]float32{titanResp.Embedding},
+					Embedding2DArray: [][]float32{titanResp.Embedding},
 				},
 			},
 		},
@@ -1367,7 +1367,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	}
 
 	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
+	if params != nil && params.Tools != nil && len(params.Tools) > 0 {
 		tools, err := provider.getChatCompletionTools(params, model)
 		if err != nil {
 			return nil, err
@@ -1796,9 +1796,9 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	path := fmt.Sprintf("%s/%s", model, basePath)
 
 	if key.BedrockKeyConfig.Deployments != nil {
-		if inferenceProfileId, ok := key.BedrockKeyConfig.Deployments[model]; ok {
+		if inferenceProfileID, ok := key.BedrockKeyConfig.Deployments[model]; ok {
 			if key.BedrockKeyConfig.ARN != nil {
-				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileId))
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileID))
 				path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 			}
 		}

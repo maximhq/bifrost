@@ -27,7 +27,7 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -169,7 +169,7 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -284,7 +284,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -411,7 +411,7 @@ func TestSemanticCache_NoCacheWhenKeyMissing(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -450,7 +450,7 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -516,7 +516,7 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -557,7 +557,7 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -610,7 +610,7 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		Provider: schemas.Anthropic, // Different provider
 		Model:    "claude-3-haiku",  // Different model
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{
@@ -652,7 +652,7 @@ func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: "user",
 					Content: schemas.MessageContent{

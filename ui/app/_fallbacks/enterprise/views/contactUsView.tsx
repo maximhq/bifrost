@@ -24,14 +24,19 @@ export default function ContactUsView({ icon, title, description, className, rea
 						variant="outline"
 						className="mx-auto mt-6"
 						onClick={() => {
-							window.open(`${readmeLink}?utm_source=bfd`, "_blank");
+							window.open(`${readmeLink}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button className="mx-auto mt-6" onClick={()=>{
-						window.open("https://calendly.com/maximai/bifrost-demo?utm_source=bfd_ent", "_blank");
-					}}>Book a demo</Button>
+					<Button
+						className="mx-auto mt-6"
+						onClick={() => {
+							window.open("https://calendly.com/maximai/bifrost-demo?utm_source=bfd_ent", "_blank", "noopener,noreferrer");
+						}}
+					>
+						Book a demo
+					</Button>
 				</div>
 			</div>
 		</div>
