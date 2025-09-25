@@ -111,7 +111,7 @@ export const networkFormConfigSchema = z
 		base_url: z
 			.url("Must be a valid URL")
 			.refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
-				message: "Only HTTPS URLs are supported",
+				message: "Must be a valid HTTP or HTTPS URL",
 			})
 			.optional(),
 		extra_headers: z.record(z.string(), z.string()).optional(),
@@ -356,17 +356,73 @@ export const performanceFormSchema = z.object({
 });
 
 // OTEL Configuration Schema
-export const otelConfigSchema = z.object({
-	push_url: z.url("Must be a valid URL").refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
-		message: "Must be a valid HTTP or HTTPS URL",
-	}),
-	type: z.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
-		message: "Please select a trace type",
-	}),
-	protocol: z.enum(["http", "grpc"], {
-		message: "Please select a protocol",
-	}),
-});
+export const otelConfigSchema = z
+	.object({
+		collector_url: z.string().min(1, "Collector address is required"),
+		trace_type: z
+			.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
+				message: "Please select a trace type",
+			})
+			.default("otel"),
+		protocol: z
+			.enum(["http", "grpc"], {
+				message: "Please select a protocol",
+			})
+			.default("http"),
+	})
+	.superRefine((data, ctx) => {
+		const value = (data.collector_url || "").trim();
+		if (!value) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["collector_url"],
+				message: "Collector address is required",
+			});
+			return;
+		}
+
+		if (data.protocol === "http") {
+			try {
+				const u = new URL(value);
+				if (!(u.protocol === "http:" || u.protocol === "https:")) {
+					ctx.addIssue({
+						code: "custom",
+						path: ["collector_url"],
+						message: "Must be a valid HTTP or HTTPS URL",
+					});
+				}
+			} catch {
+				ctx.addIssue({
+					code: "custom",
+					path: ["collector_url"],
+					message: "Must be a valid HTTP or HTTPS URL",
+				});
+			}
+			return;
+		}
+
+		if (data.protocol === "grpc") {
+			// Only allow host:port format, reject HTTP URLs
+			const hostPortRegex = /^(?!https?:\/\/)([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/;
+			const match = value.match(hostPortRegex);
+			if (!match) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["collector_url"],
+					message: "Must be in the format <host>:<port> for gRPC (e.g. otel-collector:4317)",
+				});
+				return;
+			}
+			const port = Number(match[2]);
+			if (!(port >= 1 && port <= 65535)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["collector_url"],
+					message: "Port must be between 1 and 65535",
+				});
+			}
+		}
+	});
 
 // OTEL form schema for the OtelFormFragment
 export const otelFormSchema = z.object({
@@ -380,7 +436,7 @@ export const maximConfigSchema = z.object({
 		.string()
 		.min(1, "API key is required")
 		.refine((key) => key.startsWith("sk_mx_"), {
-			message: "API key starts with sk_mx_. Please use a valid Maxim API key.",
+			message: "API key must start with 'sk_mx_'",
 		}),
 	log_repo_id: z.string().optional(),
 });

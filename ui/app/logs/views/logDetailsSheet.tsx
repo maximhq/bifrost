@@ -282,7 +282,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 								<LogMessageView message={log.output_message} />
 							</>
 						)}
-						{log.embedding_output && !log.error_details?.error.message && (
+						{log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Embedding</div>
 								<LogMessageView

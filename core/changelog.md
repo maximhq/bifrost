@@ -1,4 +1,4 @@
 <!-- The pattern we follow here is to keep the changelog for the latest version -->
 <!-- Old changelogs are automatically attached to the GitHub releases -->
 
-- Fix: Updates token calculation for streaming responses. #520
+- Feature: Adds dynamic reloads for plugins. This removes requirement of restarts on updating plugins.

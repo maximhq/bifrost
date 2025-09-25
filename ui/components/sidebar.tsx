@@ -196,7 +196,7 @@ const SidebarItem = ({
 					<SidebarMenuItem>
 						<SidebarMenuButton
 							asChild
-							className={`relative h-8 rounded-md border px-3 transition-all duration-200 ${
+							className={`relative h-7.5 rounded-md border px-3 transition-all duration-200 ${
 								isActive
 									? "bg-sidebar-accent text-primary border-primary/20"
 									: isAllowed
@@ -211,7 +211,7 @@ const SidebarItem = ({
 										<span className={`text-sm ${isActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
 									</div>
 								</div>
-								{item.url === "/" && isWebSocketConnected && (
+								{item.url === "/logs" && isWebSocketConnected && (
 									<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
 								)}
 								{item.badge && (
@@ -269,7 +269,7 @@ export default function AppSidebar() {
 			<SidebarContent className="custom-scrollbar pb-6">
 				<SidebarGroup>
 					<SidebarGroupContent>
-						<SidebarMenu className="space-y-1">
+						<SidebarMenu className="space-y-0.5">
 							{items.map((item) => {
 								const isActive = isActiveRoute(item.url);
 								const isAllowed = item.title === "Governance" ? isGovernanceEnabled : true;
@@ -283,7 +283,7 @@ export default function AppSidebar() {
 									/>
 								);
 							})}
-							<div className="text-accent-foreground flex flex-row items-center gap-2 px-3 py-2 text-xs font-medium">
+							<div className="text-accent-foreground flex flex-row items-center gap-2 px-3 my-3 text-xs font-medium">
 								<Building2 className="h-4 w-4" />
 								ENTERPRISE
 							</div>

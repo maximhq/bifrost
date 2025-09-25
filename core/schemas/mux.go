@@ -264,9 +264,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 	var messages []ResponsesMessage
 
 	// Check if this is an assistant message with multiple tool calls that need expansion
-	if cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.ToolCalls != nil && len(*cm.ChatAssistantMessage.ToolCalls) > 0 {
+	if cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.ToolCalls != nil && len(cm.ChatAssistantMessage.ToolCalls) > 0 {
 		// Expand multiple tool calls into separate function_call items
-		for _, tc := range *cm.ChatAssistantMessage.ToolCalls {
+		for _, tc := range cm.ChatAssistantMessage.ToolCalls {
 			messageType := ResponsesMessageTypeFunctionCall
 
 			var callID *string
@@ -337,7 +337,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			},
 		}
 		rm.Content = &ResponsesMessageContent{
-			ContentBlocks: &[]ResponsesMessageContentBlock{refusalBlock},
+			ContentBlocks: []ResponsesMessageContentBlock{refusalBlock},
 		}
 	} else if cm.Content.ContentStr != nil {
 		// Convert regular string content
@@ -346,8 +346,8 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		}
 	} else if cm.Content.ContentBlocks != nil {
 		// Convert content blocks
-		responseBlocks := make([]ResponsesMessageContentBlock, len(*cm.Content.ContentBlocks))
-		for i, block := range *cm.Content.ContentBlocks {
+		responseBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
+		for i, block := range cm.Content.ContentBlocks {
 			responseBlocks[i] = ResponsesMessageContentBlock{
 				Type: ResponsesMessageContentBlockType(block.Type),
 				Text: block.Text,
@@ -379,7 +379,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			}
 		}
 		rm.Content = &ResponsesMessageContent{
-			ContentBlocks: &responseBlocks,
+			ContentBlocks: responseBlocks,
 		}
 	}
 
@@ -448,7 +448,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			chatMessages = append(chatMessages, ChatMessage{
 				Role: ChatMessageRoleAssistant,
 				ChatAssistantMessage: &ChatAssistantMessage{
-					ToolCalls: &toolCallsCopy,
+					ToolCalls: toolCallsCopy,
 				},
 			})
 			currentToolCalls = nil // Reset for next batch
@@ -504,7 +504,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				if rm.Content != nil {
 					if rm.Content.ContentBlocks != nil {
 						// Look for refusal content block
-						for _, block := range *rm.Content.ContentBlocks {
+						for _, block := range rm.Content.ContentBlocks {
 							if block.Type == ResponsesOutputMessageContentTypeRefusal && block.ResponsesOutputMessageContentRefusal != nil {
 								refusalText := block.ResponsesOutputMessageContentRefusal.Refusal
 								cm.ChatAssistantMessage.Refusal = &refusalText
@@ -526,8 +526,8 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					ContentStr: rm.Content.ContentStr,
 				}
 			} else if rm.Content.ContentBlocks != nil {
-				chatBlocks := make([]ChatContentBlock, len(*rm.Content.ContentBlocks))
-				for i, block := range *rm.Content.ContentBlocks {
+				chatBlocks := make([]ChatContentBlock, len(rm.Content.ContentBlocks))
+				for i, block := range rm.Content.ContentBlocks {
 					// Map ResponsesMessageContentBlockType to ChatContentBlockType
 					var chatBlockType ChatContentBlockType
 					switch block.Type {
@@ -575,7 +575,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 				}
 				cm.Content = ChatMessageContent{
-					ContentBlocks: &chatBlocks,
+					ContentBlocks: chatBlocks,
 				}
 			}
 		}
@@ -590,7 +590,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		chatMessages = append(chatMessages, ChatMessage{
 			Role: ChatMessageRoleAssistant,
 			ChatAssistantMessage: &ChatAssistantMessage{
-				ToolCalls: &toolCallsCopy,
+				ToolCalls: toolCallsCopy,
 			},
 		})
 	}

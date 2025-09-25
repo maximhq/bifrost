@@ -106,6 +106,8 @@ type BifrostContextKey string
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
+	BifrostContextKeyRequestID          BifrostContextKey = "request-id"
+	BifrostContextKeyVirtualKeyHeader   BifrostContextKey = "x-bf-vk"
 	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
 	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
 )
@@ -273,8 +275,8 @@ type BifrostEmbedding struct {
 
 type BifrostEmbeddingResponse struct {
 	EmbeddingStr     *string
-	EmbeddingArray   *[]float32
-	Embedding2DArray *[][]float32
+	EmbeddingArray   []float32
+	Embedding2DArray [][]float32
 }
 
 func (be BifrostEmbeddingResponse) MarshalJSON() ([]byte, error) {
@@ -301,14 +303,14 @@ func (be *BifrostEmbeddingResponse) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct array of float32
 	var arrayContent []float32
 	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
-		be.EmbeddingArray = &arrayContent
+		be.EmbeddingArray = arrayContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct 2D array of float32
 	var arrayContent2D [][]float32
 	if err := sonic.Unmarshal(data, &arrayContent2D); err == nil {
-		be.Embedding2DArray = &arrayContent2D
+		be.Embedding2DArray = arrayContent2D
 		return nil
 	}
 

@@ -33,7 +33,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *sch
 		params.ExtraParams["candidate_count"] = config.CandidateCount
 	}
 	if len(config.StopSequences) > 0 {
-		params.Stop = &config.StopSequences
+		params.Stop = config.StopSequences
 	}
 	if config.PresencePenalty != nil {
 		params.PresencePenalty = config.PresencePenalty
@@ -79,7 +79,7 @@ func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Sche
 	}
 
 	if len(schema.Enum) > 0 {
-		params.Enum = &schema.Enum
+		params.Enum = schema.Enum
 	}
 
 	return params
@@ -166,7 +166,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 
 	// Map standard parameters
 	if params.Stop != nil {
-		config.StopSequences = *params.Stop
+		config.StopSequences = params.Stop
 	}
 	if params.MaxCompletionTokens != nil {
 		config.MaxOutputTokens = int32(*params.MaxCompletionTokens)
@@ -350,7 +350,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []CustomCont
 				Text: *message.Content.ContentStr,
 			})
 		} else if message.Content.ContentBlocks != nil {
-			for _, block := range *message.Content.ContentBlocks {
+			for _, block := range message.Content.ContentBlocks {
 				if block.Text != nil {
 					parts = append(parts, &CustomPart{
 						Text: *block.Text,
@@ -362,7 +362,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []CustomCont
 
 		// Handle tool calls for assistant messages
 		if message.ChatAssistantMessage != nil && message.ChatAssistantMessage.ToolCalls != nil {
-			for _, toolCall := range *message.ChatAssistantMessage.ToolCalls {
+			for _, toolCall := range message.ChatAssistantMessage.ToolCalls {
 				// Convert tool call to function call part
 				if toolCall.Function.Name != nil {
 					// Create function call part - simplified implementation
@@ -398,7 +398,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []CustomCont
 			} else if message.Content.ContentBlocks != nil {
 				// Fallback: try to extract text from content blocks
 				var textParts []string
-				for _, block := range *message.Content.ContentBlocks {
+				for _, block := range message.Content.ContentBlocks {
 					if block.Text != nil && *block.Text != "" {
 						textParts = append(textParts, *block.Text)
 					}

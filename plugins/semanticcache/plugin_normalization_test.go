@@ -230,7 +230,7 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 				{
 					Role: schemas.ChatMessageRoleUser,
 					Content: schemas.ChatMessageContent{
-						ContentBlocks: &contentBlocks,
+						ContentBlocks: contentBlocks,
 					},
 				},
 			},

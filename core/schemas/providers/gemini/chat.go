@@ -175,7 +175,7 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 			// Set content only if there are content blocks
 			if len(contentBlocks) > 0 {
 				bifrostMsg.Content = schemas.ChatMessageContent{
-					ContentBlocks: &contentBlocks,
+					ContentBlocks: contentBlocks,
 				}
 			}
 
@@ -184,7 +184,7 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 				if len(toolCalls) > 0 || thoughtStr != "" {
 					bifrostMsg.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 					if len(toolCalls) > 0 {
-						bifrostMsg.ChatAssistantMessage.ToolCalls = &toolCalls
+						bifrostMsg.ChatAssistantMessage.ToolCalls = toolCalls
 					}
 				}
 			}
@@ -506,7 +506,7 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 			if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
 				parts = append(parts, &Part{Text: *choice.Message.Content.ContentStr})
 			} else if choice.Message.Content.ContentBlocks != nil {
-				for _, block := range *choice.Message.Content.ContentBlocks {
+				for _, block := range choice.Message.Content.ContentBlocks {
 					if block.Text != nil {
 						parts = append(parts, &Part{Text: *block.Text})
 					}
@@ -515,7 +515,7 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 
 			// Handle tool calls
 			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
-				for _, toolCall := range *choice.Message.ChatAssistantMessage.ToolCalls {
+				for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
 					argsMap := make(map[string]interface{})
 					if toolCall.Function.Arguments != "" {
 						json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
@@ -574,10 +574,10 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostResponse) *GeminiEmbe
 
 		// Extract embedding values from BifrostEmbeddingResponse
 		if embedding.Embedding.EmbeddingArray != nil {
-			values = *embedding.Embedding.EmbeddingArray
-		} else if embedding.Embedding.Embedding2DArray != nil && len(*embedding.Embedding.Embedding2DArray) > 0 {
+			values = embedding.Embedding.EmbeddingArray
+		} else if embedding.Embedding.Embedding2DArray != nil && len(embedding.Embedding.Embedding2DArray) > 0 {
 			// If it's a 2D array, take the first array
-			values = (*embedding.Embedding.Embedding2DArray)[0]
+			values = embedding.Embedding.Embedding2DArray[0]
 		}
 
 		geminiEmbedding := GeminiEmbedding{

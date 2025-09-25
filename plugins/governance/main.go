@@ -30,6 +30,9 @@ type Config struct {
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
 type GovernancePlugin struct {
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+
 	// Core components with clear separation of concerns
 	store    *GovernanceStore // Pure data access layer
 	resolver *BudgetResolver  // Pure decision engine for hierarchical governance
@@ -53,7 +56,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store conf
 		logger.Warn("governance plugin requires pricing manager to calculate cost, all cost calculations will be skipped.")
 	}
 
-	governanceStore, err := NewGovernanceStore(logger, store, governanceConfig)
+	governanceStore, err := NewGovernanceStore(ctx, logger, store, governanceConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
@@ -62,17 +65,19 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store conf
 	resolver := NewBudgetResolver(governanceStore, logger)
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
-	tracker := NewUsageTracker(governanceStore, resolver, store, logger)
+	tracker := NewUsageTracker(ctx, governanceStore, resolver, store, logger)
 
 	// 4. Perform startup reset check for any expired limits from downtime
 	if store != nil {
-		if err := tracker.PerformStartupResets(); err != nil {
+		if err := tracker.PerformStartupResets(ctx); err != nil {
 			logger.Warn("startup reset failed: %v", err)
 			// Continue initialization even if startup reset fails (non-critical)
 		}
 	}
-
+	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
+		ctx:            ctx,
+		cancelFunc:     cancelFunc,
 		store:          governanceStore,
 		resolver:       resolver,
 		tracker:        tracker,
@@ -94,8 +99,8 @@ func (p *GovernancePlugin) GetName() string {
 func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	// Extract governance headers and virtual key using utility functions
 	headers := extractHeadersFromContext(*ctx)
-	virtualKey := getStringFromContext(*ctx, ContextKey("x-bf-vk"))
-	requestID := getStringFromContext(*ctx, schemas.BifrostContextKey("request-id"))
+	virtualKey := getStringFromContext(*ctx, schemas.BifrostContextKeyVirtualKeyHeader)
+	requestID := getStringFromContext(*ctx, schemas.BifrostContextKeyRequestID)
 
 	if virtualKey == "" {
 		if p.isVkMandatory != nil && *p.isVkMandatory {
@@ -196,8 +201,8 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 	// Extract governance information
 	headers := extractHeadersFromContext(*ctx)
-	virtualKey := getStringFromContext(*ctx, ContextKey("x-bf-vk"))
-	requestID := getStringFromContext(*ctx, schemas.BifrostContextKey("request-id"))
+	virtualKey := getStringFromContext(*ctx, ContextKey(schemas.BifrostContextKeyVirtualKeyHeader))
+	requestID := getStringFromContext(*ctx, schemas.BifrostContextKeyRequestID)
 
 	// Skip if no virtual key
 	if virtualKey == "" {
@@ -237,6 +242,9 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 // Cleanup shuts down all components gracefully
 func (p *GovernancePlugin) Cleanup() error {
+	if p.cancelFunc != nil {
+		p.cancelFunc()
+	}
 	if err := p.tracker.Cleanup(); err != nil {
 		return err
 	}
@@ -289,7 +297,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 	}
 
 	// Queue usage update asynchronously using tracker
-	p.tracker.UpdateUsage(usageUpdate)
+	p.tracker.UpdateUsage(p.ctx, usageUpdate)
 }
 
 // GetGovernanceStore returns the governance store

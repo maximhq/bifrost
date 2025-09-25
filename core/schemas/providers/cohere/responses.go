@@ -62,7 +62,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 		}
 
 		if len(cohereTools) > 0 {
-			cohereReq.Tools = &cohereTools
+			cohereReq.Tools = cohereTools
 		}
 	}
 
@@ -170,7 +170,7 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 					if msg.Content.ContentStr != nil {
 						systemContent = append(systemContent, *msg.Content.ContentStr)
 					} else if msg.Content.ContentBlocks != nil {
-						for _, block := range *msg.Content.ContentBlocks {
+						for _, block := range msg.Content.ContentBlocks {
 							if block.Text != nil {
 								systemContent = append(systemContent, *block.Text)
 							}
@@ -187,7 +187,7 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 					if msg.Content.ContentStr != nil {
 						cohereMsg.Content = NewStringContent(*msg.Content.ContentStr)
 					} else if msg.Content.ContentBlocks != nil {
-						contentBlocks := convertResponsesMessageContentBlocksToCohere(*msg.Content.ContentBlocks)
+						contentBlocks := convertResponsesMessageContentBlocksToCohere(msg.Content.ContentBlocks)
 						cohereMsg.Content = NewBlocksContent(contentBlocks)
 					}
 				}
@@ -225,7 +225,7 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 			cohereToolCalls = append(cohereToolCalls, toolCall)
 
 			if len(cohereToolCalls) > 0 {
-				assistantMsg.ToolCalls = &cohereToolCalls
+				assistantMsg.ToolCalls = cohereToolCalls
 			}
 
 			cohereMessages = append(cohereMessages, assistantMsg)
@@ -254,7 +254,7 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 					if content.ContentStr != nil {
 						toolMsg.Content = NewStringContent(*content.ContentStr)
 					} else if content.ContentBlocks != nil {
-						contentBlocks := convertResponsesMessageContentBlocksToCohere(*content.ContentBlocks)
+						contentBlocks := convertResponsesMessageContentBlocksToCohere(content.ContentBlocks)
 						toolMsg.Content = NewBlocksContent(contentBlocks)
 					}
 				}
@@ -330,11 +330,11 @@ func convertCohereMessageToResponsesOutput(cohereMsg CohereMessage) []schemas.Re
 			})
 		} else if cohereMsg.Content.BlocksContent != nil {
 			// Convert content blocks
-			for _, block := range *cohereMsg.Content.BlocksContent {
+			for _, block := range cohereMsg.Content.BlocksContent {
 				contentBlocks = append(contentBlocks, convertCohereContentBlockToBifrost(block))
 			}
 		}
-		content.ContentBlocks = &contentBlocks
+		content.ContentBlocks = contentBlocks
 
 		// Create message output
 		if content.ContentBlocks != nil {
@@ -350,7 +350,7 @@ func convertCohereMessageToResponsesOutput(cohereMsg CohereMessage) []schemas.Re
 
 	// Handle tool calls
 	if cohereMsg.ToolCalls != nil {
-		for _, toolCall := range *cohereMsg.ToolCalls {
+		for _, toolCall := range cohereMsg.ToolCalls {
 			// Check if Function is nil to avoid nil pointer dereference
 			if toolCall.Function == nil {
 				// Skip this tool call if Function is nil

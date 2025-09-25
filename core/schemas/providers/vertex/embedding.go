@@ -91,7 +91,7 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 		embedding := schemas.BifrostEmbedding{
 			Object: "embedding",
 			Embedding: schemas.BifrostEmbeddingResponse{
-				EmbeddingArray: &embeddingFloat32,
+				EmbeddingArray: embeddingFloat32,
 			},
 			Index: i,
 		}

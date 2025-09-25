@@ -33,7 +33,7 @@ import (
 type ResponsesParameters struct {
 	Background         *bool                         `json:"background,omitempty"`
 	Conversation       *string                       `json:"conversation,omitempty"`
-	Include            *[]string                     `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	Include            []string                     `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
 	Instructions       *string                       `json:"instructions,omitempty"`
 	MaxOutputTokens    *int                          `json:"max_output_tokens,omitempty"`
 	MaxToolCalls       *int                          `json:"max_tool_calls,omitempty"`
@@ -83,7 +83,7 @@ type ResponsesTextConfigFormatJSONSchema struct {
 }
 
 type ResponsesResponse struct {
-	Tools      *[]ResponsesTool     `json:"tools,omitempty"`
+	Tools      []ResponsesTool     `json:"tools,omitempty"`
 	ToolChoice *ResponsesToolChoice `json:"tool_choice,omitempty"`
 
 	ResponsesParameters
@@ -91,7 +91,7 @@ type ResponsesResponse struct {
 	CreatedAt         int                                 `json:"created_at"`                   // Unix timestamp when Response was created
 	Conversation      *ResponsesResponseConversation      `json:"conversation,omitempty"`       // The conversation that this response belongs to
 	IncompleteDetails *ResponsesResponseIncompleteDetails `json:"incomplete_details,omitempty"` // Details about why the response is incomplete
-	Instructions      *[]ResponsesMessage                 `json:"instructions,omitempty"`
+	Instructions      []ResponsesMessage                 `json:"instructions,omitempty"`
 	Output            []ResponsesMessage                  `json:"output,omitempty"`
 	Prompt            *ResponsesPrompt                    `json:"prompt,omitempty"`    // Reference to a prompt template and variables
 	Reasoning         *ResponsesParametersReasoning       `json:"reasoning,omitempty"` // Configuration options for reasoning models
@@ -468,7 +468,7 @@ const (
 // ResponsesInputMessageContent is a union type that can be either a string or array of content blocks
 type ResponsesMessageContent struct {
 	ContentStr    *string                         // Simple text content
-	ContentBlocks *[]ResponsesMessageContentBlock // Rich content with multiple media types
+	ContentBlocks []ResponsesMessageContentBlock // Rich content with multiple media types
 }
 
 // MarshalJSON implements custom JSON marshalling for ResponsesMessageContent.
@@ -483,7 +483,7 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 		return sonic.Marshal(*rc.ContentStr)
 	}
 	if rc.ContentBlocks != nil {
-		return sonic.Marshal(*rc.ContentBlocks)
+		return sonic.Marshal(rc.ContentBlocks)
 	}
 	// If both are nil, return null
 	return sonic.Marshal(nil)
@@ -503,7 +503,7 @@ func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ResponsesMessageContentBlock
 	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
-		rc.ContentBlocks = &arrayContent
+		rc.ContentBlocks = arrayContent
 		return nil
 	}
 
@@ -558,8 +558,8 @@ type ResponsesInputMessageContentBlockAudio struct {
 // =============================================================================
 
 type ResponsesOutputMessageContentText struct {
-	Annotations *[]ResponsesOutputMessageContentTextAnnotation `json:"annotations,omitempty"` // Citations and references
-	LogProbs    *[]ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitempty"`    // Token log probabilities
+	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations,omitempty"` // Citations and references
+	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitempty"`    // Token log probabilities
 }
 
 type ResponsesOutputMessageContentTextAnnotation struct {
@@ -859,7 +859,7 @@ type ResponsesWebSearchActionSearchSource struct {
 // Function Tool Call Output - contains the results from executing a function tool call
 type ResponsesFunctionToolCallOutput struct {
 	ResponsesFunctionToolCallOutputStr    *string //A JSON string of the output of the function tool call.
-	ResponsesFunctionToolCallOutputBlocks *[]ResponsesMessageContentBlock
+	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 }
 
 // MarshalJSON implements custom JSON marshalling for ResponsesFunctionToolCallOutput.
@@ -874,7 +874,7 @@ func (rf ResponsesFunctionToolCallOutput) MarshalJSON() ([]byte, error) {
 		return sonic.Marshal(*rf.ResponsesFunctionToolCallOutputStr)
 	}
 	if rf.ResponsesFunctionToolCallOutputBlocks != nil {
-		return sonic.Marshal(*rf.ResponsesFunctionToolCallOutputBlocks)
+		return sonic.Marshal(rf.ResponsesFunctionToolCallOutputBlocks)
 	}
 	// If both are nil, return null
 	return sonic.Marshal(nil)
@@ -914,7 +914,7 @@ func (rf *ResponsesFunctionToolCallOutput) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ResponsesMessageContentBlock
 	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
-		rf.ResponsesFunctionToolCallOutputBlocks = &arrayContent
+		rf.ResponsesFunctionToolCallOutputBlocks = arrayContent
 		return nil
 	}
 
@@ -1413,14 +1413,14 @@ type ResponsesToolMCP struct {
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object
 type ResponsesToolMCPAllowedTools struct {
 	// Either a simple array of tool names or a filter object
-	ToolNames *[]string                           `json:",omitempty"`
+	ToolNames []string                           `json:",omitempty"`
 	Filter    *ResponsesToolMCPAllowedToolsFilter `json:",omitempty"`
 }
 
 // ResponsesToolMCPAllowedToolsFilter - A filter object to specify which tools are allowed
 type ResponsesToolMCPAllowedToolsFilter struct {
 	ReadOnly  *bool     `json:"read_only,omitempty"`  // Whether tool is read-only
-	ToolNames *[]string `json:"tool_names,omitempty"` // List of allowed tool names
+	ToolNames []string `json:"tool_names,omitempty"` // List of allowed tool names
 }
 
 // ResponsesToolMCPAllowedToolsApprovalSetting - Specify which tools require approval
@@ -1434,7 +1434,7 @@ type ResponsesToolMCPAllowedToolsApprovalSetting struct {
 // ResponsesToolMCPAllowedToolsApprovalFilter - Filter for approval settings
 type ResponsesToolMCPAllowedToolsApprovalFilter struct {
 	ReadOnly  *bool     `json:"read_only,omitempty"`  // Whether tool is read-only
-	ToolNames *[]string `json:"tool_names,omitempty"` // List of tool names
+	ToolNames []string `json:"tool_names,omitempty"` // List of tool names
 }
 
 // ToolCodeInterpreter - A tool that runs Python code

@@ -930,9 +930,9 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	path := fmt.Sprintf("%s/%s", model, basePath)
 
 	if key.BedrockKeyConfig.Deployments != nil {
-		if inferenceProfileId, ok := key.BedrockKeyConfig.Deployments[model]; ok {
+		if inferenceProfileID, ok := key.BedrockKeyConfig.Deployments[model]; ok {
 			if key.BedrockKeyConfig.ARN != nil {
-				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileId))
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileID))
 				path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 			}
 		}

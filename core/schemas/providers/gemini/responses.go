@@ -228,7 +228,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				msg := schemas.ResponsesMessage{
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: &contentBlocks,
+						ContentBlocks: contentBlocks,
 					},
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 				}
@@ -253,7 +253,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				msg := schemas.ResponsesMessage{
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: &contentBlocks,
+						ContentBlocks: contentBlocks,
 					},
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 				}
@@ -512,7 +512,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 					})
 				}
 				if msg.Content.ContentBlocks != nil {
-					for _, block := range *msg.Content.ContentBlocks {
+					for _, block := range msg.Content.ContentBlocks {
 						part, err := convertContentBlockToGeminiPart(block)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
@@ -545,7 +545,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			}
 
 			if msg.Content.ContentBlocks != nil {
-				for _, block := range *msg.Content.ContentBlocks {
+				for _, block := range msg.Content.ContentBlocks {
 					part, err := convertContentBlockToGeminiPart(block)
 					if err != nil {
 						return nil, nil, fmt.Errorf("failed to convert message content block: %w", err)

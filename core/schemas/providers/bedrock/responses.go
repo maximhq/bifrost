@@ -26,7 +26,7 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 		}
 		bedrockReq.Messages = messages
 		if len(systemMessages) > 0 {
-			bedrockReq.System = &systemMessages
+			bedrockReq.System = systemMessages
 		}
 	}
 
@@ -95,7 +95,7 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 
 		if len(bedrockTools) > 0 {
 			bedrockReq.ToolConfig = &BedrockToolConfig{
-				Tools: &bedrockTools,
+				Tools: bedrockTools,
 			}
 		}
 	}
@@ -125,7 +125,7 @@ func ensureResponsesToolConfigForConversation(bifrostReq *schemas.BifrostRespons
 
 	hasToolContent, tools := extractToolsFromResponsesConversationHistory(bifrostReq.Input)
 	if hasToolContent && len(tools) > 0 {
-		bedrockReq.ToolConfig = &BedrockToolConfig{Tools: &tools}
+		bedrockReq.ToolConfig = &BedrockToolConfig{Tools: tools}
 	}
 }
 
@@ -297,7 +297,7 @@ func convertResponsesItemsToBedrockMessages(messages []schemas.ResponsesMessage)
 								Text: msg.Content.ContentStr,
 							})
 						} else if msg.Content.ContentBlocks != nil {
-							for _, block := range *msg.Content.ContentBlocks {
+							for _, block := range msg.Content.ContentBlocks {
 								if block.Text != nil {
 									systemMessages = append(systemMessages, BedrockSystemMessage{
 										Text: block.Text,
@@ -428,7 +428,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 			Text: content.ContentStr,
 		})
 	} else if content.ContentBlocks != nil {
-		for _, block := range *content.ContentBlocks {
+		for _, block := range content.ContentBlocks {
 
 			bedrockBlock := BedrockContentBlock{}
 

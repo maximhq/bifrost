@@ -124,7 +124,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
-	return NewTestSetupWithConfig(t, Config{
+	return NewTestSetupWithConfig(t, &Config{
 		Provider:          schemas.OpenAI,
 		EmbeddingModel:    "text-embedding-3-small",
 		Threshold:         0.8,

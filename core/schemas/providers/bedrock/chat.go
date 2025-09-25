@@ -28,7 +28,7 @@ func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Be
 	}
 	bedrockReq.Messages = messages
 	if len(systemMessages) > 0 {
-		bedrockReq.System = &systemMessages
+		bedrockReq.System = systemMessages
 	}
 
 	// Convert parameters and configurations
@@ -94,14 +94,14 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	var assistantMessage *schemas.ChatAssistantMessage
 	if len(toolCalls) > 0 {
 		assistantMessage = &schemas.ChatAssistantMessage{
-			ToolCalls: &toolCalls,
+			ToolCalls: toolCalls,
 		}
 	}
 
 	// Create the message content
 	messageContent := schemas.ChatMessageContent{}
 	if len(contentBlocks) > 0 {
-		messageContent.ContentBlocks = &contentBlocks
+		messageContent.ContentBlocks = contentBlocks
 	}
 
 	// Create the response choice

@@ -251,7 +251,7 @@ func TestContentVariations(t *testing.T) {
 					{
 						Role: schemas.ChatMessageRoleUser,
 						Content: schemas.ChatMessageContent{
-							ContentBlocks: &[]schemas.ChatContentBlock{
+							ContentBlocks: []schemas.ChatContentBlock{
 								{
 									Type: schemas.ChatContentBlockTypeText,
 									Text: bifrost.Ptr("Analyze this image"),
@@ -281,7 +281,7 @@ func TestContentVariations(t *testing.T) {
 					{
 						Role: schemas.ChatMessageRoleUser,
 						Content: schemas.ChatMessageContent{
-							ContentBlocks: &[]schemas.ChatContentBlock{
+							ContentBlocks: []schemas.ChatContentBlock{
 								{
 									Type: schemas.ChatContentBlockTypeText,
 									Text: bifrost.Ptr("Compare these images"),

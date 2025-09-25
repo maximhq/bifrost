@@ -11,13 +11,13 @@ import (
 type CohereChatRequest struct {
 	Model            string                   `json:"model"`                        // Required: Model to use for chat completion
 	Messages         []CohereMessage          `json:"messages"`                     // Required: Array of message objects
-	Tools            *[]CohereChatRequestTool `json:"tools,omitempty"`              // Optional: Tools available for the model
+	Tools            []CohereChatRequestTool `json:"tools,omitempty"`              // Optional: Tools available for the model
 	ToolChoice       *CohereToolChoice        `json:"tool_choice,omitempty"`        // Optional: Tool choice configuration
 	Temperature      *float64                 `json:"temperature,omitempty"`        // Optional: Sampling temperature
 	P                *float64                 `json:"p,omitempty"`                  // Optional: Top-p sampling
 	K                *int                     `json:"k,omitempty"`                  // Optional: Top-k sampling
 	MaxTokens        *int                     `json:"max_tokens,omitempty"`         // Optional: Maximum tokens to generate
-	StopSequences    *[]string                `json:"stop_sequences,omitempty"`     // Optional: Stop sequences
+	StopSequences    []string                `json:"stop_sequences,omitempty"`     // Optional: Stop sequences
 	FrequencyPenalty *float64                 `json:"frequency_penalty,omitempty"`  // Optional: Frequency penalty
 	PresencePenalty  *float64                 `json:"presence_penalty,omitempty"`   // Optional: Presence penalty
 	Stream           *bool                    `json:"stream,omitempty"`             // Optional: Enable streaming
@@ -42,7 +42,7 @@ type CohereChatRequestFunction struct {
 type CohereMessage struct {
 	Role       string                `json:"role"`                   // Required: Message role (system, user, assistant, tool)
 	Content    *CohereMessageContent `json:"content,omitempty"`      // Optional: Message content (string or array of content blocks)
-	ToolCalls  *[]CohereToolCall     `json:"tool_calls,omitempty"`   // Optional: Tool calls (for assistant messages)
+	ToolCalls  []CohereToolCall     `json:"tool_calls,omitempty"`   // Optional: Tool calls (for assistant messages)
 	ToolCallID *string               `json:"tool_call_id,omitempty"` // Optional: Tool call ID (for tool messages)
 	ToolPlan   *string               `json:"tool_plan,omitempty"`    // Optional: Chain-of-thought style reflection (assistant only)
 }
@@ -51,7 +51,7 @@ type CohereMessage struct {
 type CohereMessageContent struct {
 	// Use custom marshaling to handle string or []CohereContentBlock
 	StringContent *string               `json:"-"`
-	BlocksContent *[]CohereContentBlock `json:"-"`
+	BlocksContent []CohereContentBlock `json:"-"`
 }
 
 // MarshalJSON implements custom JSON marshaling for CohereMessageContent
@@ -60,7 +60,7 @@ func (c *CohereMessageContent) MarshalJSON() ([]byte, error) {
 		return json.Marshal(*c.StringContent)
 	}
 	if c.BlocksContent != nil {
-		return json.Marshal(*c.BlocksContent)
+		return json.Marshal(c.BlocksContent)
 	}
 	return []byte("null"), nil
 }
@@ -77,7 +77,7 @@ func (c *CohereMessageContent) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as content blocks array
 	var blocks []CohereContentBlock
 	if err := json.Unmarshal(data, &blocks); err == nil {
-		c.BlocksContent = &blocks
+		c.BlocksContent = blocks
 		return nil
 	}
 
@@ -96,7 +96,7 @@ func NewStringContent(content string) *CohereMessageContent {
 // NewBlocksContent creates a CohereMessageContent with content blocks
 func NewBlocksContent(blocks []CohereContentBlock) *CohereMessageContent {
 	return &CohereMessageContent{
-		BlocksContent: &blocks,
+		BlocksContent: blocks,
 	}
 }
 
@@ -116,7 +116,7 @@ func (c *CohereMessageContent) GetString() *string {
 }
 
 // GetBlocks returns the content blocks (nil if not blocks)
-func (c *CohereMessageContent) GetBlocks() *[]CohereContentBlock {
+func (c *CohereMessageContent) GetBlocks() []CohereContentBlock {
 	return c.BlocksContent
 }
 
@@ -213,12 +213,12 @@ type CohereTool struct {
 type CohereEmbeddingRequest struct {
 	Model           string                  `json:"model"`                      // Required: ID of embedding model
 	InputType       string                  `json:"input_type"`                 // Required: Type of input for v3+ models
-	Texts           *[]string               `json:"texts,omitempty"`            // Optional: Array of strings to embed (max 96)
-	Images          *[]string               `json:"images,omitempty"`           // Optional: Array of image data URIs (max 1)
-	Inputs          *[]CohereEmbeddingInput `json:"inputs,omitempty"`           // Optional: Array of mixed text/image inputs (max 96)
+	Texts           []string               `json:"texts,omitempty"`            // Optional: Array of strings to embed (max 96)
+	Images          []string               `json:"images,omitempty"`           // Optional: Array of image data URIs (max 1)
+	Inputs          []CohereEmbeddingInput `json:"inputs,omitempty"`           // Optional: Array of mixed text/image inputs (max 96)
 	MaxTokens       *int                    `json:"max_tokens,omitempty"`       // Optional: Max tokens to embed per input
 	OutputDimension *int                    `json:"output_dimension,omitempty"` // Optional: Embedding dimensions (256, 512, 1024, 1536)
-	EmbeddingTypes  *[]string               `json:"embedding_types,omitempty"`  // Optional: Types of embeddings to return
+	EmbeddingTypes  []string               `json:"embedding_types,omitempty"`  // Optional: Types of embeddings to return
 	Truncate        *string                 `json:"truncate,omitempty"`         // Optional: How to handle long inputs
 }
 
@@ -232,19 +232,19 @@ type CohereEmbeddingResponse struct {
 	ID           string                      `json:"id"`                      // Response ID
 	Embeddings   *CohereEmbeddingData        `json:"embeddings,omitempty"`    // Embedding data object
 	ResponseType *string                     `json:"response_type,omitempty"` // Response type (embeddings_floats, embeddings_by_type)
-	Texts        *[]string                   `json:"texts,omitempty"`         // Original text entries
-	Images       *[]CohereEmbeddingImageInfo `json:"images,omitempty"`        // Original image entries
+	Texts        []string                   `json:"texts,omitempty"`         // Original text entries
+	Images       []CohereEmbeddingImageInfo `json:"images,omitempty"`        // Original image entries
 	Meta         *CohereEmbeddingMeta        `json:"meta,omitempty"`          // Response metadata
 }
 
 // CohereEmbeddingData represents the embeddings object with different types
 type CohereEmbeddingData struct {
-	Float   *[][]float32 `json:"float,omitempty"`   // Float embeddings
-	Int8    *[][]int8    `json:"int8,omitempty"`    // Int8 embeddings
-	Uint8   *[][]uint8   `json:"uint8,omitempty"`   // Uint8 embeddings
-	Binary  *[][]int8    `json:"binary,omitempty"`  // Binary embeddings
-	Ubinary *[][]uint8   `json:"ubinary,omitempty"` // Unsigned binary embeddings
-	Base64  *[]string    `json:"base64,omitempty"`  // Base64 embeddings
+	Float   [][]float32 `json:"float,omitempty"`   // Float embeddings
+	Int8    [][]int8    `json:"int8,omitempty"`    // Int8 embeddings
+	Uint8   [][]uint8   `json:"uint8,omitempty"`   // Uint8 embeddings
+	Binary  [][]int8    `json:"binary,omitempty"`  // Binary embeddings
+	Ubinary [][]uint8   `json:"ubinary,omitempty"` // Unsigned binary embeddings
+	Base64  []string    `json:"base64,omitempty"`  // Base64 embeddings
 }
 
 // CohereEmbeddingImageInfo represents image information in the response
@@ -260,7 +260,7 @@ type CohereEmbeddingMeta struct {
 	APIVersion  *CohereEmbeddingAPIVersion `json:"api_version,omitempty"`  // API version info
 	BilledUnits *CohereBilledUnits         `json:"billed_units,omitempty"` // Billing information
 	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`       // Token usage
-	Warnings    *[]string                  `json:"warnings,omitempty"`     // Any warnings
+	Warnings    []string                  `json:"warnings,omitempty"`     // Any warnings
 }
 
 // CohereEmbeddingAPIVersion represents API version information
@@ -278,7 +278,7 @@ type CohereChatResponse struct {
 	FinishReason *CohereFinishReason `json:"finish_reason,omitempty"` // Reason for completion
 	Message      *CohereMessage      `json:"message,omitempty"`       // Generated message from assistant
 	Usage        *CohereUsage        `json:"usage,omitempty"`         // Token usage information
-	LogProbs     *[]CohereLogProb    `json:"logprobs,omitempty"`      // Log probabilities (if requested)
+	LogProbs     []CohereLogProb    `json:"logprobs,omitempty"`      // Log probabilities (if requested)
 }
 
 // CohereFinishReason represents the reason a chat request has finished
@@ -316,7 +316,7 @@ type CohereTokenUsage struct {
 type CohereLogProb struct {
 	TokenIDs []int      `json:"token_ids"`          // Token IDs of each token in text chunk
 	Text     *string    `json:"text,omitempty"`     // Text chunk for log probabilities
-	LogProbs *[]float64 `json:"logprobs,omitempty"` // Log probability of each token
+	LogProbs []float64 `json:"logprobs,omitempty"` // Log probability of each token
 }
 
 // CohereCitation represents a citation in the response
@@ -324,7 +324,7 @@ type CohereCitation struct {
 	Start   int             `json:"start"`             // Start position of cited text
 	End     int             `json:"end"`               // End position of cited text
 	Text    string          `json:"text"`              // Cited text
-	Sources *[]CohereSource `json:"sources,omitempty"` // Citation sources
+	Sources []CohereSource `json:"sources,omitempty"` // Citation sources
 }
 
 // CohereSource represents a citation source

@@ -22,7 +22,7 @@ type AnthropicTextRequest struct {
 	Temperature       *float64  `json:"temperature,omitempty"`
 	TopP              *float64  `json:"top_p,omitempty"`
 	TopK              *int      `json:"top_k,omitempty"`
-	StopSequences     *[]string `json:"stop_sequences,omitempty"`
+	StopSequences     []string `json:"stop_sequences,omitempty"`
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -34,9 +34,9 @@ type AnthropicMessageRequest struct {
 	Temperature   *float64             `json:"temperature,omitempty"`
 	TopP          *float64             `json:"top_p,omitempty"`
 	TopK          *int                 `json:"top_k,omitempty"`
-	StopSequences *[]string            `json:"stop_sequences,omitempty"`
+	StopSequences []string            `json:"stop_sequences,omitempty"`
 	Stream        *bool                `json:"stream,omitempty"`
-	Tools         *[]AnthropicTool     `json:"tools,omitempty"`
+	Tools         []AnthropicTool     `json:"tools,omitempty"`
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
@@ -61,7 +61,7 @@ type AnthropicMessage struct {
 // AnthropicContent represents content that can be either string or array of blocks
 type AnthropicContent struct {
 	ContentStr    *string
-	ContentBlocks *[]AnthropicContentBlock
+	ContentBlocks []AnthropicContentBlock
 }
 
 // MarshalJSON implements custom JSON marshalling for AnthropicContent.
@@ -76,7 +76,7 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 		return json.Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return json.Marshal(*mc.ContentBlocks)
+		return json.Marshal(mc.ContentBlocks)
 	}
 	// If both are nil, return null
 	return json.Marshal(nil)
@@ -95,7 +95,7 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []AnthropicContentBlock
 	if err := json.Unmarshal(data, &arrayContent); err == nil {
-		mc.ContentBlocks = &arrayContent
+		mc.ContentBlocks = arrayContent
 		return nil
 	}
 

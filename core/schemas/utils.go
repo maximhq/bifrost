@@ -510,13 +510,13 @@ func SafeExtractBoolPointer(value interface{}) (*bool, bool) {
 	return nil, false
 }
 
-// SafeExtractStringSlicePointer safely extracts a *[]string value from an interface{} with type checking
-func SafeExtractStringSlicePointer(value interface{}) (*[]string, bool) {
+// SafeExtractStringSlicePointer safely extracts a []string value from an interface{} with type checking
+func SafeExtractStringSlicePointer(value interface{}) ([]string, bool) {
 	if value == nil {
 		return nil, false
 	}
 	if sliceVal, ok := SafeExtractStringSlice(value); ok {
-		return &sliceVal, true
+		return sliceVal, true
 	}
 	return nil, false
 }

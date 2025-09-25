@@ -54,7 +54,7 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 		// Handle additional model response field paths
 		if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
 			if fields, ok := responseFields.([]string); ok {
-				bedrockReq.AdditionalModelResponseFieldPaths = &fields
+				bedrockReq.AdditionalModelResponseFieldPaths = fields
 			}
 		}
 
@@ -87,7 +87,7 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 				}
 
 				if len(variables) > 0 {
-					bedrockReq.PromptVariables = &variables
+					bedrockReq.PromptVariables = variables
 				}
 			}
 		}
@@ -95,7 +95,7 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 		// Handle request metadata
 		if reqMetadata, exists := bifrostReq.Params.ExtraParams["requestMetadata"]; exists {
 			if metadata, ok := reqMetadata.(map[string]string); ok {
-				bedrockReq.RequestMetadata = &metadata
+				bedrockReq.RequestMetadata = metadata
 			}
 		}
 	}
@@ -109,7 +109,7 @@ func ensureChatToolConfigForConversation(bifrostReq *schemas.BifrostChatRequest,
 
 	hasToolContent, tools := extractToolsFromConversationHistory(bifrostReq.Input)
 	if hasToolContent && len(tools) > 0 {
-		bedrockReq.ToolConfig = &BedrockToolConfig{Tools: &tools}
+		bedrockReq.ToolConfig = &BedrockToolConfig{Tools: tools}
 	}
 }
 
@@ -164,7 +164,7 @@ func convertSystemMessage(msg schemas.ChatMessage) (BedrockSystemMessage, error)
 		// For system messages, we only support text content
 		// Combine all text blocks into a single string
 		var textParts []string
-		for _, block := range *msg.Content.ContentBlocks {
+		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
 				textParts = append(textParts, *block.Text)
 			}
@@ -192,7 +192,7 @@ func convertMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 
 	// Add tool calls if present (for assistant messages)
 	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
-		for _, toolCall := range *msg.ChatAssistantMessage.ToolCalls {
+		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 			toolUseBlock := convertToolCallToContentBlock(toolCall)
 			contentBlocks = append(contentBlocks, toolUseBlock)
 		}
@@ -231,7 +231,7 @@ func convertToolMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 			})
 		}
 	} else if msg.Content.ContentBlocks != nil {
-		for _, block := range *msg.Content.ContentBlocks {
+		for _, block := range msg.Content.ContentBlocks {
 			switch block.Type {
 			case schemas.ChatContentBlockTypeText:
 				if block.Text != nil {
@@ -277,7 +277,7 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 		})
 	} else if content.ContentBlocks != nil {
 		// Multi-modal content
-		for _, block := range *content.ContentBlocks {
+		for _, block := range content.ContentBlocks {
 			bedrockBlock, err := convertContentBlock(block)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert content block: %w", err)
@@ -429,7 +429,7 @@ func convertToolConfig(params *schemas.ChatParameters) *BedrockToolConfig {
 	}
 
 	toolConfig := &BedrockToolConfig{
-		Tools: &bedrockTools,
+		Tools: bedrockTools,
 	}
 
 	// Convert tool choice
@@ -489,7 +489,7 @@ func checkMessageForToolContent(msg schemas.ChatMessage, toolsMap map[string]Bed
 	// Check assistant tool calls
 	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 		hasContent = true
-		for _, toolCall := range *msg.ChatAssistantMessage.ToolCalls {
+		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 			if toolCall.Function.Name != nil {
 				if _, exists := toolsMap[*toolCall.Function.Name]; !exists {
 					// Create a complete schema object for extracted tools
@@ -519,7 +519,7 @@ func checkMessageForToolContent(msg schemas.ChatMessage, toolsMap map[string]Bed
 
 	// Check content blocks
 	if msg.Content.ContentBlocks != nil {
-		for _, block := range *msg.Content.ContentBlocks {
+		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == "tool_use" || block.Type == "tool_result" {
 				hasContent = true
 			}

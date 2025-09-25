@@ -18,23 +18,23 @@ type BedrockTextCompletionRequest struct {
 	TopK        *int     `json:"top_k,omitempty"`       // Top-k sampling parameter
 
 	// Stop sequences (both naming conventions supported)
-	Stop          *[]string `json:"stop,omitempty"`           // Stop sequences (standard format)
-	StopSequences *[]string `json:"stop_sequences,omitempty"` // Stop sequences (Anthropic format)
+	Stop          []string `json:"stop,omitempty"`           // Stop sequences (standard format)
+	StopSequences []string `json:"stop_sequences,omitempty"` // Stop sequences (Anthropic format)
 }
 
 // BedrockConverseRequest represents a Bedrock Converse API request
 type BedrockConverseRequest struct {
-	ModelID                           string                            `json:"-"`                                           // Model ID (sent in URL path, not body)
-	Messages                          []BedrockMessage                  `json:"messages,omitempty"`                          // Array of messages for the conversation
-	System                            *[]BedrockSystemMessage           `json:"system,omitempty"`                            // System messages/prompts
-	InferenceConfig                   *BedrockInferenceConfig           `json:"inferenceConfig,omitempty"`                   // Inference parameters
-	ToolConfig                        *BedrockToolConfig                `json:"toolConfig,omitempty"`                        // Tool configuration
-	GuardrailConfig                   *BedrockGuardrailConfig           `json:"guardrailConfig,omitempty"`                   // Guardrail configuration
-	AdditionalModelRequestFields      map[string]interface{}            `json:"additionalModelRequestFields,omitempty"`      // Model-specific parameters (untyped)
-	AdditionalModelResponseFieldPaths *[]string                         `json:"additionalModelResponseFieldPaths,omitempty"` // Additional response field paths
-	PerformanceConfig                 *BedrockPerformanceConfig         `json:"performanceConfig,omitempty"`                 // Performance configuration
-	PromptVariables                   *map[string]BedrockPromptVariable `json:"promptVariables,omitempty"`                   // Prompt variables for prompt management
-	RequestMetadata                   *map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
+	ModelID                           string                           `json:"-"`                                           // Model ID (sent in URL path, not body)
+	Messages                          []BedrockMessage                 `json:"messages,omitempty"`                          // Array of messages for the conversation
+	System                            []BedrockSystemMessage           `json:"system,omitempty"`                            // System messages/prompts
+	InferenceConfig                   *BedrockInferenceConfig          `json:"inferenceConfig,omitempty"`                   // Inference parameters
+	ToolConfig                        *BedrockToolConfig               `json:"toolConfig,omitempty"`                        // Tool configuration
+	GuardrailConfig                   *BedrockGuardrailConfig          `json:"guardrailConfig,omitempty"`                   // Guardrail configuration
+	AdditionalModelRequestFields      map[string]interface{}           `json:"additionalModelRequestFields,omitempty"`      // Model-specific parameters (untyped)
+	AdditionalModelResponseFieldPaths []string                         `json:"additionalModelResponseFieldPaths,omitempty"` // Additional response field paths
+	PerformanceConfig                 *BedrockPerformanceConfig        `json:"performanceConfig,omitempty"`                 // Performance configuration
+	PromptVariables                   map[string]BedrockPromptVariable `json:"promptVariables,omitempty"`                   // Prompt variables for prompt management
+	RequestMetadata                   map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
 }
 
 type BedrockMessageRole string
@@ -125,7 +125,7 @@ type BedrockGuardContent struct {
 // BedrockGuardContentText represents text content for guardrails
 type BedrockGuardContentText struct {
 	Text       string                     `json:"text"`                 // Required: Text content
-	Qualifiers *[]BedrockContentQualifier `json:"qualifiers,omitempty"` // Optional: Content qualifiers
+	Qualifiers []BedrockContentQualifier `json:"qualifiers,omitempty"` // Optional: Content qualifiers
 }
 
 // BedrockContentQualifier represents qualifiers for guard content
@@ -140,14 +140,14 @@ const (
 // BedrockInferenceConfig represents inference configuration parameters
 type BedrockInferenceConfig struct {
 	MaxTokens     *int      `json:"maxTokens,omitempty"`     // Maximum number of tokens to generate
-	StopSequences *[]string `json:"stopSequences,omitempty"` // Sequences that will stop generation
+	StopSequences []string `json:"stopSequences,omitempty"` // Sequences that will stop generation
 	Temperature   *float64  `json:"temperature,omitempty"`   // Sampling temperature (0.0 to 1.0)
 	TopP          *float64  `json:"topP,omitempty"`          // Top-p sampling parameter (0.0 to 1.0)
 }
 
 // BedrockToolConfig represents tool configuration
 type BedrockToolConfig struct {
-	Tools      *[]BedrockTool     `json:"tools,omitempty"`      // Available tools
+	Tools      []BedrockTool     `json:"tools,omitempty"`      // Available tools
 	ToolChoice *BedrockToolChoice `json:"toolChoice,omitempty"` // Tool choice strategy
 }
 
@@ -259,8 +259,8 @@ type BedrockConverseTrace struct {
 // BedrockGuardrailTrace represents detailed guardrail trace information
 type BedrockGuardrailTrace struct {
 	Action            *string                       `json:"action,omitempty"`            // Action taken by guardrail
-	InputAssessments  *[]BedrockGuardrailAssessment `json:"inputAssessments,omitempty"`  // Input assessments
-	OutputAssessments *[]BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments
+	InputAssessments  []BedrockGuardrailAssessment `json:"inputAssessments,omitempty"`  // Input assessments
+	OutputAssessments []BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments
 	Trace             *BedrockGuardrailTraceDetail  `json:"trace,omitempty"`             // Detailed trace information
 }
 
@@ -274,7 +274,7 @@ type BedrockGuardrailAssessment struct {
 
 // BedrockGuardrailTopicPolicy represents topic policy assessment
 type BedrockGuardrailTopicPolicy struct {
-	Topics *[]BedrockGuardrailTopic `json:"topics,omitempty"` // Topics identified
+	Topics []BedrockGuardrailTopic `json:"topics,omitempty"` // Topics identified
 }
 
 // BedrockGuardrailTopic represents a topic identified by guardrail
@@ -286,7 +286,7 @@ type BedrockGuardrailTopic struct {
 
 // BedrockGuardrailContentPolicy represents content policy assessment
 type BedrockGuardrailContentPolicy struct {
-	Filters *[]BedrockGuardrailContentFilter `json:"filters,omitempty"` // Content filters applied
+	Filters []BedrockGuardrailContentFilter `json:"filters,omitempty"` // Content filters applied
 }
 
 // BedrockGuardrailContentFilter represents a content filter
@@ -298,8 +298,8 @@ type BedrockGuardrailContentFilter struct {
 
 // BedrockGuardrailWordPolicy represents word policy assessment
 type BedrockGuardrailWordPolicy struct {
-	CustomWords      *[]BedrockGuardrailCustomWord      `json:"customWords,omitempty"`      // Custom words detected
-	ManagedWordLists *[]BedrockGuardrailManagedWordList `json:"managedWordLists,omitempty"` // Managed word lists matched
+	CustomWords      []BedrockGuardrailCustomWord      `json:"customWords,omitempty"`      // Custom words detected
+	ManagedWordLists []BedrockGuardrailManagedWordList `json:"managedWordLists,omitempty"` // Managed word lists matched
 }
 
 // BedrockGuardrailCustomWord represents a custom word detected
@@ -317,8 +317,8 @@ type BedrockGuardrailManagedWordList struct {
 
 // BedrockGuardrailSensitiveInfoPolicy represents sensitive information policy assessment
 type BedrockGuardrailSensitiveInfoPolicy struct {
-	PIIEntities *[]BedrockGuardrailPIIEntity `json:"piiEntities,omitempty"` // PII entities detected
-	Regexes     *[]BedrockGuardrailRegex     `json:"regexes,omitempty"`     // Regex patterns matched
+	PIIEntities []BedrockGuardrailPIIEntity `json:"piiEntities,omitempty"` // PII entities detected
+	Regexes     []BedrockGuardrailRegex     `json:"regexes,omitempty"`     // Regex patterns matched
 }
 
 // BedrockGuardrailPIIEntity represents a PII entity detected

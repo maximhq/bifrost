@@ -22,7 +22,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 
 	// Convert texts from Bifrost format
 	if len(texts) > 0 {
-		cohereReq.Texts = &texts
+		cohereReq.Texts = texts
 	}
 
 	// Set default input type if not specified in extra params
@@ -48,7 +48,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 		// Embedding types
 		if embeddingTypes, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["embedding_types"]); ok {
 			if len(embeddingTypes) > 0 {
-				cohereReq.EmbeddingTypes = &embeddingTypes
+				cohereReq.EmbeddingTypes = embeddingTypes
 			}
 		}
 
@@ -78,19 +78,19 @@ func (cohereResp *CohereEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 
 		// Handle different embedding types - prioritize float embeddings
 		if cohereResp.Embeddings.Float != nil {
-			for i, embedding := range *cohereResp.Embeddings.Float {
+			for i, embedding := range cohereResp.Embeddings.Float {
 				bifrostEmbedding := schemas.BifrostEmbedding{
 					Object: "embedding",
 					Index:  i,
 					Embedding: schemas.BifrostEmbeddingResponse{
-						EmbeddingArray: &embedding,
+						EmbeddingArray: embedding,
 					},
 				}
 				bifrostEmbeddings = append(bifrostEmbeddings, bifrostEmbedding)
 			}
 		} else if cohereResp.Embeddings.Base64 != nil {
 			// Handle base64 embeddings as strings
-			for i, embedding := range *cohereResp.Embeddings.Base64 {
+			for i, embedding := range cohereResp.Embeddings.Base64 {
 				bifrostEmbedding := schemas.BifrostEmbedding{
 					Object: "embedding",
 					Index:  i,

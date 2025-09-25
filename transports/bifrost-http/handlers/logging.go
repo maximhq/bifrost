@@ -142,7 +142,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	result, err := h.logManager.Search(filters, pagination)
+	result, err := h.logManager.Search(ctx, filters, pagination)
 	if err != nil {
 		h.logger.Error("failed to search logs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err), h.logger)
@@ -153,13 +153,13 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
 func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
-	droppedRequests := h.logManager.GetDroppedRequests()
+	droppedRequests := h.logManager.GetDroppedRequests(ctx)
 	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests}, h.logger)
 }
 
 // getAvailableModels handles GET /api/logs/models - Get all unique models from logs
 func (h *LoggingHandler) getAvailableModels(ctx *fasthttp.RequestCtx) {
-	models := h.logManager.GetAvailableModels()
+	models := h.logManager.GetAvailableModels(ctx)
 	SendJSON(ctx, map[string]interface{}{"models": models}, h.logger)
 }
 

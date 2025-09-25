@@ -227,7 +227,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 								<div className="flex items-center gap-2">
 									<span className="text-sm">Last Reset:</span>
 									<div className="flex items-center gap-2">
-										<span className="mono text-sm">{formatDistanceToNow(new Date(team.budget.last_reset), { addSuffix: true })}</span>
+										<span className="font-mono text-sm">{formatDistanceToNow(new Date(team.budget.last_reset), { addSuffix: true })}</span>
 									</div>
 								</div>
 							</div>

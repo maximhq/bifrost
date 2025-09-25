@@ -73,8 +73,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/maximhq/bifrost/core v1.1.38 h1:d5B7n5oibBO9f5wMBxyymTewK017nzS15ZzJILRAE6k=
 github.com/maximhq/bifrost/core v1.1.38/go.mod h1:tf2pFTpoM53UGXXMFYxsaUjMqnCqYDOd9glFgMJvA0c=
-github.com/maximhq/maxim-go v0.1.10 h1:rGBYSY3qld2zfZeL4HBmropkyfrqNiJ4IYA49jbvYX8=
-github.com/maximhq/maxim-go v0.1.10/go.mod h1:0+UTWM7UZwNNE5VnljLtr/vpRGtYP8r/2q9WDwlLWFw=
+github.com/maximhq/maxim-go v0.1.11 h1:oEgisU4DKjCR1p3BKYzrvr6kFAfr+FptbOC8bHChIv4=
+github.com/maximhq/maxim-go v0.1.11/go.mod h1:0+UTWM7UZwNNE5VnljLtr/vpRGtYP8r/2q9WDwlLWFw=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=

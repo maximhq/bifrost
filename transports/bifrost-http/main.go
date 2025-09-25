@@ -125,6 +125,7 @@ func init() {
 	logger.SetLevel(schemas.LogLevel(server.LogLevel))
 	// Setting up logger
 	handlers.SetLogger(logger)
+	
 }
 
 // main is the entry point of the application.
@@ -140,4 +141,5 @@ func main() {
 		logger.Error("failed to start server: %v", err)
 		os.Exit(1)
 	}
+	logger.Info("🏁 server stopped")
 }

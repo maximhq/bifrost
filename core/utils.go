@@ -141,7 +141,8 @@ func IsFinalChunk(ctx *context.Context) bool {
 	return false
 }
 
-func GetRequestFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (schemas.RequestType, schemas.ModelProvider, string) {
+// GetRequestFields extracts the request type, provider, and model from the result or error
+func GetRequestFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, model string) {
 	if result != nil {
 		return result.ExtraFields.RequestType, result.ExtraFields.Provider, result.ExtraFields.ModelRequested
 	}

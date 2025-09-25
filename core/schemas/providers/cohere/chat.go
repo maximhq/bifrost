@@ -27,7 +27,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 			cohereMsg.Content = NewStringContent(*msg.Content.ContentStr)
 		} else if msg.Content.ContentBlocks != nil {
 			var contentBlocks []CohereContentBlock
-			for _, block := range *msg.Content.ContentBlocks {
+			for _, block := range msg.Content.ContentBlocks {
 				if block.Text != nil {
 					contentBlocks = append(contentBlocks, CohereContentBlock{
 						Type: CohereContentBlockTypeText,
@@ -50,7 +50,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 		// Convert tool calls for assistant messages
 		if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 			var toolCalls []CohereToolCall
-			for _, toolCall := range *msg.ChatAssistantMessage.ToolCalls {
+			for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 				// Safely extract function name and arguments
 				var functionName *string
 				var functionArguments string
@@ -75,7 +75,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 				}
 				toolCalls = append(toolCalls, cohereToolCall)
 			}
-			cohereMsg.ToolCalls = &toolCalls
+			cohereMsg.ToolCalls = toolCalls
 		}
 
 		// Convert tool messages
@@ -146,7 +146,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 					}
 				}
 			}
-			cohereReq.Tools = &cohereTools
+			cohereReq.Tools = cohereTools
 		}
 
 		// Convert tool choice
@@ -214,7 +214,7 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 				blocks := cohereResp.Message.Content.GetBlocks()
 				if blocks != nil {
 					var contentBlocks []schemas.ChatContentBlock
-					for _, block := range *blocks {
+					for _, block := range blocks {
 						if block.Type == CohereContentBlockTypeText && block.Text != nil {
 							contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 								Type: schemas.ChatContentBlockTypeText,
@@ -231,7 +231,7 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 					}
 					if len(contentBlocks) > 0 {
 						bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = schemas.ChatMessageContent{
-							ContentBlocks: &contentBlocks,
+							ContentBlocks: contentBlocks,
 						}
 					}
 				}
@@ -241,7 +241,7 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 		// Convert tool calls
 		if cohereResp.Message.ToolCalls != nil {
 			var toolCalls []schemas.ChatAssistantMessageToolCall
-			for _, toolCall := range *cohereResp.Message.ToolCalls {
+			for _, toolCall := range cohereResp.Message.ToolCalls {
 				// Check if Function is nil to avoid nil pointer dereference
 				if toolCall.Function == nil {
 					// Skip this tool call if Function is nil
@@ -272,7 +272,7 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 				toolCalls = append(toolCalls, bifrostToolCall)
 			}
 			bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				ToolCalls: &toolCalls,
+				ToolCalls: toolCalls,
 			}
 		}
 	}

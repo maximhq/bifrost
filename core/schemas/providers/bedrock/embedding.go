@@ -53,7 +53,7 @@ func (titanResp *BedrockTitanEmbeddingResponse) ToBifrostResponse(model string) 
 				Index:  0,
 				Object: "embedding",
 				Embedding: schemas.BifrostEmbeddingResponse{
-					Embedding2DArray: &[][]float32{titanResp.Embedding},
+					Embedding2DArray: [][]float32{titanResp.Embedding},
 				},
 			},
 		},

@@ -56,11 +56,11 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 		}
 		return vals, inputTokens, nil
 	} else if embedding.EmbeddingArray != nil {
-		return *embedding.EmbeddingArray, inputTokens, nil
-	} else if embedding.Embedding2DArray != nil && len(*embedding.Embedding2DArray) > 0 {
+		return embedding.EmbeddingArray, inputTokens, nil
+	} else if embedding.Embedding2DArray != nil && len(embedding.Embedding2DArray) > 0 {
 		// Flatten 2D array into single embedding
 		var flattened []float32
-		for _, arr := range *embedding.Embedding2DArray {
+		for _, arr := range embedding.Embedding2DArray {
 			flattened = append(flattened, arr...)
 		}
 		return flattened, inputTokens, nil
@@ -198,7 +198,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 			} else if msg.Content.ContentBlocks != nil {
 				// For content blocks, extract text parts
 				var blockTexts []string
-				for _, block := range *msg.Content.ContentBlocks {
+				for _, block := range msg.Content.ContentBlocks {
 					if block.Text != nil {
 						blockTexts = append(blockTexts, normalizeText(*block.Text))
 					}
@@ -245,7 +245,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 			} else if msg.Content.ContentBlocks != nil {
 				// For content blocks, extract text parts
 				var blockTexts []string
-				for _, block := range *msg.Content.ContentBlocks {
+				for _, block := range msg.Content.ContentBlocks {
 					if block.Text != nil {
 						blockTexts = append(blockTexts, normalizeText(*block.Text))
 					}
@@ -474,15 +474,15 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 				normalizedMsg.Content.ContentStr = &normalizedContent
 			} else if msg.Content.ContentBlocks != nil {
 				// Create a copy of content blocks with normalized text
-				normalizedBlocks := make([]schemas.ChatContentBlock, len(*msg.Content.ContentBlocks))
-				for i, block := range *msg.Content.ContentBlocks {
+				normalizedBlocks := make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
+				for i, block := range msg.Content.ContentBlocks {
 					normalizedBlocks[i] = block
 					if block.Text != nil {
 						normalizedText := normalizeText(*block.Text)
 						normalizedBlocks[i].Text = &normalizedText
 					}
 				}
-				normalizedMsg.Content.ContentBlocks = &normalizedBlocks
+				normalizedMsg.Content.ContentBlocks = normalizedBlocks
 			}
 
 			normalizedMessages = append(normalizedMessages, normalizedMsg)
@@ -509,15 +509,15 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 					normalizedContent.ContentStr = &normalizedText
 				} else if msg.Content.ContentBlocks != nil {
 					// Create a copy of content blocks with normalized text
-					normalizedBlocks := make([]schemas.ResponsesMessageContentBlock, len(*msg.Content.ContentBlocks))
-					for i, block := range *msg.Content.ContentBlocks {
+					normalizedBlocks := make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
+					for i, block := range msg.Content.ContentBlocks {
 						normalizedBlocks[i] = block
 						if block.Text != nil {
 							normalizedText := normalizeText(*block.Text)
 							normalizedBlocks[i].Text = &normalizedText
 						}
 					}
-					normalizedContent.ContentBlocks = &normalizedBlocks
+					normalizedContent.ContentBlocks = normalizedBlocks
 				}
 				normalizedMsg.Content = normalizedContent
 			}
@@ -577,7 +577,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 		metadata["max_tokens"] = *params.MaxCompletionTokens
 	}
 	if params.Stop != nil {
-		metadata["stop_sequences"] = *params.Stop
+		metadata["stop_sequences"] = params.Stop
 	}
 	if params.PresencePenalty != nil {
 		metadata["presence_penalty"] = *params.PresencePenalty
@@ -598,7 +598,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 		metadata["logprobs"] = *params.LogProbs
 	}
 	if params.Modalities != nil {
-		metadata["modalities"] = *params.Modalities
+		metadata["modalities"] = params.Modalities
 	}
 	if params.PromptCacheKey != nil {
 		metadata["prompt_cache_key"] = *params.PromptCacheKey
@@ -668,7 +668,7 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 		metadata["conversation"] = *params.Conversation
 	}
 	if params.Include != nil {
-		metadata["include"] = *params.Include
+		metadata["include"] = params.Include
 	}
 	if params.Instructions != nil {
 		metadata["instructions"] = *params.Instructions
@@ -738,7 +738,7 @@ func (plugin *Plugin) extractTextCompletionParametersToMetadata(params *schemas.
 		metadata["max_tokens"] = *params.MaxTokens
 	}
 	if params.Stop != nil {
-		metadata["stop_sequences"] = *params.Stop
+		metadata["stop_sequences"] = params.Stop
 	}
 	if params.PresencePenalty != nil {
 		metadata["presence_penalty"] = *params.PresencePenalty
