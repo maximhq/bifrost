@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -88,6 +89,34 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store conf
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// MarshalConfig marshals the plugin configuration
+func (p *GovernancePlugin) MarshalConfig(source any, target any) error {
+	// Checking if its a string, then we will JSON parse and confirm
+	if configStr, ok := source.(string); ok {
+		if err := sonic.Unmarshal([]byte(configStr), &target); err != nil {
+			return err
+		}
+	}
+	// Checking if its a map[string]any, then we will JSON parse and confirm
+	if configMap, ok := source.(map[string]any); ok {
+		configString, err := sonic.Marshal(configMap)
+		if err != nil {
+			return err
+		}
+		if err := sonic.Unmarshal([]byte(configString), &target); err != nil {
+			return err
+		}
+	}
+	// Checking if its a Config, then we will confirm
+	if config, ok := source.(*Config); ok {
+		target = *config
+	}
+	if _, ok := target.(*Config); ok {
+		return nil
+	}
+	return fmt.Errorf("invalid config type")
 }
 
 // PreHook intercepts requests before they are processed (governance decision point)
