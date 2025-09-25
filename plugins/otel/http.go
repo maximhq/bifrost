@@ -36,11 +36,14 @@ func (c *OtelClientHTTP) Emit(ctx context.Context, rs []*ResourceSpan) error {
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	resp, err := c.client.Do(req)
 	if err != nil {
+		logger.Error("[otel] failed to send request to %s: %v", c.endpoint, err)
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		logger.Error("[otel] collector at %s returned status %s", c.endpoint, resp.Status)
 		return fmt.Errorf("collector returned %s", resp.Status)
 	}
+	logger.Debug("[otel] successfully sent trace to %s, status: %s", c.endpoint, resp.Status)
 	return nil
 }

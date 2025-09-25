@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -36,12 +37,37 @@ func kvAny(k string, v *AnyValue) *KeyValue {
 	return &KeyValue{Key: k, Value: v}
 }
 
+// arrValue converts a list of any values to an OpenTelemetry array value
 func arrValue(vals ...*AnyValue) *AnyValue {
 	return &AnyValue{Value: &ArrayValue{ArrayValue: &ArrayValueValue{Values: vals}}}
 }
 
+// listValue converts a list of key-value pairs to an OpenTelemetry list value
 func listValue(kvs ...*KeyValue) *AnyValue {
 	return &AnyValue{Value: &ListValue{KvlistValue: &KeyValueList{Values: kvs}}}
+}
+
+// hexToBytes converts a hex string to bytes, padding/truncating as needed
+func hexToBytes(hexStr string, length int) []byte {
+	// Remove any non-hex characters
+	cleaned := strings.Map(func(r rune) rune {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			return r
+		}
+		return -1
+	}, hexStr)
+	// Ensure even length
+	if len(cleaned)%2 != 0 {
+		cleaned = "0" + cleaned
+	}
+	// Truncate or pad to desired length
+	if len(cleaned) > length*2 {
+		cleaned = cleaned[:length*2]
+	} else if len(cleaned) < length*2 {
+		cleaned = strings.Repeat("0", length*2-len(cleaned)) + cleaned
+	}
+	bytes, _ := hex.DecodeString(cleaned)
+	return bytes
 }
 
 // requestToResourceSpan converts a Bifrost request to an OpenTelemetry resource span
@@ -92,7 +118,7 @@ func requestToResourceSpan(traceID, spanID string, timestamp time.Time, req *sch
 		}
 		// Handling chat completion
 		if req.Input.ChatCompletionInput != nil {
-			spanName = "genai.chat"
+			spanName = "genai.request"
 			messages := []*KeyValue{}
 			for _, message := range *req.Input.ChatCompletionInput {
 				switch message.Role {
@@ -161,7 +187,7 @@ func requestToResourceSpan(traceID, spanID string, timestamp time.Time, req *sch
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
 			Attributes: []*commonpb.KeyValue{
-				kvStr("service,name", "bifrost"),
+				kvStr("service.name", "bifrost"),
 				kvStr("service.version", "1.0.0"),
 			},
 		},
@@ -172,8 +198,8 @@ func requestToResourceSpan(traceID, spanID string, timestamp time.Time, req *sch
 				},
 				Spans: []*Span{
 					{
-						TraceId:           []byte(traceID),
-						SpanId:            []byte(spanID),
+						TraceId:           hexToBytes(traceID, 16),
+						SpanId:            hexToBytes(spanID, 8),
 						Kind:              tracepb.Span_SPAN_KIND_SERVER,
 						StartTimeUnixNano: uint64(timestamp.UnixNano()),
 						EndTimeUnixNano:   uint64(timestamp.Add(time.Second).UnixNano()),
@@ -187,7 +213,7 @@ func requestToResourceSpan(traceID, spanID string, timestamp time.Time, req *sch
 }
 
 // responseToResourceSpan converts a Bifrost response to an OpenTelemetry resource span
-func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time.Time, resp *schemas.BifrostResponse) *ResourceSpan {
+func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time.Time, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) *ResourceSpan {
 	spanName := "genai.response"
 	params := []*commonpb.KeyValue{}
 	params = append(params, kvStr("genai.response.id", resp.ID))
@@ -196,15 +222,19 @@ func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time
 	params = append(params, kvInt("genai.usage.total_tokens", int64(resp.Usage.TotalTokens)))
 	params = append(params, kvStr("genai.chat.object", resp.Object))
 	params = append(params, kvStr("genai.text.model", resp.Model))
-	params = append(params, kvStr("genai.chat.system_fingerprint", *resp.SystemFingerprint))
+	if resp.SystemFingerprint != nil {
+		params = append(params, kvStr("genai.chat.system_fingerprint", *resp.SystemFingerprint))
+	}
 	params = append(params, kvStr("genai.chat.created", fmt.Sprintf("%d", resp.Created)))
 	switch resp.Object {
 	case "chat.completion":
-		spanName = "genai.chat"
+		spanName = "genai.chat.response"
 		outputMessages := []*KeyValue{}
 		for _, choice := range resp.Choices {
 			outputMessages = append(outputMessages, kvStr("role", string(choice.Message.Role)))
-			outputMessages = append(outputMessages, kvStr("content", *choice.Message.Content.ContentStr))
+			if choice.Message.Content.ContentStr != nil {
+				outputMessages = append(outputMessages, kvStr("content", *choice.Message.Content.ContentStr))
+			}
 		}
 		params = append(params, kvAny("genai.chat.output_messages", arrValue(listValue(outputMessages...))))
 	case "text.completion":
@@ -212,15 +242,34 @@ func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time
 		outputMessages := []*KeyValue{}
 		for _, choice := range resp.Choices {
 			outputMessages = append(outputMessages, kvStr("role", string(choice.Message.Role)))
-			outputMessages = append(outputMessages, kvStr("content", *choice.Message.Content.ContentStr))
+			if choice.Message.Content.ContentStr != nil {
+				outputMessages = append(outputMessages, kvStr("content", *choice.Message.Content.ContentStr))
+			}
 		}
 		params = append(params, kvAny("genai.text.output_messages", arrValue(listValue(outputMessages...))))
 	}
 	startTime := timestamp.Add(-(time.Duration(*resp.ExtraFields.Latency) * time.Millisecond))
+	status := tracepb.Status_STATUS_CODE_OK
+	if bifrostErr != nil {
+		status = tracepb.Status_STATUS_CODE_ERROR
+		if bifrostErr.Error.Type != nil {
+			params = append(params, kvStr("genai.error.type", *bifrostErr.Error.Type))
+		}
+		if bifrostErr.Error.Code != nil {
+			params = append(params, kvStr("genai.error.code", *bifrostErr.Error.Code))
+		}
+		params = append(params, kvStr("genai.error", bifrostErr.Error.Message))
+	}
+	if resp.ExtraFields.BilledUsage != nil {
+		params = append(params, kvInt("genai.usage.cost.prompt_tokens", int64(*resp.ExtraFields.BilledUsage.PromptTokens)))
+		params = append(params, kvInt("genai.usage.cost.completion_tokens", int64(*resp.ExtraFields.BilledUsage.CompletionTokens)))
+		params = append(params, kvInt("genai.usage.cost.search_units", int64(*resp.ExtraFields.BilledUsage.SearchUnits)))
+		params = append(params, kvInt("genai.usage.cost.classifications", int64(*resp.ExtraFields.BilledUsage.Classifications)))
+	}
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
 			Attributes: []*commonpb.KeyValue{
-				kvStr("service,name", "bifrost"),
+				kvStr("service.name", "bifrost"),
 				kvStr("service.version", "1.0.0"),
 			},
 		},
@@ -231,14 +280,15 @@ func responseToResourceSpan(traceID, parentSpanID, spanID string, timestamp time
 				},
 				Spans: []*Span{
 					{
-						TraceId:           []byte(traceID),
-						SpanId:            []byte(spanID),
-						ParentSpanId:      []byte(parentSpanID),
+						TraceId:           hexToBytes(traceID, 16),
+						SpanId:            hexToBytes(spanID, 8),
+						ParentSpanId:      hexToBytes(parentSpanID, 8),
 						Kind:              tracepb.Span_SPAN_KIND_SERVER,
 						StartTimeUnixNano: uint64(startTime.UnixNano()),
 						EndTimeUnixNano:   uint64(timestamp.Add(time.Second).UnixNano()),
 						Name:              spanName,
 						Attributes:        params,
+						Status:            &tracepb.Status{Code: status},
 					},
 				},
 			},

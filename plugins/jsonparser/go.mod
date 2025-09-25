@@ -4,7 +4,10 @@ go 1.24
 
 toolchain go1.24.3
 
-require github.com/maximhq/bifrost/core v1.1.38
+require (
+	github.com/bytedance/sonic v1.14.0
+	github.com/maximhq/bifrost/core v1.1.38
+)
 
 require (
 	cloud.google.com/go/compute/metadata v0.8.0 // indirect
@@ -24,7 +27,6 @@ require (
 	github.com/aws/smithy-go v1.22.5 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
-	github.com/bytedance/sonic v1.14.0 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
