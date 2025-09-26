@@ -26,6 +26,7 @@ const allowedRequestsSchema = z.object({
 const formSchema = z.object({
 	name: z.string().min(1),
 	baseFormat: z.string().min(1),
+	base_url: z.string().min(1, "Base URL is required").url("Must be a valid URL"),
 	allowed_requests: allowedRequestsSchema,
 });
 
@@ -44,6 +45,7 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 		defaultValues: {
 			name: "",
 			baseFormat: "",
+			base_url: "",
 			allowed_requests: {
 				text_completion: true,
 				chat_completion: true,
@@ -69,6 +71,13 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 			custom_provider_config: {
 				base_provider_type: data.baseFormat as KnownProvider,
 				allowed_requests: data.allowed_requests,
+			},
+			network_config: {
+				base_url: data.base_url,
+				default_request_timeout_in_seconds: 30,
+				max_retries: 0,
+				retry_backoff_initial: 500,
+				retry_backoff_max: 5000,
 			},
 			keys: [],
 		})
@@ -128,6 +137,25 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
 												</SelectContent>
 											</Select>
+										</FormControl>
+										<FormMessage />
+									</div>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="base_url"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-3">
+									<FormLabel>Base URL</FormLabel>
+									<div>
+										<FormControl>
+										<Input
+											placeholder={"https://api.your-provider.com"}
+											{...field}
+											value={field.value || ""}
+										/>
 										</FormControl>
 										<FormMessage />
 									</div>
