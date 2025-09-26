@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"sort"
 	"strings"
 	"time"
 
@@ -87,14 +88,14 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 //   - string: Hexadecimal representation of the xxhash
 //   - error: Any error that occurred during request normalization or hashing
 func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, requestType schemas.RequestType) (string, error) {
-	// Create a hash input structure that includes both input and parameters
+	// Create a hash input structure with normalized data
 	hashInput := struct {
 		Input  schemas.RequestInput     `json:"input"`
 		Params *schemas.ModelParameters `json:"params,omitempty"`
 		Stream bool                     `json:"stream,omitempty"`
 	}{
 		Input:  *plugin.getInputForCaching(req),
-		Params: req.Params,
+		Params: plugin.normalizeParamsForHashing(req.Params),
 		Stream: plugin.isStreamingRequest(requestType),
 	}
 
@@ -458,4 +459,32 @@ func (plugin *Plugin) isConversationHistoryThresholdExceeded(req *schemas.Bifros
 	default:
 		return false
 	}
+}
+
+// normalizeParamsForHashing creates a normalized copy of parameters with sorted tools.
+// Returns nil if the input params are nil to maintain the same structure.
+func (plugin *Plugin) normalizeParamsForHashing(params *schemas.ModelParameters) *schemas.ModelParameters {
+	if params == nil {
+		return nil
+	}
+
+	// Only create a copy if tools need sorting
+	if params.Tools == nil || len(*params.Tools) <= 1 {
+		return params
+	}
+
+	// Create a shallow copy of params
+	normalized := *params
+
+	// Create and sort tools copy
+	sortedTools := make([]schemas.Tool, len(*params.Tools))
+	copy(sortedTools, *params.Tools)
+
+	// Use Go's built-in sort for efficiency
+	sort.Slice(sortedTools, func(i, j int) bool {
+		return sortedTools[i].Function.Name < sortedTools[j].Function.Name
+	})
+
+	normalized.Tools = &sortedTools
+	return &normalized
 }
