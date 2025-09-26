@@ -798,6 +798,15 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 		}
 	}
 
+	// Build MessageContent based on the type of content blocks
+	messageContent := schemas.MessageContent{}
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == "text" {
+		// Single text block -> return as string content
+		messageContent.ContentStr = contentBlocks[0].Text
+	} else {
+		messageContent.ContentBlocks = &contentBlocks
+	}
+
 	// Create a single choice with the collected content
 	bifrostResponse.ID = response.ID
 	bifrostResponse.Choices = []schemas.BifrostResponseChoice{
@@ -805,10 +814,8 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 			Index: 0,
 			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
 				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentBlocks: &contentBlocks,
-					},
+					Role:             schemas.ModelChatMessageRoleAssistant,
+					Content:          messageContent,
 					AssistantMessage: assistantMessage,
 				},
 				StopString: response.StopSequence,
