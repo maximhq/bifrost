@@ -51,10 +51,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"bufio"
 
@@ -601,6 +604,11 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute pre-request callback: "+err.Error()))
 				return
 			}
+		}
+
+		// Check if the request was handled by the PreCallback (e.g., management requests)
+		if ctx.UserValue("management_handled") != nil {
+			return // Request was handled by PreCallback, don't continue with normal processing
 		}
 
 		// Convert the integration-specific request to Bifrost format
@@ -1202,4 +1210,179 @@ func mapFinishReasonToAnthropic(finishReason string) string {
 		// Pass through other reasons like "pause_turn", "refusal", "stop_sequence", etc.
 		return finishReason
 	}
+}
+
+// Management Request Types and Utilities
+
+// ManagementRequest represents a management API request that will be forwarded directly to providers
+type ManagementRequest struct {
+	Provider     schemas.ModelProvider `json:"provider"`
+	Endpoint     string                `json:"endpoint"`
+	QueryParams  map[string]string    `json:"query_params,omitempty"`
+	APIKey       string                `json:"api_key,omitempty"`
+}
+
+// ConvertToBifrostRequest converts a management request to a BifrostRequest
+// For management requests, we'll handle them directly without going through Bifrost
+func (r *ManagementRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
+	// Return a special request that will be handled by the management handler
+	return &schemas.BifrostRequest{
+		Provider: r.Provider,
+		Model:    "management", // Special model type for management requests
+		Input: schemas.RequestInput{
+			// We'll handle this specially in the router
+		},
+	}
+}
+
+// ManagementResponse represents the response from a management API call
+type ManagementResponse struct {
+	Data       []byte            `json:"data"`
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers,omitempty"`
+}
+
+// ManagementAPIClient handles direct API calls to provider management endpoints
+type ManagementAPIClient struct {
+	httpClient *http.Client
+}
+
+// NewManagementAPIClient creates a new management API client
+func NewManagementAPIClient() *ManagementAPIClient {
+	return &ManagementAPIClient{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// ProviderEndpoints defines the base URLs for different providers
+var ProviderEndpoints = map[schemas.ModelProvider]string{
+	schemas.OpenAI:    "https://api.openai.com",
+	schemas.Anthropic: "https://api.anthropic.com",
+	schemas.Gemini:    "https://generativelanguage.googleapis.com",
+}
+
+// ForwardRequest forwards a GET request directly to the provider's API
+func (c *ManagementAPIClient) ForwardRequest(
+	ctx context.Context,
+	provider schemas.ModelProvider,
+	endpoint string,
+	apiKey string,
+	queryParams map[string]string,
+) (*ManagementResponse, error) {
+	baseURL, exists := ProviderEndpoints[provider]
+	if !exists {
+		return nil, fmt.Errorf("unsupported provider: %s", provider)
+	}
+	log.Println("baseURL", baseURL)
+
+	// Build the full URL
+	fullURL := baseURL + endpoint
+	
+	// Add query parameters if any
+	if len(queryParams) > 0 {
+		fullURL += "?"
+		first := true
+		for key, value := range queryParams {
+			if !first {
+				fullURL += "&"
+			}
+			fullURL += fmt.Sprintf("%s=%s", key, value)
+			first = false
+		}
+	}
+
+	// Create the HTTP request
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set the authorization header
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Bifrost-Management-Client/1.0")
+
+	// Make the request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	log.Printf("Response body: %s", string(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Extract headers
+	headers := make(map[string]string)
+	for key, values := range resp.Header {
+		if len(values) > 0 {
+			headers[key] = values[0]
+		}
+	}
+	log.Printf("Response status code: %d", resp.StatusCode)
+	log.Printf("Response headers: %v", resp.Header)
+	return &ManagementResponse{
+		Data:       body,
+		StatusCode: resp.StatusCode,
+		Headers:    headers,
+	}, nil
+}
+
+// ExtractAPIKeyFromContext extracts the API key from the request context
+func ExtractAPIKeyFromContext(ctx *fasthttp.RequestCtx) (string, error) {
+	// Try to get the API key from the Authorization header
+	authHeader := ctx.Request.Header.Peek("Authorization")
+	if len(authHeader) > 0 {
+		// Remove "Bearer " prefix if present
+		key := string(authHeader)
+		if len(key) > 7 && key[:7] == "Bearer " {
+			return key[7:], nil
+		}
+		return key, nil
+	}
+
+	// Try to get from X-API-Key header
+	apiKeyHeader := ctx.Request.Header.Peek("X-API-Key")
+	if len(apiKeyHeader) > 0 {
+		return string(apiKeyHeader), nil
+	}
+
+	return "", fmt.Errorf("no API key found in request headers")
+}
+
+// ExtractQueryParams extracts query parameters from the request
+func ExtractQueryParams(ctx *fasthttp.RequestCtx) map[string]string {
+	params := make(map[string]string)
+	ctx.QueryArgs().VisitAll(func(key, value []byte) {
+		params[string(key)] = string(value)
+	})
+	return params
+}
+
+// SendManagementResponse sends a management API response to the client
+func SendManagementResponse(ctx *fasthttp.RequestCtx, data []byte, statusCode int) {
+	ctx.SetStatusCode(statusCode)
+	ctx.SetContentType("application/json")
+	ctx.SetBody(data)
+}
+
+// SendManagementError sends an error response for management endpoints
+func SendManagementError(ctx *fasthttp.RequestCtx, err error, statusCode int) {
+	errorResponse := map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": err.Error(),
+			"type":    "management_api_error",
+		},
+	}
+	
+	errorJSON, _ := json.Marshal(errorResponse)
+	ctx.SetStatusCode(statusCode)
+	ctx.SetContentType("application/json")
+	ctx.SetBody(errorJSON)
 }

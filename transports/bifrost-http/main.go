@@ -101,6 +101,7 @@ var (
 
 	logLevel       string // Logger level: debug, info, warn, error
 	logOutputStyle string // Logger output style: json, pretty
+	apiOnly        bool   // Run in API-only mode without UI
 )
 
 const (
@@ -156,6 +157,7 @@ func init() {
 	flag.StringVar(&appDir, "app-dir", DefaultAppDir, "Application data directory (contains config.json and logs)")
 	flag.StringVar(&logLevel, "log-level", DefaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
 	flag.StringVar(&logOutputStyle, "log-style", DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
+	flag.BoolVar(&apiOnly, "api-only", false, "Run in API-only mode without UI")
 	flag.Parse()
 
 	// Configure logger from flags
@@ -523,9 +525,14 @@ func main() {
 	// Add Prometheus /metrics endpoint
 	r.GET("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()))
 
-	// Add UI routes - serve the embedded Next.js build
-	r.GET("/", uiHandler)
-	r.GET("/{filepath:*}", uiHandler)
+	// Add UI routes - serve the embedded Next.js build (only if not in API-only mode)
+	if !apiOnly {
+		logger.Info("Registering UI routes")
+		// r.GET("/", uiHandler)
+		// r.GET("/{filepath:*}", uiHandler)
+	} else {
+		logger.Info("API-only mode: UI routes disabled")
+	}
 
 	r.NotFound = func(ctx *fasthttp.RequestCtx) {
 		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()), logger)
@@ -548,7 +555,6 @@ func main() {
 	// Start server in a goroutine
 	serverAddr := net.JoinHostPort(host, port)
 	go func() {
-		logger.Info("successfully started bifrost, serving UI on http://%s:%s", host, port)
 		if err := server.ListenAndServe(serverAddr); err != nil {
 			errChan <- err
 		}
