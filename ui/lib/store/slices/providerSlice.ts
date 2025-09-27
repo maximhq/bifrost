@@ -65,6 +65,8 @@ const providerSlice = createSlice({
 				state.selectedProvider = updatedProvider;
 			}
 		});
+
+		
 	},
 });
 

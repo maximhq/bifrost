@@ -39,7 +39,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 							control={control}
 							name={`${namePrefix}.${requestType.key}`}
 							render={({ field }) => (
-								<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
+								<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
 									<div className="space-y-0.5">
 										<FormLabel>{requestType.label}</FormLabel>
 									</div>
@@ -58,7 +58,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 							control={control}
 							name={`${namePrefix}.${requestType.key}`}
 							render={({ field }) => (
-								<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
+								<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
 									<div className="space-y-0.5">
 										<FormLabel>{requestType.label}</FormLabel>
 									</div>
