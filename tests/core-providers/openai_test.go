@@ -18,8 +18,9 @@ func TestOpenAI(t *testing.T) {
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:             schemas.OpenAI,
-		ChatModel:            "gpt-4o-mini",
 		TextModel:            "", // OpenAI doesn't support text completion in newer models
+		ChatModel:            "gpt-4o-mini",
+		VisionModel:          "gpt-4o",
 		EmbeddingModel:       "text-embedding-3-small",
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "tts-1",
@@ -36,15 +37,11 @@ func TestOpenAI(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
 			Transcription:         true,
 			TranscriptionStream:   true,
 			Embedding:             true,
-		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
 		},
 	}
 

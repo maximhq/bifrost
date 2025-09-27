@@ -84,8 +84,31 @@ type ChatRequest struct {
 }
 
 type ResponsesRequest struct {
-	Input []schemas.ResponsesMessage `json:"input"`
+	Input ResponseRequestInput `json:"input"`
 	BifrostParams
+}
+
+type ResponseRequestInput struct {
+	InputStr   *string
+	InputArray *[]schemas.BifrostMessage
+}
+
+func (input *ResponseRequestInput) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var stringContent string
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+		input.InputStr = &stringContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct array of BifrostMessage
+	var arrayContent []schemas.BifrostMessage
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+		input.InputArray = &arrayContent
+		return nil
+	}
+
+	return fmt.Errorf("input field is neither a string nor an array of content blocks")
 }
 
 type EmbeddingRequest struct {
@@ -297,12 +320,20 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if len(req.Input) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for responses", h.logger)
-		return
+	responsesInput := req.Input.InputArray
+	if responsesInput == nil {
+		responsesInput = &[]schemas.BifrostMessage{
+			{
+				Role: schemas.ModelChatMessageRoleUser,
+				Content: schemas.MessageContent{
+					ContentStr: req.Input.InputStr,
+				},
+			},
+		}
 	}
+
 	bifrostReq.Input = schemas.RequestInput{
-		ResponsesInput: &req.Input,
+		ResponsesInput: responsesInput,
 	}
 
 	// Convert context
