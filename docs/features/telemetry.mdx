@@ -49,6 +49,7 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_output_tokens_total` | Counter | Total output tokens received from upstream providers | `provider`, `model`, `method`, custom labels |
 | `bifrost_cache_hits_total` | Counter | Total cache hits by type (direct/semantic) | `provider`, `model`, `method`, `cache_type`, custom labels |
 | `bifrost_cost_total` | Counter | Total cost in USD for upstream provider requests | `provider`, `model`, `method`, custom labels |
+| `bifrost_retries_total` | Counter | Total number of retries performed before a successful request or fallback | `provider`, `model`, `method`, custom labels |
 
 **Label Definitions:**
 - `provider`: AI provider name (e.g., `openai`, `anthropic`, `azure`)
@@ -57,6 +58,7 @@ These metrics track requests forwarded to AI providers:
 - `cache_type`: Cache hit type (`direct`, `semantic`) - only for cache hits metric
 - `path`: HTTP endpoint path
 - `status`: HTTP status code
+- `retries`: Number of retry attempts (recorded as metric value, not label)
 
 ---
 
@@ -123,6 +125,19 @@ rate(bifrost_upstream_requests_total[5m]) * 100
 
 # Errors by model
 sum by (model) (rate(bifrost_error_requests_total[5m]))
+
+### Retry Analysis
+Track how often retries are happening per provider and model:
+
+```promql
+# Retry rate per provider
+rate(bifrost_retries_total[5m])
+
+# Retries per request ratio
+rate(bifrost_retries_total[5m]) / rate(bifrost_upstream_requests_total[5m])
+
+# High retry detection (e.g. >1 retry/request on average)
+rate(bifrost_retries_total[5m]) / rate(bifrost_upstream_requests_total[5m]) > 1
 ```
 
 ---

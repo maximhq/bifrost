@@ -105,6 +105,7 @@ const (
 	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
 	BifrostContextKeyRequestProvider    BifrostContextKey = "bifrost-request-provider"
 	BifrostContextKeyRequestModel       BifrostContextKey = "bifrost-request-model"
+	BifrostContextKeyRetryCount         BifrostContextKey = "bifrost-retry-count"
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
