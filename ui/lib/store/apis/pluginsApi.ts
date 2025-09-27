@@ -9,7 +9,13 @@ export const pluginsApi = baseApi.injectEndpoints({
 			providesTags: ["Plugins"],
 			transformResponse: (response: PluginsResponse) => response.plugins || [],
 		}),
-
+		
+		// Get a single plugin
+		getPlugin: builder.query<Plugin, string>({
+			query: (name) => `/plugins/${name}`,
+			providesTags: (result, error, name) => [{ type: "Plugins", id: name }],
+		}),
+		
 		// Create new plugin
 		createPlugin: builder.mutation<Plugin, CreatePluginRequest>({
 			query: (data) => ({
@@ -29,7 +35,7 @@ export const pluginsApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Plugins"],
 		}),
-
+		
 		// Delete plugin
 		deletePlugin: builder.mutation<Plugin, string>({
 			query: (name) => ({
@@ -41,5 +47,11 @@ export const pluginsApi = baseApi.injectEndpoints({
 	}),
 });
 
-export const { useGetPluginsQuery, useCreatePluginMutation, useUpdatePluginMutation, useDeletePluginMutation, useLazyGetPluginsQuery } =
-	pluginsApi;
+export const {
+	useGetPluginsQuery,
+	useGetPluginQuery,
+	useCreatePluginMutation,
+	useUpdatePluginMutation,
+	useDeletePluginMutation,
+	useLazyGetPluginsQuery,
+} = pluginsApi;

@@ -1,6 +1,19 @@
 "use client";
 
-import { BoxIcon, BugIcon, Hexagon, KeyRound, Puzzle, Settings2Icon, Shield, Telescope, Users } from "lucide-react";
+import {
+	Binoculars,
+	BoxIcon,
+	BugIcon,
+	Building2,
+	KeyRound,
+	Layers,
+	Puzzle,
+	Settings2Icon,
+	Shield,
+	Shuffle,
+	Telescope,
+	Users
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -46,12 +59,18 @@ const MCPIcon = ({ className }: { className?: string }) => (
 );
 
 // Main navigation items
-const enterpriseItems = [
+const items = [
 	{
 		title: "Logs",
 		url: "/logs",
 		icon: Telescope,
 		description: "Request logs & monitoring",
+	},
+	{
+		title: "Observability",
+		url: "/observability",
+		icon: Binoculars,
+		description: "Observability setup",
 	},
 	{
 		title: "Providers",
@@ -71,18 +90,7 @@ const enterpriseItems = [
 		icon: Users,
 		description: "Manage teams & customers",
 	},
-	{
-		title: "Governance",
-		url: "/governance",
-		icon: Shield,
-		description: "Manage governance",
-	},
-	{
-		title: "Cluster config",
-		url: "/cluster",
-		icon: Hexagon,
-		description: "Manage Bifrost cluster",
-	},
+
 	{
 		title: "MCP clients",
 		url: "/mcp-clients",
@@ -101,6 +109,27 @@ const enterpriseItems = [
 		icon: Puzzle,
 		description: "Extend Bifrost functionality",
 		badge: "Beta",
+	},
+];
+
+const enterpriseItems = [
+	{
+		title: "SCIM",
+		url: "/scim",
+		icon: Shield,
+		description: "User management and provisioning",
+	},
+	{
+		title: "Cluster config",
+		url: "/cluster",
+		icon: Layers,
+		description: "Manage Bifrost cluster",
+	},
+	{
+		title: "Adaptive routing",
+		url: "/adaptive-routing",
+		icon: Shuffle,
+		description: "Manage adaptive load balancer",
 	},
 ];
 
@@ -140,7 +169,7 @@ const promoCards = [
 				<br />
 				<br />
 				Book a demo with our team{" "}
-				<Link href="https://calendly.com/maximai/bifrost-demo" target="_blank" className="text-primary" rel="noopener noreferrer">
+				<Link href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr" target="_blank" className="text-primary" rel="noopener noreferrer">
 					here
 				</Link>
 				.
@@ -148,6 +177,60 @@ const promoCards = [
 		),
 	},
 ];
+
+const SidebarItem = ({
+	item,
+	isActive,
+	isAllowed,
+	isWebSocketConnected,
+}: {
+	item: (typeof items)[0];
+	isActive: boolean;
+	isAllowed: boolean;
+	isWebSocketConnected: boolean;
+}) => {
+	return (
+		<TooltipProvider key={item.title}>
+			<Tooltip>
+				<TooltipTrigger>
+					<SidebarMenuItem>
+						<SidebarMenuButton
+							asChild
+							className={`relative h-8 rounded-md border px-3 transition-all duration-200 ${
+								isActive
+									? "bg-sidebar-accent text-primary border-primary/20"
+									: isAllowed
+										? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+										: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-default border-transparent"
+							} `}
+						>
+							<Link href={isAllowed ? item.url : "#"} className="flex w-full items-center justify-between">
+								<div>
+									<div className="hover:text-accent-foreground flex items-center gap-2">
+										<item.icon className={`h-4 w-4 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
+										<span className={`text-sm ${isActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
+									</div>
+								</div>
+								{item.url === "/" && isWebSocketConnected && (
+									<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
+								)}
+								{item.badge && (
+									<Badge
+										variant={item.badge === "Live" ? "default" : "outline"}
+										className={cn("h-5 px-2 py-0.5 text-xs", item.badge === "Live" && "animate-pulse duration-200")}
+									>
+										{item.badge}
+									</Badge>
+								)}
+							</Link>
+						</SidebarMenuButton>
+					</SidebarMenuItem>
+				</TooltipTrigger>
+				{!isAllowed && <TooltipContent side="right">Please enable governance in the config page</TooltipContent>}
+			</Tooltip>
+		</TooltipProvider>
+	);
+};
 
 export default function AppSidebar() {
 	const pathname = usePathname();
@@ -175,7 +258,7 @@ export default function AppSidebar() {
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
 	return (
-		<Sidebar className="border-none bg-transparent overflow-y-clip">
+		<Sidebar className="overflow-y-clip border-none bg-transparent">
 			<SidebarHeader className="mt-1 ml-2 flex h-12 justify-between px-0">
 				<div className="flex h-full items-center justify-between gap-2 px-1.5">
 					<Link href="/" className="group flex items-center gap-2">
@@ -187,49 +270,34 @@ export default function AppSidebar() {
 				<SidebarGroup>
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-1">
+							{items.map((item) => {
+								const isActive = isActiveRoute(item.url);
+								const isAllowed = item.title === "Governance" ? isGovernanceEnabled : true;
+								return (
+									<SidebarItem
+										key={item.title}
+										item={item}
+										isActive={isActive}
+										isAllowed={isAllowed}
+										isWebSocketConnected={isWebSocketConnected}
+									/>
+								);
+							})}
+							<div className="text-accent-foreground flex flex-row items-center gap-2 px-3 py-2 text-xs font-medium">
+								<Building2 className="h-4 w-4" />
+								ENTERPRISE
+							</div>
 							{enterpriseItems.map((item) => {
 								const isActive = isActiveRoute(item.url);
 								const isAllowed = item.title === "Governance" ? isGovernanceEnabled : true;
 								return (
-									<TooltipProvider key={item.title}>
-										<Tooltip>
-											<TooltipTrigger>
-												<SidebarMenuItem>
-													<SidebarMenuButton
-														asChild
-														className={`relative h-8 rounded-md border px-3 transition-all duration-200 ${
-															isActive
-																? "bg-sidebar-accent text-primary border-primary/20"
-																: isAllowed
-																	? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-																	: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-default border-transparent"
-														} `}
-													>
-														<Link href={isAllowed ? item.url : "#"} className="flex w-full items-center justify-between">
-															<div>
-																<div className="hover:text-accent-foreground flex items-center gap-2">
-																	<item.icon className={`h-4 w-4 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
-																	<span className={`text-sm ${isActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
-																</div>
-															</div>
-															{item.url === "/" && isWebSocketConnected && (
-																<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
-															)}
-															{item.badge && (
-																<Badge
-																	variant={item.badge === "Live" ? "default" : "outline"}
-																	className={cn("h-5 px-2 py-0.5 text-xs", item.badge === "Live" && "animate-pulse duration-200")}
-																>
-																	{item.badge}
-																</Badge>
-															)}
-														</Link>
-													</SidebarMenuButton>
-												</SidebarMenuItem>
-											</TooltipTrigger>
-											{!isAllowed && <TooltipContent side="right">Please enable governance in the config page</TooltipContent>}
-										</Tooltip>
-									</TooltipProvider>
+									<SidebarItem
+										key={item.title}
+										item={item}
+										isActive={isActive}
+										isAllowed={isAllowed}
+										isWebSocketConnected={isWebSocketConnected}
+									/>
 								);
 							})}
 						</SidebarMenu>

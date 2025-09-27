@@ -33,7 +33,7 @@ func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib
 
 // RegisterRoutes registers the configuration-related routes.
 // It adds the `PUT /api/config` endpoint.
-func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	r.GET("/api/config", ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/config", ChainMiddlewares(h.updateConfig, middlewares...))
 	r.GET("/api/version", ChainMiddlewares(h.getVersion, middlewares...))

@@ -83,7 +83,12 @@ export const networkConfigSchema = z
 // Network form schema - more lenient for form inputs
 export const networkFormConfigSchema = z
 	.object({
-		base_url: z.preprocess((v) => (v === "" ? undefined : v), z.string().url("Must be a valid URL").optional()),
+		base_url: z
+			.url("Must be a valid URL")
+			.refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
+				message: "Only HTTPS URLs are supported",
+			})
+			.optional(),
 		extra_headers: z.record(z.string(), z.string()).optional(),
 		default_request_timeout_in_seconds: z.coerce
 			.number("Timeout must be a number")
@@ -325,6 +330,39 @@ export const performanceFormSchema = z.object({
 	send_back_raw_response: z.boolean(),
 });
 
+// OTEL Configuration Schema
+export const otelConfigSchema = z.object({
+	push_url: z.url("Must be a valid URL").refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
+		message: "Must be a valid HTTP or HTTPS URL",
+	}),
+	type: z.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
+		message: "Please select a trace type",
+	}),
+});
+
+// OTEL form schema for the OtelFormFragment
+export const otelFormSchema = z.object({
+	enabled: z.boolean().default(false),
+	otel_config: otelConfigSchema,
+});
+
+// Maxim Configuration Schema
+export const maximConfigSchema = z.object({
+	api_key: z
+		.string()
+		.min(1, "API key is required")
+		.refine((key) => key.startsWith("sk_mx_"), {
+			message: "API key starts with sk_mx_. Please use a valid Maxim API key.",
+		}),
+	log_repo_id: z.string().optional(),
+});
+
+// Maxim form schema for the MaximFormFragment
+export const maximFormSchema = z.object({
+	enabled: z.boolean().default(false),
+	maxim_config: maximConfigSchema,
+});
+
 // Export type inference helpers
 
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
@@ -333,6 +371,10 @@ export type NetworkFormConfigSchema = z.infer<typeof networkFormConfigSchema>;
 export type ProxyFormConfigSchema = z.infer<typeof proxyFormConfigSchema>;
 export type NetworkAndProxyFormSchema = z.infer<typeof networkAndProxyFormSchema>;
 export type ProxyOnlyFormSchema = z.infer<typeof proxyOnlyFormSchema>;
+export type OtelConfigSchema = z.infer<typeof otelConfigSchema>;
+export type OtelFormSchema = z.infer<typeof otelFormSchema>;
+export type MaximConfigSchema = z.infer<typeof maximConfigSchema>;
+export type MaximFormSchema = z.infer<typeof maximFormSchema>;
 export type NetworkOnlyFormSchema = z.infer<typeof networkOnlyFormSchema>;
 export type PerformanceFormSchema = z.infer<typeof performanceFormSchema>;
 export type CustomProviderConfigSchema = z.infer<typeof customProviderConfigSchema>;
