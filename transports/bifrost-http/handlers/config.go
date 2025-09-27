@@ -33,14 +33,14 @@ func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib
 
 // RegisterRoutes registers the configuration-related routes.
 // It adds the `PUT /api/config` endpoint.
-func (h *ConfigHandler) RegisterRoutes(r *router.Router) {
-	r.GET("/api/config", h.getConfig)
-	r.PUT("/api/config", h.updateConfig)
-	r.GET("/api/version", h.getVersion)
+func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...fasthttp.RequestHandler) {
+	r.GET("/api/config", ChainMiddlewares(h.getConfig, middlewares...))
+	r.PUT("/api/config", ChainMiddlewares(h.updateConfig, middlewares...))
+	r.GET("/api/version", ChainMiddlewares(h.getVersion, middlewares...))
 }
 
 // getVersion handles GET /api/version - Get the current version
-func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {
+func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {	
 	SendJSON(ctx, version, h.logger)
 }
 
