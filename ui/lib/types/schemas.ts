@@ -332,12 +332,15 @@ export const performanceFormSchema = z.object({
 
 // OTEL Configuration Schema
 export const otelConfigSchema = z.object({
-	push_url: z.url("Must be a valid URL").refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
+	collector_url: z.url("Must be a valid URL").refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
 		message: "Must be a valid HTTP or HTTPS URL",
 	}),
-	type: z.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
+	trace_type: z.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
 		message: "Please select a trace type",
-	}),
+	}).default("otel"),
+	protocol: z.enum(["http", "grpc"], {
+		message: "Please select a protocol",
+	}).default("http"),
 });
 
 // OTEL form schema for the OtelFormFragment

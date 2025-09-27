@@ -6,7 +6,7 @@ import (
 )
 
 // BifrostHTTPMiddleware is a middleware function for the Bifrost HTTP transport
-type BifrostHTTPMiddleware func(ctx *fasthttp.RequestCtx)
+type BifrostHTTPMiddleware fasthttp.RequestHandler
 
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
 func CorsMiddleware(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {

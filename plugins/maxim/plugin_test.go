@@ -29,9 +29,9 @@ func getPlugin() (schemas.Plugin, error) {
 		return nil, fmt.Errorf("MAXIM_API_KEY is not set, please set it in your environment variables")
 	}
 
-	plugin, err := Init(Config{
-		ApiKey:    os.Getenv("MAXIM_API_KEY"),
-		LogRepoId: os.Getenv("MAXIM_LOG_REPO_ID"),
+	plugin, err := Init(&Config{
+		APIKey:    os.Getenv("MAXIM_API_KEY"),
+		LogRepoID: os.Getenv("MAXIM_LOG_REPO_ID"),
 	})
 	if err != nil {
 		return nil, err
@@ -204,24 +204,24 @@ func TestPluginInitialization(t *testing.T) {
 		{
 			name: "Valid config with both fields",
 			config: Config{
-				ApiKey:    "test-api-key",
-				LogRepoId: "test-repo-id",
+				APIKey:    "test-api-key",
+				LogRepoID: "test-repo-id",
 			},
 			expectError: false,
 		},
 		{
 			name: "Valid config with only API key",
 			config: Config{
-				ApiKey:    "test-api-key",
-				LogRepoId: "",
+				APIKey:    "test-api-key",
+				LogRepoID: "",
 			},
 			expectError: false,
 		},
 		{
 			name: "Invalid config - missing API key",
 			config: Config{
-				ApiKey:    "",
-				LogRepoId: "test-repo-id",
+				APIKey:    "",
+				LogRepoID: "test-repo-id",
 			},
 			expectError: true,
 		},
@@ -231,14 +231,14 @@ func TestPluginInitialization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Skip actual Maxim SDK initialization in tests
 			if tt.expectError {
-				_, err := Init(tt.config)
+				_, err := Init(&tt.config)
 				if err == nil {
 					t.Error("Expected error but got none")
 				}
 			} else {
 				// For valid configs, we can't test actual initialization without real API key
 				// Just test the validation logic
-				if tt.config.ApiKey == "" {
+				if tt.config.APIKey == "" {
 					t.Skip("Skipping valid config test - would need real Maxim API key")
 				}
 			}

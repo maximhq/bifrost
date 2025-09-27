@@ -44,8 +44,8 @@ type PrometheusPlugin struct {
 	CostTotal             *prometheus.CounterVec
 }
 
-// NewPrometheusPlugin creates a new PrometheusPlugin with initialized metrics.
-func Init(pricingManager *pricing.PricingManager, logger schemas.Logger) *PrometheusPlugin {
+// Init creates a new PrometheusPlugin with initialized metrics.
+func Init(pricingManager *pricing.PricingManager, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if pricingManager == nil {
 		logger.Warn("telemetry plugin requires pricing manager to calculate cost, all cost calculations will be skipped.")
 	}
@@ -60,7 +60,7 @@ func Init(pricingManager *pricing.PricingManager, logger schemas.Logger) *Promet
 		OutputTokensTotal:     bifrostOutputTokensTotal,
 		CacheHitsTotal:        bifrostCacheHitsTotal,
 		CostTotal:             bifrostCostTotal,
-	}
+	}, nil
 }
 
 // GetName returns the name of the plugin.

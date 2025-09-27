@@ -136,7 +136,7 @@ type StreamAccumulator struct {
 //   - logger: Logger instance for plugin operations
 type Plugin struct {
 	store              vectorstore.VectorStore
-	config             Config
+	config             *Config
 	logger             schemas.Logger
 	client             *bifrost.Bifrost
 	streamAccumulators sync.Map // Track stream accumulators by request ID
@@ -262,7 +262,7 @@ const (
 // Returns:
 //   - schemas.Plugin: A configured semantic cache plugin instance
 //   - error: Any error that occurred during plugin initialization
-func Init(ctx context.Context, config Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.Plugin, error) {
+func Init(ctx context.Context, config *Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.Plugin, error) {
 	// Set plugin-specific defaults
 	if config.VectorStoreNamespace == "" {
 		logger.Debug(PluginLoggerPrefix + " Vector store namespace is not set, using default of " + DefaultVectorStoreNamespace)

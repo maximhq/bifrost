@@ -32,19 +32,19 @@ type ChannelMessage struct {
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
 	ctx                 context.Context
-	account             schemas.Account  // account interface
-	plugins             []schemas.Plugin // list of plugins
-	requestQueues       sync.Map         // provider request queues (thread-safe)
-	waitGroups          sync.Map         // wait groups for each provider (thread-safe)
-	providerMutexes     sync.Map         // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool  sync.Pool        // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool sync.Pool        // Pool for response channels, initial pool size is set in Init
-	errorChannelPool    sync.Pool        // Pool for error channels, initial pool size is set in Init
-	responseStreamPool  sync.Pool        // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool  sync.Pool        // Pool for PluginPipeline objects
-	logger              schemas.Logger   // logger instance, default logger is used if not provided
-	mcpManager          *MCPManager      // MCP integration manager (nil if MCP not configured)
-	dropExcessRequests  atomic.Bool      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	account             schemas.Account                  // account interface
+	plugins             atomic.Pointer[[]schemas.Plugin] // list of plugins
+	requestQueues       sync.Map                         // provider request queues (thread-safe)
+	waitGroups          sync.Map                         // wait groups for each provider (thread-safe)
+	providerMutexes     sync.Map                         // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool  sync.Pool                        // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool sync.Pool                        // Pool for response channels, initial pool size is set in Init
+	errorChannelPool    sync.Pool                        // Pool for error channels, initial pool size is set in Init
+	responseStreamPool  sync.Pool                        // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool  sync.Pool                        // Pool for PluginPipeline objects
+	logger              schemas.Logger                   // logger instance, default logger is used if not provided
+	mcpManager          *MCPManager                      // MCP integration manager (nil if MCP not configured)
+	dropExcessRequests  atomic.Bool                      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 }
 
 // PluginPipeline encapsulates the execution of plugin PreHooks and PostHooks, tracks how many plugins ran, and manages short-circuiting and error aggregation.
@@ -82,10 +82,11 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost := &Bifrost{
 		ctx:           ctx,
 		account:       config.Account,
-		plugins:       config.Plugins,
+		plugins:       atomic.Pointer[[]schemas.Plugin]{},
 		requestQueues: sync.Map{},
 		waitGroups:    sync.Map{},
 	}
+	bifrost.plugins.Store(&config.Plugins)
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
 
 	// Initialize object pools
@@ -291,6 +292,40 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *sch
 	}
 
 	return bifrost.handleStreamRequest(ctx, req, schemas.TranscriptionStreamRequest)
+}
+
+// ReloadPlugin reloads a plugin with new instance
+// During the reload - it's stop the world phase where we take a global lock on the plugin mutex
+func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {	
+	for {
+		oldPlugins := bifrost.plugins.Load()
+		if oldPlugins == nil {
+			return nil
+		}
+		// Create new slice with replaced plugin
+		newPlugins := make([]schemas.Plugin, len(*oldPlugins))
+		copy(newPlugins, *oldPlugins)
+		found := false
+		for i, p := range newPlugins {
+			if p.GetName() == plugin.GetName() {
+				bifrost.logger.Debug("replacing plugin %s with new instance", plugin.GetName())
+				newPlugins[i] = plugin
+				found = true
+				break
+			}
+		}
+		if !found{
+			// This means that user is adding a new plugin
+			bifrost.logger.Debug("adding new plugin %s", plugin.GetName())
+			newPlugins = append(newPlugins, plugin)
+		}
+		// Atomic compare-and-swap
+		if bifrost.plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			return nil
+		}
+		// Retrying as swapping did not work
+	}
+
 }
 
 // UpdateProviderConcurrency dynamically updates the queue size and concurrency for an existing provider.
@@ -962,9 +997,9 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
-	pipeline := bifrost.getPluginPipeline()
+	pipeline := bifrost.getPluginPipeline()	
 	defer bifrost.releasePluginPipeline(pipeline)
-
+	
 	preReq, shortCircuit, preCount := pipeline.RunPreHooks(&ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
@@ -990,7 +1025,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 
 	msg := bifrost.getChannelMessage(*preReq, requestType)
 	msg.Context = ctx
-
+	startTime := time.Now()
 	select {
 	case queue <- *msg:
 		// Message was sent successfully
@@ -1016,7 +1051,11 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 	var resp *schemas.BifrostResponse
 	select {
 	case result = <-msg.Response:
-		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(bifrost.plugins))
+		latency := time.Since(startTime).Milliseconds()
+		if result.ExtraFields.Latency == nil {
+			result.ExtraFields.Latency = &latency
+		}
+		resp, bifrostErr := pipeline.RunPostHooks(&ctx, result, nil, len(*bifrost.plugins.Load()))
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
@@ -1025,7 +1064,7 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
-		resp, bifrostErrPtr = pipeline.RunPostHooks(&ctx, nil, bifrostErrPtr, len(bifrost.plugins))
+		resp, bifrostErrPtr = pipeline.RunPostHooks(&ctx, nil, bifrostErrPtr, len(*bifrost.plugins.Load()))
 		bifrost.releaseChannelMessage(msg)
 		if bifrostErrPtr != nil {
 			return nil, bifrostErrPtr
@@ -1189,7 +1228,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			defer bifrost.releasePluginPipeline(pipeline)
 
 			postHookRunner = func(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(bifrost.plugins))
+				resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(*bifrost.plugins.Load()))
 				if bifrostErr != nil {
 					return nil, bifrostErr
 				}
@@ -1327,10 +1366,11 @@ func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage,
 // PLUGIN MANAGEMENT
 
 // RunPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
-func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, int) {
+func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, int) {	
 	var shortCircuit *schemas.PluginShortCircuit
 	var err error
 	for i, plugin := range p.plugins {
+		p.logger.Debug("running PreHook for plugin %s", plugin.GetName())
 		req, shortCircuit, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			p.preHookErrors = append(p.preHookErrors, err)
@@ -1388,7 +1428,7 @@ func (p *PluginPipeline) resetPluginPipeline() {
 // getPluginPipeline gets a PluginPipeline from the pool and configures it
 func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 	pipeline := bifrost.pluginPipelinePool.Get().(*PluginPipeline)
-	pipeline.plugins = bifrost.plugins
+	pipeline.plugins = *bifrost.plugins.Load()
 	pipeline.logger = bifrost.logger
 	pipeline.resetPluginPipeline()
 	return pipeline
@@ -1568,7 +1608,7 @@ func (bifrost *Bifrost) Shutdown() {
 	}
 
 	// Cleanup plugins
-	for _, plugin := range bifrost.plugins {
+	for _, plugin := range *bifrost.plugins.Load() {
 		err := plugin.Cleanup()
 		if err != nil {
 			bifrost.logger.Warn(fmt.Sprintf("Error cleaning up plugin: %s", err.Error()))
