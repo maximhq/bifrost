@@ -2,24 +2,34 @@ package anthropic
 
 import (
 	"encoding/json"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// mapAnthropicFinishReasonToOpenAI maps Anthropic finish reasons to OpenAI-compatible ones
-func MapAnthropicFinishReason(anthropicReason string) string {
-	switch anthropicReason {
-	case "end_turn":
-		return "stop"
-	case "max_tokens":
-		return "length"
-	case "stop_sequence":
-		return "stop"
-	case "tool_use":
-		return "tool_calls"
-	default:
-		// Pass through Anthropic-specific reasons like "pause_turn", "refusal", etc.
-		return anthropicReason
+var (
+	finishReasonMap = map[string]string{
+		"end_turn":      "stop",
+		"max_tokens":    "length",
+		"stop_sequence": "stop",
+		"tool_use":      "tool_calls",
 	}
+)
+
+// MapAnthropicFinishReasonToOpenAI maps Anthropic finish reasons to OpenAI-compatible ones
+func MapAnthropicFinishReasonToBifrost(anthropicReason string) string {
+	if _, ok := finishReasonMap[anthropicReason]; ok {
+		return finishReasonMap[anthropicReason]
+	}
+	return anthropicReason
+}
+
+func MapBifrostFinishReasonToAnthropic(bifrostReason string) string {
+	for k, v := range finishReasonMap {
+		if v == bifrostReason {
+			return k
+		}
+	}
+	return bifrostReason
 }
 
 // Helper function to convert interface{} to JSON string
@@ -36,10 +46,14 @@ func jsonifyInput(input interface{}) string {
 
 // convertImageBlock converts a Bifrost image block to Anthropic format
 // Uses the same pattern as the original buildAnthropicImageSourceMap function
-func convertImageBlock(block schemas.ContentBlock) AnthropicContentBlock {
+func convertToAnthropicImageBlock(block schemas.ContentBlock) AnthropicContentBlock {
 	imageBlock := AnthropicContentBlock{
 		Type:   "image",
 		Source: &AnthropicImageSource{},
+	}
+
+	if block.ImageURL == nil {
+		return imageBlock
 	}
 
 	// Use the centralized utility functions from schemas package
@@ -73,4 +87,27 @@ func convertImageBlock(block schemas.ContentBlock) AnthropicContentBlock {
 	}
 
 	return imageBlock
-}	
+}
+
+func (block AnthropicContentBlock) ToBifrostImageBlock() schemas.ContentBlock {
+	return schemas.ContentBlock{
+		Type: schemas.ContentBlockTypeImage,
+		ChatCompletionsExtendedContentBlock: &schemas.ChatCompletionsExtendedContentBlock{
+			ImageURL: &schemas.InputImage{
+				URL: func() string {
+					if block.Source.Data != nil {
+						mime := "image/png"
+						if block.Source.MediaType != nil && *block.Source.MediaType != "" {
+							mime = *block.Source.MediaType
+						}
+						return "data:" + mime + ";base64," + *block.Source.Data
+					}
+					if block.Source.URL != nil {
+						return *block.Source.URL
+					}
+					return ""
+				}(),
+			},
+		},
+	}
+}

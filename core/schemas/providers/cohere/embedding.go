@@ -23,7 +23,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostRequest) *CohereEmbeddi
 
 	if bifrostReq.Params != nil {
 		cohereReq.OutputDimension = bifrostReq.Params.Dimensions
-		cohereReq.MaxTokens = bifrostReq.Params.MaxTokens
+		cohereReq.MaxTokens = bifrostReq.Params.MaxOutputTokens
 	}
 
 	// Handle extra params

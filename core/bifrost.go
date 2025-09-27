@@ -182,8 +182,8 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 // PUBLIC API METHODS
 
 // TextCompletionRequest sends a text completion request to the specified provider.
-func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.TextCompletionInput == nil {
+func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.Prompt == nil && req.Input.PromptArray == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -196,8 +196,8 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 }
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
-func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.ChatCompletionInput == nil {
+func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -210,8 +210,8 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 }
 
 // ChatCompletionStreamRequest sends a chat completion stream request to the specified provider.
-func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if req.Input.ChatCompletionInput == nil {
+func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req.Input == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -223,9 +223,37 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *sc
 	return bifrost.handleStreamRequest(ctx, req, schemas.ChatCompletionStreamRequest)
 }
 
+// ResponsesRequest sends a responses request to the specified provider.
+func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "responses not provided for responses request",
+			},
+		}
+	}
+
+	return bifrost.handleRequest(ctx, req, schemas.ResponsesRequest)
+}
+
+// ResponsesStreamRequest sends a responses stream request to the specified provider.
+func (bifrost *Bifrost) ResponsesStreamRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req.Input == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: schemas.ErrorField{
+				Message: "responses not provided for responses stream request",
+			},
+		}
+	}
+
+	return bifrost.handleStreamRequest(ctx, req, schemas.ResponsesStreamRequest)
+}
+
 // EmbeddingRequest sends an embedding request to the specified provider.
-func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.EmbeddingInput == nil {
+func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -238,8 +266,8 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 }
 
 // SpeechRequest sends a speech request to the specified provider.
-func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.SpeechInput == nil {
+func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.Input == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -252,8 +280,8 @@ func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostR
 }
 
 // SpeechStreamRequest sends a speech stream request to the specified provider.
-func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if req.Input.SpeechInput == nil {
+func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req.Input.Input == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -266,8 +294,8 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.Bi
 }
 
 // TranscriptionRequest sends a transcription request to the specified provider.
-func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.TranscriptionInput == nil {
+func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req.Input.File == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -280,8 +308,8 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.B
 }
 
 // TranscriptionStreamRequest sends a transcription stream request to the specified provider.
-func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if req.Input.TranscriptionInput == nil {
+func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req.Input.File == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: schemas.ErrorField{
@@ -467,7 +495,7 @@ func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *syn
 //	    func(args EchoArgs) (string, error) {
 //	        return args.Message, nil
 //	    }, toolSchema)
-func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(args any) (string, error), toolSchema schemas.Tool) error {
+func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(args any) (string, error), toolSchema schemas.ChatTool) error {
 	if bifrost.mcpManager == nil {
 		return fmt.Errorf("MCP is not configured in this Bifrost instance")
 	}
@@ -483,9 +511,9 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 //   - toolCall: The tool call to execute (from assistant message)
 //
 // Returns:
-//   - schemas.BifrostMessage: Tool message with execution result
+//   - schemas.ChatMessage: Tool message with execution result
 //   - schemas.BifrostError: Any execution error
-func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.ToolCall) (*schemas.BifrostMessage, *schemas.BifrostError) {
+func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	if bifrost.mcpManager == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1289,6 +1317,8 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 		return provider.TextCompletion(req.Context, key, &req.BifrostRequest)
 	case schemas.ChatCompletionRequest:
 		return provider.ChatCompletion(req.Context, key, &req.BifrostRequest)
+	case schemas.ResponsesRequest:
+		return provider.Responses(req.Context, key, &req.BifrostRequest)
 	case schemas.EmbeddingRequest:
 		return provider.Embedding(req.Context, key, &req.BifrostRequest)
 	case schemas.SpeechRequest:
@@ -1310,6 +1340,8 @@ func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage,
 	switch reqType {
 	case schemas.ChatCompletionStreamRequest:
 		return provider.ChatCompletionStream(req.Context, postHookRunner, key, &req.BifrostRequest)
+	case schemas.ResponsesStreamRequest:
+		return provider.ResponsesStream(req.Context, postHookRunner, key, &req.BifrostRequest)
 	case schemas.SpeechStreamRequest:
 		return provider.SpeechStream(req.Context, postHookRunner, key, &req.BifrostRequest)
 	case schemas.TranscriptionStreamRequest:

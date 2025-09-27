@@ -320,28 +320,6 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 	return nil, nil
 }
 
-// getRoleFromMessage extracts and validates the role from a message map.
-func getRoleFromMessage(msg map[string]interface{}) (schemas.ModelChatMessageRole, bool) {
-	roleVal, exists := msg["role"]
-	if !exists {
-		return "", false // Role key doesn't exist
-	}
-
-	// Try direct assertion to ModelChatMessageRole
-	roleAsModelType, ok := roleVal.(schemas.ModelChatMessageRole)
-	if ok {
-		return roleAsModelType, true
-	}
-
-	// Try assertion to string and then convert
-	roleAsString, okStr := roleVal.(string)
-	if okStr {
-		return schemas.ModelChatMessageRole(roleAsString), true
-	}
-
-	return "", false // Role is of an unexpected or invalid type
-}
-
 // Ptr creates a pointer to any value.
 // This is a helper function for creating pointers to values.
 func Ptr[T any](v T) *T {
@@ -421,7 +399,7 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 // Behavior:
 // - If no gating is configured (config == nil or AllowedRequests == nil), the operation is allowed.
 // - If gating is configured, returns an error when the operation is not explicitly allowed.
-func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.Operation) *schemas.BifrostError {
+func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.RequestType) *schemas.BifrostError {
 	// No gating configured => allowed
 	if config == nil || config.AllowedRequests == nil {
 		return nil
@@ -596,7 +574,7 @@ func createBifrostChatCompletionChunkResponse(
 		ID:     id,
 		Object: "chat.completion.chunk",
 		Usage:  usage,
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				FinishReason: finishReason,
 				BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{

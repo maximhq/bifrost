@@ -70,7 +70,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		// openAIResponsePool.Put(&schemas.BifrostResponse{})
-		anthropicChatResponsePool.Put(&anthropic.AnthropicChatResponse{})
+		anthropicChatResponsePool.Put(&anthropic.AnthropicMessageResponse{})
 
 	}
 
@@ -146,7 +146,6 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	// Format messages for Vertex API
-
 	var requestBody map[string]interface{}
 
 	if strings.Contains(input.Model, "claude") {
@@ -319,6 +318,17 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 
 		return response, nil
 	}
+}
+
+func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	response, err := provider.ChatCompletion(ctx, key, input)
+	if err != nil {
+		return nil, err
+	}
+
+	response.ToResponsesOnly()
+
+	return response, nil
 }
 
 // Embedding generates embeddings for the given input text(s) using Vertex AI.
@@ -570,4 +580,8 @@ func (provider *VertexProvider) Transcription(ctx context.Context, key schemas.K
 
 func (provider *VertexProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "vertex")
+}
+
+func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "vertex")
 }

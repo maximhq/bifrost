@@ -42,7 +42,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router) {
 
 // executeTool handles POST /v1/mcp/tool/execute - Execute MCP tool
 func (h *MCPHandler) executeTool(ctx *fasthttp.RequestCtx) {
-	var req schemas.ToolCall
+	var req schemas.ChatAssistantMessageToolCall
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
 		return

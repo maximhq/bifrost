@@ -77,10 +77,10 @@ func TestMockerPlugin_Disabled(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, test message"),
 					},
 				},
@@ -121,10 +121,10 @@ func TestMockerPlugin_DefaultMockRule(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, test message"),
 					},
 				},
@@ -199,10 +199,10 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, test message"),
 					},
 				},
@@ -280,10 +280,10 @@ func TestMockerPlugin_ErrorResponse(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, test message"),
 					},
 				},
@@ -345,10 +345,10 @@ func TestMockerPlugin_MessageTemplate(t *testing.T) {
 		Provider: schemas.Anthropic,
 		Model:    "claude-3",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: &[]schemas.ChatMessage{
 				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Hello, test message"),
 					},
 				},
@@ -419,10 +419,10 @@ func TestMockerPlugin_Statistics(t *testing.T) {
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4",
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
+				ChatCompletionInput: &[]schemas.ChatMessage{
 					{
-						Role: schemas.ModelChatMessageRoleUser,
-						Content: schemas.MessageContent{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
 							ContentStr: bifrost.Ptr("Hello, test message"),
 						},
 					},
