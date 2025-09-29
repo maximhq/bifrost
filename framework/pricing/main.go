@@ -236,8 +236,18 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 	}
 
 	totalTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int { return u.TotalTokens })
-	promptTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int { return u.PromptTokens })
-	completionTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int { return u.CompletionTokens })
+	promptTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int {
+		if u.ResponsesExtendedResponseUsage != nil {
+			return u.ResponsesExtendedResponseUsage.InputTokens
+		}
+		return u.PromptTokens
+	})
+	completionTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int {
+		if u.ResponsesExtendedResponseUsage != nil {
+			return u.ResponsesExtendedResponseUsage.OutputTokens
+		}
+		return u.CompletionTokens
+	})
 
 	// Special handling for audio operations with duration-based pricing
 	if (requestType == schemas.SpeechRequest || requestType == schemas.TranscriptionRequest) && audioSeconds != nil && *audioSeconds > 0 {

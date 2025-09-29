@@ -660,6 +660,10 @@ func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) stri
 		return "chat.completion"
 	case schemas.ChatCompletionStreamRequest:
 		return "chat.completion.chunk"
+	case schemas.ResponsesRequest:
+		return "response"
+	case schemas.ResponsesStreamRequest:
+		return "response.completion.chunk"
 	case schemas.EmbeddingRequest:
 		return "list"
 	case schemas.SpeechRequest:
