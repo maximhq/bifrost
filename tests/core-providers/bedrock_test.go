@@ -22,9 +22,10 @@ func TestBedrock(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.Bedrock,
-		ChatModel: "anthropic.claude-3-sonnet-20240229-v1:0",
-		TextModel: "", // Bedrock Claude doesn't support text completion
+		Provider:       schemas.Bedrock,
+		ChatModel:      "claude-sonnet-4",
+		VisionModel:    "claude-sonnet-4",
+		TextModel:      "mistral.mistral-7b-instruct-v0:2", // Bedrock Claude doesn't support text completion
 		EmbeddingModel: "amazon.titan-embed-text-v2:0",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported for Claude
@@ -39,7 +40,6 @@ func TestBedrock(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			Embedding:             true,
 		},
 	}

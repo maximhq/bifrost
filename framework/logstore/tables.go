@@ -303,6 +303,11 @@ func (l *Log) DeserializeFields() error {
 		if err := json.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TokenUsageParsed = nil
+		} else {
+			if l.TokenUsageParsed.ResponsesExtendedResponseUsage != nil {
+				l.TokenUsageParsed.PromptTokens = l.TokenUsageParsed.ResponsesExtendedResponseUsage.InputTokens
+				l.TokenUsageParsed.CompletionTokens = l.TokenUsageParsed.ResponsesExtendedResponseUsage.OutputTokens
+			}
 		}
 	}
 

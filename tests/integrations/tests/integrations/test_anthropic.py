@@ -126,16 +126,13 @@ def convert_to_anthropic_messages(
                             }
                         )
                     else:
-                        # URL image - need to download and convert to base64
-                        response = requests.get(url)
-                        img_data = base64.b64encode(response.content).decode()
+                        # URL image - send URL directly to Anthropic
                         content.append(
                             {
                                 "type": "image",
                                 "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": img_data,
+                                    "type": "url",
+                                    "url": url,
                                 },
                             }
                         )
@@ -322,10 +319,6 @@ class TestAnthropicIntegration:
     @skip_if_no_api_key("anthropic")
     def test_07_image_url(self, anthropic_client, test_config):
         """Test Case 7: Image analysis from URL"""
-        # Download image and convert to base64 for Anthropic
-        response_img = requests.get(IMAGE_URL)
-        img_data = base64.b64encode(response_img.content).decode()
-
         messages = [
             {
                 "role": "user",
@@ -334,9 +327,8 @@ class TestAnthropicIntegration:
                     {
                         "type": "image",
                         "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": img_data,
+                            "type": "url",
+                            "url": IMAGE_URL,
                         },
                     },
                 ],
@@ -378,10 +370,6 @@ class TestAnthropicIntegration:
     @skip_if_no_api_key("anthropic")
     def test_09_multiple_images(self, anthropic_client, test_config):
         """Test Case 9: Multiple image analysis"""
-        # Download first image
-        response_img = requests.get(IMAGE_URL)
-        img_data = base64.b64encode(response_img.content).decode()
-
         messages = [
             {
                 "role": "user",
@@ -390,9 +378,8 @@ class TestAnthropicIntegration:
                     {
                         "type": "image",
                         "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": img_data,
+                            "type": "url",
+                            "url": IMAGE_URL,
                         },
                     },
                     {
@@ -421,10 +408,6 @@ class TestAnthropicIntegration:
     @skip_if_no_api_key("anthropic")
     def test_10_complex_end2end(self, anthropic_client, test_config):
         """Test Case 10: Complex end-to-end with conversation, images, and tools"""
-        # Download image for Anthropic format
-        response_img = requests.get(IMAGE_URL)
-        img_data = base64.b64encode(response_img.content).decode()
-
         messages = [
             {"role": "user", "content": "Hello! I need help with some tasks."},
             {
@@ -441,9 +424,8 @@ class TestAnthropicIntegration:
                     {
                         "type": "image",
                         "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": img_data,
+                            "type": "url",
+                            "url": IMAGE_URL,
                         },
                     },
                 ],

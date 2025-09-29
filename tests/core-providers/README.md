@@ -169,6 +169,9 @@ go test -v ./tests/core-providers/ -run "TestGemini/SimpleChat"
 
 # Test only Ollama simple chat
 go test -v ./tests/core-providers/ -run "TestOllama/SimpleChat"
+
+# Test only OpenAI reasoning capabilities
+go test -v ./tests/core-providers/ -run "TestOpenAI/Reasoning"
 ```
 
 **Available Scenario Names:**
@@ -186,6 +189,7 @@ go test -v ./tests/core-providers/ -run "TestOllama/SimpleChat"
 - `CompleteEnd2End` - Full end-to-end test
 - `ProviderSpecific` - Provider-specific features
 - `Embedding` - Basic embedding request
+- `Reasoning` - Step-by-step reasoning and thinking capabilities via Responses API
 
 ## 🧪 Test Scenarios
 
@@ -208,6 +212,7 @@ Each provider is tested against these scenarios when supported:
 - **Automatic Function Calling**: OpenAI, Anthropic, Bedrock, Azure, Vertex, Mistral, Ollama, Gemini
 - **Vision/Image Analysis**: OpenAI, Anthropic, Bedrock, Azure, Vertex, Mistral, Gemini (limited support for Cohere and Ollama)
 - **Text Completion**: Legacy models only (most providers now focus on chat completion)
+- **Reasoning/Thinking**: Advanced reasoning models with step-by-step thinking capabilities via Responses API (provider support varies)
 
 ## 📊 Understanding Test Output
 
