@@ -125,6 +125,12 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 
 // extractTextForEmbedding extracts meaningful text from different input types for embedding generation.
 // Returns the text to embed and metadata for storage.
+//
+// Text serialization format (for cache consistency):
+//   - Chat API: "role: content"
+//   - Responses API: "role: msgType: content" (when msgType is present), "role: content" (when msgType is empty)
+//
+// Note: Format updated to conditionally include msgType to avoid double colons and maintain consistency.
 func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (string, string, error) {
 	metadata := map[string]interface{}{}
 
@@ -254,12 +260,16 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 			}
 
 			role := ""
+			msgType := ""
 			if msg.Role != nil {
 				role = string(*msg.Role)
 			}
+			if msg.Type != nil {
+				msgType = string(*msg.Type)
+			}
 
 			if content != "" {
-				textParts = append(textParts, fmt.Sprintf("%s: %s", role, content))
+				textParts = append(textParts, fmt.Sprintf("%s: %s: %s", role, msgType, content))
 			}
 		}
 

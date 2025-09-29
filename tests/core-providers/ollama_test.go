@@ -17,9 +17,9 @@ func TestOllama(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.Ollama,
-		ChatModel: "llama3.2",
-		TextModel: "", // Ollama doesn't support text completion in newer models
+		Provider:       schemas.Ollama,
+		ChatModel:      "llama3.2",
+		TextModel:      "", // Ollama doesn't support text completion in newer models
 		EmbeddingModel: "", // Ollama doesn't support embedding
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
@@ -34,7 +34,6 @@ func TestOllama(t *testing.T) {
 			ImageBase64:           false,
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			Embedding:             false,
 		},
 	}
