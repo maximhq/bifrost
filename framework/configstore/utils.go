@@ -3,10 +3,30 @@ package configstore
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// processEnvValue processes a value that might be an environment variable reference
+func processEnvValue(value string, logger schemas.Logger) (string, error) {
+	v := strings.TrimSpace(value)
+	if !strings.HasPrefix(v, "env.") {
+		return value, nil
+	}
+	envKey := strings.TrimSpace(strings.TrimPrefix(v, "env."))
+	if envKey == "" {
+		logger.Warn(fmt.Sprintf("Environment variable name missing in value: %s", value))
+		return "", fmt.Errorf("environment variable name missing in %q", value)
+	}
+	if envValue, ok := os.LookupEnv(envKey); ok {
+		return envValue, nil
+	}
+	logger.Warn(fmt.Sprintf("Environment variable not found: %s", envKey))
+	return "", fmt.Errorf("environment variable %s not found", envKey)
+}
+
 
 // marshalToString marshals the given value to a JSON string.
 func marshalToString(v any) (string, error) {
