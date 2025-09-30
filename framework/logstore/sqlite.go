@@ -179,7 +179,7 @@ func (s *SQLiteLogStore) SearchLogs(filters SearchFilters, pagination Pagination
 		}
 		return nil, err
 	}
-
+	
 	return &SearchResult{
 		Logs:       logs,
 		Pagination: pagination,

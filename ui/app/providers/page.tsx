@@ -4,25 +4,25 @@ import ModelProviderConfig from "@/app/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
-import { toast } from "sonner";
 import {
 	getErrorMessage,
 	setSelectedProvider,
 	useAppDispatch,
 	useAppSelector,
-	useCreateProviderMutation,
 	useGetProvidersQuery,
 	useLazyGetProviderQuery,
 } from "@/lib/store";
+import { KnownProvider, ModelProviderName } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
-import { PlusIcon } from "lucide-react";
-import { useEffect, useState } from "react";
-import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
-import AddCustomProviderDialog from "./dialogs/addNewCustomProviderDialog";
-import { KnownProvider } from "@/lib/types/config";
+import { PlusIcon, Trash } from "lucide-react";
 import { useQueryState } from "nuqs";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import AddCustomProviderDialog from "./dialogs/addNewCustomProviderDialog";
+import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
 import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
 
 export default function Providers() {
@@ -31,12 +31,12 @@ export default function Providers() {
 	const providerFormIsDirty = useAppSelector((state) => state.provider.isDirty);
 
 	const [showRedirectionDialog, setShowRedirectionDialog] = useState(false);
+	const [showDeleteProviderDialog, setShowDeleteProviderDialog] = useState(false);
 	const [pendingRedirection, setPendingRedirection] = useState<string | undefined>(undefined);
 	const [showCustomProviderDialog, setShowCustomProviderDialog] = useState(false);
 	const [provider, setProvider] = useQueryState("provider");
 
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
-	const [createProvider, { isLoading: creatingProvider }] = useCreateProviderMutation();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 
 	const allProviders = ProviderNames.map((p) => savedProviders?.find((provider) => provider.name === p) ?? { name: p, keys: [] }).sort(
@@ -48,42 +48,37 @@ export default function Providers() {
 			.sort((a, b) => a.name.localeCompare(b.name)) ?? [];
 
 	useEffect(() => {
-		if (!selectedProvider) return;
-		// Checking if the provider already exists
-		// If not, then we will create the provider first and then move on
-		getProvider(selectedProvider.name)
+		if (!provider) return;
+		console.log("provider", provider);
+		const newSelectedProvider = allProviders.find((p) => p.name === provider) ?? customProviders.find((p) => p.name === provider);
+		if (newSelectedProvider) {
+			dispatch(setSelectedProvider(newSelectedProvider));
+		}
+		// We also try to fetch the latest version
+		getProvider(provider)
 			.unwrap()
 			.then(() => {})
 			.catch((err) => {
 				if (err.status === 404) {
-					// Here we create default object
-					// We will create the provider first
-					createProvider({
-						provider: selectedProvider.name,
-						concurrency_and_buffer_size: DefaultPerformanceConfig,
-						network_config: DefaultNetworkConfig,
-						...selectedProvider,
-					})
-						.unwrap()
-						.then(() => {})
-						.catch((err) => {
-							toast.error("Error while updating provider", {
-								description: getErrorMessage(err),
-							});
-						});
+					// Initializing provider config with default values
+					dispatch(
+						setSelectedProvider({
+							name: provider as ModelProviderName,
+							keys: [],
+							concurrency_and_buffer_size: DefaultPerformanceConfig,
+							network_config: DefaultNetworkConfig,
+							custom_provider_config: undefined,
+							proxy_config: undefined,
+							send_back_raw_response: undefined,
+						}),
+					);
 					return;
 				}
 				toast.error("Something went wrong", {
 					description: `We encountered an error while getting provider config: ${getErrorMessage(err)}`,
 				});
 			});
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [selectedProvider]);
-
-	useEffect(() => {
-		const newSelectedProvider = allProviders.find((p) => p.name === provider) ?? customProviders.find((p) => p.name === provider);
-		if (!newSelectedProvider) return;
-		dispatch(setSelectedProvider(newSelectedProvider));
+		return;
 	}, [provider]);
 
 	useEffect(() => {
@@ -98,6 +93,15 @@ export default function Providers() {
 
 	return (
 		<div className="flex h-full flex-row gap-4">
+			<ConfirmDeleteProviderDialog
+				provider={selectedProvider!}
+				show={showDeleteProviderDialog}
+				onCancel={() => setShowDeleteProviderDialog(false)}
+				onDelete={() => {
+					setProvider(allProviders[0].name);
+					setShowDeleteProviderDialog(false);
+				}}
+			/>
 			<ConfirmRedirectionDialog
 				show={showRedirectionDialog}
 				onCancel={() => setShowRedirectionDialog(false)}
@@ -109,7 +113,10 @@ export default function Providers() {
 			/>
 			<AddCustomProviderDialog
 				show={showCustomProviderDialog}
-				onSave={() => {
+				onSave={(id) => {
+					setTimeout(() => {
+						setProvider(id);
+					}, 300);
 					setShowCustomProviderDialog(false);
 				}}
 				onClose={() => {
@@ -188,23 +195,35 @@ export default function Providers() {
 											}}
 											asChild
 										>
-											<span>
-												{p.custom_provider_config ? (
-													<>
-														<RenderProviderIcon
-															provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
-															size="sm"
-															className="h-4 w-4"
-														/>
-														<div className="text-sm">{p.name}</div>
-													</>
-												) : (
-													<>
-														<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-														<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
-													</>
+											<div className="group flex w-full items-center gap-2">
+												<div className="flex w-full items-center gap-3">
+													{p.custom_provider_config ? (
+														<>
+															<RenderProviderIcon
+																provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
+																size="sm"
+																className="h-4 w-4"
+															/>
+															<div className="text-sm">{p.name}</div>
+														</>
+													) : (
+														<>
+															<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
+															<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
+														</>
+													)}
+												</div>
+												{selectedProvider?.name === p.name && (
+													<Trash
+														className="text-muted-foreground hover:text-destructive ml-auto hidden h-4 w-4 cursor-pointer group-hover:block"
+														onClick={(event) => {
+															event.preventDefault();
+															event.stopPropagation();
+															setShowDeleteProviderDialog(true);
+														}}
+													/>
 												)}
-											</span>
+											</div>
 										</TooltipTrigger>
 									</Tooltip>
 								))}

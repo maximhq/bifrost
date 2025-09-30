@@ -5,6 +5,7 @@ package lib
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1095,9 +1096,15 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 
 	if s.ConfigStore != nil {
 		if err := s.ConfigStore.AddProvider(provider, config, s.EnvKeys); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return ErrNotFound
+			}
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
 		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return ErrNotFound
+			}
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
@@ -1129,7 +1136,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 	// Get existing configuration for validation
 	existingConfig, exists := s.Providers[provider]
 	if !exists {
-		return fmt.Errorf("provider %s not found", provider)
+		return ErrNotFound
 	}
 
 	// Validate CustomProviderConfig if present, ensuring immutable fields are not changed
@@ -1211,7 +1218,7 @@ func (s *Config) RemoveProvider(provider schemas.ModelProvider) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.Providers[provider]; !exists {
-		return fmt.Errorf("provider %s not found", provider)
+		return ErrNotFound
 	}
 
 	delete(s.Providers, provider)

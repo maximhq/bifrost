@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -237,6 +238,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
+		// If not found, then first we create and then update
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err), h.logger)
 		return
 	}
@@ -258,8 +260,11 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Get the raw config to access actual values for merging with redacted request values
 	oldConfigRaw, err := h.store.GetProviderConfigRaw(provider)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusNotFound, err.Error(), h.logger)
-		return
+		if !errors.Is(err, lib.ErrNotFound) {
+			h.logger.Warn(fmt.Sprintf("Failed to get old config for provider %s: %v", provider, err))
+			SendError(ctx, fasthttp.StatusInternalServerError, err.Error(), h.logger)
+			return
+		}
 	}
 
 	if oldConfigRaw == nil {
@@ -268,8 +273,11 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	oldConfigRedacted, err := h.store.GetProviderConfigRedacted(provider)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusNotFound, err.Error(), h.logger)
-		return
+		if !errors.Is(err, lib.ErrNotFound) {
+			h.logger.Warn(fmt.Sprintf("Failed to get old redacted config for provider %s: %v", provider, err))
+			SendError(ctx, fasthttp.StatusInternalServerError, err.Error(), h.logger)
+			return
+		}
 	}
 
 	if oldConfigRedacted == nil {
@@ -348,9 +356,17 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	// Update provider config in store (env vars will be processed by store)
 	if err := h.store.UpdateProviderConfig(provider, config); err != nil {
-		h.logger.Warn(fmt.Sprintf("Failed to update provider %s: %v", provider, err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err), h.logger)
-		return
+		if !errors.Is(err, lib.ErrNotFound) {
+			h.logger.Warn(fmt.Sprintf("Failed to update provider %s: %v", provider, err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err), h.logger)
+			return
+		}
+		// Creating provider instance with current config
+		if addErr := h.store.AddProvider(provider, config); addErr != nil {
+			h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", provider, addErr))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to upsert provider: %v", addErr), h.logger)
+			return
+		}
 	}
 
 	oldConcurrencyAndBufferSize := &schemas.DefaultConcurrencyAndBufferSize

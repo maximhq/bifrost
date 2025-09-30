@@ -5,8 +5,8 @@ go 1.24
 toolchain go1.24.3
 
 require (
-	github.com/maximhq/bifrost/core v1.1.37
-	github.com/maximhq/bifrost/framework v1.0.23
+	github.com/maximhq/bifrost/core v1.1.38
+	github.com/maximhq/bifrost/framework v1.0.24
 	github.com/prometheus/client_golang v1.23.0
 	github.com/valyala/fasthttp v1.65.0
 )

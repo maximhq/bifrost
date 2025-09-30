@@ -274,7 +274,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 
 				{log.status !== "processing" && (
 					<>
-						{log.output_message && (
+						{log.output_message && !log.error_details?.error.message && (
 							<>
 								<div className="mt-4 flex w-full items-center gap-2">
 									<div className="text-sm font-medium">Response</div>

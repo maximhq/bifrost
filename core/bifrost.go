@@ -1137,7 +1137,18 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 		bifrost.releaseChannelMessage(msg)
 		return stream, nil
 	case bifrostErrVal := <-msg.Err:
+		bifrost.logger.Warn("error while executing stream request: %v", bifrostErrVal.Error.Message)
+		// Marking final chunk
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+		// On error we will complete post-hooks
+		recoveredResp, recoveredErr := pipeline.RunPostHooks(&ctx, nil, &bifrostErrVal, len(bifrost.plugins))
 		bifrost.releaseChannelMessage(msg)
+		if recoveredErr != nil {
+			return nil, recoveredErr
+		}
+		if recoveredResp != nil {
+			return newBifrostMessageChan(recoveredResp), nil
+		}
 		return nil, &bifrostErrVal
 	}
 }

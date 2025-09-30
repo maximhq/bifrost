@@ -147,8 +147,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		h.logger.Error("failed to search logs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err), h.logger)
 		return
-	}
-
+	}	
 	SendJSON(ctx, result, h.logger)
 }
 

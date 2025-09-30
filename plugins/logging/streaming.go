@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -125,7 +126,7 @@ func (p *LoggerPlugin) addStreamChunk(requestID string, chunk *StreamChunk, obje
 }
 
 // processAccumulatedChunks processes all accumulated chunks in order
-func (p *LoggerPlugin) processAccumulatedChunks(requestID string) error {
+func (p *LoggerPlugin) processAccumulatedChunks(ctx context.Context, requestID string, respErr *schemas.BifrostError) error {
 	accumulator := p.getOrCreateStreamAccumulator(requestID)
 
 	accumulator.mu.Lock()
@@ -138,7 +139,7 @@ func (p *LoggerPlugin) processAccumulatedChunks(requestID string) error {
 	completeMessage := p.buildCompleteMessageFromChunks(accumulator.Chunks)
 
 	// Calculate final latency
-	latency, err := p.calculateLatency(requestID, accumulator.FinalTimestamp, context.Background())
+	latency, err := p.calculateLatency(ctx, requestID, accumulator.FinalTimestamp)
 	if err != nil {
 		p.logger.Error("failed to calculate latency for request %s: %v", requestID, err)
 		latency = 0
@@ -147,6 +148,9 @@ func (p *LoggerPlugin) processAccumulatedChunks(requestID string) error {
 	// Update database with complete message
 	updates := make(map[string]interface{})
 	updates["status"] = "success"
+	if respErr != nil {
+		updates["status"] = "error"
+	}
 	updates["stream"] = true
 	updates["latency"] = latency
 	updates["timestamp"] = accumulator.FinalTimestamp
@@ -158,13 +162,19 @@ func (p *LoggerPlugin) processAccumulatedChunks(requestID string) error {
 	if completeMessage.AssistantMessage != nil && completeMessage.AssistantMessage.ToolCalls != nil {
 		tempEntry.ToolCallsParsed = completeMessage.AssistantMessage.ToolCalls
 	}
-
 	if err := tempEntry.SerializeFields(); err != nil {
 		return fmt.Errorf("failed to serialize complete message: %w", err)
 	}
-
-	updates["output_message"] = tempEntry.OutputMessage
-	updates["content_summary"] = tempEntry.ContentSummary
+	if respErr != nil {
+		if b, mErr := sonic.Marshal(respErr); mErr == nil {
+			updates["error_details"] = string(b)
+		} else {
+			updates["error_details"] = fmt.Sprintf(`{"message":"failed to marshal error: %v"}`, mErr)
+		}
+	} else {
+		updates["output_message"] = tempEntry.OutputMessage
+		updates["content_summary"] = tempEntry.ContentSummary
+	}
 	if tempEntry.ToolCalls != "" {
 		updates["tool_calls"] = tempEntry.ToolCalls
 	}
@@ -402,7 +412,7 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 
 			if shouldProcess {
 
-				if processErr := p.processAccumulatedChunks(requestID); processErr != nil {
+				if processErr := p.processAccumulatedChunks(*ctx, requestID, err); processErr != nil {
 					p.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 				}
 

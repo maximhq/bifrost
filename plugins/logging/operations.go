@@ -37,7 +37,7 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, tim
 	updates := make(map[string]interface{})
 	if !timestamp.IsZero() {
 		// Try to get original timestamp from context first for latency calculation
-		latency, err := p.calculateLatency(requestID, timestamp, ctx)
+		latency, err := p.calculateLatency(ctx, requestID, timestamp)
 		if err != nil {
 			return err
 		}
@@ -142,7 +142,7 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 
 	// Handle error case first
 	if data.ErrorDetails != nil {
-		latency, err := p.calculateLatency(requestID, timestamp, ctx)
+		latency, err := p.calculateLatency(ctx, requestID, timestamp)
 		if err != nil {
 			// If we can't get created_at, just update status and error
 			tempEntry := &logstore.Log{}
@@ -182,7 +182,7 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 	if isFinalChunk {
 		// Stream is finishing, calculate latency
 		var err error
-		latency, err = p.calculateLatency(requestID, timestamp, ctx)
+		latency, err = p.calculateLatency(ctx, requestID, timestamp)
 		if err != nil {
 			return fmt.Errorf("failed to get created_at for latency calculation: %w", err)
 		}
@@ -267,14 +267,17 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 }
 
 // calculateLatency computes latency in milliseconds from creation time
-func (p *LoggerPlugin) calculateLatency(requestID string, currentTime time.Time, ctx context.Context) (float64, error) {
+func (p *LoggerPlugin) calculateLatency(ctx context.Context, requestID string, currentTime time.Time) (float64, error) {
 	// Try to get original timestamp from context first
 	if ctxTimestamp, ok := ctx.Value(CreatedTimestampKey).(time.Time); ok {
 		return float64(currentTime.Sub(ctxTimestamp).Nanoseconds()) / 1e6, nil
 	}
-
-	// Fallback to database query if not found in context
-	originalEntry, err := p.store.FindFirst(map[string]interface{}{"id": requestID}, "created_at")
+	var originalEntry *logstore.Log
+	err := retryOnNotFound(ctx, func() error {
+		var opErr error
+		originalEntry, opErr = p.store.FindFirst(map[string]interface{}{"id": requestID}, "created_at")
+		return opErr
+	})
 	if err != nil {
 		return 0, err
 	}

@@ -371,7 +371,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	if !ok {
 		p.logger.Error("model not found in context")
 		return result, err, nil
-	}	
+	}
 	// Check if this is a streaming response
 	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
 	if !ok {

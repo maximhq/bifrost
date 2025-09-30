@@ -6,6 +6,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider, isKnownProvider } from "@/lib/types/config";
@@ -73,10 +74,11 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 			network_config: {
 				base_url: provider.network_config?.base_url || "",
 				extra_headers: provider.network_config?.extra_headers,
-				default_request_timeout_in_seconds: provider.network_config?.default_request_timeout_in_seconds || 30,
-				max_retries: provider.network_config?.max_retries || 0,
-				retry_backoff_initial: provider.network_config?.retry_backoff_initial || 500,
-				retry_backoff_max: provider.network_config?.retry_backoff_max || 5000,
+				default_request_timeout_in_seconds:
+					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
+				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
+				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
+				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -191,7 +193,7 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 									<FormItem className="flex-1">
 										<FormLabel>Initial Backoff (ms)</FormLabel>
 										<FormControl>
-											<Input placeholder="500" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
+											<Input placeholder="e.g 500" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -204,7 +206,7 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 									<FormItem className="flex-1">
 										<FormLabel>Max Backoff (ms)</FormLabel>
 										<FormControl>
-											<Input placeholder="5000" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
+											<Input placeholder="e.g 5000" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
 										</FormControl>
 										<FormMessage />
 									</FormItem>

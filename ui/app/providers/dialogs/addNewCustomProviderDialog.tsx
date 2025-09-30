@@ -33,7 +33,7 @@ type FormData = z.infer<typeof formSchema>;
 
 interface Props {
 	show: boolean;
-	onSave: () => void;
+	onSave: (id:string) => void;
 	onClose: () => void;
 }
 
@@ -73,8 +73,8 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 			keys: [],
 		})
 			.unwrap()
-			.then(() => {
-				onSave();
+			.then((provider) => {
+				onSave(provider.name);
 				form.reset();
 			})
 			.catch((err) => {

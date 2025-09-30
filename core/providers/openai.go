@@ -499,9 +499,24 @@ func handleOpenAIStreaming(
 			}
 
 			// Handle usage-only chunks (when stream_options include_usage is true)
-			if len(response.Choices) == 0 && response.Usage != nil {
+			if response.Usage != nil {
 				// Collect usage information and send at the end of the stream
-				usage = response.Usage
+				// Here in some cases usage comes before final message
+				// So we need to check if the response.Usage is nil and then if usage != nil
+				// then add up all tokens
+				if response.Usage.PromptTokens > usage.PromptTokens {
+					usage.PromptTokens = response.Usage.PromptTokens
+				}
+				if response.Usage.CompletionTokens > usage.CompletionTokens {
+					usage.CompletionTokens = response.Usage.CompletionTokens
+				}
+				if response.Usage.TotalTokens > usage.TotalTokens {
+					usage.TotalTokens = response.Usage.TotalTokens
+				}
+				calculatedTotal := usage.PromptTokens + usage.CompletionTokens
+				if calculatedTotal > usage.TotalTokens {
+					usage.TotalTokens = calculatedTotal
+				}
 				response.Usage = nil
 			}
 

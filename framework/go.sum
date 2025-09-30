@@ -183,8 +183,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuErjs=
 github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
-github.com/maximhq/bifrost/core v1.1.37 h1:jVFY1tQFY8T2r4S3RE1zN8cFp1Uw97Dec3Ud32rR8Uc=
-github.com/maximhq/bifrost/core v1.1.37/go.mod h1:tf2pFTpoM53UGXXMFYxsaUjMqnCqYDOd9glFgMJvA0c=
+github.com/maximhq/bifrost/core v1.1.38 h1:d5B7n5oibBO9f5wMBxyymTewK017nzS15ZzJILRAE6k=
+github.com/maximhq/bifrost/core v1.1.38/go.mod h1:tf2pFTpoM53UGXXMFYxsaUjMqnCqYDOd9glFgMJvA0c=
 github.com/mitchellh/mapstructure v1.3.3/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/mitchellh/mapstructure v1.4.1/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/mitchellh/mapstructure v1.4.3/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=

@@ -89,8 +89,8 @@ if ! grep -q "\"$route\"" docs/docs.json; then
   ' docs/docs.json > docs/docs.json.tmp && mv docs/docs.json.tmp docs/docs.json
 fi
 
-
-
+# Pulling again before committing
+git pull origin main
 # Commit and push changes
 git add docs/changelogs/$VERSION.mdx
 git add docs/docs.json

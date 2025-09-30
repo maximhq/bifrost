@@ -46,6 +46,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		var fullContent strings.Builder
 		var responseCount int
 		var lastResponse *schemas.BifrostStream
+		var hasReceivedUsage bool
 
 		// Create a timeout context for the stream reading
 		streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -97,6 +98,22 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					}
 				}
 
+				// Check if this response contains usage information
+				if response.Usage != nil {
+					hasReceivedUsage = true
+					t.Logf("📊 Token usage received - Prompt: %d, Completion: %d, Total: %d",
+						response.Usage.PromptTokens,
+						response.Usage.CompletionTokens,
+						response.Usage.TotalTokens)
+
+					// Validate token counts
+					assert.Greater(t, response.Usage.PromptTokens, 0, "Prompt tokens should be greater than 0")
+					assert.Greater(t, response.Usage.CompletionTokens, 0, "Completion tokens should be greater than 0")
+					assert.Greater(t, response.Usage.TotalTokens, 0, "Total tokens should be greater than 0")
+					assert.Equal(t, response.Usage.PromptTokens+response.Usage.CompletionTokens,
+						response.Usage.TotalTokens, "Total tokens should equal prompt + completion tokens")
+				}
+
 				responseCount++
 
 				// Safety check to prevent infinite loops in case of issues
@@ -110,18 +127,36 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 	streamComplete:
+		// Validate that we received usage information at some point in the stream
+		assert.True(t, hasReceivedUsage, "Should have received token usage information during streaming")
+
 		// Validate that the last response contains usage information and/or finish reason
 		// with empty choices (typical final chunk pattern)
 		if lastResponse != nil && lastResponse.BifrostResponse != nil {
 			// Check if this is a final metadata chunk (empty choices with usage/finish info)
 			if len(lastResponse.Choices) == 0 && lastResponse.Usage != nil {
+				// Comprehensive validation of final usage
+				assert.Greater(t, lastResponse.Usage.PromptTokens, 0, "Final chunk should have prompt token count")
+				assert.Greater(t, lastResponse.Usage.CompletionTokens, 0, "Final chunk should have completion token count")
 				assert.Greater(t, lastResponse.Usage.TotalTokens, 0, "Final chunk should have total token count")
-				t.Logf("📊 Final metadata chunk - Total tokens: %d", lastResponse.Usage.TotalTokens)
+				assert.Equal(t, lastResponse.Usage.PromptTokens+lastResponse.Usage.CompletionTokens,
+					lastResponse.Usage.TotalTokens, "Total tokens should equal prompt + completion tokens")
+				t.Logf("📊 Final metadata chunk - Prompt: %d, Completion: %d, Total: %d",
+					lastResponse.Usage.PromptTokens,
+					lastResponse.Usage.CompletionTokens,
+					lastResponse.Usage.TotalTokens)
 			} else if len(lastResponse.Choices) > 0 {
 				// Check if final choice has finish reason
 				finalChoice := lastResponse.Choices[0]
 				if finalChoice.FinishReason != nil {
 					t.Logf("🏁 Stream ended with finish reason: %s", *finalChoice.FinishReason)
+				}
+
+				// Even with choices, we should have usage info in the last response or earlier
+				if lastResponse.Usage != nil {
+					assert.Greater(t, lastResponse.Usage.PromptTokens, 0, "Should have prompt tokens")
+					assert.Greater(t, lastResponse.Usage.CompletionTokens, 0, "Should have completion tokens")
+					assert.Greater(t, lastResponse.Usage.TotalTokens, 0, "Should have total tokens")
 				}
 			} else {
 				t.Fatal("Last response should have choices or usage")
@@ -143,6 +178,9 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			} else {
 				// This is a metadata-only chunk, which is valid for final chunks
 				assert.NotNil(t, lastResponse.Usage, "Usage should not be nil")
+				// Additional validation for the usage in metadata-only chunk
+				assert.Greater(t, lastResponse.Usage.PromptTokens, 0, "Metadata chunk should have prompt tokens")
+				assert.Greater(t, lastResponse.Usage.CompletionTokens, 0, "Metadata chunk should have completion tokens")
 			}
 		}
 
@@ -176,6 +214,8 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 			var toolCallDetected bool
 			var responseCount int
+			var hasReceivedUsageWithTools bool
+			var lastResponseWithTools *schemas.BifrostStream
 
 			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
@@ -190,7 +230,24 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					}
 
 					require.NotNil(t, response, "Streaming response should not be nil")
+					lastResponseWithTools = response
 					responseCount++
+
+					// Check for usage information in tool call streaming
+					if response.Usage != nil {
+						hasReceivedUsageWithTools = true
+						t.Logf("📊 Tool stream usage - Prompt: %d, Completion: %d, Total: %d",
+							response.Usage.PromptTokens,
+							response.Usage.CompletionTokens,
+							response.Usage.TotalTokens)
+
+						// Validate token counts for tool calls
+						assert.Greater(t, response.Usage.PromptTokens, 0, "Tool stream should have prompt tokens")
+						assert.Greater(t, response.Usage.CompletionTokens, 0, "Tool stream should have completion tokens")
+						assert.Greater(t, response.Usage.TotalTokens, 0, "Tool stream should have total tokens")
+						assert.Equal(t, response.Usage.PromptTokens+response.Usage.CompletionTokens,
+							response.Usage.TotalTokens, "Total should equal prompt + completion for tool stream")
+					}
 
 					for _, choice := range response.Choices {
 						if choice.BifrostStreamResponseChoice != nil {
@@ -225,6 +282,15 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		toolStreamComplete:
 			assert.Greater(t, responseCount, 0, "Should receive at least one streaming response")
 			assert.True(t, toolCallDetected, "Should detect tool calls in streaming response")
+			assert.True(t, hasReceivedUsageWithTools, "Should have received token usage for tool call stream")
+
+			// Validate final response has proper usage information
+			if lastResponseWithTools != nil && lastResponseWithTools.Usage != nil {
+				assert.Greater(t, lastResponseWithTools.Usage.PromptTokens, 0, "Final tool stream should have prompt tokens")
+				assert.Greater(t, lastResponseWithTools.Usage.CompletionTokens, 0, "Final tool stream should have completion tokens")
+				assert.Greater(t, lastResponseWithTools.Usage.TotalTokens, 0, "Final tool stream should have total tokens")
+			}
+
 			t.Logf("✅ Streaming with tools test completed successfully")
 		})
 	}

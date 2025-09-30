@@ -1,11 +1,11 @@
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ModelProvider } from "@/lib/types/config";
+import { isKnownProvider, ModelProvider } from "@/lib/types/config";
 import { useEffect, useMemo, useState } from "react";
 import { ApiStructureFormFragment, ProxyFormFragment } from "../fragments";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { keysRequired } from "./utils";
 
 interface Props {
@@ -43,7 +43,7 @@ const availableTabs = (provider: ModelProvider) => {
 
 export default function ModelProviderConfig({ provider }: Props) {
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
-
+	const isCustomProver = !isKnownProvider(provider.name);
 	const tabs = useMemo(() => {
 		return availableTabs(provider);
 	}, [provider.name]);
@@ -56,7 +56,7 @@ export default function ModelProviderConfig({ provider }: Props) {
 
 	return (
 		<div className="flex w-full flex-col gap-2">
-			<Accordion type="single" collapsible>
+			<Accordion type="single" collapsible={showApiKeys} value={!showApiKeys || isCustomProver ? "item-1" : undefined}>
 				<AccordionItem value="item-1">
 					<AccordionTrigger className="flex cursor-pointer items-center text-[17px] font-semibold">
 						Provider level configuration
