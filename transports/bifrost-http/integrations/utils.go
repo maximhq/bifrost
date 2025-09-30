@@ -557,6 +557,27 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router) {
 	}
 }
 
+// isAPIKeyAuth checks if the request uses standard API key authentication.
+// Returns true for API key auth (x-api-key header), false for OAuth (Bearer sk-ant-oat*).
+// This is required for Claude Code specifically, which may use OAuth authentication.
+// Default behavior is to assume API mode when neither x-api-key nor OAuth token is present.
+func isAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
+	// If x-api-key header is present - this is definitely API mode
+	if apiKey := string(ctx.Request.Header.Peek("x-api-key")); apiKey != "" {
+		return true
+	}
+
+	// Check for OAuth token in Authorization header
+	if authHeader := string(ctx.Request.Header.Peek("Authorization")); authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat") {
+			return false // OAuth mode, NOT API
+		}
+	}
+
+	// Default to API mode
+	return true
+}
+
 // createHandler creates a fasthttp handler for the given route configuration.
 // The handler follows this flow:
 // 1. Parse JSON request body into the configured request type (for methods that expect bodies)
@@ -616,6 +637,14 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if bifrostReq.Model == "" {
 			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Model parameter is required"))
 			return
+		}
+		// Auto-detect auth mode for Anthropic: API keys use standard provider,
+		// OAuth tokens (sk-ant-oat-*) use passthrough to preserve request structure
+		if bifrostReq.Provider == schemas.Anthropic {
+			// Switch to passthrough provider if NOT API key auth (i.e., OAuth)
+			if !isAPIKeyAuth(ctx) {
+				bifrostReq.Provider = schemas.AnthropicPassthrough
+			}
 		}
 
 		// Check if streaming is requested

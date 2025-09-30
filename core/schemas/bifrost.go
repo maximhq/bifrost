@@ -38,20 +38,21 @@ const (
 type ModelProvider string
 
 const (
-	OpenAI     ModelProvider = "openai"
-	Azure      ModelProvider = "azure"
-	Anthropic  ModelProvider = "anthropic"
-	Bedrock    ModelProvider = "bedrock"
-	Cohere     ModelProvider = "cohere"
-	Vertex     ModelProvider = "vertex"
-	Mistral    ModelProvider = "mistral"
-	Ollama     ModelProvider = "ollama"
-	Groq       ModelProvider = "groq"
-	SGL        ModelProvider = "sgl"
-	Parasail   ModelProvider = "parasail"
-	Cerebras   ModelProvider = "cerebras"
-	Gemini     ModelProvider = "gemini"
-	OpenRouter ModelProvider = "openrouter"
+	OpenAI               ModelProvider = "openai"
+	Azure                ModelProvider = "azure"
+	Anthropic            ModelProvider = "anthropic"
+	AnthropicPassthrough ModelProvider = "anthropic_passthrough"
+	Bedrock              ModelProvider = "bedrock"
+	Cohere               ModelProvider = "cohere"
+	Vertex               ModelProvider = "vertex"
+	Mistral              ModelProvider = "mistral"
+	Ollama               ModelProvider = "ollama"
+	Groq                 ModelProvider = "groq"
+	SGL                  ModelProvider = "sgl"
+	Parasail             ModelProvider = "parasail"
+	Cerebras             ModelProvider = "cerebras"
+	Gemini               ModelProvider = "gemini"
+	OpenRouter           ModelProvider = "openrouter"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -105,6 +106,8 @@ const (
 	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
 	BifrostContextKeyRequestProvider    BifrostContextKey = "bifrost-request-provider"
 	BifrostContextKeyRequestModel       BifrostContextKey = "bifrost-request-model"
+	BifrostContextKeyOriginalRequest    BifrostContextKey = "bifrost-original-request"
+	BifrostContextKeyOriginalHeaders    BifrostContextKey = "bifrost-original-headers"
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
