@@ -118,6 +118,11 @@ func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return newSqliteConfigStore(ctx, sqliteConfig, logger)
 		}
 		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
+	case ConfigStoreTypePostgres:
+		if postgresConfig, ok := config.Config.(*PostgresConfig); ok {
+			return newPostgresConfigStore(ctx, postgresConfig, logger)
+		}
+		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
 	}
 	return nil, fmt.Errorf("unsupported config store type: %s", config.Type)
 }
