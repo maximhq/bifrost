@@ -174,22 +174,83 @@
         "type": {
           "type": "string",
           "enum": [
-            "sqlite"
+            "sqlite",
+            "postgres"
           ],
           "description": "Configuration store type"
         },
         "config": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Database file path"
+          "anyOf": [
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "sqlite"
+                  }
+                }
+              },
+              "then": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Database file path"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "postgres"
+                  }
+                }
+              },
+              "then": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "Database host"
+                  },
+                  "port": {
+                    "type": "string",
+                    "description": "Database port"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "Database user"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                  },
+                  "db_name": {
+                    "type": "string",
+                    "description": "Database name"
+                  },
+                  "ssl_mode": {
+                    "type": "string",
+                    "description": "Database SSL mode"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
+                "additionalProperties": false
+              }
             }
-          },
-          "required": [
-            "path"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "additionalProperties": false
@@ -205,22 +266,82 @@
         "type": {
           "type": "string",
           "enum": [
-            "sqlite"
+            "sqlite",
+            "postgres"
           ],
           "description": "Logs store type"
         },
         "config": {
           "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Database file path"
+          "oneOf": [
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "sqlite"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Database file path"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "postgres"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "Database host"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "description": "Database port"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "Database user"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                  },
+                  "db_name": {
+                    "type": "string",
+                    "description": "Database name"
+                  },
+                  "ssl_mode": {
+                    "type": "string",
+                    "description": "Database SSL mode"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
+                "additionalProperties": false
+              }
             }
-          },
-          "required": [
-            "path"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "additionalProperties": false
