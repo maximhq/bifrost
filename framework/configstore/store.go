@@ -130,6 +130,11 @@ func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return newPostgresConfigStore(ctx, postgresConfig, logger)
 		}
 		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
+	case ConfigStoreTypeMySQL:
+		if mysqlConfig, ok := config.Config.(*MySQLConfig); ok {
+			return newMySQLConfigStore(ctx, mysqlConfig, logger)
+		}
+		return nil, fmt.Errorf("invalid mysql config: %T", config.Config)
 	}
 	return nil, fmt.Errorf("unsupported config store type: %s", config.Type)
 }
