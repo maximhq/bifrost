@@ -1,11 +1,7 @@
-package litellm
+package integrations
 
 import (
 	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -14,23 +10,23 @@ import (
 // LiteLLM is fully OpenAI-compatible, so we reuse OpenAI types
 // with aliases for clarity and minimal LiteLLM-specific extensions
 type LiteLLMRouter struct {
-	*integrations.GenericRouter
+	*GenericRouter
 }
 
 // NewLiteLLMRouter creates a new LiteLLMRouter with the given bifrost client.
 func NewLiteLLMRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *LiteLLMRouter {
-	routes := []integrations.RouteConfig{}
+	routes := []RouteConfig{}
 
 	// Add OpenAI routes to LiteLLM for OpenAI API compatibility
-	routes = append(routes, openai.CreateOpenAIRouteConfigs("/litellm", handlerStore)...)
+	routes = append(routes, CreateOpenAIRouteConfigs("/litellm", handlerStore)...)
 
 	// Add Anthropic routes to LiteLLM for Anthropic API compatibility
-	routes = append(routes, anthropic.CreateAnthropicRouteConfigs("/litellm")...)
+	routes = append(routes, CreateAnthropicRouteConfigs("/litellm")...)
 
 	// Add GenAI routes to LiteLLM for Vertex AI compatibility
-	routes = append(routes, genai.CreateGenAIRouteConfigs("/litellm")...)
+	routes = append(routes, CreateGenAIRouteConfigs("/litellm")...)
 
 	return &LiteLLMRouter{
-		GenericRouter: integrations.NewGenericRouter(client, handlerStore, routes),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes),
 	}
 }

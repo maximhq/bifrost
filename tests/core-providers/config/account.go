@@ -128,7 +128,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("COHERE_API_KEY"),
-				Models: []string{"command-a-03-2025", "c4ai-aya-vision-8b"},
+				Models: []string{"command-a-03-2025", "c4ai-aya-vision-8b", "embed-v4.0"},
 				Weight: 1.0,
 			},
 		}, nil

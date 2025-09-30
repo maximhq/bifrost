@@ -22,13 +22,11 @@ func normalizeText(text string) string {
 // generateEmbedding generates an embedding for the given text using the configured provider.
 func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]float32, int, error) {
 	// Create embedding request
-	embeddingReq := &schemas.BifrostRequest{
+	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: plugin.config.Provider,
 		Model:    plugin.config.EmbeddingModel,
-		Input: schemas.RequestInput{
-			EmbeddingInput: &schemas.EmbeddingInput{
-				Texts: []string{text},
-			},
+		Input: schemas.EmbeddingInput{
+			Text: &text,
 		},
 	}
 
@@ -86,16 +84,26 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 // Returns:
 //   - string: Hexadecimal representation of the xxhash
 //   - error: Any error that occurred during request normalization or hashing
-func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, requestType schemas.RequestType) (string, error) {
+func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, error) {
 	// Create a hash input structure that includes both input and parameters
 	hashInput := struct {
-		Input  schemas.RequestInput     `json:"input"`
-		Params *schemas.ModelParameters `json:"params,omitempty"`
-		Stream bool                     `json:"stream,omitempty"`
+		Input  interface{} `json:"input"`
+		Params interface{} `json:"params,omitempty"`
+		Stream bool        `json:"stream,omitempty"`
 	}{
-		Input:  *plugin.getInputForCaching(req),
-		Params: req.Params,
-		Stream: plugin.isStreamingRequest(requestType),
+		Input:  plugin.getInputForCaching(req),
+		Stream: bifrost.IsStreamRequestType(req.RequestType),
+	}
+
+	switch req.RequestType {
+	case schemas.TextCompletionRequest:
+		hashInput.Params = req.TextCompletionRequest.Params
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		hashInput.Params = req.ChatRequest.Params
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		hashInput.Params = req.ResponsesRequest.Params
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		hashInput.Params = req.SpeechRequest.Params
 	}
 
 	// Marshal to JSON for consistent hashing
@@ -111,79 +119,66 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, requestTy
 
 // extractTextForEmbedding extracts meaningful text from different input types for embedding generation.
 // Returns the text to embed and metadata for storage.
-func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, requestType schemas.RequestType) (string, string, error) {
+func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (string, string, error) {
 	metadata := map[string]interface{}{}
 
 	attachments := []string{}
 
-	// Add parameters as metadata if present
-	if req.Params != nil {
-		if req.Params.ToolChoice != nil {
-			if req.Params.ToolChoice.ToolChoiceStr != nil {
-				metadata["tool_choice"] = *req.Params.ToolChoice.ToolChoiceStr
-			} else if req.Params.ToolChoice.ToolChoiceStruct != nil {
-				metadata["tool_choice"] = (*req.Params.ToolChoice.ToolChoiceStruct).Function.Name
-			}
-		}
-		if req.Params.Temperature != nil {
-			metadata["temperature"] = *req.Params.Temperature
-		}
-		if req.Params.TopP != nil {
-			metadata["top_p"] = *req.Params.TopP
-		}
-		if req.Params.TopK != nil {
-			metadata["top_k"] = *req.Params.TopK
-		}
-		if req.Params.MaxTokens != nil {
-			metadata["max_tokens"] = *req.Params.MaxTokens
-		}
-		if req.Params.StopSequences != nil {
-			metadata["stop_sequences"] = *req.Params.StopSequences
-		}
-		if req.Params.PresencePenalty != nil {
-			metadata["presence_penalty"] = *req.Params.PresencePenalty
-		}
-		if req.Params.FrequencyPenalty != nil {
-			metadata["frequency_penalty"] = *req.Params.FrequencyPenalty
-		}
-		if req.Params.ParallelToolCalls != nil {
-			metadata["parallel_tool_calls"] = *req.Params.ParallelToolCalls
-		}
-		if req.Params.User != nil {
-			metadata["user"] = *req.Params.User
-		}
+	// Add parameters as metadata if present - handle segregated parameters
+	metadata["stream"] = bifrost.IsStreamRequestType(req.RequestType)
 
-		if len(req.Params.ExtraParams) > 0 {
-			maps.Copy(metadata, req.Params.ExtraParams)
+	// Extract parameters based on request type
+	switch req.RequestType {
+	case schemas.TextCompletionRequest:
+		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
+			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
 		}
-	}
-
-	metadata["stream"] = plugin.isStreamingRequest(requestType)
-
-	if req.Params != nil && req.Params.Tools != nil {
-		if toolsJSON, err := json.Marshal(*req.Params.Tools); err != nil {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err))
-		} else {
-			toolHash := xxhash.Sum64(toolsJSON)
-			metadata["tools_hash"] = fmt.Sprintf("%x", toolHash)
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
+			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
+		}
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
+			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
+		}
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
+			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
+		}
+	case schemas.EmbeddingRequest:
+		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
+			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
+		}
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
+			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
 		}
 	}
 
 	switch {
-	case req.Input.TextCompletionInput != nil:
+	case req.TextCompletionRequest != nil:
 		metadataHash, err := getMetadataHash(metadata)
 		if err != nil {
 			return "", "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
 		}
 
-		return *req.Input.TextCompletionInput, metadataHash, nil
+		var textContent string
+		if req.TextCompletionRequest.Input.Prompt != nil {
+			textContent = normalizeText(*req.TextCompletionRequest.Input.Prompt)
+		} else if len(req.TextCompletionRequest.Input.PromptArray) > 0 {
+			textContent = normalizeText(strings.Join(req.TextCompletionRequest.Input.PromptArray, " "))
+		}
+		return textContent, metadataHash, nil
 
-	case req.Input.ChatCompletionInput != nil:
-		reqInput := plugin.getInputForCaching(req)
+	case req.ChatRequest != nil:
+		reqInput, ok := plugin.getInputForCaching(req).([]schemas.ChatMessage)
+		if !ok {
+			return "", "", fmt.Errorf("failed to cast request input to chat messages")
+		}
 
 		// Serialize chat messages for embedding
 		var textParts []string
-		for _, msg := range *reqInput.ChatCompletionInput {
+		for _, msg := range reqInput {
 			// Extract content as string
 			var content string
 			if msg.Content.ContentStr != nil {
@@ -193,10 +188,10 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 				var blockTexts []string
 				for _, block := range *msg.Content.ContentBlocks {
 					if block.Text != nil {
-						blockTexts = append(blockTexts, *block.Text)
+						blockTexts = append(blockTexts, normalizeText(*block.Text))
 					}
-					if block.ImageURL != nil && block.ImageURL.URL != "" {
-						attachments = append(attachments, block.ImageURL.URL)
+					if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
+						attachments = append(attachments, block.ImageURLStruct.URL)
 					}
 				}
 				content = strings.Join(blockTexts, " ")
@@ -222,10 +217,60 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 
 		return strings.Join(textParts, "\n"), metadataHash, nil
 
-	case req.Input.SpeechInput != nil:
-		if req.Input.SpeechInput.Input != "" {
-			if req.Input.SpeechInput.VoiceConfig.Voice != nil {
-				metadata["voice"] = *req.Input.SpeechInput.VoiceConfig.Voice
+	case req.ResponsesRequest != nil:
+		reqInput, ok := plugin.getInputForCaching(req).([]schemas.ResponsesMessage)
+		if !ok {
+			return "", "", fmt.Errorf("failed to cast request input to responses messages")
+		}
+
+		// Serialize chat messages for embedding
+		var textParts []string
+		for _, msg := range reqInput {
+			// Extract content as string
+			var content string
+			if msg.Content.ContentStr != nil {
+				content = normalizeText(*msg.Content.ContentStr)
+			} else if msg.Content.ContentBlocks != nil {
+				// For content blocks, extract text parts
+				var blockTexts []string
+				for _, block := range *msg.Content.ContentBlocks {
+					if block.Text != nil {
+						blockTexts = append(blockTexts, normalizeText(*block.Text))
+					}
+					if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+						attachments = append(attachments, *block.ResponsesInputMessageContentBlockImage.ImageURL)
+					}
+					if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileURL != nil {
+						attachments = append(attachments, *block.ResponsesInputMessageContentBlockFile.FileURL)
+					}
+				}
+				content = strings.Join(blockTexts, " ")
+			}
+
+			if content != "" {
+				textParts = append(textParts, fmt.Sprintf("%s: %s", msg.Role, content))
+			}
+		}
+
+		if len(textParts) == 0 {
+			return "", "", fmt.Errorf("no text content found in chat messages")
+		}
+
+		if len(attachments) > 0 {
+			metadata["attachments"] = attachments
+		}
+
+		metadataHash, err := getMetadataHash(metadata)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
+		}
+
+		return strings.Join(textParts, "\n"), metadataHash, nil
+
+	case req.SpeechRequest != nil:
+		if req.SpeechRequest.Input.Input != "" {
+			if req.SpeechRequest.Params.VoiceConfig.Voice != nil {
+				metadata["voice"] = *req.SpeechRequest.Params.VoiceConfig.Voice
 			}
 
 			metadataHash, err := getMetadataHash(metadata)
@@ -233,20 +278,20 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 				return "", "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
 			}
 
-			return req.Input.SpeechInput.Input, metadataHash, nil
+			return req.SpeechRequest.Input.Input, metadataHash, nil
 		}
 		return "", "", fmt.Errorf("no input text found in speech request")
 
-	case req.Input.EmbeddingInput != nil:
+	case req.EmbeddingRequest != nil:
 		metadataHash, err := getMetadataHash(metadata)
 		if err != nil {
 			return "", "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
 		}
 
-		texts := req.Input.EmbeddingInput.Texts
+		texts := req.EmbeddingRequest.Input.Texts
 
-		if len(texts) == 0 && req.Input.EmbeddingInput.Text != nil {
-			texts = []string{*req.Input.EmbeddingInput.Text}
+		if len(texts) == 0 && req.EmbeddingRequest.Input.Text != nil {
+			texts = []string{*req.EmbeddingRequest.Input.Text}
 		}
 
 		var text string
@@ -256,7 +301,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest, reque
 
 		return strings.TrimSpace(text), metadataHash, nil
 
-	case req.Input.TranscriptionInput != nil:
+	case req.TranscriptionRequest != nil:
 		// Skip semantic caching for transcription requests
 		return "", "", fmt.Errorf("transcription requests are not supported for semantic caching")
 
@@ -271,13 +316,6 @@ func getMetadataHash(metadata map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
 	}
 	return fmt.Sprintf("%x", xxhash.Sum64(metadataJSON)), nil
-}
-
-// isStreamingRequest checks if the request is a streaming request
-func (plugin *Plugin) isStreamingRequest(requestType schemas.RequestType) bool {
-	return requestType == schemas.ChatCompletionStreamRequest ||
-		requestType == schemas.SpeechStreamRequest ||
-		requestType == schemas.TranscriptionStreamRequest
 }
 
 // buildUnifiedMetadata constructs the unified metadata structure for VectorEntry
@@ -381,23 +419,25 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 
 // getInputForCaching returns a normalized and sanitized copy of req.Input for hashing/embedding.
 // It applies text normalization (lowercase + trim) and optionally removes system messages.
-func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.RequestInput {
-	reqInput := req.Input
-
-	// Handle text completion normalization
-	if reqInput.TextCompletionInput != nil {
-		normalizedText := normalizeText(*reqInput.TextCompletionInput)
-		reqInput.TextCompletionInput = &normalizedText
-	}
-
-	// Handle chat completion normalization
-	if reqInput.ChatCompletionInput != nil {
-		originalMessages := *reqInput.ChatCompletionInput
-		normalizedMessages := make([]schemas.BifrostMessage, 0, len(originalMessages))
+func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{} {
+	switch req.RequestType {
+	case schemas.TextCompletionRequest:
+		if req.TextCompletionRequest.Input.Prompt != nil {
+			normalizedText := normalizeText(*req.TextCompletionRequest.Input.Prompt)
+			req.TextCompletionRequest.Input.Prompt = &normalizedText
+		} else if len(req.TextCompletionRequest.Input.PromptArray) > 0 {
+			for i, prompt := range req.TextCompletionRequest.Input.PromptArray {
+				req.TextCompletionRequest.Input.PromptArray[i] = normalizeText(prompt)
+			}
+		}
+		return req.TextCompletionRequest.Input
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		originalMessages := req.ChatRequest.Input
+		normalizedMessages := make([]schemas.ChatMessage, 0, len(originalMessages))
 
 		for _, msg := range originalMessages {
 			// Skip system messages if configured to exclude them
-			if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && msg.Role == schemas.ModelChatMessageRoleSystem {
+			if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && msg.Role == schemas.ChatMessageRoleSystem {
 				continue
 			}
 
@@ -410,7 +450,7 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.R
 				normalizedMsg.Content.ContentStr = &normalizedContent
 			} else if msg.Content.ContentBlocks != nil {
 				// Create a copy of content blocks with normalized text
-				normalizedBlocks := make([]schemas.ContentBlock, len(*msg.Content.ContentBlocks))
+				normalizedBlocks := make([]schemas.ChatContentBlock, len(*msg.Content.ContentBlocks))
 				for i, block := range *msg.Content.ContentBlocks {
 					normalizedBlocks[i] = block
 					if block.Text != nil {
@@ -423,16 +463,45 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) *schemas.R
 
 			normalizedMessages = append(normalizedMessages, normalizedMsg)
 		}
+		return normalizedMessages
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		originalMessages := req.ResponsesRequest.Input
+		normalizedMessages := make([]schemas.ResponsesMessage, 0, len(originalMessages))
 
-		reqInput.ChatCompletionInput = &normalizedMessages
+		for _, msg := range originalMessages {
+			// Skip system messages if configured to exclude them
+			if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
+				continue
+			}
+
+			// Create a copy of the message with normalized content
+			normalizedMsg := msg
+
+			// Normalize message content
+			if msg.Content.ContentStr != nil {
+				normalizedContent := normalizeText(*msg.Content.ContentStr)
+				normalizedMsg.Content.ContentStr = &normalizedContent
+			} else if msg.Content.ContentBlocks != nil {
+				// Create a copy of content blocks with normalized text
+				normalizedBlocks := make([]schemas.ResponsesMessageContentBlock, len(*msg.Content.ContentBlocks))
+				for i, block := range *msg.Content.ContentBlocks {
+					normalizedBlocks[i] = block
+					if block.Text != nil {
+						normalizedText := normalizeText(*block.Text)
+						normalizedBlocks[i].Text = &normalizedText
+					}
+				}
+				normalizedMsg.Content.ContentBlocks = &normalizedBlocks
+			}
+
+			normalizedMessages = append(normalizedMessages, normalizedMsg)
+		}
+		return normalizedMessages
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		return normalizeText(req.SpeechRequest.Input.Input)
+	default:
+		return nil
 	}
-
-	if reqInput.SpeechInput != nil {
-		normalizedInput := normalizeText(reqInput.SpeechInput.Input)
-		reqInput.SpeechInput.Input = normalizedInput
-	}
-
-	return &reqInput
 }
 
 // removeField removes the first occurrence of target from the slice.
@@ -446,12 +515,173 @@ func removeField(arr []string, target string) []string {
 	return arr // unchanged if target not found
 }
 
-// isConversationHistoryThresholdExceeded checks if the conversation history threshold is exceeded
+// extractChatParametersToMetadata extracts Chat API parameters into metadata map
+func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParameters, metadata map[string]interface{}) {
+	if params.ToolChoice != nil {
+		if params.ToolChoice.ChatToolChoiceStr != nil {
+			metadata["tool_choice"] = *params.ToolChoice.ChatToolChoiceStr
+		} else if params.ToolChoice.ChatToolChoiceStruct != nil && params.ToolChoice.ChatToolChoiceStruct.Function.Name != "" {
+			metadata["tool_choice"] = params.ToolChoice.ChatToolChoiceStruct.Function.Name
+		}
+	}
+	if params.Temperature != nil {
+		metadata["temperature"] = *params.Temperature
+	}
+	if params.TopP != nil {
+		metadata["top_p"] = *params.TopP
+	}
+	if params.MaxCompletionTokens != nil {
+		metadata["max_tokens"] = *params.MaxCompletionTokens
+	}
+	if params.Stop != nil {
+		metadata["stop_sequences"] = *params.Stop
+	}
+	if params.PresencePenalty != nil {
+		metadata["presence_penalty"] = *params.PresencePenalty
+	}
+	if params.FrequencyPenalty != nil {
+		metadata["frequency_penalty"] = *params.FrequencyPenalty
+	}
+	if params.ParallelToolCalls != nil {
+		metadata["parallel_tool_calls"] = *params.ParallelToolCalls
+	}
+	if params.User != nil {
+		metadata["user"] = *params.User
+	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+	if len(params.Tools) > 0 {
+		if toolsJSON, err := json.Marshal(params.Tools); err != nil {
+			plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err))
+		} else {
+			toolHash := xxhash.Sum64(toolsJSON)
+			metadata["tools_hash"] = fmt.Sprintf("%x", toolHash)
+		}
+	}
+}
+
+// extractResponsesParametersToMetadata extracts Responses API parameters into metadata map
+func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.ResponsesParameters, metadata map[string]interface{}) {
+	if params.ToolChoice != nil {
+		if params.ToolChoice.ResponsesToolChoiceStr != nil {
+			metadata["tool_choice"] = *params.ToolChoice.ResponsesToolChoiceStr
+		} else if params.ToolChoice.ResponsesToolChoiceStruct != nil && params.ToolChoice.ResponsesToolChoiceStruct.Name != nil {
+			metadata["tool_choice"] = *params.ToolChoice.ResponsesToolChoiceStruct.Name
+		}
+	}
+	if params.Temperature != nil {
+		metadata["temperature"] = *params.Temperature
+	}
+	if params.TopP != nil {
+		metadata["top_p"] = *params.TopP
+	}
+	if params.MaxOutputTokens != nil {
+		metadata["max_tokens"] = *params.MaxOutputTokens
+	}
+	if params.ParallelToolCalls != nil {
+		metadata["parallel_tool_calls"] = *params.ParallelToolCalls
+	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+	if len(params.Tools) > 0 {
+		if toolsJSON, err := json.Marshal(params.Tools); err != nil {
+			plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err))
+		} else {
+			toolHash := xxhash.Sum64(toolsJSON)
+			metadata["tools_hash"] = fmt.Sprintf("%x", toolHash)
+		}
+	}
+}
+
+// extractTextCompletionParametersToMetadata extracts Text Completion parameters into metadata map
+func (plugin *Plugin) extractTextCompletionParametersToMetadata(params *schemas.TextCompletionParameters, metadata map[string]interface{}) {
+	if params.Temperature != nil {
+		metadata["temperature"] = *params.Temperature
+	}
+	if params.TopP != nil {
+		metadata["top_p"] = *params.TopP
+	}
+	if params.MaxTokens != nil {
+		metadata["max_tokens"] = *params.MaxTokens
+	}
+	if params.Stop != nil {
+		metadata["stop_sequences"] = *params.Stop
+	}
+	if params.PresencePenalty != nil {
+		metadata["presence_penalty"] = *params.PresencePenalty
+	}
+	if params.FrequencyPenalty != nil {
+		metadata["frequency_penalty"] = *params.FrequencyPenalty
+	}
+	if params.User != nil {
+		metadata["user"] = *params.User
+	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+}
+
+// extractSpeechParametersToMetadata extracts Speech parameters into metadata map
+func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechParameters, metadata map[string]interface{}) {
+	if params.Speed != nil {
+		metadata["speed"] = *params.Speed
+	}
+	if params.ResponseFormat != "" {
+		metadata["response_format"] = params.ResponseFormat
+	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+}
+
+// extractEmbeddingParametersToMetadata extracts Embedding parameters into metadata map
+func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
+	if params.EncodingFormat != nil {
+		metadata["encoding_format"] = *params.EncodingFormat
+	}
+	if params.Dimensions != nil {
+		metadata["dimensions"] = *params.Dimensions
+	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+}
+
+// extractTranscriptionParametersToMetadata extracts Transcription parameters into metadata map
+func (plugin *Plugin) extractTranscriptionParametersToMetadata(params *schemas.TranscriptionParameters, metadata map[string]interface{}) {
+	if params.Language != nil {
+		metadata["language"] = *params.Language
+	}
+	if params.ResponseFormat != nil {
+		metadata["response_format"] = *params.ResponseFormat
+	}
+	if params.Prompt != nil {
+		metadata["prompt"] = *params.Prompt
+	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+}
+
 func (plugin *Plugin) isConversationHistoryThresholdExceeded(req *schemas.BifrostRequest) bool {
 	switch {
-	case req.Input.ChatCompletionInput != nil:
-		input := plugin.getInputForCaching(req)
-		if len(*input.ChatCompletionInput) > plugin.config.ConversationHistoryThreshold {
+	case req.ChatRequest.Input != nil:
+		input, ok := plugin.getInputForCaching(req).([]schemas.ChatMessage)
+		if !ok {
+			return false
+		}
+		if len(input) > plugin.config.ConversationHistoryThreshold {
+			return true
+		}
+		return false
+	case req.ResponsesRequest.Input != nil:
+		input, ok := plugin.getInputForCaching(req).([]schemas.ResponsesMessage)
+		if !ok {
+			return false
+		}
+		if len(input) > plugin.config.ConversationHistoryThreshold {
 			return true
 		}
 		return false

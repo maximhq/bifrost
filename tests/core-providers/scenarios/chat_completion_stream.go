@@ -22,7 +22,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	}
 
 	t.Run("ChatCompletionStream", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateBasicChatMessage("Tell me a short story about a robot learning to paint. Keep it under 200 words."),
 		}
 
@@ -191,7 +191,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	// Test streaming with tool calls if supported
 	if testConfig.Scenarios.ToolCalls {
 		t.Run("ChatCompletionStreamWithTools", func(t *testing.T) {
-			messages := []schemas.BifrostMessage{
+			messages := []schemas.ChatMessage{
 				CreateBasicChatMessage("What's the weather like in San Francisco? Please use the get_weather function."),
 			}
 

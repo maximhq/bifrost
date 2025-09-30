@@ -263,6 +263,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 							Value:            dbKey.Value,
 							Models:           dbKey.Models,
 							Weight:           dbKey.Weight,
+							OpenAIKeyConfig:  dbKey.OpenAIKeyConfig,
 							AzureKeyConfig:   dbKey.AzureKeyConfig,
 							VertexKeyConfig:  dbKey.VertexKeyConfig,
 							BedrockKeyConfig: dbKey.BedrockKeyConfig,
@@ -500,7 +501,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 					// Process Azure key config if present
 					if key.AzureKeyConfig != nil {
-						if err := config.processAzureKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
+						if err := config.processAzureKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
 							config.cleanupEnvKeys(provider, "", newEnvKeys)
 							logger.Warn("failed to process Azure key config env vars for %s: %v", provider, err)
 							continue
@@ -509,7 +510,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 					// Process Vertex key config if present
 					if key.VertexKeyConfig != nil {
-						if err := config.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
+						if err := config.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
 							config.cleanupEnvKeys(provider, "", newEnvKeys)
 							logger.Warn("failed to process Vertex key config env vars for %s: %v", provider, err)
 							continue
@@ -518,7 +519,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 					// Process Bedrock key config if present
 					if key.BedrockKeyConfig != nil {
-						if err := config.processBedrockKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
+						if err := config.processBedrockKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
 							config.cleanupEnvKeys(provider, "", newEnvKeys)
 							logger.Warn("failed to process Bedrock key config env vars for %s: %v", provider, err)
 							continue
@@ -880,9 +881,10 @@ func (s *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 	redactedConfig.Keys = make([]schemas.Key, len(config.Keys))
 	for i, key := range config.Keys {
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:     key.ID,
-			Models: key.Models, // Copy slice reference - read-only so safe
-			Weight: key.Weight,
+			ID:              key.ID,
+			Models:          key.Models, // Copy slice reference - read-only so safe
+			Weight:          key.Weight,
+			OpenAIKeyConfig: key.OpenAIKeyConfig,
 		}
 
 		// Redact API key value
@@ -1069,7 +1071,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 
 		// Process Azure key config if present
 		if key.AzureKeyConfig != nil {
-			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Azure key config env vars: %w", err)
 			}
@@ -1077,7 +1079,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 
 		// Process Vertex key config if present
 		if key.VertexKeyConfig != nil {
-			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Vertex key config env vars: %w", err)
 			}
@@ -1085,7 +1087,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 
 		// Process Bedrock key config if present
 		if key.BedrockKeyConfig != nil {
-			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Bedrock key config env vars: %w", err)
 			}
@@ -1174,7 +1176,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 
 		// Process Azure key config if present
 		if key.AzureKeyConfig != nil {
-			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Azure key config env vars: %w", err)
 			}
@@ -1182,7 +1184,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 
 		// Process Vertex key config if present
 		if key.VertexKeyConfig != nil {
-			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Vertex key config env vars: %w", err)
 			}
@@ -1190,7 +1192,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 
 		// Process Bedrock key config if present
 		if key.BedrockKeyConfig != nil {
-			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Bedrock key config env vars: %w", err)
 			}
@@ -1837,7 +1839,7 @@ func (s *Config) autoDetectProviders() {
 }
 
 // processAzureKeyConfigEnvVars processes environment variables in Azure key configuration
-func (s *Config) processAzureKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, keyIndex int, newEnvKeys map[string]struct{}) error {
+func (s *Config) processAzureKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, newEnvKeys map[string]struct{}) error {
 	azureConfig := key.AzureKeyConfig
 
 	// Process Endpoint
@@ -1880,7 +1882,7 @@ func (s *Config) processAzureKeyConfigEnvVars(key *schemas.Key, provider schemas
 }
 
 // processVertexKeyConfigEnvVars processes environment variables in Vertex key configuration
-func (s *Config) processVertexKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, keyIndex int, newEnvKeys map[string]struct{}) error {
+func (s *Config) processVertexKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, newEnvKeys map[string]struct{}) error {
 	vertexConfig := key.VertexKeyConfig
 
 	// Process ProjectID
@@ -1938,7 +1940,7 @@ func (s *Config) processVertexKeyConfigEnvVars(key *schemas.Key, provider schema
 }
 
 // processBedrockKeyConfigEnvVars processes environment variables in Bedrock key configuration
-func (s *Config) processBedrockKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, keyIndex int, newEnvKeys map[string]struct{}) error {
+func (s *Config) processBedrockKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, newEnvKeys map[string]struct{}) error {
 	bedrockConfig := key.BedrockKeyConfig
 
 	// Process AccessKey
