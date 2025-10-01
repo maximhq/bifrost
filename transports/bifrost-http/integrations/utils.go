@@ -578,6 +578,23 @@ func isAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
 	return true
 }
 
+// isAnthropicRequest checks if the request is targeting an Anthropic endpoint.
+// This is used to determine if we need to preserve the raw request for potential passthrough.
+func isAnthropicRequest(ctx *fasthttp.RequestCtx) bool {
+	path := string(ctx.Path())
+	return strings.Contains(path, "/anthropic/") || strings.Contains(path, "/v1/messages")
+}
+
+// extractHeaders converts fasthttp headers to a map for passthrough mode.
+// This preserves all original headers for the anthropic_passthrough provider.
+func extractHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	headers := make(map[string]string)
+	for key, value := range ctx.Request.Header.All() {
+		headers[string(key)] = string(value)
+	}
+	return headers
+}
+
 // createHandler creates a fasthttp handler for the given route configuration.
 // The handler follows this flow:
 // 1. Parse JSON request body into the configured request type (for methods that expect bodies)
@@ -594,8 +611,19 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		method := string(ctx.Method())
 
+		var body []byte
+		var originalHeaders map[string]string
+
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodDelete {
+
+			body = ctx.Request.Body()
+
+			// If this is an Anthropic request with OAuth, preserve headers for passthrough
+			if isAnthropicRequest(ctx) && !isAPIKeyAuth(ctx) {
+				originalHeaders = extractHeaders(ctx)
+			}
+
 			if config.RequestParser != nil {
 				// Use custom parser (e.g., for multipart/form-data)
 				if err := config.RequestParser(ctx, req); err != nil {
@@ -604,7 +632,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				}
 			} else {
 				// Use default JSON parsing
-				body := ctx.Request.Body()
 				if len(body) > 0 {
 					if err := json.Unmarshal(body, req); err != nil {
 						g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
@@ -660,6 +687,13 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			key, ok := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)).(schemas.Key)
 			if ok {
 				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+			}
+		}
+
+		if bifrostReq.Provider == schemas.AnthropicPassthrough && len(body) > 0 {
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyOriginalRequest, json.RawMessage(body))
+			if originalHeaders != nil {
+				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyOriginalHeaders, originalHeaders)
 			}
 		}
 
