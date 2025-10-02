@@ -3,11 +3,12 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { ModelPlaceholders } from "@/lib/constants/config";
 import { isRedacted } from "@/lib/utils/validation";
 import { Info } from "lucide-react";
 import { Control, UseFormReturn } from "react-hook-form";
@@ -18,27 +19,18 @@ interface Props {
 	form: UseFormReturn<any>;
 }
 
-// Model placeholders based on provider type
-const MODEL_PLACEHOLDERS = {
-	default: "e.g. gpt-4, gpt-3.5-turbo. Leave blank for all models.",
-	openai: "e.g. gpt-4, gpt-3.5-turbo, gpt-4-turbo, gpt-4o",
-	azure: "e.g. gpt-4, gpt-3.5-turbo (must match deployment mappings)",
-	bedrock: "e.g. claude-v2, titan-text-express-v1",
-	vertex: "e.g. gemini-pro, text-bison, chat-bison",
-};
-
 export function ApiKeyFormFragment({ control, providerName, form }: Props) {
-	const isOpenAI = providerName === "openai";
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
 	const modelsPlaceholder = isAzure
-		? MODEL_PLACEHOLDERS.azure
+		? ModelPlaceholders.azure
 		: isBedrock
-			? MODEL_PLACEHOLDERS.bedrock
+			? ModelPlaceholders.bedrock
 			: isVertex
-				? MODEL_PLACEHOLDERS.vertex
-				: MODEL_PLACEHOLDERS.openai;
+				? ModelPlaceholders.vertex
+				: ModelPlaceholders.openai;
+	const isOpenAI = providerName === "openai";
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">

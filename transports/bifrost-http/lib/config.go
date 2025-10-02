@@ -134,7 +134,8 @@ type Config struct {
 	EnvKeys map[string][]configstore.EnvKeyInfo
 
 	// Plugin configs
-	Plugins []*schemas.PluginConfig
+	Plugins       []*schemas.PluginConfig
+	LoadedPlugins map[string]bool
 
 	// Pricing manager
 	PricingManager *pricing.PricingManager
@@ -223,7 +224,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to get logs store config: %w", err)
 			}
-			logger.Debug("log store config from DB: %v", logStoreConfig)
 			if logStoreConfig == nil {
 				logStoreConfig = &logstore.Config{
 					Enabled: true,
@@ -238,6 +238,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize logs store: %v", err)
 			}
+			logger.Info("logs store initialized.")
 			err = config.ConfigStore.UpdateLogsStoreConfig(ctx, logStoreConfig)
 			if err != nil {
 				return nil, fmt.Errorf("failed to update logs store config: %w", err)
@@ -603,7 +604,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 		if config.ConfigStore != nil {
 			logger.Debug("updating governance config in store")
-			if err := config.ConfigStore.ExecuteTransaction(ctx,func(tx *gorm.DB) error {
+			if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 				// Create budgets
 				for _, budget := range config.GovernanceConfig.Budgets {
 					if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
@@ -1474,7 +1475,7 @@ func (s *Config) EditMCPClientTools(ctx context.Context, name string, toolsToAdd
 		if err := s.ConfigStore.UpdateMCPConfig(ctx, s.MCPConfig, s.EnvKeys); err != nil {
 			return fmt.Errorf("failed to update MCP config in store: %w", err)
 		}
-		if err := s.ConfigStore.UpdateEnvKeys(ctx, 	s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateEnvKeys(ctx, s.EnvKeys); err != nil {
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}

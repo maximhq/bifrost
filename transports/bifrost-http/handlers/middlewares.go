@@ -1,6 +1,16 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"slices"
+	"strings"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -32,6 +42,128 @@ func CorsMiddleware(config *lib.Config) BifrostHTTPMiddleware {
 				}
 				return
 			}
+			next(ctx)
+		}
+	}
+}
+
+func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !config.LoadedPlugins[governance.PluginName] {
+				next(ctx)
+				return
+			}
+			var virtualKeyValue string
+			// Extract x-bf-vk header
+			ctx.Request.Header.All()(func(key, value []byte) bool {
+				if strings.ToLower(string(key)) == "x-bf-vk" {
+					virtualKeyValue = string(value)
+				}
+				return true
+			})
+			// If no virtual key, continue to next handler
+			if virtualKeyValue == "" {
+				next(ctx)
+				return
+			}
+			// Only process POST requests with a body
+			if string(ctx.Method()) != "POST" {
+				next(ctx)
+				return
+			}
+			// Get the request body
+			body := ctx.Request.Body()
+			if len(body) == 0 {
+				next(ctx)
+				return
+			}
+			// Parse the request body to extract the model field
+			var requestBody map[string]interface{}
+			if err := json.Unmarshal(body, &requestBody); err != nil {
+				// If we can't parse as JSON, continue without modification
+				next(ctx)
+				return
+			}
+			// Check if the request has a model field
+			modelValue, hasModel := requestBody["model"]
+			if !hasModel {
+				next(ctx)
+				return
+			}
+			modelStr, ok := modelValue.(string)
+			if !ok || modelStr == "" {
+				next(ctx)
+				return
+			}
+			// Check if model already has provider prefix (contains "/")
+			if strings.Contains(modelStr, "/") {
+				next(ctx)
+				return
+			}
+			opCtx := context.Background()
+			virtualKey, err := config.ConfigStore.GetVirtualKeyByValue(opCtx, virtualKeyValue)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get virtual key: %v", err), logger)
+				return
+			}
+			if virtualKey == nil {
+				SendError(ctx, fasthttp.StatusBadRequest, "Invalid virtual key", logger)
+				return
+			}
+			if !virtualKey.IsActive {
+				next(ctx)
+				return
+			}
+			// Get provider configs for this virtual key
+			providerConfigs, err := config.ConfigStore.GetVirtualKeyProviderConfigs(opCtx, virtualKey.ID)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get virtual key provider configs: %v", err), logger)
+				return
+			}
+			if len(providerConfigs) == 0 {
+				// No provider configs, continue without modification
+				next(ctx)
+				return
+			}
+			allowedProviderConfigs := make([]configstore.TableVirtualKeyProviderConfig, 0)
+			for _, config := range providerConfigs {
+				if len(config.AllowedModels) == 0 || slices.Contains(config.AllowedModels, modelStr) {
+					allowedProviderConfigs = append(allowedProviderConfigs, config)
+				}
+			}
+			if len(allowedProviderConfigs) == 0 {
+				// No allowed provider configs, continue without modification
+				next(ctx)
+				return
+			}
+			// Weighted random selection from allowed providers
+			totalWeight := 0.0
+			for _, config := range allowedProviderConfigs {
+				totalWeight += config.Weight
+			}
+			// Generate random number between 0 and totalWeight
+			randomValue := rand.Float64() * totalWeight
+			// Select provider based on weighted random selection
+			var selectedProvider schemas.ModelProvider
+			currentWeight := 0.0
+			for _, config := range allowedProviderConfigs {
+				currentWeight += config.Weight
+				if randomValue <= currentWeight {
+					selectedProvider = schemas.ModelProvider(config.Provider)
+					break
+				}
+			}
+			// Update the model field in the request body
+			requestBody["model"] = string(selectedProvider) + "/" + modelStr
+			// Marshal the updated request body back to JSON
+			updatedBody, err := json.Marshal(requestBody)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to marshal updated request body: %v", err), logger)
+				return
+			}
+			// Replace the request body with the updated one
+			ctx.Request.SetBody(updatedBody)
 			next(ctx)
 		}
 	}

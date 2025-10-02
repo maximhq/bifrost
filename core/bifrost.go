@@ -1768,7 +1768,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 	}
 
 	if len(keys) == 0 {
-		return schemas.Key{}, fmt.Errorf("no keys found for provider: %v", providerKey)
+		return schemas.Key{}, fmt.Errorf("no keys found for provider: %v and model: %s", providerKey, model)
 	}
 
 	// filter out keys which dont support the model, if the key has no models, it is supported for all models

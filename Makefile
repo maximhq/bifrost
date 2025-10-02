@@ -3,7 +3,7 @@
 # Variables
 HOST ?= localhost
 PORT ?= 8080
-APP_DIR ?=
+APP_DIR ?= 
 PROMETHEUS_LABELS ?=
 LOG_STYLE ?= json
 LOG_LEVEL ?= info

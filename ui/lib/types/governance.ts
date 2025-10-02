@@ -52,8 +52,7 @@ export interface VirtualKey {
 	name: string;
 	value: string; // The actual key value
 	description?: string;
-	allowed_models?: string[];
-	allowed_providers?: string[];
+	provider_configs?: VirtualKeyProviderConfig[];
 	team_id?: string;
 	customer_id?: string;
 	budget_id?: string;
@@ -67,6 +66,13 @@ export interface VirtualKey {
 	budget?: Budget;
 	rate_limit?: RateLimit;
 	keys?: DBKey[]; // Associated database keys
+}
+
+export interface VirtualKeyProviderConfig {
+	id?: number;
+	provider: string;
+	weight: number;
+	allowed_models: string[];
 }
 
 export interface UsageStats {
@@ -83,8 +89,7 @@ export interface UsageStats {
 export interface CreateVirtualKeyRequest {
 	name: string;
 	description?: string;
-	allowed_models?: string[];
-	allowed_providers?: string[];
+	provider_configs?: VirtualKeyProviderConfig[];
 	team_id?: string;
 	customer_id?: string;
 	budget?: CreateBudgetRequest;
@@ -95,8 +100,7 @@ export interface CreateVirtualKeyRequest {
 
 export interface UpdateVirtualKeyRequest {
 	description?: string;
-	allowed_models?: string[];
-	allowed_providers?: string[];
+	provider_configs?: VirtualKeyProviderConfig[];
 	team_id?: string;
 	customer_id?: string;
 	budget?: UpdateBudgetRequest;

@@ -633,13 +633,12 @@ type TableTeam struct {
 
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type TableVirtualKey struct {
-	ID               string   `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name             string   `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
-	Description      string   `gorm:"type:text" json:"description,omitempty"`
-	Value            string   `gorm:"uniqueIndex:idx_virtual_key_value;type:varchar(255);not null" json:"value"` // The virtual key value
-	IsActive         bool     `gorm:"default:true" json:"is_active"`
-	AllowedModels    []string `gorm:"type:text;serializer:json" json:"allowed_models"`    // Empty means all models allowed
-	AllowedProviders []string `gorm:"type:text;serializer:json" json:"allowed_providers"` // Empty means all providers allowed
+	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
+	Description     string                          `gorm:"type:text" json:"description,omitempty"`
+	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:varchar(255);not null" json:"value"` // The virtual key value
+	IsActive        bool                            `gorm:"default:true" json:"is_active"`
+	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means all providers allowed
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
 	TeamID      *string    `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
@@ -656,6 +655,15 @@ type TableVirtualKey struct {
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
+}
+
+// TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
+type TableVirtualKeyProviderConfig struct {
+	ID            uint     `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID  string   `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider      string   `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight        float64  `gorm:"default:1.0" json:"weight"`
+	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // Empty means all models allowed
 }
 
 // TableModelPricing represents pricing information for AI models
@@ -692,11 +700,14 @@ type TableModelPricing struct {
 }
 
 // Table names
-func (TableBudget) TableName() string       { return "governance_budgets" }
-func (TableRateLimit) TableName() string    { return "governance_rate_limits" }
-func (TableCustomer) TableName() string     { return "governance_customers" }
-func (TableTeam) TableName() string         { return "governance_teams" }
-func (TableVirtualKey) TableName() string   { return "governance_virtual_keys" }
+func (TableBudget) TableName() string     { return "governance_budgets" }
+func (TableRateLimit) TableName() string  { return "governance_rate_limits" }
+func (TableCustomer) TableName() string   { return "governance_customers" }
+func (TableTeam) TableName() string       { return "governance_teams" }
+func (TableVirtualKey) TableName() string { return "governance_virtual_keys" }
+func (TableVirtualKeyProviderConfig) TableName() string {
+	return "governance_virtual_key_provider_configs"
+}
 func (TableConfig) TableName() string       { return "governance_config" }
 func (TableModelPricing) TableName() string { return "governance_model_pricing" }
 

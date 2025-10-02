@@ -19,6 +19,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddCustomProviderConfigJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVirtualKeyProviderConfigTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -237,6 +240,38 @@ func migrationAddCustomProviderConfigJSONColumn(ctx context.Context, db *gorm.DB
 				if err := migrator.AddColumn(&TableProvider{}, "custom_provider_config_json"); err != nil {
 					return err
 				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "addvirtualkeyproviderconfig",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasTable(&TableVirtualKeyProviderConfig{}) {
+				if err := migrator.CreateTable(&TableVirtualKeyProviderConfig{}); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if err := migrator.DropTable(&TableVirtualKeyProviderConfig{}); err != nil {
+				return err
 			}
 			return nil
 		},

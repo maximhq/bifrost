@@ -914,6 +914,73 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 	return s.db.WithContext(ctx).Delete(&TableVirtualKey{}, "id = ?", id).Error
 }
 
+// GetVirtualKeyProviderConfigs retrieves all virtual key provider configs from the database.
+func (s *RDBConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]TableVirtualKeyProviderConfig, error) {
+	var virtualKey TableVirtualKey
+	if err := s.db.WithContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
+		return nil, err
+	}
+
+	if virtualKey.ID == "" {
+		return nil, nil
+	}
+
+	var providerConfigs []TableVirtualKeyProviderConfig
+	if err := s.db.WithContext(ctx).Where("virtual_key_id = ?", virtualKey.ID).Find(&providerConfigs).Error; err != nil {
+		return nil, err
+	}
+	return providerConfigs, nil
+}
+
+// CreateVirtualKeyProviderConfig creates a new virtual key provider config in the database.
+func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.WithContext(ctx).Create(virtualKeyProviderConfig).Error
+}
+
+// UpdateVirtualKeyProviderConfig updates a virtual key provider config in the database.
+func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.WithContext(ctx).Save(virtualKeyProviderConfig).Error
+}
+
+// DeleteVirtualKeyProviderConfig deletes a virtual key provider config from the database.
+func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.WithContext(ctx).Delete(&TableVirtualKeyProviderConfig{}, "id = ?", id).Error
+}
+
+// GetVirtualKeyByValue retrieves a virtual key by its value
+func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*TableVirtualKey, error) {
+	var virtualKey TableVirtualKey
+	if err := s.db.WithContext(ctx).Preload("Team").
+		Preload("Customer").
+		Preload("Budget").
+		Preload("RateLimit").
+		Preload("ProviderConfigs").
+		Preload("Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, key_id, models_json")
+		}).First(&virtualKey, "value = ?", value).Error; err != nil {
+		return nil, err
+	}
+	return &virtualKey, nil
+}
+
 // GetTeams retrieves all teams from the database.
 func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]TableTeam, error) {
 	// Preload relationships for complete information

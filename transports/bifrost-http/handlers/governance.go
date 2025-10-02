@@ -40,29 +40,38 @@ func NewGovernanceHandler(plugin *governance.GovernancePlugin, configStore confi
 
 // CreateVirtualKeyRequest represents the request body for creating a virtual key
 type CreateVirtualKeyRequest struct {
-	Name             string                  `json:"name" validate:"required"`
-	Description      string                  `json:"description,omitempty"`
-	AllowedModels    []string                `json:"allowed_models,omitempty"`    // Empty means all models allowed
-	AllowedProviders []string                `json:"allowed_providers,omitempty"` // Empty means all providers allowed
-	TeamID           *string                 `json:"team_id,omitempty"`           // Mutually exclusive with CustomerID
-	CustomerID       *string                 `json:"customer_id,omitempty"`       // Mutually exclusive with TeamID
-	Budget           *CreateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit        *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	KeyIDs           []string                `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
-	IsActive         *bool                   `json:"is_active,omitempty"`
+	Name            string   `json:"name" validate:"required"`
+	Description     string   `json:"description,omitempty"`
+	AllowedModels   []string `json:"allowed_models,omitempty"` // Empty means all models allowed
+	ProviderConfigs []struct {
+		Provider      string   `json:"provider" validate:"required"`
+		Weight        float64  `json:"weight,omitempty"`
+		AllowedModels []string `json:"allowed_models,omitempty"` // Empty means all models allowed
+	} `json:"provider_configs,omitempty"` // Empty means all providers allowed
+	TeamID     *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
+	CustomerID *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
+	Budget     *CreateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit  *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	KeyIDs     []string                `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
+	IsActive   *bool                   `json:"is_active,omitempty"`
 }
 
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
 type UpdateVirtualKeyRequest struct {
-	Description      *string                 `json:"description,omitempty"`
-	AllowedModels    []string               `json:"allowed_models,omitempty"`
-	AllowedProviders []string               `json:"allowed_providers,omitempty"`
-	TeamID           *string                 `json:"team_id,omitempty"`
-	CustomerID       *string                 `json:"customer_id,omitempty"`
-	Budget           *UpdateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
-	KeyIDs           []string               `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
-	IsActive         *bool                   `json:"is_active,omitempty"`
+	Description     *string  `json:"description,omitempty"`
+	AllowedModels   []string `json:"allowed_models,omitempty"`
+	ProviderConfigs []struct {
+		ID            *uint    `json:"id,omitempty"` // null for new entries
+		Provider      string   `json:"provider" validate:"required"`
+		Weight        float64  `json:"weight,omitempty"`
+		AllowedModels []string `json:"allowed_models,omitempty"` // Empty means all models allowed
+	} `json:"provider_configs,omitempty"`
+	TeamID     *string                 `json:"team_id,omitempty"`
+	CustomerID *string                 `json:"customer_id,omitempty"`
+	Budget     *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit  *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	KeyIDs     []string                `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
+	IsActive   *bool                   `json:"is_active,omitempty"`
 }
 
 // CreateBudgetRequest represents the request body for creating a budget
@@ -216,16 +225,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 
 		vk = configstore.TableVirtualKey{
-			ID:               uuid.NewString(),
-			Name:             req.Name,
-			Value:            uuid.NewString(),
-			Description:      req.Description,
-			AllowedModels:    req.AllowedModels,
-			AllowedProviders: req.AllowedProviders,
-			TeamID:           req.TeamID,
-			CustomerID:       req.CustomerID,
-			IsActive:         isActive,
-			Keys:             keys, // Set the keys for the many-to-many relationship
+			ID:          uuid.NewString(),
+			Name:        req.Name,
+			Value:       uuid.NewString(),
+			Description: req.Description,
+			TeamID:      req.TeamID,
+			CustomerID:  req.CustomerID,
+			IsActive:    isActive,
+			Keys:        keys, // Set the keys for the many-to-many relationship
 		}
 
 		if req.Budget != nil {
@@ -260,6 +267,19 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
+		}
+
+		if req.ProviderConfigs != nil {
+			for _, pc := range req.ProviderConfigs {
+				if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, &configstore.TableVirtualKeyProviderConfig{
+					VirtualKeyID:  vk.ID,
+					Provider:      pc.Provider,
+					Weight:        pc.Weight,
+					AllowedModels: pc.AllowedModels,
+				}, tx); err != nil {
+					return err
+				}
+			}
 		}
 
 		return nil
@@ -339,12 +359,6 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		// Update fields if provided
 		if req.Description != nil {
 			vk.Description = *req.Description
-		}
-		if req.AllowedModels != nil {
-			vk.AllowedModels = req.AllowedModels
-		}
-		if req.AllowedProviders != nil {
-			vk.AllowedProviders = req.AllowedProviders
 		}
 		if req.TeamID != nil {
 			vk.TeamID = req.TeamID
@@ -454,7 +468,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			var keys []configstore.TableKey
 			if len(req.KeyIDs) > 0 {
 				var err error
-				keys, err = h.configStore.GetKeysByIDs(ctx,req.KeyIDs)
+				keys, err = h.configStore.GetKeysByIDs(ctx, req.KeyIDs)
 				if err != nil {
 					return fmt.Errorf("failed to get keys by IDs: %w", err)
 				}
@@ -469,6 +483,59 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 		if err := h.configStore.UpdateVirtualKey(ctx, vk, tx); err != nil {
 			return err
+		}
+
+		if req.ProviderConfigs != nil {
+			// Get existing provider configs for comparison
+			var existingConfigs []configstore.TableVirtualKeyProviderConfig
+			if err := tx.Where("virtual_key_id = ?", vk.ID).Find(&existingConfigs).Error; err != nil {
+				return err
+			}
+
+			// Create maps for easier lookup
+			existingConfigsMap := make(map[uint]configstore.TableVirtualKeyProviderConfig)
+			for _, config := range existingConfigs {
+				existingConfigsMap[config.ID] = config
+			}
+
+			requestConfigsMap := make(map[uint]bool)
+
+			// Process new configs: create new ones and update existing ones
+			for _, pc := range req.ProviderConfigs {
+				if pc.ID == nil {
+					// Create new provider config
+					if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, &configstore.TableVirtualKeyProviderConfig{
+						VirtualKeyID:  vk.ID,
+						Provider:      pc.Provider,
+						Weight:        pc.Weight,
+						AllowedModels: pc.AllowedModels,
+					}, tx); err != nil {
+						return err
+					}
+				} else {
+					// Update existing provider config
+					existing, ok := existingConfigsMap[*pc.ID]
+					if !ok {
+						return fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)
+					}
+					requestConfigsMap[*pc.ID] = true
+					existing.Provider = pc.Provider
+					existing.Weight = pc.Weight
+					existing.AllowedModels = pc.AllowedModels
+					if err := h.configStore.UpdateVirtualKeyProviderConfig(ctx, &existing, tx); err != nil {
+						return err
+					}
+				}
+			}
+
+			// Delete provider configs that are not in the request
+			for id := range existingConfigsMap {
+				if !requestConfigsMap[id] {
+					if err := h.configStore.DeleteVirtualKeyProviderConfig(ctx, id, tx); err != nil {
+						return err
+					}
+				}
+			}
 		}
 
 		return nil
