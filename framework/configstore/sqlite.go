@@ -845,6 +845,7 @@ func (s *SQLiteConfigStore) GetVirtualKeys(ctx context.Context) ([]TableVirtualK
 		Preload("Customer").
 		Preload("Budget").
 		Preload("RateLimit").
+		Preload("ProviderConfigs").
 		Preload("Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, key_id, models_json")
 		}).Find(&virtualKeys).Error; err != nil {
@@ -861,9 +862,25 @@ func (s *SQLiteConfigStore) GetVirtualKey(ctx context.Context, id string) (*Tabl
 		Preload("Customer").
 		Preload("Budget").
 		Preload("RateLimit").
+		Preload("ProviderConfigs").
 		Preload("Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, key_id, models_json")
 		}).First(&virtualKey, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &virtualKey, nil
+}
+
+func (s *SQLiteConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*TableVirtualKey, error) {
+	var virtualKey TableVirtualKey
+	if err := s.db.WithContext(ctx).Preload("Team").
+		Preload("Customer").
+		Preload("Budget").
+		Preload("RateLimit").
+		Preload("ProviderConfigs").
+		Preload("Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, key_id, models_json")
+		}).First(&virtualKey, "value = ?", value).Error; err != nil {
 		return nil, err
 	}
 	return &virtualKey, nil
@@ -921,6 +938,53 @@ func (s *SQLiteConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *Ta
 	}
 
 	return nil
+}
+
+func (s *SQLiteConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]TableVirtualKeyProviderConfig, error) {
+	var virtualKey TableVirtualKey
+	if err := s.db.WithContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
+		return nil, err
+	}
+
+	if virtualKey.ID == "" {
+		return nil, nil
+	}
+
+	var providerConfigs []TableVirtualKeyProviderConfig
+	if err := s.db.WithContext(ctx).Where("virtual_key_id = ?", virtualKey.ID).Find(&providerConfigs).Error; err != nil {
+		return nil, err
+	}
+	return providerConfigs, nil
+}
+
+func (s *SQLiteConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.WithContext(ctx).Create(virtualKeyProviderConfig).Error
+}
+
+func (s *SQLiteConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.WithContext(ctx).Save(virtualKeyProviderConfig).Error
+}
+
+func (s *SQLiteConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	return txDB.WithContext(ctx).Delete(&TableVirtualKeyProviderConfig{}, "id = ?", id).Error
 }
 
 // GetKeysByIDs retrieves multiple keys by their IDs
@@ -1246,10 +1310,10 @@ func (s *SQLiteConfigStore) removeDuplicateKeysAndNullKeys(ctx context.Context) 
 // Close closes the SQLite config store.
 func (s *SQLiteConfigStore) Close(ctx context.Context) error {
 	sqlDB, err := s.db.DB()
-    if err != nil {
-        return err
-    }
-    return sqlDB.Close()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
 }
 
 // newSqliteConfigStore creates a new SQLite config store.

@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { MODEL_PLACEHOLDERS } from "@/lib/constants/config";
 import { isRedacted } from "@/lib/utils/validation";
 import { Info } from "lucide-react";
 import { Control, UseFormReturn } from "react-hook-form";
@@ -16,15 +17,6 @@ interface Props {
 	providerName: string;
 	form: UseFormReturn<any>;
 }
-
-// Model placeholders based on provider type
-const MODEL_PLACEHOLDERS = {
-	default: "e.g. gpt-4, gpt-3.5-turbo. Leave blank for all models.",
-	openai: "e.g. gpt-4, gpt-3.5-turbo, gpt-4-turbo, gpt-4o",
-	azure: "e.g. gpt-4, gpt-3.5-turbo (must match deployment mappings)",
-	bedrock: "e.g. claude-v2, titan-text-express-v1",
-	vertex: "e.g. gemini-pro, text-bison, chat-bison",
-};
 
 export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isBedrock = providerName === "bedrock";

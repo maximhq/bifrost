@@ -1,19 +1,19 @@
 // Known provider names array - centralized definition
 export const KnownProvidersNames = [
-	"openai",
 	"anthropic",
 	"azure",
 	"bedrock",
+	"cerebras",
 	"cohere",
-	"vertex",
+	"gemini",
+	"groq",
 	"mistral",
 	"ollama",
-	"groq",
+	"openai",
+	"openrouter",
 	"parasail",
 	"sgl",
-	"cerebras",
-	"gemini",
-	"openrouter",
+	"vertex",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant

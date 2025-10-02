@@ -14,7 +14,7 @@ import { formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { formatDistanceToNow } from "date-fns";
 import isEqual from "lodash.isequal";
-import { User } from "lucide-react";
+import { Building } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -185,7 +185,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 											{customers.map((customer) => (
 												<SelectItem key={customer.id} value={customer.id}>
 													<div className="flex items-center gap-2">
-														<User className="h-4 w-4" />
+														<Building className="h-4 w-4" />
 														{customer.name}
 													</div>
 												</SelectItem>
@@ -214,7 +214,8 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 									<span className="text-sm">Current Usage:</span>
 									<div className="flex items-center gap-2">
 										<span className="text-sm">
-											<span className="font-mono">{formatCurrency(team.budget.current_usage)}</span> / <span className="font-mono">{formatCurrency(team.budget.max_limit)}</span>
+											<span className="font-mono">{formatCurrency(team.budget.current_usage)}</span> /{" "}
+											<span className="font-mono">{formatCurrency(team.budget.max_limit)}</span>
 										</span>
 										<Badge
 											variant={team.budget.current_usage >= team.budget.max_limit ? "destructive" : "default"}

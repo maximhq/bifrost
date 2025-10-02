@@ -129,16 +129,16 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 				case schemas.ModelChatMessageRoleUser:
 					kvs := []*KeyValue{kvStr("role", "user")}
 					if message.Content.ContentStr != nil {
-						kvs = append(kvs, kvStr("content", *message.Content.ContentStr))					
+						kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
 					}
 					messages = append(messages, listValue(kvs...))
 				case schemas.ModelChatMessageRoleAssistant:
 					kvs := []*KeyValue{kvStr("role", "assistant")}
 					if message.Content.ContentStr != nil {
-						kvs = append(kvs, kvStr("content", *message.Content.ContentStr))						
+						kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
 					}
 					messages = append(messages, listValue(kvs...))
-				case schemas.ModelChatMessageRoleSystem:					
+				case schemas.ModelChatMessageRoleSystem:
 					if message.Content.ContentStr != nil {
 						params = append(params, kvStr("gen_ai.system_instructions", *message.Content.ContentStr))
 					}
