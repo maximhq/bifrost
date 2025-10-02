@@ -71,7 +71,13 @@ build-ui: install-ui ## Build ui
 	@rm -rf ui/.next
 	@cd ui && npm run build && npm run copy-build
 
-build: build-ui ## Build bifrost-http binary
+build-go: ## Build bifrost-http binary only (without UI)
+	@echo "$(GREEN)Building bifrost-http (Go only)...$(NC)"
+	@mkdir -p tmp
+	@cd transports/bifrost-http && GOWORK=off go build -o ../../tmp/bifrost-http .
+	@echo "$(GREEN)Built: tmp/bifrost-http$(NC)"
+
+build: build-ui ## Build bifrost-http binary with UI
 	@echo "$(GREEN)Building bifrost-http...$(NC)"
 	@cd transports/bifrost-http && GOWORK=off go build -o ../../tmp/bifrost-http .
 	@echo "$(GREEN)Built: tmp/bifrost-http$(NC)"

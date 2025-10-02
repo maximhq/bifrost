@@ -146,6 +146,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	AllowDirectKeys:         false,
 	AllowedOrigins:          []string{},
 	MaxRequestBodySizeMB:    100,
+	AdminKey:                "", // Empty by default, can be set via CLI flag, config.json, or ADMIN_KEY env var
 }
 
 // LoadConfig loads initial configuration from a JSON config file into memory
