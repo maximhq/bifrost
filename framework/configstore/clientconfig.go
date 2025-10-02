@@ -35,6 +35,7 @@ type ClientConfig struct {
 	AllowDirectKeys         bool     `json:"allow_direct_keys"`         // Allow direct keys to be used for requests
 	AllowedOrigins          []string `json:"allowed_origins,omitempty"` // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	MaxRequestBodySizeMB    int      `json:"max_request_body_size_mb"`  // The maximum request body size in MB
+	AdminKey                string   `json:"admin_key,omitempty"`       // Admin authentication key for protected endpoints (HTTP Basic Auth with username 'admin')
 }
 
 // ProviderConfig represents the configuration for a specific AI model provider.

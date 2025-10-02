@@ -54,6 +54,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -95,9 +96,10 @@ var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 // Command line flags
 var (
-	port   string // Port to run the server on
-	host   string // Host to bind the server to
-	appDir string // Application data directory
+	port     string // Port to run the server on
+	host     string // Host to bind the server to
+	appDir   string // Application data directory
+	adminKey string // Admin authentication key
 
 	logLevel       string // Logger level: debug, info, warn, error
 	logOutputStyle string // Logger output style: json, pretty
@@ -154,6 +156,7 @@ func init() {
 	flag.StringVar(&port, "port", DefaultPort, "Port to run the server on")
 	flag.StringVar(&host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
 	flag.StringVar(&appDir, "app-dir", DefaultAppDir, "Application data directory (contains config.json and logs)")
+	flag.StringVar(&adminKey, "adminkey", "", "Admin authentication key for protected endpoints (can also be set via ADMIN_KEY env var)")
 	flag.StringVar(&logLevel, "log-level", DefaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
 	flag.StringVar(&logOutputStyle, "log-style", DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
 	flag.Parse()
@@ -195,6 +198,64 @@ func corsMiddleware(config *lib.Config, next fasthttp.RequestHandler) fasthttp.R
 			return
 		}
 
+		next(ctx)
+	}
+}
+
+// adminAuthMiddleware provides HTTP Basic Authentication for admin endpoints.
+// It only applies authentication if an admin key is configured.
+// Uses "admin" as username and the configured admin key as password.
+func adminAuthMiddleware(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		// If no admin key is configured, allow access without authentication
+		if config.ClientConfig.AdminKey == "" {
+			next(ctx)
+			return
+		}
+
+		// Check for Authorization header
+		authHeader := string(ctx.Request.Header.Peek("Authorization"))
+		if authHeader == "" {
+			// Send WWW-Authenticate header and 401 response
+			ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="Bifrost Admin"`)
+			handlers.SendError(ctx, fasthttp.StatusUnauthorized, "Admin authentication required", logger)
+			return
+		}
+
+		// Parse Basic auth header
+		if !strings.HasPrefix(authHeader, "Basic ") {
+			ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="Bifrost Admin"`)
+			handlers.SendError(ctx, fasthttp.StatusUnauthorized, "Invalid authentication method", logger)
+			return
+		}
+
+		// Decode base64 credentials
+		credentials := strings.TrimPrefix(authHeader, "Basic ")
+		decoded, err := base64.StdEncoding.DecodeString(credentials)
+		if err != nil {
+			ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="Bifrost Admin"`)
+			handlers.SendError(ctx, fasthttp.StatusUnauthorized, "Invalid authentication format", logger)
+			return
+		}
+
+		// Split username:password
+		parts := strings.SplitN(string(decoded), ":", 2)
+		if len(parts) != 2 {
+			ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="Bifrost Admin"`)
+			handlers.SendError(ctx, fasthttp.StatusUnauthorized, "Invalid authentication format", logger)
+			return
+		}
+
+		username, password := parts[0], parts[1]
+
+		// Validate credentials (username must be "admin" and password must match admin key)
+		if username != "admin" || password != config.ClientConfig.AdminKey {
+			ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="Bifrost Admin"`)
+			handlers.SendError(ctx, fasthttp.StatusUnauthorized, "Invalid admin credentials", logger)
+			return
+		}
+
+		// Authentication successful, continue with request
 		next(ctx)
 	}
 }
@@ -351,6 +412,17 @@ func main() {
 		logger.Fatal("failed to load config %v", err)
 	}
 
+	// Apply admin key from CLI flag or environment variable (overrides config.json)
+	if adminKey != "" {
+		// CLI flag takes precedence
+		config.ClientConfig.AdminKey = adminKey
+		logger.Info("admin key set from command line flag")
+	} else if envAdminKey := os.Getenv("ADMIN_KEY"); envAdminKey != "" {
+		// Environment variable as fallback
+		config.ClientConfig.AdminKey = envAdminKey
+		logger.Info("admin key set from ADMIN_KEY environment variable")
+	}
+
 	// Initialize pricing manager
 	pricingManager, err := pricing.Init(config.ConfigStore, logger)
 	if err != nil {
@@ -500,32 +572,51 @@ func main() {
 
 	r := router.New()
 
-	// Register all handler routes
-	providerHandler.RegisterRoutes(r)
+	// Register public endpoints (no auth required)
 	completionHandler.RegisterRoutes(r)
-	mcpHandler.RegisterRoutes(r)
 	integrationHandler.RegisterRoutes(r)
-	configHandler.RegisterRoutes(r)
-	pluginsHandler.RegisterRoutes(r)
-	if cacheHandler != nil {
-		cacheHandler.RegisterRoutes(r)
-	}
-	if governanceHandler != nil {
-		governanceHandler.RegisterRoutes(r)
-	}
-	if loggingHandler != nil {
-		loggingHandler.RegisterRoutes(r)
-	}
-	if wsHandler != nil {
-		wsHandler.RegisterRoutes(r)
-	}
+	
+	// Register MCP tool execution endpoint (public) - this needs to be separate from admin routes
+	r.POST("/v1/mcp/tool/execute", func(ctx *fasthttp.RequestCtx) {
+		// Create a temporary router just for this handler
+		tempRouter := router.New()
+		mcpHandler.RegisterRoutes(tempRouter)
+		tempRouter.Handler(ctx)
+	})
 
-	// Add Prometheus /metrics endpoint
+	// Apply admin authentication middleware to all /api/* routes
+	r.ANY("/api/{path:*}", adminAuthMiddleware(config, func(ctx *fasthttp.RequestCtx) {
+		// Create admin router and register all admin handlers
+		adminRouter := router.New()
+		
+		providerHandler.RegisterRoutes(adminRouter)
+		configHandler.RegisterRoutes(adminRouter)
+		pluginsHandler.RegisterRoutes(adminRouter)
+		mcpHandler.RegisterRoutes(adminRouter) // This includes the admin MCP routes
+		
+		if cacheHandler != nil {
+			cacheHandler.RegisterRoutes(adminRouter)
+		}
+		if governanceHandler != nil {
+			governanceHandler.RegisterRoutes(adminRouter)
+		}
+		if loggingHandler != nil {
+			loggingHandler.RegisterRoutes(adminRouter)
+		}
+		if wsHandler != nil {
+			wsHandler.RegisterRoutes(adminRouter)
+		}
+		
+		// Handle the request with the admin router
+		adminRouter.Handler(ctx)
+	}))
+
+	// Add Prometheus /metrics endpoint (public)
 	r.GET("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()))
 
-	// Add UI routes - serve the embedded Next.js build
-	r.GET("/", uiHandler)
-	r.GET("/{filepath:*}", uiHandler)
+	// Add UI routes with admin authentication - serve the embedded Next.js build
+	r.GET("/", adminAuthMiddleware(config, uiHandler))
+	r.GET("/{filepath:*}", adminAuthMiddleware(config, uiHandler))
 
 	r.NotFound = func(ctx *fasthttp.RequestCtx) {
 		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()), logger)

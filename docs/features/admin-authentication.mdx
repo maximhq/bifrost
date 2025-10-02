@@ -1,0 +1,293 @@
+---
+title: "Admin Authentication"
+description: "Secure administrative endpoints with HTTP Basic Authentication to protect provider configuration, logs, and governance features."
+icon: "shield-check"
+---
+
+## Overview
+
+Bifrost supports optional admin authentication to protect administrative endpoints and the web UI from unauthorized access. When enabled, administrative operations and the web interface require HTTP Basic Authentication with username `admin` and a configured admin key as the password.
+
+<Note>
+Admin authentication is completely optional. When not configured, Bifrost behaves exactly as before with no authentication required.
+</Note>
+
+## Configuration
+
+The admin key can be configured in three ways, listed in order of precedence:
+
+### 1. Command Line Flag (Highest Priority)
+
+```bash
+./bifrost-http -adminkey "my-secure-password-123"
+```
+
+### 2. Environment Variable
+
+```bash
+export ADMIN_KEY="my-secure-password-123"
+./bifrost-http
+```
+
+### 3. Configuration File
+
+Add the `admin_key` field to the `client` section of your `config.json`:
+
+```json
+{
+  "client": {
+    "admin_key": "my-secure-password-123",
+    "enable_logging": true,
+    "enable_governance": true,
+    "drop_excess_requests": false,
+    "initial_pool_size": 10,
+    "max_request_body_size_mb": 100
+  },
+  "providers": {
+    // ... your provider configurations
+  }
+}
+```
+
+## Protected Endpoints
+
+When admin authentication is enabled, the following administrative endpoints require authentication:
+
+### Provider Management
+- `GET /api/providers` - List all providers
+- `POST /api/providers` - Add new provider
+- `PUT /api/providers/{provider}` - Update provider
+- `DELETE /api/providers/{provider}` - Remove provider
+- `GET /api/keys` - List API keys
+
+### Configuration Management
+- `GET /api/config` - Get current configuration
+- `PUT /api/config` - Update configuration
+
+### Logging & Monitoring
+- `GET /api/logs` - Retrieve request logs
+- `GET /api/logs/dropped` - Get dropped requests
+- `GET /api/logs/models` - List available models
+- `GET /ws/logs` - WebSocket log streaming
+
+### Governance & Budget Management
+- All `/api/governance/*` endpoints for virtual keys, teams, customers, budgets, and rate limits
+
+### MCP Administration
+- `GET /api/mcp/clients` - List MCP clients
+- `POST /api/mcp/client` - Add MCP client
+- `PUT /api/mcp/client/{name}` - Update MCP client
+- `DELETE /api/mcp/client/{name}` - Remove MCP client
+- `POST /api/mcp/client/{name}/reconnect` - Reconnect MCP client
+
+### Plugin Management
+- All `/api/plugins/*` endpoints
+
+### Cache Management
+- All `/api/cache/*` endpoints
+
+### Web Interface & Static Assets
+- `GET /` - Web UI dashboard and management interface
+- `GET /{filepath:*}` - Static assets (CSS, JS, images, etc.)
+
+## Public Endpoints
+
+These endpoints remain accessible without authentication regardless of admin key configuration:
+
+### AI Completions (Core Functionality)
+- `POST /v1/chat/completions` - Chat completions
+- `POST /v1/text/completions` - Text completions  
+- `POST /v1/embeddings` - Text embeddings
+- `POST /v1/audio/speech` - Text-to-speech
+- `POST /v1/audio/transcriptions` - Speech-to-text
+
+### MCP Tool Execution
+- `POST /v1/mcp/tool/execute` - Execute MCP tools
+
+### Integration APIs
+- All provider-specific integration endpoints (e.g., `/openai/*`, `/anthropic/*`, `/genai/*`)
+
+### System Endpoints
+- `GET /metrics` - Prometheus metrics
+- `GET /api/version` - Version information
+
+## Usage Examples
+
+### Making Authenticated Requests
+
+When admin authentication is enabled, include HTTP Basic Authentication headers:
+
+#### Using curl with -u flag:
+```bash
+curl -u admin:my-secure-password-123 \
+  -X GET http://localhost:8080/api/config
+```
+
+#### Using curl with Authorization header:
+```bash
+# First, encode credentials in base64
+echo -n 'admin:my-secure-password-123' | base64
+# Output: YWRtaW46bXktc2VjdXJlLXBhc3N3b3JkLTEyMw==
+
+curl -H "Authorization: Basic YWRtaW46bXktc2VjdXJlLXBhc3N3b3JkLTEyMw==" \
+  -X GET http://localhost:8080/api/config
+```
+
+#### Using Python requests:
+```python
+import requests
+from requests.auth import HTTPBasicAuth
+
+response = requests.get(
+    'http://localhost:8080/api/config',
+    auth=HTTPBasicAuth('admin', 'my-secure-password-123')
+)
+```
+
+#### Using JavaScript fetch:
+```javascript
+const credentials = btoa('admin:my-secure-password-123');
+
+fetch('http://localhost:8080/api/config', {
+  headers: {
+    'Authorization': `Basic ${credentials}`
+  }
+})
+.then(response => response.json())
+.then(data => console.log(data));
+```
+
+### Web UI Access
+
+When admin authentication is enabled, accessing the web UI at `http://localhost:8080/` will prompt for credentials:
+
+![Browser Basic Auth Dialog](../../media/basic-auth-dialog.png)
+
+- **Username**: `admin`
+- **Password**: Your configured admin key
+
+### Testing Authentication
+
+Test that authentication is working correctly:
+
+```bash
+# This should return 401 Unauthorized
+curl -X GET http://localhost:8080/api/config
+
+# This should return the configuration
+curl -u admin:your-admin-key \
+  -X GET http://localhost:8080/api/config
+
+# Web UI should also require authentication
+curl -X GET http://localhost:8080/
+# Returns 401 Unauthorized without credentials
+
+# Web UI with authentication
+curl -u admin:your-admin-key \
+  -X GET http://localhost:8080/
+# Returns the HTML page
+
+# Public endpoints should still work without auth
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+## Error Responses
+
+When authentication is required but not provided or invalid:
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Basic realm="Bifrost Admin"
+Content-Type: application/json
+
+{
+  "error": {
+    "message": "Admin authentication required"
+  }
+}
+```
+
+## Security Best Practices
+
+<Warning>
+Always use strong, unique passwords for your admin key and never commit them to version control.
+</Warning>
+
+### Password Security
+- Use a strong, randomly generated password with at least 16 characters
+- Include a mix of letters, numbers, and special characters
+- Use a password manager to generate and store the key securely
+
+### Deployment Security
+- **Use Environment Variables**: Prefer `ADMIN_KEY` environment variable over config files in production
+- **Enable HTTPS**: Always use HTTPS in production to protect credentials in transit
+- **Restrict Access**: Limit access to the admin key to authorized personnel only
+- **Rotate Regularly**: Change the admin key periodically as part of your security practices
+
+### Network Security
+- Consider running Bifrost behind a reverse proxy with additional authentication layers
+- Use firewall rules to restrict access to admin endpoints to trusted networks
+- Monitor access logs for unusual authentication attempts
+
+## Docker Deployment
+
+When deploying with Docker, use environment variables to set the admin key:
+
+```bash
+# Using environment variable
+docker run -p 8080:8080 \
+  -e ADMIN_KEY="your-secure-admin-key" \
+  -v $(pwd)/data:/app/data \
+  maximhq/bifrost
+
+# Or using a .env file
+docker run -p 8080:8080 \
+  --env-file .env \
+  -v $(pwd)/data:/app/data \
+  maximhq/bifrost
+```
+
+## Backward Compatibility
+
+<Info>
+Admin authentication is fully backward compatible. Existing Bifrost installations will continue to work exactly as before when no admin key is configured.
+</Info>
+
+- **Default Behavior**: When no admin key is set, all endpoints remain publicly accessible
+- **No Breaking Changes**: Existing API clients and integrations continue to work unchanged
+- **Optional Feature**: Admin authentication is completely opt-in and disabled by default
+
+## Troubleshooting
+
+### Common Issues
+
+**401 Unauthorized on admin endpoints:**
+- Verify the admin key is correctly set via CLI flag, environment variable, or config file
+- Check that you're using the correct username (`admin`) and password (your admin key)
+- Ensure base64 encoding is correct if using Authorization headers manually
+
+**Public endpoints returning 401:**
+- Check that you're accessing the correct endpoints (`/v1/*` should be public)
+- Verify your Bifrost configuration doesn't have other authentication mechanisms enabled
+
+**Admin key not being recognized:**
+- CLI flag takes highest precedence, followed by environment variable, then config file
+- Restart Bifrost after changing environment variables or config files
+- Check for typos in the admin key configuration
+
+**Browser authentication issues:**
+- Modern browsers will show a login dialog when accessing the web UI
+- Some browsers may cache credentials - use incognito/private mode for testing
+- If browser shows "Authentication failed", verify your admin key is correct
+
+### Debug Tips
+
+Enable debug logging to troubleshoot authentication issues:
+
+```bash
+./bifrost-http -adminkey "your-key" -log-level debug
+```
+
+Look for authentication-related log messages that can help identify configuration issues.
