@@ -3,6 +3,9 @@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { VirtualKey } from "@/lib/types/governance";
 import { calculateUsagePercentage, formatCurrency, getUsageVariant, parseResetPeriod } from "@/lib/utils/governance";
 import { formatDistanceToNow } from "date-fns";
@@ -36,8 +39,8 @@ export default function VirtualKeyDetailDialog({ virtualKey, onClose }: VirtualK
 
 	return (
 		<Dialog open onOpenChange={onClose}>
-			<DialogContent className="max-h-[80vh] w-full max-w-2xl overflow-y-auto p-0" showCloseButton={true}>
-				<DialogHeader className="z-10 border-b px-6 pt-6 bg-transparent">
+			<DialogContent className="max-h-[80vh] max-w-4xl overflow-y-auto p-0" showCloseButton={true}>
+				<DialogHeader className="z-10 border-b bg-transparent px-6 pt-6">
 					<DialogTitle>{virtualKey.name}</DialogTitle>
 					<DialogDescription>{virtualKey.description || "Virtual key details and usage information"}</DialogDescription>
 				</DialogHeader>
@@ -86,56 +89,99 @@ export default function VirtualKeyDetailDialog({ virtualKey, onClose }: VirtualK
 
 					<Separator />
 
-					{/* Model & Provider Restrictions */}
+					{/* Allowed Keys */}
 					<div className="space-y-4">
-						<h3 className="font-semibold">Allowed Models & Providers</h3>
+						<h3 className="font-semibold">Allowed Keys</h3>
 
 						<div className="space-y-3">
-							{!virtualKey.allowed_models && !virtualKey.allowed_providers ? (
-								<span className="text-muted-foreground text-sm">All models and providers allowed</span>
+							{virtualKey.keys && virtualKey.keys.length > 0 ? (
+								<div className="rounded-md border">
+									<Table>
+										<TableHeader>
+											<TableRow>
+												<TableHead>Key ID</TableHead>
+												<TableHead>Allowed Models</TableHead>
+											</TableRow>
+										</TableHeader>
+										<TableBody>
+											{virtualKey.keys.map((key) => (
+												<TableRow key={key.key_id}>
+													<TableCell className="max-w-[200px] truncate">
+														<span className="font-mono text-sm">{key.key_id}</span>
+													</TableCell>
+													<TableCell>
+														{key.models && key.models.length > 0 ? (
+															<div className="flex flex-wrap gap-1">
+																{key.models.map((model: string) => (
+																	<Badge key={model} variant="secondary" className="text-xs">
+																		{model}
+																	</Badge>
+																))}
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">All models allowed</span>
+														)}
+													</TableCell>
+												</TableRow>
+											))}
+										</TableBody>
+									</Table>
+								</div>
 							) : (
-								<>
-									{virtualKey.allowed_models && virtualKey.allowed_models.length > 0 ? (
-										<div>
-											<span className="text-muted-foreground text-sm font-medium">Models</span>
-											<div className="mt-2">
-												{virtualKey.allowed_models && virtualKey.allowed_models.length > 0 ? (
-													<div className="flex flex-wrap gap-2">
-														{virtualKey.allowed_models.map((model) => (
-															<Badge key={model} variant="secondary" className="text-xs">
-																{model}
-															</Badge>
-														))}
-													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">All models allowed</span>
-												)}
-											</div>
-										</div>
-									) : (
-										<span className="text-muted-foreground text-sm">All models allowed</span>
-									)}
-									{virtualKey.allowed_providers && virtualKey.allowed_providers.length > 0 ? (
-										<div>
-											<span className="text-muted-foreground text-sm font-medium">Providers</span>
-											<div className="mt-2">
-												{virtualKey.allowed_providers && virtualKey.allowed_providers.length > 0 ? (
-													<div className="flex flex-wrap gap-2">
-														{virtualKey.allowed_providers.map((provider) => (
-															<Badge key={provider} variant="secondary" className="text-xs">
-																{provider}
-															</Badge>
-														))}
-													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">All providers allowed</span>
-												)}
-											</div>
-										</div>
-									) : (
-										<span className="text-muted-foreground text-sm">All providers allowed</span>
-									)}
-								</>
+								<span className="text-muted-foreground text-sm">No specific keys assigned - all keys allowed</span>
+							)}
+						</div>
+					</div>
+
+					<Separator />
+
+					{/* Provider Configurations */}
+					<div className="space-y-4">
+						<h3 className="font-semibold">Provider Configurations</h3>
+
+						<div className="space-y-3">
+							{!virtualKey.provider_configs || virtualKey.provider_configs.length === 0 ? (
+								<span className="text-muted-foreground text-sm">All providers allowed with default settings</span>
+							) : (
+								<div className="rounded-md border">
+									<Table>
+										<TableHeader>
+											<TableRow>
+												<TableHead>Provider</TableHead>
+												<TableHead>Weight</TableHead>
+												<TableHead>Allowed Models</TableHead>
+											</TableRow>
+										</TableHeader>
+										<TableBody>
+											{virtualKey.provider_configs.map((config, index) => (
+												<TableRow key={`${config.provider}-${index}`}>
+													<TableCell>
+														<div className="flex items-center gap-2">
+															<RenderProviderIcon provider={config.provider as ProviderIconType} size="sm" className="h-4 w-4" />
+															{ProviderLabels[config.provider as ProviderName] || config.provider}
+														</div>
+													</TableCell>
+													<TableCell>
+														<span className="font-mono text-sm">{config.weight}</span>
+													</TableCell>
+													<TableCell>
+														{config.allowed_models && config.allowed_models.length > 0 ? (
+															<div className="flex flex-wrap gap-1">
+																{config.allowed_models.map((model) => (
+																	<Badge key={model} variant="secondary" className="text-xs">
+																		{model}
+																	</Badge>
+																))}
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">All models allowed</span>
+														)}
+													</TableCell>
+												</TableRow>
+											))}
+										</TableBody>
+									</Table>
+								</div>
 							)}
 						</div>
 					</div>

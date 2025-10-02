@@ -55,9 +55,16 @@ type ConfigStore interface {
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]TableVirtualKey, error)
 	GetVirtualKey(ctx context.Context, id string) (*TableVirtualKey, error)
+	GetVirtualKeyByValue(ctx context.Context, value string) (*TableVirtualKey, error)
 	CreateVirtualKey(ctx context.Context, virtualKey *TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string) error
+
+	// Virtual key provider config CRUD
+	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]TableVirtualKeyProviderConfig, error)
+	CreateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error
+	UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error
+	DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
 
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]TableTeam, error)

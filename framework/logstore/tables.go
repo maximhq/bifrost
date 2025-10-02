@@ -102,10 +102,10 @@ type Log struct {
 	// Virtual fields for JSON output - these will be populated when needed
 	InputHistoryParsed        []schemas.BifrostMessage    `gorm:"-" json:"input_history,omitempty"`
 	OutputMessageParsed       *schemas.BifrostMessage     `gorm:"-" json:"output_message,omitempty"`
-	EmbeddingOutputParsed     []schemas.BifrostEmbedding `gorm:"-" json:"embedding_output,omitempty"`
+	EmbeddingOutputParsed     []schemas.BifrostEmbedding  `gorm:"-" json:"embedding_output,omitempty"`
 	ParamsParsed              *schemas.ModelParameters    `gorm:"-" json:"params,omitempty"`
-	ToolsParsed               []schemas.Tool             `gorm:"-" json:"tools,omitempty"`
-	ToolCallsParsed           []schemas.ToolCall         `gorm:"-" json:"tool_calls,omitempty"`
+	ToolsParsed               []schemas.Tool              `gorm:"-" json:"tools,omitempty"`
+	ToolCallsParsed           []schemas.ToolCall          `gorm:"-" json:"tool_calls,omitempty"`
 	TokenUsageParsed          *schemas.LLMUsage           `gorm:"-" json:"token_usage,omitempty"`
 	ErrorDetailsParsed        *schemas.BifrostError       `gorm:"-" json:"error_details,omitempty"`
 	SpeechInputParsed         *schemas.SpeechInput        `gorm:"-" json:"speech_input,omitempty"`

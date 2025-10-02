@@ -69,9 +69,9 @@ type AnthropicMessageRequest struct {
 	Temperature   *float64             `json:"temperature,omitempty"`
 	TopP          *float64             `json:"top_p,omitempty"`
 	TopK          *int                 `json:"top_k,omitempty"`
-	StopSequences []string            `json:"stop_sequences,omitempty"`
+	StopSequences []string             `json:"stop_sequences,omitempty"`
 	Stream        *bool                `json:"stream,omitempty"`
-	Tools         []AnthropicTool     `json:"tools,omitempty"`
+	Tools         []AnthropicTool      `json:"tools,omitempty"`
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 }
 

@@ -223,7 +223,6 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 			}
 		}
 	}
-	t.logger.Info("startup reset summary: VKs with RL=%d, without RL=%d, RL resets=%d", vksWithRateLimits, vksWithoutRateLimits, len(resetRateLimits))
 	if len(errs) > 0 {
 		t.logger.Error("startup reset encountered %d errors: %v", len(errs), errs)
 		return fmt.Errorf("startup reset completed with %d errors", len(errs))

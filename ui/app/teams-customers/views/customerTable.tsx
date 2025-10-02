@@ -18,10 +18,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
-import { DollarSign, Edit, Key, Plus, Trash2, Users } from "lucide-react";
+import { Edit, Key, Plus, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import CustomerDialog from "./customerDialog";
+import { cn } from "@/lib/utils";
 
 interface CustomersTableProps {
 	customers: Customer[];
@@ -94,6 +95,7 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
 								<TableHead>Name</TableHead>
 								<TableHead>Teams</TableHead>
 								<TableHead>Budget</TableHead>
+								<TableHead>Reset Period</TableHead>
 								<TableHead>Virtual Keys</TableHead>
 								<TableHead className="text-right">Actions</TableHead>
 							</TableRow>
@@ -136,18 +138,21 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
 											</TableCell>
 											<TableCell>
 												{customer.budget ? (
-													<div className="flex items-center gap-1">
-														<DollarSign className="h-3 w-3" />
-														<span className="text-sm">
-															{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
-														</span>
-														<Badge
-															variant={customer.budget.current_usage >= customer.budget.max_limit ? "destructive" : "secondary"}
-															className="text-xs"
-														>
-															{parseResetPeriod(customer.budget.reset_duration)}
-														</Badge>
-													</div>
+													<span
+														className={cn(
+															"font-mono text-sm",
+															customer.budget.current_usage >= customer.budget.max_limit && "text-destructive",
+														)}
+													>
+														{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
+													</span>
+												) : (
+													<span className="text-muted-foreground text-sm">-</span>
+												)}
+											</TableCell>
+											<TableCell>
+												{customer.budget ? (
+													parseResetPeriod(customer.budget.reset_duration)
 												) : (
 													<span className="text-muted-foreground text-sm">-</span>
 												)}

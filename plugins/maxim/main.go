@@ -392,7 +392,7 @@ func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResp
 	}
 	generationID, ok := ctx.Value(GenerationIDKey).(string)
 	if ok {
-		if bifrostErr != nil  {
+		if bifrostErr != nil {
 			genErr := logging.GenerationError{
 				Message: bifrostErr.Error.Message,
 				Code:    bifrostErr.Error.Code,

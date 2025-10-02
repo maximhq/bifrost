@@ -46,21 +46,19 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(({ cla
 	};
 
 	return (
-		<div className={cn("border-input dark:bg-accent flex flex-wrap items-center gap-2 rounded-sm border", className)}>
-			<div className={cn("flex flex-row gap-2", value.length > 0 && "pl-2")}>
-				{value.map((tag) => (
-					<Badge key={tag} variant="secondary" className="bg-accent dark:bg-card flex items-center gap-1">
-						{tag}
-						<button
-							type="button"
-							className="ring-offset-background focus:ring-ring cursor-pointer rounded-full outline-none focus:ring-2 focus:ring-offset-2"
-							onClick={() => removeTag(tag)}
-						>
-							<X className="h-3 w-3" />
-						</button>
-					</Badge>
-				))}
-			</div>
+		<div className={cn("border-input dark:bg-accent flex flex-wrap items-center gap-2 rounded-sm border p-1", className)}>
+			{value.map((tag) => (
+				<Badge key={tag} variant="secondary" className="bg-accent dark:bg-card flex items-center gap-1">
+					{tag}
+					<button
+						type="button"
+						className="ring-offset-background focus:ring-ring cursor-pointer rounded-full outline-none focus:ring-2 focus:ring-offset-2"
+						onClick={() => removeTag(tag)}
+					>
+						<X className="h-3 w-3" />
+					</button>
+				</Badge>
+			))}
 			<Input
 				ref={ref}
 				type="text"
@@ -68,7 +66,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(({ cla
 				onChange={handleInputChange}
 				onKeyDown={handleKeyDown}
 				onBlur={handleBlur}
-				className={cn("dark:bg-accent min-w-32 flex-1 border-0 shadow-none focus-visible:ring-0", value.length > 0 ? "px-0" : "px-1")}
+				className={cn("dark:bg-accent h-6 min-w-32 flex-1 border-0 p-0 text-xs shadow-none focus-visible:ring-0")}
 				{...props}
 			/>
 		</div>

@@ -62,9 +62,9 @@ func (pm *PricingManager) syncPricing(ctx context.Context) error {
 	pricingData, err := pm.loadPricingFromURL(ctx)
 	if err != nil {
 		// Check if we have existing data in database
-		pricingRecords, err := pm.configStore.GetModelPrices(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get pricing records: %w", err)
+		pricingRecords, pricingErr := pm.configStore.GetModelPrices(ctx)
+		if pricingErr != nil {
+			return fmt.Errorf("failed to get pricing records: %w", pricingErr)
 		}
 		if len(pricingRecords) > 0 {
 			pm.logger.Error("failed to load pricing data from URL, but existing data found in database: %v", err)

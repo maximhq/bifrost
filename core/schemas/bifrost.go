@@ -118,7 +118,7 @@ const (
 // a text completion, a chat completion, an embedding request, a speech request, or a transcription request.
 type RequestInput struct {
 	TextCompletionInput *string             `json:"text_completion_input,omitempty"`
-	ChatCompletionInput []BifrostMessage   `json:"chat_completion_input,omitempty"`
+	ChatCompletionInput []BifrostMessage    `json:"chat_completion_input,omitempty"`
 	EmbeddingInput      *EmbeddingInput     `json:"embedding_input,omitempty"`
 	SpeechInput         *SpeechInput        `json:"speech_input,omitempty"`
 	TranscriptionInput  *TranscriptionInput `json:"transcription_input,omitempty"`
@@ -295,12 +295,12 @@ type Fallback struct {
 // mapped to the provider's parameters.
 type ModelParameters struct {
 	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
-	Tools             []Tool     `json:"tools,omitempty"`               // Tools to use
+	Tools             []Tool      `json:"tools,omitempty"`               // Tools to use
 	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
 	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
 	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
 	MaxTokens         *int        `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
-	StopSequences     []string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	StopSequences     []string    `json:"stop_sequences,omitempty"`      // Sequences that stop generation
 	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
 	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
 	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
@@ -318,7 +318,7 @@ type FunctionParameters struct {
 	Description *string                `json:"description,omitempty"` // Description of the parameters
 	Required    []string               `json:"required,omitempty"`    // Required parameter names
 	Properties  map[string]interface{} `json:"properties,omitempty"`  // Parameter properties
-	Enum        []string              `json:"enum,omitempty"`        // Enum values for the parameters
+	Enum        []string               `json:"enum,omitempty"`        // Enum values for the parameters
 }
 
 // Function represents a function that can be called by the model.
@@ -492,7 +492,7 @@ type ToolMessage struct {
 type AssistantMessage struct {
 	Refusal     *string      `json:"refusal,omitempty"`
 	Annotations []Annotation `json:"annotations,omitempty"`
-	ToolCalls   []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
 	Thought     *string      `json:"thought,omitempty"`
 }
 
@@ -795,7 +795,7 @@ type BifrostResponseExtraFields struct {
 	Provider    ModelProvider      `json:"provider"`
 	Params      ModelParameters    `json:"model_params"`
 	Latency     *int64             `json:"latency,omitempty"`
-	ChatHistory []BifrostMessage  `json:"chat_history,omitempty"`
+	ChatHistory []BifrostMessage   `json:"chat_history,omitempty"`
 	BilledUsage *BilledLLMUsage    `json:"billed_usage,omitempty"`
 	ChunkIndex  int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse interface{}        `json:"raw_response,omitempty"`

@@ -3,6 +3,7 @@ package pricing
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,6 +26,8 @@ type PricingManager struct {
 	// In-memory cache for fast access - direct map for O(1) lookups
 	pricingData map[string]configstore.TableModelPricing
 	mu          sync.RWMutex
+
+	modelPool map[schemas.ModelProvider][]string
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -75,8 +78,11 @@ func Init(ctx context.Context, configStore configstore.ConfigStore, logger schem
 		configStore: configStore,
 		logger:      logger,
 		pricingData: make(map[string]configstore.TableModelPricing),
+		modelPool:   make(map[schemas.ModelProvider][]string),
 		done:        make(chan struct{}),
 	}
+
+	logger.Info("initializing pricing manager...")
 
 	if configStore != nil {
 		// Load initial pricing data
@@ -88,13 +94,15 @@ func Init(ctx context.Context, configStore configstore.ConfigStore, logger schem
 		if err := pm.syncPricing(ctx); err != nil {
 			return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 		}
-		
 	} else {
 		// Load pricing data from config memory
 		if err := pm.loadPricingIntoMemory(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load pricing data from config memory: %w", err)
 		}
 	}
+
+	// Populate model pool with normalized providers
+	pm.populateModelPool()
 
 	// Start background sync worker
 	pm.syncCtx, pm.syncCancel = context.WithCancel(ctx)
@@ -331,6 +339,80 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 	totalCost := inputCost + outputCost
 
 	return totalCost
+}
+
+// populateModelPool populates the model pool with all available models per provider (thread-safe)
+func (pm *PricingManager) populateModelPool() {
+	// Acquire write lock for the entire rebuild operation
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	// Clear existing model pool
+	pm.modelPool = make(map[schemas.ModelProvider][]string)
+
+	// Map to track unique models per provider
+	providerModels := make(map[schemas.ModelProvider]map[string]bool)
+
+	// Iterate through all pricing data to collect models per provider
+	for _, pricing := range pm.pricingData {
+		// Normalize provider before adding to model pool
+		normalizedProvider := schemas.ModelProvider(normalizeProvider(pricing.Provider))
+
+		// Initialize map for this provider if not exists
+		if providerModels[normalizedProvider] == nil {
+			providerModels[normalizedProvider] = make(map[string]bool)
+		}
+
+		// Add model to the provider's model set (using map for deduplication)
+		providerModels[normalizedProvider][pricing.Model] = true
+	}
+
+	// Convert sets to slices and assign to modelPool
+	for provider, modelSet := range providerModels {
+		models := make([]string, 0, len(modelSet))
+		for model := range modelSet {
+			models = append(models, model)
+		}
+		pm.modelPool[provider] = models
+	}
+
+	// Log the populated model pool for debugging
+	totalModels := 0
+	for provider, models := range pm.modelPool {
+		totalModels += len(models)
+		pm.logger.Debug("populated %d models for provider %s", len(models), string(provider))
+	}
+	pm.logger.Info("populated model pool with %d models across %d providers", totalModels, len(pm.modelPool))
+}
+
+// GetModelsForProvider returns all available models for a given provider (thread-safe)
+func (pm *PricingManager) GetModelsForProvider(provider schemas.ModelProvider) []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	models, exists := pm.modelPool[provider]
+	if !exists {
+		return []string{}
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]string, len(models))
+	copy(result, models)
+	return result
+}
+
+// GetProvidersForModel returns all providers for a given model (thread-safe)
+func (pm *PricingManager) GetProvidersForModel(model string) []schemas.ModelProvider {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	providers := make([]schemas.ModelProvider, 0)
+	for provider, models := range pm.modelPool {
+		if slices.Contains(models, model) {
+			providers = append(providers, provider)
+		}
+	}
+	return providers
 }
 
 // getPricing returns pricing information for a model (thread-safe)

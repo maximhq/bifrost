@@ -122,9 +122,9 @@ func NewTestSetup(t *testing.T) *TestSetup {
 	}
 
 	return NewTestSetupWithConfig(t, &Config{
-		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-small",
-		Threshold:      0.8,
+		Provider:          schemas.OpenAI,
+		EmbeddingModel:    "text-embedding-3-small",
+		Threshold:         0.8,
 		CleanUpOnShutdown: true,
 		Keys: []schemas.Key{
 			{

@@ -88,7 +88,7 @@ type BedrockMistralContent struct {
 type BedrockMistralChatMessage struct {
 	Role       schemas.ModelChatMessageRole `json:"role"`                   // Role of the message sender
 	Content    []BedrockMistralContent      `json:"content"`                // Array of message content
-	ToolCalls  []BedrockAnthropicToolCall  `json:"tool_calls,omitempty"`   // Optional tool calls
+	ToolCalls  []BedrockAnthropicToolCall   `json:"tool_calls,omitempty"`   // Optional tool calls
 	ToolCallID *string                      `json:"tool_call_id,omitempty"` // Optional tool call ID
 }
 
