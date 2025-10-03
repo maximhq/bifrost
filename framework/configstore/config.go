@@ -12,6 +12,7 @@ type ConfigStoreType string
 const (
 	ConfigStoreTypeSQLite ConfigStoreType = "sqlite"
 	ConfigStoreTypePostgres ConfigStoreType = "postgres"	
+	ConfigStoreTypeMySQL ConfigStoreType = "mysql"
 )
 
 // Config represents the configuration for the config store.
@@ -58,6 +59,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal postgres config: %w", err)
 		}
 		c.Config = &postgresConfig
+	case ConfigStoreTypeMySQL:
+		var mysqlConfig MySQLConfig
+		if err := json.Unmarshal(temp.Config, &mysqlConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal mysql config: %w", err)
+		}
+		c.Config = &mysqlConfig
 	default:
 		return fmt.Errorf("unknown config store type: %s", temp.Type)
 	}
