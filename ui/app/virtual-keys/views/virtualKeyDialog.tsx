@@ -496,7 +496,7 @@ export default function VirtualKeyDialog({ virtualKey, teams, customers, onSave,
 							)}
 						</div>
 					</div>
-					<div className="dark:bg-card border-border sticky bottom-0 border-t bg-white py-3">
+					<div className="dark:bg-card border-border  bg-white pb-6">
 						<FormFooter validator={validator} label="Virtual Key" onCancel={onCancel} isLoading={isLoading} isEditing={isEditing} />
 					</div>
 				</form>

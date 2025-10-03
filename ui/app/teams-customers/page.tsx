@@ -1,16 +1,15 @@
 "use client";
 
 import FullPageLoader from "@/components/fullPageLoader";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getErrorMessage, useGetCoreConfigQuery, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import CustomersTable from "./views/customers-table";
-import TeamsTable from "./views/teams-table";
-import VirtualKeysTable from "./views/virtual-keys-table";
+import CustomersTable from "./views/customerTable";
+import TeamsTable from "./views/teamsTable";
 
-export default function GovernancePage() {
-	const [activeTab, setActiveTab] = useState("virtual-keys");
+export default function TeamsCustomersPage() {
+	const [activeTab, setActiveTab] = useState("teams");
 
 	// Fetch all data with RTK Query
 	const { data: virtualKeysData, error: vkError, isLoading: vkLoading, refetch: refetchVirtualKeys } = useGetVirtualKeysQuery();
@@ -57,43 +56,41 @@ export default function GovernancePage() {
 	}
 
 	return (
-		<div className="">
-			<Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-				<TabsList className="mb-4 grid h-12 w-full grid-cols-3">
-					{["virtual-keys", "teams", "customers"].map((tab) => (
-						<TabsTrigger key={tab} value={tab} className="flex items-center gap-2 capitalize transition-all duration-200 ease-in-out">
-							{tab.replace("-", " ")}
-						</TabsTrigger>
-					))}
-				</TabsList>
-
-				<div className="">
-					<TabsContent value="virtual-keys" className="mt-0">
-						<VirtualKeysTable
-							virtualKeys={virtualKeysData?.virtual_keys || []}
-							teams={teamsData?.teams || []}
-							customers={customersData?.customers || []}
-							onRefresh={handleRefresh}
-						/>
-					</TabsContent>
-					<TabsContent value="teams" className="mt-0">
-						<TeamsTable
-							teams={teamsData?.teams || []}
-							customers={customersData?.customers || []}
-							virtualKeys={virtualKeysData?.virtual_keys || []}
-							onRefresh={handleRefresh}
-						/>
-					</TabsContent>
-					<TabsContent value="customers" className="mt-0">
-						<CustomersTable
-							customers={customersData?.customers || []}
-							teams={teamsData?.teams || []}
-							virtualKeys={virtualKeysData?.virtual_keys || []}
-							onRefresh={handleRefresh}
-						/>
-					</TabsContent>
-				</div>
-			</Tabs>
+		<div className="flex w-full flex-row gap-4">
+			<div className="flex min-w-[200px] flex-col gap-1 rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
+				{["teams", "customers"].map((tab) => (
+					<div
+						key={tab}
+						className={cn(
+							"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
+							activeTab === tab
+								? "bg-secondary opacity-100 hover:opacity-100"
+								: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
+						)}
+						onClick={() => setActiveTab(tab)}
+					>
+						{tab.replace("-", " ").charAt(0).toUpperCase() + tab.replace("-", " ").slice(1)}
+					</div>
+				))}
+			</div>
+			<div className="w-full pt-4">
+				{activeTab === "teams" && (
+					<TeamsTable
+						teams={teamsData?.teams || []}
+						customers={customersData?.customers || []}
+						virtualKeys={virtualKeysData?.virtual_keys || []}
+						onRefresh={handleRefresh}
+					/>
+				)}
+				{activeTab === "customers" && (
+					<CustomersTable
+						customers={customersData?.customers || []}
+						teams={teamsData?.teams || []}
+						virtualKeys={virtualKeysData?.virtual_keys || []}
+						onRefresh={handleRefresh}
+					/>
+				)}
+			</div>
 		</div>
 	);
 }

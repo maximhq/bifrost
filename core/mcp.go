@@ -872,9 +872,9 @@ func (m *MCPManager) addMCPToolsToBifrostRequest(ctx context.Context, req *schem
 			req.Params = &schemas.ModelParameters{}
 		}
 		if req.Params.Tools == nil {
-			req.Params.Tools = &[]schemas.Tool{}
+			req.Params.Tools = []schemas.Tool{}
 		}
-		tools := *req.Params.Tools
+		tools := req.Params.Tools
 
 		// Create a map of existing tool names for O(1) lookup
 		existingToolsMap := make(map[string]bool)
@@ -890,7 +890,7 @@ func (m *MCPManager) addMCPToolsToBifrostRequest(ctx context.Context, req *schem
 				existingToolsMap[mcpTool.Function.Name] = true
 			}
 		}
-		req.Params.Tools = &tools
+		req.Params.Tools = tools
 
 	}
 	return req

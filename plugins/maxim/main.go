@@ -19,11 +19,11 @@ import (
 const PluginName = "maxim"
 
 // Config is the configuration for the maxim plugin.
-//   - apiKey: API key for Maxim SDK authentication
-//   - logRepoId: Optional default ID for the Maxim logger instance
+//   - APIKey: API key for Maxim SDK authentication
+//   - LogRepoID: Optional default ID for the Maxim logger instance
 type Config struct {
-	LogRepoId string `json:"log_repo_id,omitempty"` // Optional - can be empty
-	ApiKey    string `json:"api_key"`
+	LogRepoID string `json:"log_repo_id,omitempty"` // Optional - can be empty
+	APIKey    string `json:"api_key"`
 }
 
 // Init initializes and returns a Plugin instance for Maxim's logger.
@@ -34,28 +34,31 @@ type Config struct {
 // Returns:
 //   - schemas.Plugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func Init(config Config) (schemas.Plugin, error) {
+func Init(config *Config) (schemas.Plugin, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
 	// check if Maxim Logger variables are set
-	if config.ApiKey == "" {
+	if config.APIKey == "" {
 		return nil, fmt.Errorf("apiKey is not set")
 	}
 
-	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: config.ApiKey})
+	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: config.APIKey})
 
 	plugin := &Plugin{
 		mx:               mx,
-		defaultLogRepoId: config.LogRepoId,
+		defaultLogRepoID: config.LogRepoID,
 		loggers:          make(map[string]*logging.Logger),
 		loggerMutex:      &sync.RWMutex{},
 	}
 
 	// Initialize default logger if LogRepoId is provided
-	if config.LogRepoId != "" {
-		logger, err := mx.GetLogger(&logging.LoggerConfig{Id: config.LogRepoId})
+	if config.LogRepoID != "" {
+		logger, err := mx.GetLogger(&logging.LoggerConfig{Id: config.LogRepoID})
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize default logger: %w", err)
 		}
-		plugin.loggers[config.LogRepoId] = logger
+		plugin.loggers[config.LogRepoID] = logger
 	}
 
 	return plugin, nil
@@ -103,7 +106,7 @@ const (
 //   - loggerMutex: RW mutex for thread-safe access to loggers map
 type Plugin struct {
 	mx               *maxim.Maxim
-	defaultLogRepoId string
+	defaultLogRepoID string
 	loggers          map[string]*logging.Logger
 	loggerMutex      *sync.RWMutex
 }
@@ -126,8 +129,8 @@ func (plugin *Plugin) getEffectiveLogRepoID(ctx *context.Context) string {
 	}
 
 	// Fall back to default log repo ID from config
-	if plugin.defaultLogRepoId != "" {
-		return plugin.defaultLogRepoId
+	if plugin.defaultLogRepoID != "" {
+		return plugin.defaultLogRepoID
 	}
 
 	// Return empty string if neither header nor default is available
@@ -250,20 +253,20 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 
 	if req.Input.ChatCompletionInput != nil {
 		requestType = "chat_completion"
-		for _, message := range *req.Input.ChatCompletionInput {
+		for _, message := range req.Input.ChatCompletionInput {
 			messages = append(messages, logging.CompletionRequest{
 				Role:    string(message.Role),
 				Content: message.Content,
 			})
 		}
-		if len(*req.Input.ChatCompletionInput) > 0 {
-			lastMsg := (*req.Input.ChatCompletionInput)[len(*req.Input.ChatCompletionInput)-1]
+		if len(req.Input.ChatCompletionInput) > 0 {
+			lastMsg := (req.Input.ChatCompletionInput)[len(req.Input.ChatCompletionInput)-1]
 			if lastMsg.Content.ContentStr != nil {
 				latestMessage = *lastMsg.Content.ContentStr
 			} else if lastMsg.Content.ContentBlocks != nil {
 				// Find the last text content block
-				for i := len(*lastMsg.Content.ContentBlocks) - 1; i >= 0; i-- {
-					block := (*lastMsg.Content.ContentBlocks)[i]
+				for i := len(lastMsg.Content.ContentBlocks) - 1; i >= 0; i-- {
+					block := (lastMsg.Content.ContentBlocks)[i]
 					if block.Type == "text" && block.Text != nil {
 						latestMessage = *block.Text
 						break
@@ -374,50 +377,39 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 //   - *schemas.BifrostError: The original error, unmodified
 //   - error: Never returns an error as it handles missing IDs gracefully
 func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	if ctxRef != nil {
-		ctx := *ctxRef
-
-		// Get effective log repo ID for this request
-		effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctxRef)
-
-		generationID, ok := ctx.Value(GenerationIDKey).(string)
-		if ok && effectiveLogRepoID != "" {
-			// Process generation completion in the effective log repository
-			logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-			if err == nil {
-				if bifrostErr != nil {
-					genErr := logging.GenerationError{
-						Message: bifrostErr.Error.Message,
-						Code:    bifrostErr.Error.Code,
-						Type:    bifrostErr.Error.Type,
-					}
-					logger.SetGenerationError(generationID, &genErr)
-				} else if res != nil {
-					logger.AddResultToGeneration(generationID, res)
-				}
-
-				logger.EndGeneration(generationID)
-			}
-		}
-
-		traceID, ok := ctx.Value(TraceIDKey).(string)
-		if ok && effectiveLogRepoID != "" {
-			// End trace in the effective log repository
-			logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-			if err == nil {
-				logger.EndTrace(traceID)
-			}
-		}
-
-		// Flush only the effective logger that was used for this request
-		if effectiveLogRepoID != "" {
-			logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-			if err == nil {
-				logger.Flush()
-			}
-		}
+	if ctxRef == nil {
+		return res, bifrostErr, nil
 	}
-
+	ctx := *ctxRef
+	// Get effective log repo ID for this request
+	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctxRef)
+	if effectiveLogRepoID == "" {
+		return res, bifrostErr, nil
+	}
+	logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
+	if err != nil {
+		return res, bifrostErr, nil
+	}
+	generationID, ok := ctx.Value(GenerationIDKey).(string)
+	if ok {
+		if bifrostErr != nil  {
+			genErr := logging.GenerationError{
+				Message: bifrostErr.Error.Message,
+				Code:    bifrostErr.Error.Code,
+				Type:    bifrostErr.Error.Type,
+			}
+			logger.SetGenerationError(generationID, &genErr)
+		} else if res != nil {
+			logger.AddResultToGeneration(generationID, res)
+		}
+		logger.EndGeneration(generationID)
+	}
+	traceID, ok := ctx.Value(TraceIDKey).(string)
+	if ok {
+		logger.EndTrace(traceID)
+	}
+	// Flush only the effective logger that was used for this request
+	logger.Flush()
 	return res, bifrostErr, nil
 }
 

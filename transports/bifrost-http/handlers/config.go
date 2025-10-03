@@ -33,14 +33,14 @@ func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib
 
 // RegisterRoutes registers the configuration-related routes.
 // It adds the `PUT /api/config` endpoint.
-func (h *ConfigHandler) RegisterRoutes(r *router.Router) {
-	r.GET("/api/config", h.getConfig)
-	r.PUT("/api/config", h.updateConfig)
-	r.GET("/api/version", h.getVersion)
+func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
+	r.GET("/api/config", ChainMiddlewares(h.getConfig, middlewares...))
+	r.PUT("/api/config", ChainMiddlewares(h.updateConfig, middlewares...))
+	r.GET("/api/version", ChainMiddlewares(h.getVersion, middlewares...))
 }
 
 // getVersion handles GET /api/version - Get the current version
-func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {
+func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {	
 	SendJSON(ctx, version, h.logger)
 }
 
@@ -54,7 +54,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available", h.logger)
 			return
 		}
-		cc, err := h.store.ConfigStore.GetClientConfig()
+		cc, err := h.store.ConfigStore.GetClientConfig(ctx)
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError,
 				fmt.Sprintf("failed to fetch config from db: %v", err), h.logger)
@@ -117,7 +117,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Update the store with the new config
 	h.store.ClientConfig = updatedConfig
 
-	if err := h.store.ConfigStore.UpdateClientConfig(&updatedConfig); err != nil {
+	if err := h.store.ConfigStore.UpdateClientConfig(ctx, &updatedConfig); err != nil {
 		h.logger.Warn(fmt.Sprintf("failed to save configuration: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err), h.logger)
 		return

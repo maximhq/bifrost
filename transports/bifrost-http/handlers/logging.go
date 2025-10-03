@@ -30,11 +30,11 @@ func NewLoggingHandler(logManager logging.LogManager, logger schemas.Logger) *Lo
 }
 
 // RegisterRoutes registers all logging-related routes
-func (h *LoggingHandler) RegisterRoutes(r *router.Router) {
+func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	// Log retrieval with filtering, search, and pagination
-	r.GET("/api/logs", h.getLogs)
-	r.GET("/api/logs/dropped", h.getDroppedRequests)
-	r.GET("/api/logs/models", h.getAvailableModels)
+	r.GET("/api/logs", ChainMiddlewares(h.getLogs, middlewares...))
+	r.GET("/api/logs/dropped", ChainMiddlewares(h.getDroppedRequests, middlewares...))
+	r.GET("/api/logs/models", ChainMiddlewares(h.getAvailableModels, middlewares...))
 }
 
 // getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
@@ -142,7 +142,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	result, err := h.logManager.Search(filters, pagination)
+	result, err := h.logManager.Search(ctx, filters, pagination)
 	if err != nil {
 		h.logger.Error("failed to search logs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err), h.logger)
@@ -153,13 +153,13 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
 func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
-	droppedRequests := h.logManager.GetDroppedRequests()
+	droppedRequests := h.logManager.GetDroppedRequests(ctx)
 	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests}, h.logger)
 }
 
 // getAvailableModels handles GET /api/logs/models - Get all unique models from logs
 func (h *LoggingHandler) getAvailableModels(ctx *fasthttp.RequestCtx) {
-	models := h.logManager.GetAvailableModels()
+	models := h.logManager.GetAvailableModels(ctx)
 	SendJSON(ctx, map[string]interface{}{"models": models}, h.logger)
 }
 

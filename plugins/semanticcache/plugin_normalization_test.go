@@ -69,7 +69,7 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4o-mini",
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
+				ChatCompletionInput: []schemas.BifrostMessage{
 					{
 						Role: schemas.ModelChatMessageRoleSystem,
 						Content: schemas.MessageContent{
@@ -229,11 +229,11 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4o-mini",
 			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
+				ChatCompletionInput: []schemas.BifrostMessage{
 					{
 						Role: schemas.ModelChatMessageRoleUser,
 						Content: schemas.MessageContent{
-							ContentBlocks: &contentBlocks,
+							ContentBlocks: contentBlocks,
 						},
 					},
 				},

@@ -75,7 +75,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 	if requestID == "" {
 		requestID = uuid.New().String()
 	}
-	bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("request-id"), requestID)
+	bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyRequestID, requestID)
 
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)

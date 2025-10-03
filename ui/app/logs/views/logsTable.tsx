@@ -78,7 +78,7 @@ export function LogsDataTable({
 	return (
 		<div className="space-y-2">
 			<LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} />
-			<div className="rounded-sm border">
+			<div className="rounded-sm border overflow-x-scroll max-h-[calc(100dvh-20rem)] custom-scrollbar">
 				<Table>
 					<TableHeader className="px-2">
 						{table.getHeaderGroups().map((headerGroup) => (

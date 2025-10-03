@@ -2,7 +2,6 @@
 
 import FormFooter from "@/components/formFooter";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -183,41 +182,39 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						/>
 
 						{isEditing && customer?.budget && (
-							<Card>
-								<CardHeader>
-									<CardTitle className="flex items-center gap-2">
-										<DollarSign className="h-5 w-5" />
+							<div>
+								<div className="border-accent mb-2 flex w-full flex-row items-center gap-2 border-b pb-2 font-medium">
+									<div className="flex w-[300px] flex-row items-center gap-2">
+										<DollarSign className="h-4 w-4" />
 										Current Budget
-									</CardTitle>
-								</CardHeader>
-								<CardContent>
-									<div className="space-y-2">
-										<div className="flex justify-between">
-											<span>Current Usage:</span>
-											<span>${formatCurrency(customer.budget.current_usage)}</span>
-										</div>
-										<div className="flex justify-between">
-											<span>Budget Limit:</span>
-											<span>${formatCurrency(customer.budget.max_limit)}</span>
-										</div>
-										<div className="flex justify-between">
-											<span>Reset Period:</span>
-											<span>{customer.budget.reset_duration}</span>
-										</div>
-										<div className="h-2 w-full rounded-full bg-gray-200">
-											<div
-												className="h-2 rounded-full bg-blue-600"
-												style={{
-													width: `${Math.min((customer.budget.current_usage / customer.budget.max_limit) * 100, 100)}%`,
-												}}
-											></div>
-										</div>
 									</div>
-									<p className="text-muted-foreground mt-2 text-sm">
-										Budget management for existing customers should be done through the budget edit dialog.
-									</p>
-								</CardContent>
-							</Card>
+									<div className="ml-auto h-2 w-full rounded-full bg-gray-200">
+										<div
+											className="h-2 rounded-full bg-blue-600"
+											style={{
+												width: `${Math.min((customer.budget.current_usage / customer.budget.max_limit) * 100, 100)}%`,
+											}}
+										></div>
+									</div>
+								</div>
+								<div className="space-y-2">
+									<div className="flex justify-between">
+										<span>Current Usage:</span>
+										<span>{formatCurrency(customer.budget.current_usage)}</span>
+									</div>
+									<div className="flex justify-between">
+										<span>Budget Limit:</span>
+										<span>{formatCurrency(customer.budget.max_limit)}</span>
+									</div>
+									<div className="flex justify-between">
+										<span>Reset Period:</span>
+										<span>{customer.budget.reset_duration}</span>
+									</div>
+								</div>
+								<div className="text-muted-foreground bg-accent border-accent mt-3 rounded-md border p-2 text-sm">
+									Budget management for existing customers should be done through the budget edit dialog.
+								</div>
+							</div>
 						)}
 
 						{isEditing && customer?.budget && (

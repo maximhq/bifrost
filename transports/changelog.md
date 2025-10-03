@@ -1,5 +1,7 @@
 <!-- The pattern we follow here is to keep the changelog for the latest version -->
 <!-- Old changelogs are automatically attached to the GitHub releases -->
 
-- Fix: Adds `Base URL` input in custom provider creation dialog.
-- Fix: Fixes `x` button getting hidden behind dialog header.
+- Feature: UI for configuring external observability connectors
+- Feature: OTLP collector
+- Feature: UI-driven Maxim observability configuration
+- Fix: Fixes Bifrost specific error logging in first party and third party logging plugins

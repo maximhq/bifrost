@@ -41,7 +41,7 @@ func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -94,7 +94,7 @@ func BenchmarkMockerPlugin_PreHook_RegexRule(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -169,7 +169,7 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -223,7 +223,7 @@ func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
 		Provider: schemas.OpenAI, // Different from rule condition
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{
@@ -274,7 +274,7 @@ func BenchmarkMockerPlugin_PreHook_Template(b *testing.B) {
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
+			ChatCompletionInput: []schemas.BifrostMessage{
 				{
 					Role: schemas.ModelChatMessageRoleUser,
 					Content: schemas.MessageContent{

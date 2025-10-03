@@ -1,3 +1,4 @@
+// Package genai provides types for the Google GenAI API.
 package genai
 
 import (
@@ -236,7 +237,7 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 		Provider: provider,
 		Model:    model,
 		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{},
+			ChatCompletionInput: []schemas.BifrostMessage{},
 		},
 	}
 
@@ -368,7 +369,7 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 			// Set content only if there are content blocks
 			if len(contentBlocks) > 0 {
 				bifrostMsg.Content = schemas.MessageContent{
-					ContentBlocks: &contentBlocks,
+					ContentBlocks: contentBlocks,
 				}
 			}
 
@@ -377,7 +378,7 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 				if len(toolCalls) > 0 || thoughtStr != "" {
 					bifrostMsg.AssistantMessage = &schemas.AssistantMessage{}
 					if len(toolCalls) > 0 {
-						bifrostMsg.AssistantMessage.ToolCalls = &toolCalls
+						bifrostMsg.AssistantMessage.ToolCalls = toolCalls
 					}
 					if thoughtStr != "" {
 						bifrostMsg.AssistantMessage.Thought = &thoughtStr
@@ -389,7 +390,7 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 		}
 	}
 
-	bifrostReq.Input.ChatCompletionInput = &messages
+	bifrostReq.Input.ChatCompletionInput = messages
 
 	// Convert generation config to parameters
 	if params := r.convertGenerationConfigToParams(); params != nil {
@@ -455,7 +456,7 @@ func (r *GeminiChatRequest) ConvertToBifrostRequest() *schemas.BifrostRequest {
 		}
 
 		if len(tools) > 0 {
-			bifrostReq.Params.Tools = &tools
+			bifrostReq.Params.Tools = tools
 		}
 	}
 
@@ -530,7 +531,7 @@ func (r *GeminiChatRequest) convertGenerationConfigToParams() *schemas.ModelPara
 		params.ExtraParams["candidate_count"] = config.CandidateCount
 	}
 	if len(config.StopSequences) > 0 {
-		params.StopSequences = &config.StopSequences
+		params.StopSequences = config.StopSequences
 	}
 	if config.PresencePenalty != nil {
 		params.PresencePenalty = bifrost.Ptr(float64(*config.PresencePenalty))
@@ -576,7 +577,7 @@ func (r *GeminiChatRequest) convertSchemaToFunctionParameters(schema *genai_sdk.
 	}
 
 	if len(schema.Enum) > 0 {
-		params.Enum = &schema.Enum
+		params.Enum = schema.Enum
 	}
 
 	return params
@@ -622,7 +623,7 @@ func DeriveGenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) interf
 		if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
 			parts = append(parts, &genai_sdk.Part{Text: *choice.Message.Content.ContentStr})
 		} else if choice.Message.Content.ContentBlocks != nil {
-			for _, block := range *choice.Message.Content.ContentBlocks {
+			for _, block := range choice.Message.Content.ContentBlocks {
 				if block.Text != nil {
 					parts = append(parts, &genai_sdk.Part{Text: *block.Text})
 				}
@@ -631,7 +632,7 @@ func DeriveGenAIFromBifrostResponse(bifrostResp *schemas.BifrostResponse) interf
 
 		// Handle tool calls
 		if choice.Message.AssistantMessage != nil && choice.Message.AssistantMessage.ToolCalls != nil {
-			for _, toolCall := range *choice.Message.AssistantMessage.ToolCalls {
+			for _, toolCall := range choice.Message.AssistantMessage.ToolCalls {
 				argsMap := make(map[string]interface{})
 				if toolCall.Function.Arguments != "" {
 					// Attempt to unmarshal arguments, but don't fail if it's not valid JSON,
@@ -844,7 +845,7 @@ func DeriveGeminiEmbeddingFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 	for i, embedding := range bifrostResp.Data {
 		var values []float32
 		if embedding.Embedding.EmbeddingArray != nil {
-			values = *embedding.Embedding.EmbeddingArray
+			values = embedding.Embedding.EmbeddingArray
 		}
 
 		geminiEmbedding := GeminiEmbedding{
