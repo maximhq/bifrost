@@ -94,6 +94,34 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 
 	// Chat completions endpoint
 	for _, path := range []string{
+		"/v1/completions",
+		"/completions",
+		"/openai/deployments/{deployment-id}/completions",
+	} {
+		routes = append(routes, integrations.RouteConfig{
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &OpenAIChatRequest{}
+			},
+			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				if openaiReq, ok := req.(*OpenAIChatRequest); ok {
+					return openaiReq.ConvertToBifrostRequest(pathPrefix != "/openai"), nil
+				}
+				return nil, errors.New("invalid request type")
+			},
+			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				return DeriveOpenAIFromBifrostResponse(resp), nil
+			},
+			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				return DeriveOpenAIErrorFromBifrostError(err)
+			},
+			PreCallback: AzureEndpointPreHook(handlerStore),
+		})
+	}
+
+	// Chat completions endpoint
+	for _, path := range []string{
 		"/v1/chat/completions",
 		"/chat/completions",
 		"/openai/deployments/{deployment-id}/chat/completions",

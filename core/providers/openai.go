@@ -98,7 +98,66 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 // TextCompletion is not supported by the OpenAI provider.
 // Returns an error indicating that text completion is not available.
 func (provider *OpenAIProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion", "openai")
+	preparedParams := prepareParams(params)
+
+	// Merge additional parameters
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":  model,
+		"prompt": text,
+	}, preparedParams)
+
+	return handleOpenAITextCompletion(ctx, provider.client, requestBody, provider.networkConfig.ExtraHeaders, provider.networkConfig.BaseURL+"/v1/completions", key, provider.GetProviderKey(), provider.sendBackRawResponse, params)
+}
+
+func handleOpenAITextCompletion(ctx context.Context, client *fasthttp.Client, requestBody map[string]interface{}, extraHeaders map[string]string, url string, key schemas.Key, providerName schemas.ModelProvider, sendBackRawResponse bool, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	jsonBody, err := sonic.Marshal(requestBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod("POST")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
+
+	req.SetBody(jsonBody)
+
+	// Make request
+	bifrostErr := makeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	responseBody := resp.Body()
+
+	response := &schemas.BifrostResponse{}
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.Provider = providerName
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	if params != nil {
+		response.ExtraFields.Params = *params
+	}
+
+	return response, nil
 }
 
 // ChatCompletion performs a chat completion request to the OpenAI API.

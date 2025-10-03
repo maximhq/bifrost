@@ -7,55 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
-
-// cerebrasTextResponsePool provides a pool for Cerebras text completion response objects.
-var cerebrasTextResponsePool = sync.Pool{
-	New: func() interface{} {
-		return &AzureTextResponse{}
-	},
-}
-
-// // cerebrasChatResponsePool provides a pool for Cerebras chat response objects.
-// var cerebrasChatResponsePool = sync.Pool{
-// 	New: func() interface{} {
-// 		return &schemas.BifrostResponse{}
-// 	},
-// }
-
-// // acquireCerebrasChatResponse gets a Cerebras response from the pool and resets it.
-// func acquireCerebrasChatResponse() *schemas.BifrostResponse {
-// 	resp := cerebrasChatResponsePool.Get().(*schemas.BifrostResponse)
-// 	*resp = schemas.BifrostResponse{} // Reset the struct
-// 	return resp
-// }
-
-// // releaseCerebrasChatResponse returns a Cerebras response to the pool.
-// func releaseCerebrasChatResponse(resp *schemas.BifrostResponse) {
-// 	if resp != nil {
-// 		cerebrasChatResponsePool.Put(resp)
-// 	}
-// }
-
-// acquireCerebrasTextResponse gets a Cerebras text completion response from the pool and resets it.
-func acquireCerebrasTextResponse() *AzureTextResponse {
-	resp := cerebrasTextResponsePool.Get().(*AzureTextResponse)
-	*resp = AzureTextResponse{} // Reset the struct
-	return resp
-}
-
-// releaseCerebrasTextResponse returns a Cerebras text completion response to the pool.
-func releaseCerebrasTextResponse(resp *AzureTextResponse) {
-	if resp != nil {
-		cerebrasTextResponsePool.Put(resp)
-	}
-}
 
 // CerebrasProvider implements the Provider interface for Cerebras's API.
 type CerebrasProvider struct {
@@ -81,12 +38,6 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	// Initialize streaming HTTP client
 	streamClient := &http.Client{
 		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-	}
-
-	// Pre-warm response pools
-	for range config.ConcurrencyAndBufferSize.Concurrency {
-		// cerebrasChatResponsePool.Put(&schemas.BifrostResponse{})
-		cerebrasTextResponsePool.Put(&AzureTextResponse{})
 	}
 
 	// Configure proxy if provided
@@ -124,104 +75,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model stri
 		"prompt": text,
 	}, preparedParams)
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	jsonBody, err := sonic.Marshal(requestBody)
-	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Cerebras)
-	}
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/completions")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from cerebras provider: %s", string(resp.Body())))
-
-		var errorResp map[string]interface{}
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("Cerebras error: %v", errorResp)
-		return nil, bifrostErr
-	}
-
-	responseBody := resp.Body()
-
-	// Pre-allocate response structs from pools
-	response := acquireCerebrasTextResponse()
-	defer releaseCerebrasTextResponse(response)
-
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	choices := []schemas.BifrostResponseChoice{}
-
-	// Create the completion result
-	if len(response.Choices) > 0 {
-		// Copy text content to avoid pointer to pooled memory
-		textCopy := response.Choices[0].Text
-
-		choices = append(choices, schemas.BifrostResponseChoice{
-			Index: 0,
-			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentStr: &textCopy,
-					},
-				},
-				LogProbs: &schemas.LogProbs{
-					Text: response.Choices[0].LogProbs,
-				},
-			},
-			FinishReason: response.Choices[0].FinishReason,
-		})
-	}
-
-	// Copy Usage struct to avoid pointer to pooled memory
-	usageCopy := response.Usage
-
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:                response.ID,
-		Choices:           choices,
-		Model:             response.Model,
-		Created:           response.Created,
-		SystemFingerprint: response.SystemFingerprint,
-		Usage:             &usageCopy,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Cerebras,
-		},
-	}
-
-	// Set raw response if enabled
-	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
-	}
-
-	return bifrostResponse, nil
+	return handleOpenAITextCompletion(ctx, provider.client, requestBody, provider.networkConfig.ExtraHeaders, provider.networkConfig.BaseURL+"/v1/completions", key, provider.GetProviderKey(), provider.sendBackRawResponse, params)
 }
 
 // ChatCompletion performs a chat completion request to the Cerebras API.

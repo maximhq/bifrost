@@ -69,7 +69,7 @@ var completionRequestKnownFields = map[string]bool{
 type CompletionRequest struct {
 	Model     string                   `json:"model"`     // Model to use in "provider/model" format
 	Messages  []schemas.BifrostMessage `json:"messages"`  // Chat messages (for chat completion)
-	Text      string                   `json:"text"`      // Text input (for text completion)
+	Prompt    string                   `json:"prompt"`    // Text input (for text completion)
 	Fallbacks []string                 `json:"fallbacks"` // Fallback providers and models in "provider/model" format
 	Stream    *bool                    `json:"stream"`    // Whether to stream the response
 
@@ -266,7 +266,7 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router) {
 	// Completion endpoints
-	r.POST("/v1/text/completions", h.textCompletion)
+	r.POST("/v1/completions", h.textCompletion)
 	r.POST("/v1/chat/completions", h.chatCompletion)
 	r.POST("/v1/embeddings", h.embeddings)
 	r.POST("/v1/audio/speech", h.speechCompletion)
@@ -447,12 +447,12 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 	// Validate and set input based on completion type
 	switch completionType {
 	case CompletionTypeText:
-		if req.Text == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "Text is required for text completion", h.logger)
+		if req.Prompt == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "Prompt is required for text completion", h.logger)
 			return
 		}
 		bifrostReq.Input = schemas.RequestInput{
-			TextCompletionInput: &req.Text,
+			TextCompletionInput: &req.Prompt,
 		}
 	case CompletionTypeChat:
 		if len(req.Messages) == 0 {

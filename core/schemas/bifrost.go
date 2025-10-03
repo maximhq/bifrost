@@ -698,6 +698,8 @@ type BifrostNonStreamResponseChoice struct {
 	Message    BifrostMessage `json:"message"`
 	StopString *string        `json:"stop,omitempty"`
 	LogProbs   *LogProbs      `json:"log_probs,omitempty"`
+
+	Text *string `json:"text,omitempty"` // For text completion
 }
 
 // BifrostStreamResponseChoice represents a choice in the stream response

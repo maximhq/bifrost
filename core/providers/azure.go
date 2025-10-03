@@ -6,30 +6,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
-
-// AzureTextResponse represents the response structure from Azure's text completion API.
-// It includes completion choices, model information, and usage statistics.
-type AzureTextResponse struct {
-	ID      string `json:"id"`     // Unique identifier for the completion
-	Object  string `json:"object"` // Type of completion (always "text.completion")
-	Choices []struct {
-		FinishReason *string                       `json:"finish_reason,omitempty"` // Reason for completion termination
-		Index        int                           `json:"index"`                   // Index of the choice
-		Text         string                        `json:"text"`                    // Generated text
-		LogProbs     schemas.TextCompletionLogProb `json:"logprobs"`                // Log probabilities
-	} `json:"choices"`
-	Model             string           `json:"model"`              // Model used for the completion
-	Created           int              `json:"created"`            // Unix timestamp of completion creation
-	SystemFingerprint *string          `json:"system_fingerprint"` // System fingerprint for the request
-	Usage             schemas.LLMUsage `json:"usage"`              // Token usage statistics
-}
 
 // AzureError represents the error response structure from Azure's API.
 // It includes error code and message information.
@@ -42,48 +24,6 @@ type AzureError struct {
 
 // AzureAuthorizationTokenKey is the context key for the Azure authentication token.
 const AzureAuthorizationTokenKey ContextKey = "azure-authorization-token"
-
-// azureTextCompletionResponsePool provides a pool for Azure text completion response objects.
-var azureTextCompletionResponsePool = sync.Pool{
-	New: func() interface{} {
-		return &AzureTextResponse{}
-	},
-}
-
-// // azureChatResponsePool provides a pool for Azure chat response objects.
-// var azureChatResponsePool = sync.Pool{
-// 	New: func() interface{} {
-// 		return &schemas.BifrostResponse{}
-// 	},
-// }
-
-// // acquireAzureChatResponse gets an Azure chat response from the pool and resets it.
-// func acquireAzureChatResponse() *schemas.BifrostResponse {
-// 	resp := azureChatResponsePool.Get().(*schemas.BifrostResponse)
-// 	*resp = schemas.BifrostResponse{} // Reset the struct
-// 	return resp
-// }
-
-// // releaseAzureChatResponse returns an Azure chat response to the pool.
-// func releaseAzureChatResponse(resp *schemas.BifrostResponse) {
-// 	if resp != nil {
-// 		azureChatResponsePool.Put(resp)
-// 	}
-// }
-
-// acquireAzureTextResponse gets an Azure text completion response from the pool and resets it.
-func acquireAzureTextResponse() *AzureTextResponse {
-	resp := azureTextCompletionResponsePool.Get().(*AzureTextResponse)
-	*resp = AzureTextResponse{} // Reset the struct
-	return resp
-}
-
-// releaseAzureTextResponse returns an Azure text completion response to the pool.
-func releaseAzureTextResponse(resp *AzureTextResponse) {
-	if resp != nil {
-		azureTextCompletionResponsePool.Put(resp)
-	}
-}
 
 // AzureProvider implements the Provider interface for Azure's OpenAI API.
 type AzureProvider struct {
@@ -109,13 +49,6 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 	// Initialize streaming HTTP client
 	streamClient := &http.Client{
 		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-	}
-
-	// Pre-warm response pools
-	for range config.ConcurrencyAndBufferSize.Concurrency {
-		// azureChatResponsePool.Put(&schemas.BifrostResponse{})
-		azureTextCompletionResponsePool.Put(&AzureTextResponse{})
-
 	}
 
 	// Configure proxy if provided
@@ -235,59 +168,25 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, model string,
 		return nil, err
 	}
 
-	// Create response object from pool
-	response := acquireAzureTextResponse()
-	defer releaseAzureTextResponse(response)
+	response := &schemas.BifrostResponse{}
 
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	choices := []schemas.BifrostResponseChoice{}
-
-	// Create the completion result
-	if len(response.Choices) > 0 {
-		choices = append(choices, schemas.BifrostResponseChoice{
-			Index: 0,
-			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentStr: &response.Choices[0].Text,
-					},
-				},
-				LogProbs: &schemas.LogProbs{
-					Text: response.Choices[0].LogProbs,
-				},
-			},
-			FinishReason: response.Choices[0].FinishReason,
-		})
-	}
-
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:                response.ID,
-		Choices:           choices,
-		Model:             response.Model,
-		Created:           response.Created,
-		SystemFingerprint: response.SystemFingerprint,
-		Usage:             &response.Usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Azure,
-		},
-	}
+	response.ExtraFields.Provider = provider.GetProviderKey()
 
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		response.ExtraFields.Params = *params
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 // ChatCompletion performs a chat completion request to Azure's API.
@@ -307,10 +206,6 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 		return nil, err
 	}
 
-	// Create response object from pool
-	// response := acquireAzureChatResponse()
-	// defer releaseAzureChatResponse(response)
-
 	response := &schemas.BifrostResponse{}
 
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
@@ -318,7 +213,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 		return nil, bifrostErr
 	}
 
-	response.ExtraFields.Provider = schemas.Azure
+	response.ExtraFields.Provider = provider.GetProviderKey()
 
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
@@ -344,10 +239,6 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 		return nil, err
 	}
 
-	// Pre-allocate response structs from pools
-	// response := acquireAzureChatResponse()
-	// defer releaseAzureChatResponse(response)
-
 	response := &schemas.BifrostResponse{}
 
 	// Use enhanced response handler with pre-allocated response
@@ -356,7 +247,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, model string, key 
 		return nil, bifrostErr
 	}
 
-	response.ExtraFields.Provider = schemas.Azure
+	response.ExtraFields.Provider = provider.GetProviderKey()
 
 	if params != nil {
 		response.ExtraFields.Params = *params

@@ -9,6 +9,7 @@ import (
 // OpenAIChatRequest represents an OpenAI chat completion request
 type OpenAIChatRequest struct {
 	Model               string                   `json:"model"`
+	Prompt              *string                  `json:"prompt,omitempty"` // This is used for text completion
 	Messages            []schemas.BifrostMessage `json:"messages"`
 	MaxTokens           *int                     `json:"max_tokens,omitempty"`
 	Temperature         *float64                 `json:"temperature,omitempty"`
@@ -167,6 +168,7 @@ func (r *OpenAIChatRequest) ConvertToBifrostRequest(checkProviderFromModel bool)
 		Provider: provider,
 		Model:    model,
 		Input: schemas.RequestInput{
+			TextCompletionInput: r.Prompt,
 			ChatCompletionInput: &r.Messages,
 		},
 		Params: filterParams(provider, params),

@@ -14,27 +14,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// // sglResponsePool provides a pool for SGL response objects.
-// var sglResponsePool = sync.Pool{
-// 	New: func() interface{} {
-// 		return &schemas.BifrostResponse{}
-// 	},
-// }
-
-// // acquireSGLResponse gets a SGL response from the pool and resets it.
-// func acquireSGLResponse() *schemas.BifrostResponse {
-// 	resp := sglResponsePool.Get().(*schemas.BifrostResponse)
-// 	*resp = schemas.BifrostResponse{} // Reset the struct
-// 	return resp
-// }
-
-// // releaseSGLResponse returns a SGL response to the pool.
-// func releaseSGLResponse(resp *schemas.BifrostResponse) {
-// 	if resp != nil {
-// 		sglResponsePool.Put(resp)
-// 	}
-// }
-
 // SGLProvider implements the Provider interface for SGL's API.
 type SGLProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
@@ -92,7 +71,14 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the SGL provider.
 func (provider *SGLProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion", "sgl")
+	preparedParams := prepareParams(params)
+
+	requestBody := mergeConfig(map[string]interface{}{
+		"model":  model,
+		"prompt": text,
+	}, preparedParams)
+
+	return handleOpenAITextCompletion(ctx, provider.client, requestBody, provider.networkConfig.ExtraHeaders, provider.networkConfig.BaseURL+"/v1/completions", key, provider.GetProviderKey(), provider.sendBackRawResponse, params)
 }
 
 // ChatCompletion performs a chat completion request to the SGL API.
