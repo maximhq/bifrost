@@ -293,19 +293,30 @@ type Fallback struct {
 // your request to the model. Bifrost follows a standard set of parameters which
 // mapped to the provider's parameters.
 type ModelParameters struct {
-	ToolChoice        *ToolChoice `json:"tool_choice,omitempty"`         // Whether to call a tool
-	Tools             *[]Tool     `json:"tools,omitempty"`               // Tools to use
-	Temperature       *float64    `json:"temperature,omitempty"`         // Controls randomness in the output
-	TopP              *float64    `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
-	TopK              *int        `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
-	MaxTokens         *int        `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
-	StopSequences     *[]string   `json:"stop_sequences,omitempty"`      // Sequences that stop generation
-	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
-	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
-	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
-	EncodingFormat    *string     `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
-	Dimensions        *int        `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
-	User              *string     `json:"user,omitempty"`                // User identifier for tracking
+	ToolChoice          *ToolChoice             `json:"tool_choice,omitempty"`         // Whether to call a tool
+	Tools               *[]Tool                 `json:"tools,omitempty"`               // Tools to use
+	Temperature         *float64                `json:"temperature,omitempty"`         // Controls randomness in the output
+	TopP                *float64                `json:"top_p,omitempty"`               // Controls diversity via nucleus sampling
+	TopK                *int                    `json:"top_k,omitempty"`               // Controls diversity via top-k sampling
+	MaxTokens           *int                    `json:"max_tokens,omitempty"`          // Maximum number of tokens to generate
+	StopSequences       *[]string               `json:"stop_sequences,omitempty"`      // Sequences that stop generation
+	PresencePenalty     *float64                `json:"presence_penalty,omitempty"`    // Penalizes repeated tokens
+	FrequencyPenalty    *float64                `json:"frequency_penalty,omitempty"`   // Penalizes frequent tokens
+	ParallelToolCalls   *bool                   `json:"parallel_tool_calls,omitempty"` // Enables parallel tool calls
+	EncodingFormat      *string                 `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
+	Dimensions          *int                    `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
+	User                *string                 `json:"user,omitempty"`                // User identifier for tracking
+	N                   *int                    `json:"n,omitempty"`
+	Stop                interface{}             `json:"stop,omitempty"`
+	MaxCompletionTokens *int                    `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort     *string                 `json:"reasoning_effort,omitempty"`
+	StreamOptions       *map[string]interface{} `json:"stream_options,omitempty"`
+	Stream              *bool                   `json:"stream,omitempty"`
+	LogProbs            *bool                   `json:"logprobs,omitempty"`
+	TopLogProbs         *int                    `json:"top_logprobs,omitempty"`
+	ResponseFormat      interface{}             `json:"response_format,omitempty"`
+	Seed                *int                    `json:"seed,omitempty"`
+	LogitBias           map[string]float64      `json:"logit_bias,omitempty"`
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -501,6 +512,21 @@ type ImageURLStruct struct {
 	Detail *string `json:"detail,omitempty"`
 }
 
+// ImageContentType represents the type of image content
+type ImageContentType string
+
+const (
+	ImageContentTypeBase64 ImageContentType = "base64"
+	ImageContentTypeURL    ImageContentType = "url"
+)
+
+// URLTypeInfo contains extracted information about a URL
+type URLTypeInfo struct {
+	Type                 ImageContentType
+	MediaType            *string
+	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
+}
+
 // InputAudioStruct represents audio data in a message.
 // Data carries the audio payload as a string (e.g., data URL or provider-accepted encoded content).
 // Format is optional (e.g., "wav", "mp3"); when nil, providers may attempt auto-detection.
@@ -597,9 +623,10 @@ type TextCompletionLogProb struct {
 
 // LogProbs represents the log probabilities for different aspects of a response.
 type LogProbs struct {
-	Content []ContentLogProb      `json:"content,omitempty"`
-	Refusal []LogProb             `json:"refusal,omitempty"`
-	Text    TextCompletionLogProb `json:"text,omitempty"`
+	Content []ContentLogProb `json:"content,omitempty"`
+	Refusal []LogProb        `json:"refusal,omitempty"`
+
+	*TextCompletionLogProb
 }
 
 // FunctionCall represents a call to a function.
@@ -686,18 +713,24 @@ func (be *BifrostEmbeddingResponse) UnmarshalJSON(data []byte) error {
 // IMPORTANT: Only one of BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
-	Index        int     `json:"index"`
-	FinishReason *string `json:"finish_reason,omitempty"`
+	Index        int       `json:"index"`
+	FinishReason *string   `json:"finish_reason,omitempty"`
+	LogProbs     *LogProbs `json:"log_probs,omitempty"`
+
+	*BifrostTextCompletionResponseChoice
 
 	*BifrostNonStreamResponseChoice
 	*BifrostStreamResponseChoice
+}
+
+type BifrostTextCompletionResponseChoice struct {
+	Text *string `json:"text,omitempty"`
 }
 
 // BifrostNonStreamResponseChoice represents a choice in the non-stream response
 type BifrostNonStreamResponseChoice struct {
 	Message    BifrostMessage `json:"message"`
 	StopString *string        `json:"stop,omitempty"`
-	LogProbs   *LogProbs      `json:"log_probs,omitempty"`
 }
 
 // BifrostStreamResponseChoice represents a choice in the stream response
