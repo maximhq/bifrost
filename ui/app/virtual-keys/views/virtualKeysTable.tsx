@@ -156,10 +156,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
 									return (
 										<TableRow key={vk.id} className="hover:bg-muted/50 cursor-pointer transition-colors" onClick={() => handleRowClick(vk)}>
 											<TableCell className="max-w-[200px]">
-												<div className="truncate">
-													<div className="truncate font-medium">{vk.name}</div>
-													{vk.description && <div className="text-muted-foreground truncate text-sm">{vk.description}</div>}
-												</div>
+												<div className="truncate font-medium">{vk.name}</div>
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center gap-2">
