@@ -3,6 +3,7 @@ package genai
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -50,6 +51,11 @@ func CreateGenAIRouteConfigs(pathPrefix string) []integrations.RouteConfig {
 		},
 		PreCallback: extractAndSetModelFromURL,
 	})
+
+	// Add management endpoints only for primary GenAI integration
+	if pathPrefix == "/genai" {
+		routes = append(routes, createGenAIManagementRoutes(pathPrefix)...)
+	}
 
 	return routes
 }
@@ -114,4 +120,96 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, req interface{}) error 
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
+}
+
+// createGenAIManagementRoutes creates route configurations for Google GenAI management endpoints
+func createGenAIManagementRoutes(pathPrefix string) []integrations.RouteConfig {
+	var routes []integrations.RouteConfig
+
+	// Management endpoints - following the same for-loop pattern as other routes
+	for _, path := range []string{
+		"/v1beta/models",
+		"/v1beta/models/{model:*}",
+	} {
+		log.Printf("Creating management route: %s", pathPrefix + path)
+		routes = append(routes, integrations.RouteConfig{
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &integrations.ManagementRequest{}
+			},
+			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				// For management endpoints, we create a minimal BifrostRequest
+				// The actual API call is handled by the PreCallback (handleGenAIManagementRequest)
+				return &schemas.BifrostRequest{
+					Provider: schemas.Gemini,
+					Model:    "management", // Special model type for management requests
+					Input:    schemas.RequestInput{}, // Empty input - management doesn't need chat data
+				}, nil
+			},
+			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}, nil
+			},
+			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				return map[string]interface{}{
+					"object": "list",
+					"data":   []interface{}{},
+				}
+			},
+			PreCallback: handleGenAIManagementRequest,
+		})
+	}
+
+	return routes
+}
+
+// handleGenAIManagementRequest handles management endpoint requests by forwarding directly to Google GenAI API
+func handleGenAIManagementRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	// Extract API key from request
+	apiKey, err := integrations.ExtractAPIKeyFromContext(ctx)
+	if err != nil {
+		integrations.SendManagementError(ctx, err, 401)
+		return err
+	}
+
+	// Extract query parameters
+	queryParams := integrations.ExtractQueryParams(ctx)
+
+	// Determine the endpoint based on the path
+	var endpoint string
+	path := string(ctx.Path())
+	
+	if strings.HasSuffix(path, "/v1beta/models") && !strings.Contains(path, "/v1beta/models/") {
+		// List models endpoint
+		endpoint = "/v1beta/models"
+	} else if strings.Contains(path, "/v1beta/models/") {
+		// Model details endpoint - extract model from path
+		model := ctx.UserValue("model")
+		if model == nil {
+			integrations.SendManagementError(ctx, fmt.Errorf("model parameter is required"), 400)
+			return fmt.Errorf("model parameter is required")
+		}
+		modelStr := model.(string)
+		endpoint = "/v1beta/models/" + modelStr
+	} else {
+		integrations.SendManagementError(ctx, fmt.Errorf("unknown management endpoint"), 404)
+		return fmt.Errorf("unknown management endpoint")
+	}
+
+	// Create management client and forward the request
+	client := integrations.NewManagementAPIClient()
+	response, err := client.ForwardRequest(ctx, schemas.Gemini, endpoint, apiKey, queryParams)
+	if err != nil {
+		integrations.SendManagementError(ctx, err, 500)
+		ctx.SetUserValue("management_handled", true)
+		return nil
+	}
+
+	// Send the successful response
+	integrations.SendManagementResponse(ctx, response.Data, response.StatusCode)
+	ctx.SetUserValue("management_handled", true)
+	return nil
 }

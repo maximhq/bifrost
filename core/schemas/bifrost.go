@@ -119,7 +119,8 @@ type RequestInput struct {
 	ChatCompletionInput *[]BifrostMessage   `json:"chat_completion_input,omitempty"`
 	EmbeddingInput      *EmbeddingInput     `json:"embedding_input,omitempty"`
 	SpeechInput         *SpeechInput        `json:"speech_input,omitempty"`
-	TranscriptionInput  *TranscriptionInput `json:"transcription_input,omitempty"`
+	TranscriptionInput *TranscriptionInput `json:"transcription_input,omitempty"`
+	ManagementInput     *ManagementInput    `json:"management_input,omitempty"`
 }
 
 // EmbeddingInput represents the input for an embedding request.
@@ -266,6 +267,13 @@ type TranscriptionInput struct {
 	Prompt         *string `json:"prompt,omitempty"`
 	ResponseFormat *string `json:"response_format,omitempty"` // Default is "json"
 	Format         *string `json:"file_format,omitempty"`     // Type of file, not required in openai, but required in gemini
+}
+
+// ManagementInput represents the input for a management API request.
+type ManagementInput struct {
+	Endpoint    string            `json:"endpoint"`
+	QueryParams map[string]string `json:"query_params,omitempty"`
+	APIKey      string            `json:"api_key,omitempty"`
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
@@ -519,6 +527,7 @@ type BifrostResponse struct {
 	Data              []BifrostEmbedding         `json:"data,omitempty"`       // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
 	Speech            *BifrostSpeech             `json:"speech,omitempty"`     // Maps to "speech" field in provider responses (e.g., OpenAI speech format)
 	Transcribe        *BifrostTranscribe         `json:"transcribe,omitempty"` // Maps to "transcribe" field in provider responses (e.g., OpenAI transcription format)
+	Management        *ManagementResponse        `json:"management,omitempty"` // Maps to "management" field in provider responses (e.g., OpenAI models API format)
 	Model             string                     `json:"model,omitempty"`
 	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
 	ServiceTier       *string                    `json:"service_tier,omitempty"`
@@ -734,6 +743,13 @@ type BifrostTranscribe struct {
 	// Embedded structs for specific fields only
 	*BifrostTranscribeNonStreamResponse
 	*BifrostTranscribeStreamResponse
+}
+
+// ManagementResponse represents the response from a management API call
+type ManagementResponse struct {
+	Data       []byte            `json:"data"`
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 
 // BifrostTranscribeNonStreamResponse represents non-streaming specific fields only
