@@ -41,10 +41,10 @@ response, err := client.ChatCompletionRequest(context.Background(), &schemas.Bif
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-mini",
 	Input: schemas.RequestInput{
-		ChatCompletionInput: &[]schemas.BifrostMessage{
+		ChatCompletionInput: &[]schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentStr: bifrost.Ptr("What is 2+2? Use the calculator tool."),
 				},
 			},
@@ -89,16 +89,16 @@ client, initErr := bifrost.Init(context.Background(), schemas.BifrostConfig{
 if initErr != nil {
 	panic(initErr)
 }
-defer client.Cleanup()
+defer client.Shutdown()
 
 response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-mini",
 	Input: schemas.RequestInput{
-		ChatCompletionInput: &[]schemas.BifrostMessage{
+		ChatCompletionInput: &[]schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentStr: bifrost.Ptr("What do you see when you search for 'bifrost' on youtube?"),
 				},
 			},
@@ -214,10 +214,10 @@ response, err := client.ChatCompletionRequest(context.Background(), &schemas.Bif
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-mini",
 	Input: schemas.RequestInput{
-		ChatCompletionInput: &[]schemas.BifrostMessage{
+		ChatCompletionInput: &[]schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentStr: bifrost.Ptr("What's the weather in New York and calculate 15% tip for a $50 bill?"),
 				},
 			},

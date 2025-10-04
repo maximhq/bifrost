@@ -13,10 +13,10 @@ response, err := client.ChatCompletionRequest(context.Background(), &schemas.Bif
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o", // Using vision-capable model
 	Input: schemas.RequestInput{
-		ChatCompletionInput: &[]schemas.BifrostMessage{
+		ChatCompletionInput: &[]schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentBlocks: &[]schemas.ContentBlock{
 						{
 							Type: schemas.ContentBlockTypeText,
@@ -54,10 +54,10 @@ response, err := client.ChatCompletionRequest(context.Background(), &schemas.Bif
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-audio-preview",
 	Input: schemas.RequestInput{
-		ChatCompletionInput: &[]schemas.BifrostMessage{
+		ChatCompletionInput: &[]schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentBlocks: &[]schemas.ContentBlock{
 						{
 							Type: schemas.ContentBlockTypeText,
@@ -157,10 +157,10 @@ response, err := client.ChatCompletionRequest(context.Background(), &schemas.Bif
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o",
 	Input: schemas.RequestInput{
-		ChatCompletionInput: &[]schemas.BifrostMessage{
+		ChatCompletionInput: &[]schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentBlocks: &[]schemas.ContentBlock{
 						{
 							Type: schemas.ContentBlockTypeText,
@@ -203,10 +203,10 @@ response, err := client.ChatCompletionRequest(context.Background(), &schemas.Bif
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o",
 	Input: schemas.RequestInput{
-		ChatCompletionInput: &[]schemas.BifrostMessage{
+		ChatCompletionInput: &[]schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentBlocks: &[]schemas.ContentBlock{
 						{
 							Type: schemas.ContentBlockTypeText,

@@ -3,30 +3,39 @@ package cohere
 import (
 	"encoding/json"
 	"fmt"
-
-	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ==================== REQUEST TYPES ====================
 
 // CohereChatRequest represents a Cohere  chat completion request
 type CohereChatRequest struct {
-	Model            string            `json:"model"`                        // Required: Model to use for chat completion
-	Messages         []CohereMessage   `json:"messages"`                     // Required: Array of message objects
-	Tools            *[]schemas.Tool   `json:"tools,omitempty"`              // Optional: Tools available for the model
-	ToolChoice       *CohereToolChoice `json:"tool_choice,omitempty"`        // Optional: Tool choice configuration
-	Temperature      *float64          `json:"temperature,omitempty"`        // Optional: Sampling temperature
-	P                *float64          `json:"p,omitempty"`                  // Optional: Top-p sampling
-	K                *int              `json:"k,omitempty"`                  // Optional: Top-k sampling
-	MaxTokens        *int              `json:"max_tokens,omitempty"`         // Optional: Maximum tokens to generate
-	StopSequences    *[]string         `json:"stop_sequences,omitempty"`     // Optional: Stop sequences
-	FrequencyPenalty *float64          `json:"frequency_penalty,omitempty"`  // Optional: Frequency penalty
-	PresencePenalty  *float64          `json:"presence_penalty,omitempty"`   // Optional: Presence penalty
-	Stream           *bool             `json:"stream,omitempty"`             // Optional: Enable streaming
-	SafetyMode       *string           `json:"safety_mode,omitempty"`        // Optional: Safety mode
-	LogProbs         *bool             `json:"log_probs,omitempty"`          // Optional: Log probabilities
-	StrictToolChoice *bool             `json:"strict_tool_choice,omitempty"` // Optional: Strict tool choice
-	Thinking         *CohereThinking   `json:"thinking,omitempty"`           // Optional: Reasoning configuration
+	Model            string                   `json:"model"`                        // Required: Model to use for chat completion
+	Messages         []CohereMessage          `json:"messages"`                     // Required: Array of message objects
+	Tools            *[]CohereChatRequestTool `json:"tools,omitempty"`              // Optional: Tools available for the model
+	ToolChoice       *CohereToolChoice        `json:"tool_choice,omitempty"`        // Optional: Tool choice configuration
+	Temperature      *float64                 `json:"temperature,omitempty"`        // Optional: Sampling temperature
+	P                *float64                 `json:"p,omitempty"`                  // Optional: Top-p sampling
+	K                *int                     `json:"k,omitempty"`                  // Optional: Top-k sampling
+	MaxTokens        *int                     `json:"max_tokens,omitempty"`         // Optional: Maximum tokens to generate
+	StopSequences    *[]string                `json:"stop_sequences,omitempty"`     // Optional: Stop sequences
+	FrequencyPenalty *float64                 `json:"frequency_penalty,omitempty"`  // Optional: Frequency penalty
+	PresencePenalty  *float64                 `json:"presence_penalty,omitempty"`   // Optional: Presence penalty
+	Stream           *bool                    `json:"stream,omitempty"`             // Optional: Enable streaming
+	SafetyMode       *string                  `json:"safety_mode,omitempty"`        // Optional: Safety mode
+	LogProbs         *bool                    `json:"log_probs,omitempty"`          // Optional: Log probabilities
+	StrictToolChoice *bool                    `json:"strict_tool_choice,omitempty"` // Optional: Strict tool choice
+	Thinking         *CohereThinking          `json:"thinking,omitempty"`           // Optional: Reasoning configuration
+}
+
+type CohereChatRequestTool struct {
+	Type     string                    `json:"type"` // always "function"
+	Function CohereChatRequestFunction `json:"function"`
+}
+
+type CohereChatRequestFunction struct {
+	Name        string      `json:"name"`                  // Function name
+	Parameters  interface{} `json:"parameters,omitempty"`  // Function parameters (JSON string)
+	Description *string     `json:"description,omitempty"` // Optional: Function description
 }
 
 // CohereMessage represents a message in Cohere  format
@@ -111,10 +120,19 @@ func (c *CohereMessageContent) GetBlocks() *[]CohereContentBlock {
 	return c.BlocksContent
 }
 
+type CohereContentBlockType string
+
+const (
+	CohereContentBlockTypeText     CohereContentBlockType = "text"
+	CohereContentBlockTypeImage    CohereContentBlockType = "image_url"
+	CohereContentBlockTypeThinking CohereContentBlockType = "thinking"
+	CohereContentBlockTypeDocument CohereContentBlockType = "document"
+)
+
 // CohereContentBlock represents a content block in Cohere  format
 // This is a union type that can be text, image_url, thinking, or document
 type CohereContentBlock struct {
-	Type string `json:"type"` // Required: Content block type
+	Type CohereContentBlockType `json:"type"` // Required: Content block type
 
 	// Text content block
 	Text *string `json:"text,omitempty"`

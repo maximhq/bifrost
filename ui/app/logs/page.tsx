@@ -9,7 +9,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { getErrorMessage, useLazyGetLogsQuery } from "@/lib/store";
-import type { BifrostMessage, ContentBlock, LogEntry, LogFilters, LogStats, MessageContent, Pagination } from "@/lib/types/logs";
+import type { ChatMessage, ContentBlock, LogEntry, LogFilters, LogStats, ChatMessageContent, Pagination } from "@/lib/types/logs";
 import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -244,7 +244,7 @@ export default function LogsPage() {
 		setInitialLoading(false);
 	}, []);
 
-	const getMessageText = (content: MessageContent): string => {
+	const getMessageText = (content: ChatMessageContent): string => {
 		if (typeof content === "string") {
 			return content;
 		}
@@ -291,7 +291,7 @@ export default function LogsPage() {
 		if (filters.content_search) {
 			const search = filters.content_search.toLowerCase();
 			const content = [
-				...(log.input_history || []).map((msg: BifrostMessage) => getMessageText(msg.content)),
+				...(log.input_history || []).map((msg: ChatMessage) => getMessageText(msg.content)),
 				log.output_message ? getMessageText(log.output_message.content) : "",
 			]
 				.join(" ")

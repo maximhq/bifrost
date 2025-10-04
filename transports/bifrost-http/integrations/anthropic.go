@@ -25,7 +25,9 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
-					return anthropicReq.ToBifrostRequest(), nil
+					return &schemas.BifrostRequest{
+						ChatRequest: anthropicReq.ToBifrostRequest(),
+					}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},

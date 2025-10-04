@@ -45,10 +45,17 @@ func (r *AnthropicMessageRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
+type AnthropicMessageRole string
+
+const (
+	AnthropicMessageRoleUser      AnthropicMessageRole = "user"
+	AnthropicMessageRoleAssistant AnthropicMessageRole = "assistant"
+)
+
 // AnthropicMessage represents a message in Anthropic format
 type AnthropicMessage struct {
-	Role    string           `json:"role"`    // "user", "assistant"
-	Content AnthropicContent `json:"content"` // Array of content blocks
+	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant"
+	Content AnthropicContent     `json:"content"` // Array of content blocks
 }
 
 // AnthropicContent represents content that can be either string or array of blocks
@@ -95,17 +102,27 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("content field is neither a string nor an array of ContentBlock")
 }
 
+type AnthropicContentBlockType string
+
+const (
+	AnthropicContentBlockTypeText       AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage      AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeToolUse    AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeToolResult AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeThinking   AnthropicContentBlockType = "thinking"
+)
+
 // AnthropicContentBlock represents content in Anthropic message format
 type AnthropicContentBlock struct {
-	Type      string                `json:"type"`                  // "text", "image", "tool_use", "tool_result", "thinking"
-	Text      *string               `json:"text,omitempty"`        // For text content
-	Thinking  *string               `json:"thinking,omitempty"`    // For thinking content
-	ToolUseID *string               `json:"tool_use_id,omitempty"` // For tool_result content
-	ID        *string               `json:"id,omitempty"`          // For tool_use content
-	Name      *string               `json:"name,omitempty"`        // For tool_use content
-	Input     interface{}           `json:"input,omitempty"`       // For tool_use content
-	Content   *AnthropicContent     `json:"content,omitempty"`     // For tool_result content
-	Source    *AnthropicImageSource `json:"source,omitempty"`      // For image content
+	Type      AnthropicContentBlockType `json:"type"`                  // "text", "image", "tool_use", "tool_result", "thinking"
+	Text      *string                   `json:"text,omitempty"`        // For text content
+	Thinking  *string                   `json:"thinking,omitempty"`    // For thinking content
+	ToolUseID *string                   `json:"tool_use_id,omitempty"` // For tool_result content
+	ID        *string                   `json:"id,omitempty"`          // For tool_use content
+	Name      *string                   `json:"name,omitempty"`        // For tool_use content
+	Input     interface{}               `json:"input,omitempty"`       // For tool_use content
+	Content   *AnthropicContent         `json:"content,omitempty"`     // For tool_result content
+	Source    *AnthropicImageSource     `json:"source,omitempty"`      // For image content
 }
 
 // AnthropicImageSource represents image source in Anthropic format
@@ -136,14 +153,10 @@ const (
 
 // AnthropicTool represents a tool in Anthropic format
 type AnthropicTool struct {
-	Name        string  `json:"name"`
-	Type        *string `json:"type,omitempty"`
-	Description string  `json:"description"`
-	InputSchema *struct {
-		Type       string                 `json:"type"` // "object"
-		Properties map[string]interface{} `json:"properties"`
-		Required   []string               `json:"required"`
-	} `json:"input_schema,omitempty"`
+	Name        string                          `json:"name"`
+	Type        *AnthropicToolType              `json:"type,omitempty"`
+	Description string                          `json:"description"`
+	InputSchema *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
 }
 
 // AnthropicToolChoice represents tool choice in Anthropic format
@@ -174,28 +187,6 @@ type AnthropicMessageResponse struct {
 	StopReason   *string                 `json:"stop_reason,omitempty"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
-}
-
-// AnthropicChatResponse represents the response structure from Anthropic's chat completion API (legacy)
-type AnthropicChatResponse struct {
-	ID      string `json:"id"`   // Unique identifier for the completion
-	Type    string `json:"type"` // Type of completion
-	Role    string `json:"role"` // Role of the message sender
-	Content []struct {
-		Type     string                 `json:"type"`               // Type of content
-		Text     string                 `json:"text,omitempty"`     // Text content
-		Thinking string                 `json:"thinking,omitempty"` // Thinking process
-		ID       string                 `json:"id"`                 // Content identifier
-		Name     string                 `json:"name"`               // Name of the content
-		Input    map[string]interface{} `json:"input"`              // Input parameters
-	} `json:"content"` // Array of content items
-	Model        string  `json:"model"`                   // Model used for the completion
-	StopReason   string  `json:"stop_reason,omitempty"`   // Reason for completion termination
-	StopSequence *string `json:"stop_sequence,omitempty"` // Sequence that caused completion to stop
-	Usage        struct {
-		InputTokens  int `json:"input_tokens"`  // Number of input tokens used
-		OutputTokens int `json:"output_tokens"` // Number of output tokens generated
-	} `json:"usage"` // Token usage statistics
 }
 
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API

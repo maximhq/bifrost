@@ -20,7 +20,7 @@ func RunImageBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 	}
 
 	t.Run("ImageBase64", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		messages := []schemas.ChatMessage{
 			CreateImageMessage("Describe this image briefly", TestImageBase64),
 		}
 

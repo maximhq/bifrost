@@ -64,6 +64,10 @@ const AllowedRequestsSchema = z.object({
 });
 
 // Key configuration schemas
+const OpenAIKeyConfigSchema = z.object({
+	use_responses_api: z.boolean(),
+});
+
 const AzureKeyConfigSchema = z.object({
 	endpoint: z.string().min(1, "Endpoint is required for Azure keys"),
 	deployments: z
@@ -126,6 +130,7 @@ const KeySchema = z.object({
 	value: z.string(),
 	models: z.array(z.string()),
 	weight: z.number().min(0.1, "Key weights must be between 0.1 and 1").max(1, "Key weights must be between 0.1 and 1"),
+	openai_key_config: OpenAIKeyConfigSchema.optional(),
 	azure_key_config: AzureKeyConfigSchema.optional(),
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),

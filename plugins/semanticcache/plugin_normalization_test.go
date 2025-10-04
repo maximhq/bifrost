@@ -63,30 +63,28 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 	}
 
 	// Create chat completion requests for all test cases
-	requests := make([]*schemas.BifrostRequest, len(testCases))
+	requests := make([]*schemas.BifrostChatRequest, len(testCases))
 	for i, tc := range testCases {
-		requests[i] = &schemas.BifrostRequest{
+		requests[i] = &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4o-mini",
-			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
-					{
-						Role: schemas.ModelChatMessageRoleSystem,
-						Content: schemas.MessageContent{
-							ContentStr: &tc.systemMsg,
-						},
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleSystem,
+					Content: schemas.ChatMessageContent{
+						ContentStr: &tc.systemMsg,
 					},
-					{
-						Role: schemas.ModelChatMessageRoleUser,
-						Content: schemas.MessageContent{
-							ContentStr: &tc.userMsg,
-						},
+				},
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
+						ContentStr: &tc.userMsg,
 					},
 				},
 			},
-			Params: &schemas.ModelParameters{
-				Temperature: PtrFloat64(0.5),
-				MaxTokens:   PtrInt(50),
+			Params: &schemas.ChatParameters{
+				Temperature:         PtrFloat64(0.5),
+				MaxCompletionTokens: PtrInt(50),
 			},
 		}
 	}
@@ -144,7 +142,7 @@ func testSpeechNormalization(t *testing.T, setup *TestSetup) {
 	}
 
 	// Create speech requests for all test cases
-	requests := make([]*schemas.BifrostRequest, len(testCases))
+	requests := make([]*schemas.BifrostSpeechRequest, len(testCases))
 	for i, tc := range testCases {
 		requests[i] = CreateSpeechRequest(tc.input, "alloy")
 	}
@@ -214,33 +212,31 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 	}
 
 	// Create chat completion requests with content blocks
-	requests := make([]*schemas.BifrostRequest, len(testCases))
+	requests := make([]*schemas.BifrostChatRequest, len(testCases))
 	for i, tc := range testCases {
 		// Create content blocks
-		contentBlocks := make([]schemas.ContentBlock, len(tc.textBlocks))
+		contentBlocks := make([]schemas.ChatContentBlock, len(tc.textBlocks))
 		for j, text := range tc.textBlocks {
-			contentBlocks[j] = schemas.ContentBlock{
-				Type: schemas.ContentBlockTypeText,
+			contentBlocks[j] = schemas.ChatContentBlock{
+				Type: schemas.ChatContentBlockTypeText,
 				Text: &text,
 			}
 		}
 
-		requests[i] = &schemas.BifrostRequest{
+		requests[i] = &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI,
 			Model:    "gpt-4o-mini",
-			Input: schemas.RequestInput{
-				ChatCompletionInput: &[]schemas.BifrostMessage{
-					{
-						Role: schemas.ModelChatMessageRoleUser,
-						Content: schemas.MessageContent{
-							ContentBlocks: &contentBlocks,
-						},
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: schemas.ChatMessageContent{
+						ContentBlocks: &contentBlocks,
 					},
 				},
 			},
-			Params: &schemas.ModelParameters{
-				Temperature: PtrFloat64(0.5),
-				MaxTokens:   PtrInt(50),
+			Params: &schemas.ChatParameters{
+				Temperature:         PtrFloat64(0.5),
+				MaxCompletionTokens: PtrInt(50),
 			},
 		}
 	}
