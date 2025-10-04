@@ -85,7 +85,15 @@ export interface BifrostTranscribe {
 }
 
 // Message content types
-export type MessageContentType = "text" | "image_url" | "input_audio";
+export type MessageContentType =
+	| "text"
+	| "image_url"
+	| "input_audio"
+	| "input_text"
+	| "input_file"
+	| "output_text"
+	| "refusal"
+	| "reasoning";
 
 export interface ContentBlock {
 	type: MessageContentType;

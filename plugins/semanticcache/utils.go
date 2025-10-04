@@ -254,12 +254,16 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 			}
 
 			role := ""
+			msgType := ""
 			if msg.Role != nil {
 				role = string(*msg.Role)
 			}
+			if msg.Type != nil {
+				msgType = string(*msg.Type)
+			}
 
 			if content != "" {
-				textParts = append(textParts, fmt.Sprintf("%s: %s", role, content))
+				textParts = append(textParts, fmt.Sprintf("%s: %s: %s", role, msgType, content))
 			}
 		}
 

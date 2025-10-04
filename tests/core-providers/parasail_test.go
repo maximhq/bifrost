@@ -17,9 +17,9 @@ func TestParasail(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.Parasail,
-		ChatModel: "parasail-deepseek-r1",
-		TextModel: "", // Parasail doesn't support text completion
+		Provider:       schemas.Parasail,
+		ChatModel:      "parasail-deepseek-r1",
+		TextModel:      "", // Parasail doesn't support text completion
 		EmbeddingModel: "", // Parasail doesn't support embedding
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
@@ -34,7 +34,6 @@ func TestParasail(t *testing.T) {
 			ImageBase64:           false, // Not supported yet
 			MultipleImages:        false, // Not supported yet
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			Embedding:             false, // Not supported yet
 		},
 	}
