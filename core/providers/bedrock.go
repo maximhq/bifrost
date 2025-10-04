@@ -1081,16 +1081,18 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		}
 	}
 
+	// Build MessageContent based on the type of content blocks
+	messageContent := BuildMessageContent(contentBlocks)
+	defer releaseMessageContent(messageContent)
+
 	// Create a single choice with the aggregated content
 	choices := []schemas.BifrostResponseChoice{
 		{
 			Index: 0,
 			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
 				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentBlocks: &contentBlocks,
-					},
+					Role:             schemas.ModelChatMessageRoleAssistant,
+					Content:          *messageContent,
 					AssistantMessage: assistantMessage,
 				},
 			},
