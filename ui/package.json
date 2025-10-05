@@ -12,7 +12,7 @@
 	},
 	"dependencies": {
 		"@bprogress/next": "3.2.12",
-		"@hookform/resolvers": "5.2.1",
+		"@hookform/resolvers": "5.2.2",
 		"@monaco-editor/react": "4.7.0",
 		"@phosphor-icons/react": "2.1.10",
 		"@radix-ui/react-accordion": "1.2.12",
