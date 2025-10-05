@@ -19,7 +19,7 @@ type AnthropicContentBlock struct {
 	ID        *string               `json:"id,omitempty"`          // For tool_use content
 	Name      *string               `json:"name,omitempty"`        // For tool_use content
 	Input     interface{}           `json:"input,omitempty"`       // For tool_use content
-	Content   AnthropicContent      `json:"content,omitempty"`     // For tool_result content
+	Content   *AnthropicContent     `json:"content,omitempty"`     // For tool_result content
 	Source    *AnthropicImageSource `json:"source,omitempty"`      // For image content
 }
 
@@ -282,36 +282,38 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 						bifrostMsg.ToolMessage = &schemas.ToolMessage{
 							ToolCallID: content.ToolUseID,
 						}
-						if content.Content.ContentStr != nil {
-							contentBlocks = append(contentBlocks, schemas.ContentBlock{
-								Type: schemas.ContentBlockTypeText,
-								Text: content.Content.ContentStr,
-							})
-						} else if content.Content.ContentBlocks != nil {
-							for _, block := range *content.Content.ContentBlocks {
-								if block.Text != nil {
-									contentBlocks = append(contentBlocks, schemas.ContentBlock{
-										Type: schemas.ContentBlockTypeText,
-										Text: block.Text,
-									})
-								} else if block.Source != nil {
-									contentBlocks = append(contentBlocks, schemas.ContentBlock{
-										Type: schemas.ContentBlockTypeImage,
-										ImageURL: &schemas.ImageURLStruct{
-											URL: func() string {
-												if block.Source.Data != nil {
-													mime := "image/png"
-													if block.Source.MediaType != nil && *block.Source.MediaType != "" {
-														mime = *block.Source.MediaType
+						if content.Content != nil {
+							if content.Content.ContentStr != nil {
+								contentBlocks = append(contentBlocks, schemas.ContentBlock{
+									Type: schemas.ContentBlockTypeText,
+									Text: content.Content.ContentStr,
+								})
+							} else if content.Content.ContentBlocks != nil {
+								for _, block := range *content.Content.ContentBlocks {
+									if block.Text != nil {
+										contentBlocks = append(contentBlocks, schemas.ContentBlock{
+											Type: schemas.ContentBlockTypeText,
+											Text: block.Text,
+										})
+									} else if block.Source != nil {
+										contentBlocks = append(contentBlocks, schemas.ContentBlock{
+											Type: schemas.ContentBlockTypeImage,
+											ImageURL: &schemas.ImageURLStruct{
+												URL: func() string {
+													if block.Source.Data != nil {
+														mime := "image/png"
+														if block.Source.MediaType != nil && *block.Source.MediaType != "" {
+															mime = *block.Source.MediaType
+														}
+														return "data:" + mime + ";base64," + *block.Source.Data
 													}
-													return "data:" + mime + ";base64," + *block.Source.Data
-												}
-												if block.Source.URL != nil {
-													return *block.Source.URL
-												}
-												return ""
-											}()},
-									})
+													if block.Source.URL != nil {
+														return *block.Source.URL
+													}
+													return ""
+												}()},
+										})
+									}
 								}
 							}
 						}

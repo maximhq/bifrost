@@ -48,15 +48,15 @@
 package integrations
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"bufio"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -613,15 +613,29 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		var body []byte
 		var originalHeaders map[string]string
+		var originalPath string
 
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodDelete {
 
 			body = ctx.Request.Body()
 
-			// If this is an Anthropic request with OAuth, preserve headers for passthrough
+			// If this is an Anthropic request with OAuth, preserve headers and path for passthrough
 			if isAnthropicRequest(ctx) && !isAPIKeyAuth(ctx) {
 				originalHeaders = extractHeaders(ctx)
+				// Extract the original path, removing the /anthropic prefix
+				fullPath := string(ctx.Path())
+
+				if strings.HasPrefix(fullPath, "/anthropic") {
+					originalPath = strings.TrimPrefix(fullPath, "/anthropic")
+				} else {
+					originalPath = fullPath
+				}
+
+				// Preserve query string if present
+				if queryString := string(ctx.URI().QueryString()); queryString != "" {
+					originalPath += "?" + queryString
+				}
 			}
 
 			if config.RequestParser != nil {
@@ -695,6 +709,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			if originalHeaders != nil {
 				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyOriginalHeaders, originalHeaders)
 			}
+
+			if originalPath != "" {
+				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyOriginalPath, originalPath)
+			}
 		}
 
 		if isStreaming {
@@ -743,6 +761,11 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		return
 	}
 
+	var headers http.Header
+	if h, ok := result.ExtraFields.RawHeaders.(http.Header); ok {
+		headers = h
+	}
+
 	// Convert Bifrost response to integration-specific format and send
 	response, err := config.ResponseConverter(result)
 	if err != nil {
@@ -761,7 +784,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 	}
 
-	g.sendSuccess(ctx, config.ErrorConverter, response)
+	g.sendSuccess(ctx, config.ErrorConverter, response, headers)
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
@@ -861,6 +884,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 			case <-ctx.Done():
 				return
 			default:
+			}
+
+			if response.RawSSEEvent != nil {
+				if _, err := w.Write(response.RawSSEEvent); err != nil {
+					return
+				}
+				if err := w.Flush(); err != nil {
+					return
+				}
+				continue
 			}
 
 			// Handle errors
@@ -1022,10 +1055,22 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, errorConverter Error
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
-func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter ErrorConverter, response interface{}) {
+func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter ErrorConverter, response interface{}, headers http.Header) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetContentType("application/json")
 
+	if headers != nil {
+		if rawBytes, okBody := response.([]byte); okBody {
+			for k, vv := range headers {
+				for _, v := range vv {
+					ctx.Response.Header.Add(k, v)
+				}
+			}
+			ctx.SetBody(rawBytes)
+			return
+		}
+	}
+
+	ctx.SetContentType("application/json")
 	responseBody, err := json.Marshal(response)
 	if err != nil {
 		g.sendError(ctx, errorConverter, newBifrostError(err, "failed to encode response"))

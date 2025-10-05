@@ -565,13 +565,29 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer w.Flush()
 
+		sendDoneMarker := true
+
 		// Process streaming responses
 		for response := range stream {
 			if response == nil {
 				continue
 			}
 
-			// Extract and validate the response data
+			// Check for raw SSE event
+			if response.RawSSEEvent != nil {
+				sendDoneMarker = false
+				if _, err := w.Write(response.RawSSEEvent); err != nil {
+					h.logger.Warn(fmt.Sprintf("Failed to write raw SSE event: %v", err))
+					break
+				}
+				if err := w.Flush(); err != nil {
+					h.logger.Warn(fmt.Sprintf("Failed to flush raw SSE event: %v", err))
+					break
+				}
+				continue
+			}
+
+			// Standard mode: Extract and validate the response data
 			data, valid := extractResponse(response)
 			if !valid {
 				continue
@@ -598,8 +614,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 		}
 
 		// Send the [DONE] marker to indicate the end of the stream
-		if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-			h.logger.Warn(fmt.Sprintf("Failed to write SSE done marker: %v", err))
+		if sendDoneMarker {
+			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+				h.logger.Warn(fmt.Sprintf("Failed to write SSE done marker: %v", err))
+			}
 		}
 	})
 }

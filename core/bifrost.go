@@ -1089,6 +1089,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 					outputStream <- &schemas.BifrostStream{
 						BifrostResponse: processedResp,
 						BifrostError:    processedErr,
+						RawSSEEvent:     streamMsg.RawSSEEvent,
 					}
 				}
 			}()

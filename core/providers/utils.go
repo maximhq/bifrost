@@ -822,6 +822,24 @@ func handleStreamEndWithSuccess(
 	processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
 }
 
+// handleStreamEndForPassthrough sets the stream end indicator and runs post-hooks
+// WITHOUT sending the response to the channel. This is specifically for passthrough modes
+// where raw SSE events are forwarded as-is, and we only need to trigger telemetry/logging
+// without sending a duplicate event to the client.
+func handleStreamEndForPassthrough(
+	ctx context.Context,
+	response *schemas.BifrostResponse,
+	postHookRunner schemas.PostHookRunner,
+	logger schemas.Logger,
+) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	_, bifrostErr := postHookRunner(&ctx, response, nil)
+	if bifrostErr != nil && handleStreamControlSkip(logger, bifrostErr) {
+		return
+	}
+}
+
 func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostError) bool {
 	if bifrostErr == nil || bifrostErr.StreamControl == nil {
 		return false

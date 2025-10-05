@@ -108,6 +108,7 @@ const (
 	BifrostContextKeyRequestModel       BifrostContextKey = "bifrost-request-model"
 	BifrostContextKeyOriginalRequest    BifrostContextKey = "bifrost-original-request"
 	BifrostContextKeyOriginalHeaders    BifrostContextKey = "bifrost-original-headers"
+	BifrostContextKeyOriginalPath       BifrostContextKey = "bifrost-original-path"
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
@@ -801,6 +802,7 @@ type BifrostResponseExtraFields struct {
 	BilledUsage *BilledLLMUsage    `json:"billed_usage,omitempty"`
 	ChunkIndex  int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse interface{}        `json:"raw_response,omitempty"`
+	RawHeaders  interface{}        `json:"-"`
 	CacheDebug  *BifrostCacheDebug `json:"cache_debug,omitempty"`
 }
 
@@ -830,6 +832,7 @@ const (
 type BifrostStream struct {
 	*BifrostResponse
 	*BifrostError
+	RawSSEEvent []byte
 }
 
 // BifrostError represents an error from the Bifrost system.
