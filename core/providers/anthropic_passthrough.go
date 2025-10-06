@@ -402,22 +402,26 @@ func (provider *AnthropicPassthroughProvider) handleAnthropicStreamingPassthroug
 
 					// Only parse if we have both event type and data
 					if eventType != "" && eventData != "" {
-						var event anthropic.AnthropicStreamMessage
+						var event anthropic.AnthropicStreamEvent
 						if err := sonic.Unmarshal([]byte(eventData), &event); err == nil {
 							// Extract usage information
 							if event.Usage != nil {
-								usage = event.Usage
+								usage = &schemas.LLMUsage{
+									PromptTokens:     event.Usage.InputTokens,
+									CompletionTokens: event.Usage.OutputTokens,
+									TotalTokens:      event.Usage.InputTokens + event.Usage.OutputTokens,
+								}
 							}
 
-							// Extract finish reason
-							if event.StopReason != nil {
-								mapped := anthropic.MapAnthropicFinishReasonToBifrost(*event.StopReason)
+							// Extract finish reason from delta
+							if event.Delta != nil && event.Delta.StopReason != nil {
+								mapped := anthropic.MapAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 								finishReason = &mapped
 							}
 
 							// Extract message ID from message_start event
-							if eventType == "message_start" && event.ID != "" {
-								messageID = event.ID
+							if eventType == "message_start" && event.Message != nil && event.Message.ID != "" {
+								messageID = event.Message.ID
 							}
 						}
 
