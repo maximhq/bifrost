@@ -1295,7 +1295,7 @@ func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
 		return &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     &statusCode,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderResponseUnmarshal,
 				Error:   err,
 			},
@@ -1305,7 +1305,7 @@ func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
 	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     &statusCode,
-		Error:          schemas.ErrorField{},
+		Error:          &schemas.ErrorField{},
 	}
 
 	if errorResp.EventID != nil {
@@ -1331,7 +1331,7 @@ func parseOpenAIErrorForStreamDataLine(jsonData string) (*schemas.BifrostError, 
 	// Send error through channel
 	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Type:    openAIError.Error.Type,
 			Code:    openAIError.Error.Code,
 			Message: openAIError.Error.Message,

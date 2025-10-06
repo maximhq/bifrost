@@ -41,8 +41,8 @@ type AnthropicMessageRequest struct {
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
-func (r *AnthropicMessageRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
+func (mr *AnthropicMessageRequest) IsStreamingRequested() bool {
+	return mr.Stream != nil && *mr.Stream
 }
 
 type AnthropicMessageRole string
@@ -120,7 +120,7 @@ type AnthropicContentBlock struct {
 	ToolUseID *string                   `json:"tool_use_id,omitempty"` // For tool_result content
 	ID        *string                   `json:"id,omitempty"`          // For tool_use content
 	Name      *string                   `json:"name,omitempty"`        // For tool_use content
-	Input     interface{}               `json:"input,omitempty"`       // For tool_use content
+	Input     any               `json:"input,omitempty"`       // For tool_use content
 	Content   *AnthropicContent         `json:"content,omitempty"`     // For tool_result content
 	Source    *AnthropicImageSource     `json:"source,omitempty"`      // For image content
 }

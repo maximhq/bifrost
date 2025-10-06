@@ -339,7 +339,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		rm.Content = &ResponsesMessageContent{
 			ContentBlocks: []ResponsesMessageContentBlock{refusalBlock},
 		}
-	} else if cm.Content.ContentStr != nil {
+	}  else if cm.Content.ContentStr != nil {
 		// Convert regular string content
 		rm.Content = &ResponsesMessageContent{
 			ContentStr: cm.Content.ContentStr,
@@ -352,7 +352,6 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				Type: ResponsesMessageContentBlockType(block.Type),
 				Text: block.Text,
 			}
-
 			// Convert specific block types
 			if block.ImageURLStruct != nil {
 				responseBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{

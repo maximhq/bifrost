@@ -9,9 +9,9 @@ import (
 
 var fnTypePtr = schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction))
 
-// ToChatCompletionRequest converts an Anthropic messages request to Bifrost format
-func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
-	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
+// ToBifrostRequest converts an Anthropic messages request to Bifrost format
+func (mr *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
+	provider, model := schemas.ParseModelString(mr.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: provider,
@@ -21,17 +21,17 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatR
 	messages := []schemas.ChatMessage{}
 
 	// Add system message if present
-	if request.System != nil {
-		if request.System.ContentStr != nil && *request.System.ContentStr != "" {
+	if mr.System != nil {
+		if mr.System.ContentStr != nil && *mr.System.ContentStr != "" {
 			messages = append(messages, schemas.ChatMessage{
 				Role: schemas.ChatMessageRoleSystem,
 				Content: schemas.ChatMessageContent{
-					ContentStr: request.System.ContentStr,
+					ContentStr: mr.System.ContentStr,
 				},
 			})
-		} else if request.System.ContentBlocks != nil {
+		} else if mr.System.ContentBlocks != nil {
 			contentBlocks := []schemas.ChatContentBlock{}
-			for _, block := range request.System.ContentBlocks {
+			for _, block := range mr.System.ContentBlocks {
 				if block.Text != nil { // System messages will only have text content
 					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 						Type: schemas.ChatContentBlockTypeText,
@@ -49,7 +49,7 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatR
 	}
 
 	// Convert messages
-	for _, msg := range request.Messages {
+	for _, msg := range mr.Messages {
 		var bifrostMsg schemas.ChatMessage
 		bifrostMsg.Role = schemas.ChatMessageRole(msg.Role)
 
@@ -133,34 +133,34 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatR
 	bifrostReq.Input = messages
 
 	// Convert parameters
-	if request.MaxTokens > 0 || request.Temperature != nil || request.TopP != nil || request.TopK != nil || request.StopSequences != nil {
+	if mr.MaxTokens > 0 || mr.Temperature != nil || mr.TopP != nil || mr.TopK != nil || mr.StopSequences != nil {
 		params := &schemas.ChatParameters{
 			ExtraParams: make(map[string]interface{}),
 		}
 
-		if request.MaxTokens > 0 {
-			params.MaxCompletionTokens = &request.MaxTokens
+		if mr.MaxTokens > 0 {
+			params.MaxCompletionTokens = &mr.MaxTokens
 		}
-		if request.Temperature != nil {
-			params.Temperature = request.Temperature
+		if mr.Temperature != nil {
+			params.Temperature = mr.Temperature
 		}
-		if request.TopP != nil {
-			params.TopP = request.TopP
+		if mr.TopP != nil {
+			params.TopP = mr.TopP
 		}
-		if request.TopK != nil {
-			params.ExtraParams["top_k"] = *request.TopK
+		if mr.TopK != nil {
+			params.ExtraParams["top_k"] = *mr.TopK
 		}
-		if request.StopSequences != nil {
-			params.Stop = request.StopSequences
+		if mr.StopSequences != nil {
+			params.Stop = mr.StopSequences
 		}
 
 		bifrostReq.Params = params
 	}
 
 	// Convert tools
-	if request.Tools != nil {
+	if mr.Tools != nil {
 		tools := []schemas.ChatTool{}
-		for _, tool := range request.Tools {
+		for _, tool := range mr.Tools {
 			// Convert input_schema to FunctionParameters
 			params := schemas.ToolFunctionParameters{
 				Type: "object",
@@ -187,23 +187,23 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatR
 	}
 
 	// Convert tool choice
-	if request.ToolChoice != nil {
+	if mr.ToolChoice != nil {
 		if bifrostReq.Params == nil {
 			bifrostReq.Params = &schemas.ChatParameters{}
 		}
 		toolChoice := &schemas.ChatToolChoice{
 			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
 				Type: func() schemas.ChatToolChoiceType {
-					if request.ToolChoice.Type == "tool" {
+					if mr.ToolChoice.Type == "tool" {
 						return schemas.ChatToolChoiceTypeFunction
 					}
-					return schemas.ChatToolChoiceType(request.ToolChoice.Type)
+					return schemas.ChatToolChoiceType(mr.ToolChoice.Type)
 				}(),
 			},
 		}
-		if request.ToolChoice.Type == "tool" && request.ToolChoice.Name != "" {
+		if mr.ToolChoice.Type == "tool" && mr.ToolChoice.Name != "" {
 			toolChoice.ChatToolChoiceStruct.Function = schemas.ChatToolChoiceFunction{
-				Name: request.ToolChoice.Name,
+				Name: mr.ToolChoice.Name,
 			}
 		}
 		bifrostReq.Params.ToolChoice = toolChoice
@@ -212,7 +212,7 @@ func (request *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatR
 	return bifrostReq
 }
 
-// ToChatCompletionResponse converts an Anthropic message response to Bifrost format
+// ToBifrostResponse converts an Anthropic message response to Bifrost format
 func (response *AnthropicMessageResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	if response == nil {
 		return nil
@@ -355,6 +355,9 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 		if bifrostReq.Params.Tools != nil {
 			tools := make([]AnthropicTool, 0, len(bifrostReq.Params.Tools))
 			for _, tool := range bifrostReq.Params.Tools {
+				if tool.Function == nil {
+					continue
+				}
 				anthropicTool := AnthropicTool{
 					Name: tool.Function.Name,
 				}
@@ -363,7 +366,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 				}
 
 				// Convert function parameters to input_schema
-				if tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil {
+				if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
 					anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
 						Type:       tool.Function.Parameters.Type,
 						Properties: tool.Function.Parameters.Properties,
@@ -379,7 +382,6 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 		// Convert tool choice
 		if bifrostReq.Params.ToolChoice != nil {
 			toolChoice := &AnthropicToolChoice{}
-
 			if bifrostReq.Params.ToolChoice.ChatToolChoiceStr != nil {
 				switch schemas.ChatToolChoiceType(*bifrostReq.Params.ToolChoice.ChatToolChoiceStr) {
 				case schemas.ChatToolChoiceTypeAny:
@@ -404,7 +406,6 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 					toolChoice.Type = "auto"
 				}
 			}
-
 			anthropicReq.ToolChoice = toolChoice
 		}
 	}
@@ -755,13 +756,11 @@ func ToAnthropicChatCompletionStreamError(bifrostErr *schemas.BifrostError) stri
 	if errorResp == nil {
 		return ""
 	}
-
 	// Marshal to JSON
 	jsonData, err := json.Marshal(errorResp)
 	if err != nil {
 		return ""
 	}
-
 	// Format as Anthropic SSE error event
 	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }

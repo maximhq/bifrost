@@ -638,7 +638,7 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 	if err == nil {
 		return &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: message,
 			},
 		}
@@ -646,7 +646,7 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,
 		},

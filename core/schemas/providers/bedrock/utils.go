@@ -14,17 +14,14 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 	if bifrostReq.Params == nil {
 		return
 	}
-
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params); inferenceConfig != nil {
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
-
 	// Convert tool config
 	if toolConfig := convertToolConfig(bifrostReq.Params); toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
-
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
 		// Handle guardrail configuration
@@ -45,57 +42,54 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 				bedrockReq.GuardrailConfig = config
 			}
 		}
-
 		// Handle additional model request field paths
-		if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
-			bedrockReq.AdditionalModelRequestFields = requestFields.(map[string]interface{})
-		}
-
-		// Handle additional model response field paths
-		if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
-			if fields, ok := responseFields.([]string); ok {
-				bedrockReq.AdditionalModelResponseFieldPaths = fields
+		if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
+				bedrockReq.AdditionalModelRequestFields = requestFields.(map[string]interface{})
 			}
-		}
 
-		// Handle performance configuration
-		if perfConfig, exists := bifrostReq.Params.ExtraParams["performanceConfig"]; exists {
-			if pc, ok := perfConfig.(map[string]interface{}); ok {
-				config := &BedrockPerformanceConfig{}
-
-				if latency, ok := pc["latency"].(string); ok {
-					config.Latency = &latency
+			// Handle additional model response field paths
+			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
+				if fields, ok := responseFields.([]string); ok {
+					bedrockReq.AdditionalModelResponseFieldPaths = fields
 				}
-
-				bedrockReq.PerformanceConfig = config
 			}
-		}
+			// Handle performance configuration
+			if perfConfig, exists := bifrostReq.Params.ExtraParams["performanceConfig"]; exists {
+				if pc, ok := perfConfig.(map[string]interface{}); ok {
+					config := &BedrockPerformanceConfig{}
 
-		// Handle prompt variables
-		if promptVars, exists := bifrostReq.Params.ExtraParams["promptVariables"]; exists {
-			if vars, ok := promptVars.(map[string]interface{}); ok {
-				variables := make(map[string]BedrockPromptVariable)
+					if latency, ok := pc["latency"].(string); ok {
+						config.Latency = &latency
+					}
+					bedrockReq.PerformanceConfig = config
+				}
+			}
+			// Handle prompt variables
+			if promptVars, exists := bifrostReq.Params.ExtraParams["promptVariables"]; exists {
+				if vars, ok := promptVars.(map[string]interface{}); ok {
+					variables := make(map[string]BedrockPromptVariable)
 
-				for key, value := range vars {
-					if valueMap, ok := value.(map[string]interface{}); ok {
-						variable := BedrockPromptVariable{}
-						if text, ok := valueMap["text"].(string); ok {
-							variable.Text = &text
+					for key, value := range vars {
+						if valueMap, ok := value.(map[string]interface{}); ok {
+							variable := BedrockPromptVariable{}
+							if text, ok := valueMap["text"].(string); ok {
+								variable.Text = &text
+							}
+							variables[key] = variable
 						}
-						variables[key] = variable
+					}
+
+					if len(variables) > 0 {
+						bedrockReq.PromptVariables = variables
 					}
 				}
-
-				if len(variables) > 0 {
-					bedrockReq.PromptVariables = variables
-				}
 			}
-		}
-
-		// Handle request metadata
-		if reqMetadata, exists := bifrostReq.Params.ExtraParams["requestMetadata"]; exists {
-			if metadata, ok := reqMetadata.(map[string]string); ok {
-				bedrockReq.RequestMetadata = metadata
+			// Handle request metadata
+			if reqMetadata, exists := bifrostReq.Params.ExtraParams["requestMetadata"]; exists {
+				if metadata, ok := reqMetadata.(map[string]string); ok {
+					bedrockReq.RequestMetadata = metadata
+				}
 			}
 		}
 	}
@@ -445,23 +439,36 @@ func convertToolConfig(params *schemas.ChatParameters) *BedrockToolConfig {
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format
 func convertToolChoice(toolChoice schemas.ChatToolChoice) *BedrockToolChoice {
-	// Check if it's a string choice
+	// String variant
 	if toolChoice.ChatToolChoiceStr != nil {
 		switch schemas.ChatToolChoiceType(*toolChoice.ChatToolChoiceStr) {
-		case schemas.ChatToolChoiceTypeFunction:
-			return &BedrockToolChoice{
-				Auto: &BedrockToolChoiceAuto{},
-			}
 		case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
-			return &BedrockToolChoice{
-				Any: &BedrockToolChoiceAny{},
-			}
+			return &BedrockToolChoice{Any: &BedrockToolChoiceAny{}}
 		case schemas.ChatToolChoiceTypeNone:
-			// Bedrock doesn't have explicit "none" - just don't include tools
+			// Bedrock doesn't have explicit "none" - omit ToolChoice
+			return nil
+		case schemas.ChatToolChoiceTypeFunction:
+			// Not representable without a name; expect struct form instead.
 			return nil
 		}
 	}
-
+	// Struct variant
+	if toolChoice.ChatToolChoiceStruct != nil {
+		switch toolChoice.ChatToolChoiceStruct.Type {
+		case schemas.ChatToolChoiceTypeFunction:
+			name := toolChoice.ChatToolChoiceStruct.Function.Name
+			if name != "" {
+				return &BedrockToolChoice{
+					Tool: &BedrockToolChoiceTool{Name: name},
+				}
+			}
+			return nil
+		case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
+			return &BedrockToolChoice{Any: &BedrockToolChoiceAny{}}
+		case schemas.ChatToolChoiceTypeNone:
+			return nil
+		}
+	}
 	return nil
 }
 

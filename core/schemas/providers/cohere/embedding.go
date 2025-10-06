@@ -4,7 +4,7 @@ import "github.com/maximhq/bifrost/core/schemas"
 
 // ToCohereEmbeddingRequest converts a Bifrost embedding request to Cohere format
 func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *CohereEmbeddingRequest {
-	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
+	if bifrostReq == nil || bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 
@@ -123,7 +123,9 @@ func (cohereResp *CohereEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 
 		// Convert billed usage
 		if cohereResp.Meta.BilledUnits != nil {
-			bifrostResponse.ExtraFields.BilledUsage = &schemas.BilledLLMUsage{}
+			if bifrostResponse.ExtraFields.BilledUsage == nil {
+				bifrostResponse.ExtraFields.BilledUsage = &schemas.BilledLLMUsage{}
+			}
 			if cohereResp.Meta.BilledUnits.InputTokens != nil {
 				bifrostResponse.ExtraFields.BilledUsage.PromptTokens = cohereResp.Meta.BilledUnits.InputTokens
 			}

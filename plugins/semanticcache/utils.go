@@ -25,7 +25,7 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: plugin.config.Provider,
 		Model:    plugin.config.EmbeddingModel,
-		Input: schemas.EmbeddingInput{
+		Input: &schemas.EmbeddingInput{
 			Text: &text,
 		},
 	}

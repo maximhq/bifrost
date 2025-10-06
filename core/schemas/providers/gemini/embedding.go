@@ -1,6 +1,8 @@
 package gemini
 
 import (
+	"strings"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -9,22 +11,18 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Gemi
 	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
-
 	embeddingInput := bifrostReq.Input
-
 	// Get the text to embed
 	var text string
 	if embeddingInput.Text != nil {
 		text = *embeddingInput.Text
 	} else if len(embeddingInput.Texts) > 0 {
 		// Take the first text if multiple texts are provided
-		text = embeddingInput.Texts[0]
+		text = strings.Join(embeddingInput.Texts, " ")
 	}
-
 	if text == "" {
 		return nil
 	}
-
 	// Create the Gemini embedding request
 	request := &GeminiEmbeddingRequest{
 		Model: bifrostReq.Model,
@@ -36,7 +34,6 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Gemi
 			},
 		},
 	}
-
 	// Add parameters if available
 	if bifrostReq.Params != nil {
 		if bifrostReq.Params.Dimensions != nil {
@@ -53,6 +50,5 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Gemi
 			}
 		}
 	}
-
 	return request
 }

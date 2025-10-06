@@ -15,10 +15,12 @@ func ToBedrockTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionReq
 
 	// Extract the raw prompt from bifrostReq
 	prompt := ""
-	if bifrostReq.Input.PromptStr != nil {
-		prompt = *bifrostReq.Input.PromptStr
-	} else if len(bifrostReq.Input.PromptArray) > 0 {
-		prompt = strings.Join(bifrostReq.Input.PromptArray, "\n\n")
+	if bifrostReq.Input != nil {
+		if bifrostReq.Input.PromptStr != nil {
+			prompt = *bifrostReq.Input.PromptStr
+		} else if len(bifrostReq.Input.PromptArray) > 0 && bifrostReq.Input.PromptArray != nil {
+			prompt = strings.Join(bifrostReq.Input.PromptArray, "\n\n")
+		}
 	}
 
 	bedrockReq := &BedrockTextCompletionRequest{

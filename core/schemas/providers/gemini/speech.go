@@ -39,7 +39,7 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, responseMod
 		}
 
 		// Add speech config to generation config if voice config is provided
-		if bifrostReq.Params != nil && bifrostReq.Params.VoiceConfig.Voice != nil {
+		if bifrostReq.Params != nil && bifrostReq.Params.VoiceConfig != nil && bifrostReq.Params.VoiceConfig.Voice != nil {
 			addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Params.VoiceConfig)
 		}
 	}

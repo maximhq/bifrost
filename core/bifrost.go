@@ -190,10 +190,18 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 // TextCompletionRequest sends a text completion request to the specified provider.
 func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.PromptStr == nil && req.Input.PromptArray == nil {
+	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
+				Message: "text completion request is nil",
+			},
+		}
+	}
+	if req.Input == nil || (req.Input.PromptStr == nil && req.Input.PromptArray == nil) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
 				Message: "text not provided for text completion request",
 			},
 		}
@@ -211,10 +219,18 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "chat completion request is nil",
+			},
+		}
+	}
 	if req.Input == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "chats not provided for chat completion request",
 			},
 		}
@@ -232,10 +248,18 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 
 // ChatCompletionStreamRequest sends a chat completion stream request to the specified provider.
 func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "chat completion stream request is nil",
+			},
+		}
+	}
 	if req.Input == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "chats not provided for chat completion request",
 			},
 		}
@@ -253,10 +277,18 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *sc
 
 // ResponsesRequest sends a responses request to the specified provider.
 func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses request is nil",
+			},
+		}
+	}
 	if req.Input == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "responses not provided for responses request",
 			},
 		}
@@ -274,10 +306,18 @@ func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.Bifro
 
 // ResponsesStreamRequest sends a responses stream request to the specified provider.
 func (bifrost *Bifrost) ResponsesStreamRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses stream request is nil",
+			},
+		}
+	}
 	if req.Input == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "responses not provided for responses stream request",
 			},
 		}
@@ -295,10 +335,18 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx context.Context, req *schemas
 
 // EmbeddingRequest sends an embedding request to the specified provider.
 func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil {
+	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
+				Message: "embedding request is nil",
+			},
+		}
+	}
+	if req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
 				Message: "embedding input not provided for embedding request",
 			},
 		}
@@ -316,10 +364,18 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 
 // SpeechRequest sends a speech request to the specified provider.
 func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.Input == "" {
+	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
+				Message: "speech request is nil",
+			},
+		}
+	}
+	if req.Input != nil || req.Input.Input == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
 				Message: "speech input not provided for speech request",
 			},
 		}
@@ -337,10 +393,18 @@ func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostS
 
 // SpeechStreamRequest sends a speech stream request to the specified provider.
 func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if req.Input.Input == "" {
+	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
+				Message: "speech stream request is nil",
+			},
+		}
+	}
+	if req.Input != nil || req.Input.Input == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
 				Message: "speech input not provided for speech stream request",
 			},
 		}
@@ -358,10 +422,18 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.Bi
 
 // TranscriptionRequest sends a transcription request to the specified provider.
 func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if req.Input.File == nil {
+	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
+				Message: "transcription request is nil",
+			},
+		}
+	}
+	if req.Input != nil || req.Input.File == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
 				Message: "transcription input not provided for transcription request",
 			},
 		}
@@ -379,10 +451,18 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.B
 
 // TranscriptionStreamRequest sends a transcription stream request to the specified provider.
 func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if req.Input.File == nil {
+	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
+				Message: "transcription stream request is nil",
+			},
+		}
+	}
+	if req.Input != nil || req.Input.File == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
 				Message: "transcription input not provided for transcription stream request",
 			},
 		}
@@ -548,7 +628,7 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 						select {
 						case m.Err <- schemas.BifrostError{
 							IsBifrostError: false,
-							Error: schemas.ErrorField{
+							Error: &schemas.ErrorField{
 								Message: "request failed during provider concurrency update",
 							},
 						}:
@@ -677,7 +757,7 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 	if bifrost.mcpManager == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "MCP is not configured in this Bifrost instance",
 			},
 		}
@@ -687,7 +767,7 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: err.Error(),
 				Error:   err,
 			},
@@ -1412,7 +1492,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				bifrost.logger.Warn("error selecting key for model %s: %v", req.Model, err)
 				req.Err <- schemas.BifrostError{
 					IsBifrostError: false,
-					Error: schemas.ErrorField{
+					Error: &schemas.ErrorField{
 						Message: err.Error(),
 						Error:   err,
 					},
@@ -1552,7 +1632,7 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: fmt.Sprintf("unsupported request type: %s", req.RequestType),
 			},
 		}
@@ -1573,7 +1653,7 @@ func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage,
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: fmt.Sprintf("unsupported request type: %s", req.RequestType),
 			},
 		}

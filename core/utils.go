@@ -57,7 +57,7 @@ func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 func newBifrostError(err error) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: err.Error(),
 			Error:   err,
 		},
@@ -69,7 +69,7 @@ func newBifrostError(err error) *schemas.BifrostError {
 func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 		},
 	}

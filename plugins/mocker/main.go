@@ -850,7 +850,7 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 
 	// Create mock error
 	mockError := &schemas.BifrostError{
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: errorContent.Message,
 		},
 		AllowFallbacks: allowFallbacks,
@@ -941,7 +941,7 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 	case DefaultBehaviorError:
 		return req, &schemas.PluginShortCircuit{
 			Error: &schemas.BifrostError{
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: "Mock plugin default error",
 				},
 			},

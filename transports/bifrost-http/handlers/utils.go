@@ -26,7 +26,7 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string, logger 
 	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     &statusCode,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 		},
 	}

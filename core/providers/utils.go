@@ -37,7 +37,7 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		// Return a BifrostError indicating this.
 		return &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Type:    schemas.Ptr(schemas.RequestCancelled),
 				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
@@ -49,7 +49,7 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
 			return &schemas.BifrostError{
 				IsBifrostError: false,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderRequest,
 					Error:   err,
 				},
@@ -181,7 +181,7 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 		return &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     &statusCode,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderResponseUnmarshal,
 				Error:   err,
 			},
@@ -191,7 +191,7 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	return &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     &statusCode,
-		Error:          schemas.ErrorField{},
+		Error:          &schemas.ErrorField{},
 	}
 }
 
@@ -221,7 +221,7 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 	if structuredErr != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDecodeStructured,
 				Error:   structuredErr,
 			},
@@ -232,7 +232,7 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 		if rawErr != nil {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: true,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderDecodeRaw,
 					Error:   rawErr,
 				},
@@ -250,7 +250,7 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 func newUnsupportedOperationError(operation string, providerName string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: fmt.Sprintf("%s is not supported by %s provider", operation, providerName),
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
@@ -283,7 +283,7 @@ func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 func newConfigurationError(message string, providerType schemas.ModelProvider) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 		},
 	}
@@ -294,7 +294,7 @@ func newConfigurationError(message string, providerType schemas.ModelProvider) *
 func newBifrostOperationError(message string, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: true,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,
 		},
@@ -309,7 +309,7 @@ func newProviderAPIError(message string, err error, statusCode int, providerType
 		StatusCode:     &statusCode,
 		Type:           errorType,
 		EventID:        eventID,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,
 			Type:    errorType,
@@ -406,7 +406,7 @@ func processAndSendError(
 	bifrostError :=
 		&schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: fmt.Sprintf("Error reading stream: %v", err),
 				Error:   err,
 			},

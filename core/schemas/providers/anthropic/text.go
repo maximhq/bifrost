@@ -46,6 +46,9 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 }
 
 func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostResponse {
+	if response == nil {
+		return nil
+	}
 	return &schemas.BifrostResponse{
 		ID: response.ID,
 		Choices: []schemas.BifrostChatResponseChoice{

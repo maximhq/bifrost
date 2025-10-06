@@ -9,8 +9,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (request *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostResponsesRequest {
-	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
+// ToResponsesBifrostRequest converts an Anthropic message request to Bifrost format
+func (mr *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostResponsesRequest {
+	provider, model := schemas.ParseModelString(mr.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider: provider,
@@ -22,20 +23,20 @@ func (request *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.Bif
 		ExtraParams: make(map[string]interface{}),
 	}
 
-	if request.MaxTokens > 0 {
-		params.MaxOutputTokens = &request.MaxTokens
+	if mr.MaxTokens > 0 {
+		params.MaxOutputTokens = &mr.MaxTokens
 	}
-	if request.Temperature != nil {
-		params.Temperature = request.Temperature
+	if mr.Temperature != nil {
+		params.Temperature = mr.Temperature
 	}
-	if request.TopP != nil {
-		params.TopP = request.TopP
+	if mr.TopP != nil {
+		params.TopP = mr.TopP
 	}
-	if request.TopK != nil {
-		params.ExtraParams["top_k"] = *request.TopK
+	if mr.TopK != nil {
+		params.ExtraParams["top_k"] = *mr.TopK
 	}
-	if request.StopSequences != nil {
-		params.ExtraParams["stop"] = request.StopSequences
+	if mr.StopSequences != nil {
+		params.ExtraParams["stop"] = mr.StopSequences
 	}
 	bifrostReq.Params = params
 
@@ -43,14 +44,14 @@ func (request *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.Bif
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Handle system message - convert Anthropic system field to first message with role "system"
-	if request.System != nil {
+	if mr.System != nil {
 		var systemText string
-		if request.System.ContentStr != nil {
-			systemText = *request.System.ContentStr
-		} else if request.System.ContentBlocks != nil {
+		if mr.System.ContentStr != nil {
+			systemText = *mr.System.ContentStr
+		} else if mr.System.ContentBlocks != nil {
 			// Combine text blocks from system content
 			var textParts []string
-			for _, block := range request.System.ContentBlocks {
+			for _, block := range mr.System.ContentBlocks {
 				if block.Text != nil {
 					textParts = append(textParts, *block.Text)
 				}
@@ -71,15 +72,15 @@ func (request *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.Bif
 	}
 
 	// Convert regular messages
-	for _, msg := range request.Messages {
+	for _, msg := range mr.Messages {
 		convertedMessages := convertAnthropicMessageToBifrostResponsesMessages(&msg)
 		bifrostMessages = append(bifrostMessages, convertedMessages...)
 	}
 
 	// Convert tools if present
-	if request.Tools != nil {
+	if mr.Tools != nil {
 		var bifrostTools []schemas.ResponsesTool
-		for _, tool := range request.Tools {
+		for _, tool := range mr.Tools {
 			bifrostTool := convertAnthropicToolToBifrost(&tool)
 			if bifrostTool != nil {
 				bifrostTools = append(bifrostTools, *bifrostTool)
@@ -91,8 +92,8 @@ func (request *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.Bif
 	}
 
 	// Convert tool choice if present
-	if request.ToolChoice != nil {
-		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(request.ToolChoice)
+	if mr.ToolChoice != nil {
+		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(mr.ToolChoice)
 		if bifrostToolChoice != nil {
 			bifrostReq.Params.ToolChoice = bifrostToolChoice
 		}
@@ -172,16 +173,16 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 	return anthropicReq
 }
 
-// ToAnthropicResponsesResponse converts an Anthropic response to BifrostResponse with Responses structure
-func (anthropicResp *AnthropicMessageResponse) ToResponsesBifrostResponse() *schemas.BifrostResponse {
-	if anthropicResp == nil {
+// ToResponsesBifrostResponse converts an Anthropic response to BifrostResponse with Responses structure
+func (response *AnthropicMessageResponse) ToResponsesBifrostResponse() *schemas.BifrostResponse {
+	if response == nil {
 		return nil
 	}
 
 	// Create the BifrostResponse with Responses structure
 	bifrostResp := &schemas.BifrostResponse{
-		ID:     anthropicResp.ID,
-		Model:  anthropicResp.Model,
+		ID:     response.ID,
+		Model:  response.Model,
 		Object: "response",
 		ResponsesResponse: &schemas.ResponsesResponse{
 			CreatedAt: int(time.Now().Unix()),
@@ -189,26 +190,26 @@ func (anthropicResp *AnthropicMessageResponse) ToResponsesBifrostResponse() *sch
 	}
 
 	// Convert usage information
-	if anthropicResp.Usage != nil {
+	if response.Usage != nil {
 		bifrostResp.Usage = &schemas.LLMUsage{
-			TotalTokens: anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens,
+			TotalTokens: response.Usage.InputTokens + response.Usage.OutputTokens,
 			ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{
-				InputTokens:  anthropicResp.Usage.InputTokens,
-				OutputTokens: anthropicResp.Usage.OutputTokens,
+				InputTokens:  response.Usage.InputTokens,
+				OutputTokens: response.Usage.OutputTokens,
 			},
 		}
 
 		// Handle cached tokens if present
-		if anthropicResp.Usage.CacheReadInputTokens > 0 {
+		if response.Usage.CacheReadInputTokens > 0 {
 			if bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails == nil {
 				bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
-			bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails.CachedTokens = anthropicResp.Usage.CacheReadInputTokens
+			bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails.CachedTokens = response.Usage.CacheReadInputTokens
 		}
 	}
 
 	// Convert content to Responses output messages
-	outputMessages := convertAnthropicContentBlocksToResponsesMessages(anthropicResp.Content)
+	outputMessages := convertAnthropicContentBlocksToResponsesMessages(response.Content)
 	if len(outputMessages) > 0 {
 		bifrostResp.ResponsesResponse.Output = outputMessages
 	}
@@ -216,7 +217,7 @@ func (anthropicResp *AnthropicMessageResponse) ToResponsesBifrostResponse() *sch
 	return bifrostResp
 }
 
-// ConvertBifrostResponseToAnthropic converts a BifrostResponse with Responses structure back to AnthropicMessageResponse
+// ToAnthropicResponsesResponse converts a BifrostResponse with Responses structure back to AnthropicMessageResponse
 func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponse) *AnthropicMessageResponse {
 	anthropicResp := &AnthropicMessageResponse{
 		ID:    bifrostResp.ID,
@@ -781,7 +782,24 @@ func convertBifrostToolToAnthropic(tool *schemas.ResponsesTool) *AnthropicTool {
 
 // Helper function to convert ResponsesToolChoice back to AnthropicToolChoice
 func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoice) *AnthropicToolChoice {
-	if toolChoice == nil || toolChoice.ResponsesToolChoiceStruct == nil {
+	if toolChoice == nil {
+		return nil
+	}
+	// String-form choices (auto/any/none/required) have no struct payload.
+	if toolChoice.ResponsesToolChoiceStruct == nil && toolChoice.ResponsesToolChoiceStr != nil {
+		switch schemas.ResponsesToolChoiceType(*toolChoice.ResponsesToolChoiceStr) {
+		case schemas.ResponsesToolChoiceTypeAuto:
+			return &AnthropicToolChoice{Type: "auto"}
+		case schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
+			return &AnthropicToolChoice{Type: "any"}
+		case schemas.ResponsesToolChoiceTypeNone:
+			return &AnthropicToolChoice{Type: "none"}
+		default:
+			return nil
+		}
+	}
+
+	if toolChoice.ResponsesToolChoiceStruct == nil {
 		return nil
 	}
 
@@ -865,12 +883,50 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 					},
 				})
 			}
+		case "tool_result":
+			if block.ToolUseID != nil {
+				// Create function call output message
+				msg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: block.ToolUseID,
+					},
+				}
+				// Initialize nested output struct
+				msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput = &schemas.ResponsesFunctionToolCallOutput{}
+				if block.Content != nil {
+					if block.Content.ContentStr != nil {
+						msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.
+							ResponsesFunctionToolCallOutputStr = block.Content.ContentStr
+					} else if block.Content.ContentBlocks != nil {
+						var outBlocks []schemas.ResponsesMessageContentBlock
+						for _, cb := range block.Content.ContentBlocks {
+							switch cb.Type {
+							case AnthropicContentBlockTypeText:
+								if cb.Text != nil {
+									outBlocks = append(outBlocks, schemas.ResponsesMessageContentBlock{
+										Type: schemas.ResponsesInputMessageContentBlockTypeText,
+										Text: cb.Text,
+									})
+								}
+							case AnthropicContentBlockTypeImage:
+								if cb.Source != nil {
+									outBlocks = append(outBlocks, cb.toBifrostResponsesImageBlock())
+								}
+							}
+						}
+						msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.
+							ResponsesFunctionToolCallOutputBlocks = outBlocks
+					}
+				}
+				messages = append(messages, msg)
+			}
 
 		default:
 			// Handle other block types if needed
 		}
 	}
-
 	return messages
 }
 
@@ -975,22 +1031,24 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 				contentBlocks = append(contentBlocks, resultBlock)
 
 			case schemas.ResponsesMessageTypeReasoning:
-				// Thinking block (Claude 3.5 Sonnet specific)
-				if msg.Content.ContentStr != nil {
-					contentBlock := AnthropicContentBlock{
-						Type: AnthropicContentBlockTypeThinking,
+				// Build thinking from ResponsesReasoning summary, else from reasoning content blocks
+				var thinking string
+				if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.Summary != nil {
+					for _, b := range msg.ResponsesReasoning.Summary {
+						thinking += b.Text
 					}
-
-					if msg.ResponsesReasoning != nil {
-						var thinking string
-						if msg.ResponsesReasoning.Summary != nil {
-							for _, block := range msg.ResponsesReasoning.Summary {
-								thinking += block.Text
-							}
+				} else if msg.Content != nil && msg.Content.ContentBlocks != nil {
+					for _, b := range msg.Content.ContentBlocks {
+						if b.Type == schemas.ResponsesOutputMessageContentTypeReasoning && b.Text != nil {
+							thinking += *b.Text
 						}
-						contentBlock.Thinking = &thinking
 					}
-					contentBlocks = append(contentBlocks, contentBlock)
+				}
+				if thinking != "" {
+					contentBlocks = append(contentBlocks, AnthropicContentBlock{
+						Type:     AnthropicContentBlockTypeThinking,
+						Thinking: &thinking,
+					})
 				}
 
 			default:

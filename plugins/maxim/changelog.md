@@ -3,5 +3,5 @@
 
 - Fix: Maxim plugin now captures Bifrost gateway specific errors.
 - Upgrade dependency: maxim-go to 0.1.11
-- Upgrade dependency: core to 1.1.39
-- Upgrade dependency: framework to 1.0.25
+- Upgrade dependency: core to 1.2.0
+- Upgrade dependency: framework to 1.1.0

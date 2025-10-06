@@ -378,22 +378,23 @@ func convertResponsesItemsToBedrockMessages(messages []schemas.ResponsesMessage)
 					if msg.ResponsesToolMessage.CallID != nil {
 						toolUseID = *msg.ResponsesToolMessage.CallID
 					}
-
 					toolResultBlock := BedrockContentBlock{
 						ToolResult: &BedrockToolResult{
 							ToolUseID: toolUseID,
 						},
 					}
-
 					// Set content based on available data
 					if msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputStr != nil {
-						// Unmarshal the JSON string into an interface{} to get a proper JSON object
-						var parsedOutput interface{}
-						if err := json.Unmarshal([]byte(*msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputStr), &parsedOutput); err != nil {
-							return nil, nil, fmt.Errorf("failed to parse tool result JSON: %w", err)
-						}
-						toolResultBlock.ToolResult.Content = []BedrockContentBlock{
-							{JSON: parsedOutput},
+						raw := *msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputStr
+						var parsed interface{}
+						if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+							toolResultBlock.ToolResult.Content = []BedrockContentBlock{
+								{JSON: parsed},
+							}
+						} else {
+							toolResultBlock.ToolResult.Content = []BedrockContentBlock{
+								{Text: &raw},
+							}
 						}
 					} else if msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputBlocks != nil {
 						toolResultContent, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(schemas.ResponsesMessageContent{

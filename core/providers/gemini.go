@@ -228,7 +228,7 @@ func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, req
 	providerName := provider.GetProviderKey()
 
 	// Validate input
-	if request == nil || request.Input.Input == "" {
+	if request == nil || request.Input == nil || request.Input.Input == "" {
 		return nil, newBifrostOperationError("invalid speech input: no text provided", fmt.Errorf("empty text input"), providerName)
 	}
 
@@ -270,6 +270,10 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	}
 
 	providerName := provider.GetProviderKey()
+
+	if request == nil || request.Input == nil || request.Input.Input == "" {
+		return nil, newBifrostOperationError("speech input is not provided", fmt.Errorf("empty text input"), providerName)
+	}
 
 	// Prepare request body using speech-specific function
 	requestBody := gemini.ToGeminiSpeechRequest(request, []string{"AUDIO"})
@@ -354,7 +358,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 					bifrostErr := &schemas.BifrostError{
 						Type:           schemas.Ptr("gemini_api_error"),
 						IsBifrostError: false,
-						Error: schemas.ErrorField{
+						Error: &schemas.ErrorField{
 							Message: err.Error(),
 							Error:   err,
 						},
@@ -450,11 +454,14 @@ func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.K
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
 	}
-
 	providerName := provider.GetProviderKey()
-
+	// Check if input is provided
+	if request.Input == nil || request.Input.File == nil {
+		return nil, newBifrostOperationError("transcription input is not provided", fmt.Errorf("empty file input"), providerName)
+	}
 	// Check file size limit (Gemini has a 20MB limit for inline data)
 	const maxFileSize = 20 * 1024 * 1024 // 20MB
+
 	if len(request.Input.File) > maxFileSize {
 		return nil, newBifrostOperationError("audio file too large for inline transcription", fmt.Errorf("file size %d bytes exceeds 20MB limit", len(request.Input.File)), providerName)
 	}
@@ -497,6 +504,10 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	}
 
 	providerName := provider.GetProviderKey()
+
+	if request.Input == nil || request.Input.File == nil {
+		return nil, newBifrostOperationError("transcription input is not provided", fmt.Errorf("empty file input"), providerName)
+	}	
 
 	// Check file size limit (Gemini has a 20MB limit for inline data)
 	if request.Input.File != nil {
@@ -591,7 +602,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				bifrostErr := &schemas.BifrostError{
 					Type:           schemas.Ptr("gemini_api_error"),
 					IsBifrostError: false,
-					Error: schemas.ErrorField{
+					Error: &schemas.ErrorField{
 						Message: fmt.Sprintf("Gemini API error: %v", errorCheck["error"]),
 						Error:   fmt.Errorf("stream error: %v", errorCheck["error"]),
 					},

@@ -225,10 +225,10 @@ type BedrockMistralTextResponse struct {
 
 // BedrockConverseResponse represents a Bedrock Converse API response
 type BedrockConverseResponse struct {
-	Output                        BedrockConverseOutput     `json:"output"`                                  // Required: Response output
+	Output                        *BedrockConverseOutput     `json:"output"`                                  // Required: Response output
 	StopReason                    string                    `json:"stopReason"`                              // Required: Reason for stopping
-	Usage                         BedrockTokenUsage         `json:"usage"`                                   // Required: Token usage information
-	Metrics                       BedrockConverseMetrics    `json:"metrics"`                                 // Required: Response metrics
+	Usage                         *BedrockTokenUsage         `json:"usage"`                                   // Required: Token usage information
+	Metrics                       *BedrockConverseMetrics    `json:"metrics"`                                 // Required: Response metrics
 	AdditionalModelResponseFields map[string]interface{}    `json:"additionalModelResponseFields,omitempty"` // Optional: Additional model-specific response fields
 	PerformanceConfig             *BedrockPerformanceConfig `json:"performanceConfig,omitempty"`             // Optional: Performance configuration used
 	Trace                         *BedrockConverseTrace     `json:"trace,omitempty"`                         // Optional: Guardrail trace information

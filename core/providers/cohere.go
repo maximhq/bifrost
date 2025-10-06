@@ -145,7 +145,7 @@ func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Co
 	if err != nil {
 		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderJSONMarshaling,
 				Error:   err,
 			},
@@ -190,7 +190,7 @@ func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Co
 	if err := sonic.Unmarshal(resp.Body(), &cohereResponse); err != nil {
 		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "error parsing Cohere v2 response",
 				Error:   err,
 			},
@@ -203,7 +203,7 @@ func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Co
 		if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
 			return nil, nil, &schemas.BifrostError{
 				IsBifrostError: true,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: "error parsing raw response",
 					Error:   err,
 				},
@@ -372,7 +372,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderRequest,
 				Error:   err,
 			},

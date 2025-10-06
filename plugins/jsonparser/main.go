@@ -133,7 +133,7 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 						if !p.isValidJSON(fixedContent) {
 							err = &schemas.BifrostError{
-								Error: schemas.ErrorField{
+								Error: &schemas.ErrorField{
 									Message: "Invalid JSON in streaming response",
 								},
 								StreamControl: &schemas.StreamControl{

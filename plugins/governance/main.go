@@ -108,7 +108,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 				Error: &schemas.BifrostError{
 					Type:       bifrost.Ptr("virtual_key_required"),
 					StatusCode: bifrost.Ptr(400),
-					Error: schemas.ErrorField{
+					Error: &schemas.ErrorField{
 						Message: "x-bf-vk header is missing",
 					},
 				},
@@ -152,7 +152,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 			Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(result.Decision)),
 				StatusCode: bifrost.Ptr(403),
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: result.Reason,
 				},
 			},
@@ -163,7 +163,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 			Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(result.Decision)),
 				StatusCode: bifrost.Ptr(429),
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: result.Reason,
 				},
 			},
@@ -174,7 +174,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 			Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(result.Decision)),
 				StatusCode: bifrost.Ptr(402),
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: result.Reason,
 				},
 			},
@@ -185,7 +185,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 		return req, &schemas.PluginShortCircuit{
 			Error: &schemas.BifrostError{
 				Type: bifrost.Ptr(string(result.Decision)),
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: "Governance decision error",
 				},
 			},

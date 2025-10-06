@@ -262,10 +262,10 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		initialData.Params = req.EmbeddingRequest.Params
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		initialData.Params = req.SpeechRequest.Params
-		initialData.SpeechInput = &req.SpeechRequest.Input
+		initialData.SpeechInput = req.SpeechRequest.Input
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		initialData.Params = req.TranscriptionRequest.Params
-		initialData.TranscriptionInput = &req.TranscriptionRequest.Input
+		initialData.TranscriptionInput = req.TranscriptionRequest.Input
 	}
 	*ctx = context.WithValue(*ctx, CreatedTimestampKey, createdTimestamp)
 	// Queue the log creation message (non-blocking) - Using sync.Pool

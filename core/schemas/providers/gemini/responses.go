@@ -563,24 +563,24 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			case schemas.ResponsesMessageTypeFunctionCall:
 				// Convert function call to Gemini FunctionCall
 				if msg.ResponsesToolMessage.Name != nil {
-					argsMap := make(map[string]any)
+					argsMap := map[string]any{}
 					if msg.ResponsesToolMessage.Arguments != nil {
-						// Parse JSON arguments
-						if err := sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Arguments), &argsMap); err == nil {
-							part := &CustomPart{
-								FunctionCall: &FunctionCall{
-									Name: *msg.ResponsesToolMessage.Name,
-									Args: argsMap,
-								},
-							}
-							if msg.ResponsesToolMessage.CallID != nil {
-								part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
-							}
-							content.Parts = append(content.Parts, part)
+						if err := sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Arguments), &argsMap); err != nil {
+							return nil, nil, fmt.Errorf("failed to decode function call arguments: %w", err)
 						}
 					}
-				}
 
+					part := &CustomPart{
+						FunctionCall: &FunctionCall{
+							Name: *msg.ResponsesToolMessage.Name,
+							Args: argsMap,
+						},
+					}
+					if msg.ResponsesToolMessage.CallID != nil {
+						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+					}
+					content.Parts = append(content.Parts, part)
+				}
 			case schemas.ResponsesMessageTypeFunctionCallOutput:
 				// Convert function response to Gemini FunctionResponse
 				if msg.ResponsesToolMessage.CallID != nil {

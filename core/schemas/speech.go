@@ -12,7 +12,7 @@ type SpeechInput struct {
 }
 
 type SpeechParameters struct {
-	VoiceConfig    SpeechVoiceInput `json:"voice"`
+	VoiceConfig    *SpeechVoiceInput `json:"voice"`
 	Instructions   string           `json:"instructions,omitempty"`
 	ResponseFormat string           `json:"response_format,omitempty"` // Default is "mp3"
 	Speed          *float64         `json:"speed,omitempty"`

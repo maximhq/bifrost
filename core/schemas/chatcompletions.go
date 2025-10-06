@@ -1,13 +1,13 @@
 package schemas
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/bytedance/sonic"
 )
 
-// Parameters
-
+// ChatParameters represents the parameters for a chat completion.
 type ChatParameters struct {
 	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`     // Penalizes frequent tokens
 	LogitBias           *map[string]float64 `json:"logit_bias,omitempty"`            // Bias for logit values
@@ -39,25 +39,29 @@ type ChatParameters struct {
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
+// ChatStreamOptions represents the stream options for a chat completion.
 type ChatStreamOptions struct {
 	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 	IncludeUsage       *bool `json:"include_usage,omitempty"` // Bifrost marks this as true by default
 }
 
-// TOOLS
-
+// ChatToolType represents the type of tool.
 type ChatToolType string
 
+// ChatToolType values
 const (
 	ChatToolTypeFunction ChatToolType = "function"
 	ChatToolTypeCustom   ChatToolType = "custom"
 )
 
+// ChatTool represents a tool definition.
 type ChatTool struct {
 	Type     ChatToolType      `json:"type"`
 	Function *ChatToolFunction `json:"function,omitempty"` // Function definition
 	Custom   *ChatToolCustom   `json:"custom,omitempty"`   // Custom tool definition
 }
+
+// ChatToolFunction represents a function definition.
 type ChatToolFunction struct {
 	Name        string                  `json:"name"`                  // Name of the function
 	Description *string                 `json:"description,omitempty"` // Description of the parameters
@@ -65,7 +69,7 @@ type ChatToolFunction struct {
 	Strict      *bool                   `json:"strict,omitempty"`      // Whether to enforce strict parameter validation
 }
 
-// FunctionParameters represents the parameters for a function definition.
+// ToolFunctionParameters represents the parameters for a function definition.
 type ToolFunctionParameters struct {
 	Type        string                 `json:"type"`                  // Type of the parameters
 	Description *string                `json:"description,omitempty"` // Description of the parameters
@@ -83,7 +87,7 @@ type ChatToolCustomFormat struct {
 	Grammar *ChatToolCustomGrammarFormat `json:"grammar,omitempty"`
 }
 
-// ChatCustomToolGrammarFormat - A grammar defined by the user
+// ChatToolCustomGrammarFormat - A grammar defined by the user
 type ChatToolCustomGrammarFormat struct {
 	Definition string `json:"definition"` // The grammar definition
 	Syntax     string `json:"syntax"`     // "lark" | "regex"
@@ -93,6 +97,7 @@ type ChatToolCustomGrammarFormat struct {
 // documentation to see which tool choices are supported.
 type ChatToolChoiceType string
 
+// ChatToolChoiceType values
 const (
 	ChatToolChoiceTypeNone     ChatToolChoiceType = "none"
 	ChatToolChoiceTypeAny      ChatToolChoiceType = "any"
@@ -105,6 +110,7 @@ const (
 	ChatToolChoiceTypeCustom ChatToolChoiceType = "custom"
 )
 
+// ChatToolChoiceStruct represents a tool choice.
 type ChatToolChoiceStruct struct {
 	Type         ChatToolChoiceType         `json:"type"`                    // Type of tool choice
 	Function     ChatToolChoiceFunction     `json:"function,omitempty"`      // Function to call if type is ToolChoiceTypeFunction
@@ -119,17 +125,17 @@ type ChatToolChoice struct {
 
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.
 // It marshals either ContentStr or ContentBlocks directly without wrapping.
-func (bc ChatToolChoice) MarshalJSON() ([]byte, error) {
+func (ctc ChatToolChoice) MarshalJSON() ([]byte, error) {
 	// Validation: ensure only one field is set at a time
-	if bc.ChatToolChoiceStr != nil && bc.ChatToolChoiceStruct != nil {
+	if ctc.ChatToolChoiceStr != nil && ctc.ChatToolChoiceStruct != nil {
 		return nil, fmt.Errorf("both ChatToolChoiceStr, ChatToolChoiceStruct are set; only one should be non-nil")
 	}
 
-	if bc.ChatToolChoiceStr != nil {
-		return sonic.Marshal(bc.ChatToolChoiceStr)
+	if ctc.ChatToolChoiceStr != nil {
+		return sonic.Marshal(ctc.ChatToolChoiceStr)
 	}
-	if bc.ChatToolChoiceStruct != nil {
-		return sonic.Marshal(bc.ChatToolChoiceStruct)
+	if ctc.ChatToolChoiceStruct != nil {
+		return sonic.Marshal(ctc.ChatToolChoiceStruct)
 	}
 	// If both are nil, return null
 	return sonic.Marshal(nil)
@@ -138,49 +144,52 @@ func (bc ChatToolChoice) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
 // It determines whether "content" is a string or array and assigns to the appropriate field.
 // It also handles direct string/array content without a wrapper object.
-func (bc *ChatToolChoice) UnmarshalJSON(data []byte) error {
+func (ctc *ChatToolChoice) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var toolChoiceStr string
 	if err := sonic.Unmarshal(data, &toolChoiceStr); err == nil {
-		bc.ChatToolChoiceStr = &toolChoiceStr
-		bc.ChatToolChoiceStruct = nil
+		ctc.ChatToolChoiceStr = &toolChoiceStr
+		ctc.ChatToolChoiceStruct = nil
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var chatToolChoice ChatToolChoiceStruct
 	if err := sonic.Unmarshal(data, &chatToolChoice); err == nil {
-		bc.ChatToolChoiceStr = nil
-		bc.ChatToolChoiceStruct = &chatToolChoice
+		ctc.ChatToolChoiceStr = nil
+		ctc.ChatToolChoiceStruct = &chatToolChoice
 		return nil
 	}
 
 	return fmt.Errorf("tool_choice field is neither a string nor a ChatToolChoiceStruct object")
 }
 
+// ChatToolChoiceFunction represents a function choice.
 type ChatToolChoiceFunction struct {
 	Name string `json:"name"`
 }
 
+// ChatToolChoiceCustom represents a custom choice.
 type ChatToolChoiceCustom struct {
 	Name string `json:"name"`
 }
 
+// ChatToolChoiceAllowedTools represents a allowed tools choice.
 type ChatToolChoiceAllowedTools struct {
 	Mode  string                           `json:"mode"` // "auto" | "required"
 	Tools []ChatToolChoiceAllowedToolsTool `json:"tools"`
 }
 
+// ChatToolChoiceAllowedToolsTool represents a allowed tools tool.
 type ChatToolChoiceAllowedToolsTool struct {
 	Type     string                 `json:"type"` // "function"
 	Function ChatToolChoiceFunction `json:"function,omitempty"`
 }
 
-// MESSAGES
-
 // ChatMessageRole represents the role of a chat message
 type ChatMessageRole string
 
+// ChatMessageRole values
 const (
 	ChatMessageRoleAssistant ChatMessageRole = "assistant"
 	ChatMessageRoleUser      ChatMessageRole = "user"
@@ -201,6 +210,7 @@ type ChatMessage struct {
 	*ChatAssistantMessage
 }
 
+// ChatMessageContent represents a content in a message.
 type ChatMessageContent struct {
 	ContentStr    *string
 	ContentBlocks []ChatContentBlock
@@ -228,10 +238,18 @@ func (mc ChatMessageContent) MarshalJSON() ([]byte, error) {
 // It determines whether "content" is a string or array and assigns to the appropriate field.
 // It also handles direct string/array content without a wrapper object.
 func (mc *ChatMessageContent) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		mc.ContentStr = nil
+		mc.ContentBlocks = nil
+		return nil
+	}
+
 	// First, try to unmarshal as a direct string
 	var stringContent string
 	if err := sonic.Unmarshal(data, &stringContent); err == nil {
 		mc.ContentStr = &stringContent
+		mc.ContentBlocks = nil
 		return nil
 	}
 
@@ -239,6 +257,7 @@ func (mc *ChatMessageContent) UnmarshalJSON(data []byte) error {
 	var arrayContent []ChatContentBlock
 	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
 		mc.ContentBlocks = arrayContent
+		mc.ContentStr = nil
 		return nil
 	}
 
@@ -248,6 +267,7 @@ func (mc *ChatMessageContent) UnmarshalJSON(data []byte) error {
 // ChatContentBlockType represents the type of content block in a message.
 type ChatContentBlockType string
 
+// ChatContentBlockType values
 const (
 	ChatContentBlockTypeText       ChatContentBlockType = "text"
 	ChatContentBlockTypeImage      ChatContentBlockType = "image_url"

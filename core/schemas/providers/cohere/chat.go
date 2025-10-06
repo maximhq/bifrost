@@ -4,7 +4,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ConvertChatRequestToCohere converts a Bifrost request to Cohere v2 format
+// ToCohereChatCompletionRequest converts a Bifrost request to Cohere v2 format
 func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *CohereChatRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -168,7 +168,8 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 					toolChoice := ToolChoiceRequired
 					cohereReq.ToolChoice = &toolChoice
 				default:
-					cohereReq.ToolChoice = nil
+					toolChoice := ToolChoiceAuto
+					cohereReq.ToolChoice = &toolChoice					
 				}
 			}
 		}

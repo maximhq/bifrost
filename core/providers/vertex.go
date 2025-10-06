@@ -206,7 +206,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderRequest,
 				Error:   err,
 			},
@@ -231,7 +231,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 					Error:   err,
@@ -401,7 +401,7 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 					Error:   err,
@@ -542,7 +542,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		)
 	} else {
 		url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
-
+		authHeader := map[string]string{}
+		if key.Value != "" {
+			authHeader["Authorization"] = "Bearer " + key.Value
+		}
 		// Use shared OpenAI streaming logic
 		return handleOpenAIStreaming(
 			ctx,

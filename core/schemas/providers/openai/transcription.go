@@ -9,7 +9,7 @@ func (r *OpenAITranscriptionRequest) ToBifrostRequest() *schemas.BifrostTranscri
 	bifrostReq := &schemas.BifrostTranscriptionRequest{
 		Provider: provider,
 		Model:    model,
-		Input: schemas.TranscriptionInput{
+		Input: &schemas.TranscriptionInput{
 			File: r.File,
 		},
 		Params: &r.TranscriptionParameters,

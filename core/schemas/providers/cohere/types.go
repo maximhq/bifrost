@@ -178,6 +178,7 @@ type CohereToolChoice string
 const (
 	ToolChoiceRequired CohereToolChoice = "REQUIRED"
 	ToolChoiceNone     CohereToolChoice = "NONE"
+	ToolChoiceAuto     CohereToolChoice = "AUTO"
 )
 
 // CohereToolCall represents a tool call in Cohere  format

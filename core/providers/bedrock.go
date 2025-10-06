@@ -100,7 +100,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 					Error:   err,
@@ -109,7 +109,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		}
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderJSONMarshaling,
 				Error:   err,
 			},
@@ -121,7 +121,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "error creating request",
 				Error:   err,
 			},
@@ -146,7 +146,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderRequest,
 				Error:   err,
 			},
@@ -159,7 +159,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
@@ -173,7 +173,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 			return nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				StatusCode:     &resp.StatusCode,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderResponseUnmarshal,
 					Error:   err,
 				},
@@ -182,7 +182,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 
 		return nil, &schemas.BifrostError{
 			StatusCode: &resp.StatusCode,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: errorResp.Message,
 			},
 		}

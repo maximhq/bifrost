@@ -708,7 +708,7 @@ func handleAnthropicStreaming(
 					// Send error through channel before closing
 					bifrostErr := &schemas.BifrostError{
 						IsBifrostError: false,
-						Error: schemas.ErrorField{
+						Error: &schemas.ErrorField{
 							Type:    &event.Error.Type,
 							Message: event.Error.Message,
 						},

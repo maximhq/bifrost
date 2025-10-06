@@ -45,7 +45,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 	}
 
 	// Convert tools
-	if bifrostReq.Params.Tools != nil {
+	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
 		var cohereTools []CohereChatRequestTool
 		for _, tool := range bifrostReq.Params.Tools {
 			if tool.ResponsesToolFunction != nil && tool.Name != nil {
@@ -67,7 +67,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 	}
 
 	// Convert tool choice
-	if bifrostReq.Params.ToolChoice != nil {
+	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
 		cohereReq.ToolChoice = convertBifrostToolChoiceToCohereToolChoice(*bifrostReq.Params.ToolChoice)
 	}
 

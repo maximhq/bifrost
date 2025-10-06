@@ -9,7 +9,7 @@ func (r *OpenAISpeechRequest) ToBifrostRequest() *schemas.BifrostSpeechRequest {
 	bifrostReq := &schemas.BifrostSpeechRequest{
 		Provider: provider,
 		Model:    model,
-		Input:    schemas.SpeechInput{Input: r.Input},
+		Input:    &schemas.SpeechInput{Input: r.Input},
 		Params:   &r.SpeechParameters,
 	}
 

@@ -155,7 +155,7 @@ type BifrostParams struct {
 }
 
 type TextRequest struct {
-	Prompt schemas.TextCompletionInput `json:"prompt"`
+	Prompt *schemas.TextCompletionInput `json:"prompt"`
 	BifrostParams
 	*schemas.TextCompletionParameters
 }
@@ -173,7 +173,7 @@ type ResponsesRequest struct {
 }
 
 type EmbeddingRequest struct {
-	Input schemas.EmbeddingInput `json:"input"`
+	Input *schemas.EmbeddingInput `json:"input"`
 	BifrostParams
 	*schemas.EmbeddingParameters
 }
@@ -556,7 +556,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	bifrostSpeechReq := &schemas.BifrostSpeechRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
-		Input:     *req.SpeechInput,
+		Input:     req.SpeechInput,
 		Params:    req.SpeechParameters,
 		Fallbacks: fallbacks,
 	}
@@ -673,7 +673,7 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 	bifrostTranscriptionReq := &schemas.BifrostTranscriptionRequest{
 		Model:    modelName,
 		Provider: schemas.ModelProvider(provider),
-		Input:    *transcriptionInput,
+		Input:    transcriptionInput,
 		Params:   transcriptionParams,
 	}
 

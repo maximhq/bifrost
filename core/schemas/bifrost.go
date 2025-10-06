@@ -120,7 +120,7 @@ const (
 type BifrostTextCompletionRequest struct {
 	Provider  ModelProvider             `json:"provider"`
 	Model     string                    `json:"model"`
-	Input     TextCompletionInput       `json:"input,omitempty"`
+	Input     *TextCompletionInput      `json:"input,omitempty"`
 	Params    *TextCompletionParameters `json:"params,omitempty"`
 	Fallbacks []Fallback                `json:"fallbacks,omitempty"`
 }
@@ -144,7 +144,7 @@ type BifrostResponsesRequest struct {
 type BifrostEmbeddingRequest struct {
 	Provider  ModelProvider        `json:"provider"`
 	Model     string               `json:"model"`
-	Input     EmbeddingInput       `json:"input,omitempty"`
+	Input     *EmbeddingInput       `json:"input,omitempty"`
 	Params    *EmbeddingParameters `json:"params,omitempty"`
 	Fallbacks []Fallback           `json:"fallbacks,omitempty"`
 }
@@ -152,7 +152,7 @@ type BifrostEmbeddingRequest struct {
 type BifrostSpeechRequest struct {
 	Provider  ModelProvider     `json:"provider"`
 	Model     string            `json:"model"`
-	Input     SpeechInput       `json:"input,omitempty"`
+	Input     *SpeechInput       `json:"input,omitempty"`
 	Params    *SpeechParameters `json:"params,omitempty"`
 	Fallbacks []Fallback        `json:"fallbacks,omitempty"`
 }
@@ -160,7 +160,7 @@ type BifrostSpeechRequest struct {
 type BifrostTranscriptionRequest struct {
 	Provider  ModelProvider            `json:"provider"`
 	Model     string                   `json:"model"`
-	Input     TranscriptionInput       `json:"input,omitempty"`
+	Input     *TranscriptionInput       `json:"input,omitempty"`
 	Params    *TranscriptionParameters `json:"params,omitempty"`
 	Fallbacks []Fallback               `json:"fallbacks,omitempty"`
 }
@@ -445,7 +445,7 @@ type BifrostError struct {
 	Type           *string                 `json:"type,omitempty"`
 	IsBifrostError bool                    `json:"is_bifrost_error"`
 	StatusCode     *int                    `json:"status_code,omitempty"`
-	Error          ErrorField              `json:"error"`
+	Error          *ErrorField              `json:"error"`
 	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields,omitempty"`

@@ -118,16 +118,21 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 			FinishReason: &bedrockResp.StopReason,
 		},
 	}
-
-	// Convert usage information
-	usage := &schemas.LLMUsage{
-		PromptTokens:     bedrockResp.Usage.InputTokens,
-		CompletionTokens: bedrockResp.Usage.OutputTokens,
-		TotalTokens:      bedrockResp.Usage.TotalTokens,
+	var usage *schemas.LLMUsage
+	if bedrockResp.Usage != nil {
+		// Convert usage information
+		usage = &schemas.LLMUsage{
+			PromptTokens:     bedrockResp.Usage.InputTokens,
+			CompletionTokens: bedrockResp.Usage.OutputTokens,
+			TotalTokens:      bedrockResp.Usage.TotalTokens,
+		}
 	}
 
 	// Calculate latency
-	latency := float64(bedrockResp.Metrics.LatencyMs)
+	var latency float64
+	if bedrockResp.Metrics != nil {
+		latency = float64(bedrockResp.Metrics.LatencyMs)
+	}
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostResponse{

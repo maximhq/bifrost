@@ -303,11 +303,11 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfi
 }
 
 // addSpeechConfigToGenerationConfig adds speech configuration to the generation config
-func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig schemas.SpeechVoiceInput) {
+func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *schemas.SpeechVoiceInput) {
 	speechConfig := SpeechConfig{}
 
 	// Handle single voice configuration
-	if voiceConfig.Voice != nil {
+	if voiceConfig != nil && voiceConfig.Voice != nil {
 		speechConfig.VoiceConfig = &VoiceConfig{
 			PrebuiltVoiceConfig: &PrebuiltVoiceConfig{
 				VoiceName: *voiceConfig.Voice,
@@ -316,7 +316,7 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig sch
 	}
 
 	// Handle multi-speaker voice configuration
-	if len(voiceConfig.MultiVoiceConfig) > 0 {
+	if voiceConfig != nil && len(voiceConfig.MultiVoiceConfig) > 0 {
 		var speakerVoiceConfigs []*SpeakerVoiceConfig
 		for _, vc := range voiceConfig.MultiVoiceConfig {
 			speakerVoiceConfigs = append(speakerVoiceConfigs, &SpeakerVoiceConfig{

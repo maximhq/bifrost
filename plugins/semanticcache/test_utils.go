@@ -225,11 +225,11 @@ func CreateSpeechRequest(input string, voice string) *schemas.BifrostSpeechReque
 	return &schemas.BifrostSpeechRequest{
 		Provider: schemas.OpenAI,
 		Model:    "tts-1",
-		Input: schemas.SpeechInput{
+		Input: &schemas.SpeechInput{
 			Input: input,
 		},
 		Params: &schemas.SpeechParameters{
-			VoiceConfig: schemas.SpeechVoiceInput{
+			VoiceConfig: &schemas.SpeechVoiceInput{
 				Voice: &voice,
 			},
 			ResponseFormat: "mp3",
@@ -289,7 +289,7 @@ func CreateEmbeddingRequest(texts []string) *schemas.BifrostEmbeddingRequest {
 	return &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.OpenAI,
 		Model:    "text-embedding-3-small",
-		Input: schemas.EmbeddingInput{
+		Input: &schemas.EmbeddingInput{
 			Texts: texts,
 		},
 	}

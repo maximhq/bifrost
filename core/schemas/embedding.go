@@ -53,6 +53,10 @@ func (e *EmbeddingInput) MarshalJSON() ([]byte, error) {
 }
 
 func (e *EmbeddingInput) UnmarshalJSON(data []byte) error {
+	e.Text = nil
+	e.Texts = nil
+	e.Embedding = nil
+	e.Embeddings = nil
 	// Try string
 	var s string
 	if err := sonic.Unmarshal(data, &s); err == nil {
