@@ -129,7 +129,7 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 			if ok {
 				anthropicReq.TopK = topK
 			}
-			if stop, ok := schemas.SafeExtractStringSlicePointer(bifrostReq.Params.ExtraParams["stop"]); ok {
+			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				anthropicReq.StopSequences = stop
 			}
 		}
@@ -891,7 +891,7 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 					})
 				} else if msg.Content.ContentBlocks != nil {
 					// Convert content blocks
-						for _, block := range msg.Content.ContentBlocks {
+					for _, block := range msg.Content.ContentBlocks {
 						anthropicBlock := convertContentBlockToAnthropic(block)
 						if anthropicBlock != nil {
 							contentBlocks = append(contentBlocks, *anthropicBlock)

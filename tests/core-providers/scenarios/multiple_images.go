@@ -29,7 +29,7 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			{
 				Role: schemas.ChatMessageRoleUser,
 				Content: schemas.ChatMessageContent{
-					ContentBlocks: &[]schemas.ChatContentBlock{
+					ContentBlocks: []schemas.ChatContentBlock{
 						{
 							Type: schemas.ChatContentBlockTypeText,
 							Text: bifrost.Ptr("Compare these two images - what are the similarities and differences? Both are animals, but what are the specific differences between them?"),
