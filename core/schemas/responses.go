@@ -33,7 +33,7 @@ import (
 type ResponsesParameters struct {
 	Background         *bool                         `json:"background,omitempty"`
 	Conversation       *string                       `json:"conversation,omitempty"`
-	Include            []string                     `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	Include            []string                      `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
 	Instructions       *string                       `json:"instructions,omitempty"`
 	MaxOutputTokens    *int                          `json:"max_output_tokens,omitempty"`
 	MaxToolCalls       *int                          `json:"max_tool_calls,omitempty"`
@@ -83,18 +83,121 @@ type ResponsesTextConfigFormatJSONSchema struct {
 }
 
 type ResponsesResponse struct {
-	Tools      []ResponsesTool     `json:"tools,omitempty"`
-	ToolChoice *ResponsesToolChoice `json:"tool_choice,omitempty"`
-
-	ResponsesParameters
+	Background         *bool                          `json:"background,omitempty"`
+	Conversation       *ResponsesResponseConversation `json:"conversation,omitempty"`
+	Include            []string                       `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	Instructions       *ResponsesResponseInstructions `json:"instructions,omitempty"`
+	MaxOutputTokens    *int                           `json:"max_output_tokens,omitempty"`
+	MaxToolCalls       *int                           `json:"max_tool_calls,omitempty"`
+	Metadata           *map[string]any                `json:"metadata,omitempty"`
+	ParallelToolCalls  *bool                          `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID *string                        `json:"previous_response_id,omitempty"`
+	PromptCacheKey     *string                        `json:"prompt_cache_key,omitempty"`  // Prompt cache key
+	Reasoning          *ResponsesParametersReasoning  `json:"reasoning,omitempty"`         // Configuration options for reasoning models
+	SafetyIdentifier   *string                        `json:"safety_identifier,omitempty"` // Safety identifier
+	ServiceTier        *string                        `json:"service_tier,omitempty"`
+	StreamOptions      *ResponsesStreamOptions        `json:"stream_options,omitempty"`
+	Store              *bool                          `json:"store,omitempty"`
+	Temperature        *float64                       `json:"temperature,omitempty"`
+	Text               *ResponsesTextConfig           `json:"text,omitempty"`
+	TopLogProbs        *int                           `json:"top_logprobs,omitempty"`
+	TopP               *float64                       `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice         *ResponsesToolChoice           `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools              []ResponsesTool                `json:"tools,omitempty"`       // Tools to use
+	Truncation         *string                        `json:"truncation,omitempty"`
 
 	CreatedAt         int                                 `json:"created_at"`                   // Unix timestamp when Response was created
-	Conversation      *ResponsesResponseConversation      `json:"conversation,omitempty"`       // The conversation that this response belongs to
 	IncompleteDetails *ResponsesResponseIncompleteDetails `json:"incomplete_details,omitempty"` // Details about why the response is incomplete
-	Instructions      []ResponsesMessage                 `json:"instructions,omitempty"`
 	Output            []ResponsesMessage                  `json:"output,omitempty"`
-	Prompt            *ResponsesPrompt                    `json:"prompt,omitempty"`    // Reference to a prompt template and variables
-	Reasoning         *ResponsesParametersReasoning       `json:"reasoning,omitempty"` // Configuration options for reasoning models
+	Prompt            *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
+}
+
+type ResponsesResponseConversation struct {
+	ResponsesResponseConversationStr    *string
+	ResponsesResponseConversationStruct *ResponsesResponseConversationStruct
+}
+
+// MarshalJSON implements custom JSON marshalling for ResponsesMessageContent.
+// It marshals either ContentStr or ContentBlocks directly without wrapping.
+func (rc ResponsesResponseConversation) MarshalJSON() ([]byte, error) {
+	// Validation: ensure only one field is set at a time
+	if rc.ResponsesResponseConversationStr != nil && rc.ResponsesResponseConversationStruct != nil {
+		return nil, fmt.Errorf("both ResponsesResponseConversationStr and ResponsesResponseConversationStruct are set; only one should be non-nil")
+	}
+
+	if rc.ResponsesResponseConversationStr != nil {
+		return sonic.Marshal(*rc.ResponsesResponseConversationStr)
+	}
+	if rc.ResponsesResponseConversationStruct != nil {
+		return sonic.Marshal(rc.ResponsesResponseConversationStruct)
+	}
+	// If both are nil, return null
+	return sonic.Marshal(nil)
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
+// It determines whether "content" is a string or array and assigns to the appropriate field.
+// It also handles direct string/array content without a wrapper object.
+func (rc *ResponsesResponseConversation) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var stringContent string
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+		rc.ResponsesResponseConversationStr = &stringContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct array of ContentBlock
+	var structContent ResponsesResponseConversationStruct
+	if err := sonic.Unmarshal(data, &structContent); err == nil {
+		rc.ResponsesResponseConversationStruct = &structContent
+		return nil
+	}
+
+	return fmt.Errorf("content field is neither a string nor a struct")
+}
+
+type ResponsesResponseInstructions struct {
+	ResponsesResponseInstructionsStr   *string
+	ResponsesResponseInstructionsArray []ResponsesMessage
+}
+
+// MarshalJSON implements custom JSON marshalling for ResponsesMessageContent.
+// It marshals either ContentStr or ContentBlocks directly without wrapping.
+func (rc ResponsesResponseInstructions) MarshalJSON() ([]byte, error) {
+	// Validation: ensure only one field is set at a time
+	if rc.ResponsesResponseInstructionsStr != nil && rc.ResponsesResponseInstructionsArray != nil {
+		return nil, fmt.Errorf("both ResponsesMessageContentStr and ResponsesMessageContentBlocks are set; only one should be non-nil")
+	}
+
+	if rc.ResponsesResponseInstructionsStr != nil {
+		return sonic.Marshal(*rc.ResponsesResponseInstructionsStr)
+	}
+	if rc.ResponsesResponseInstructionsArray != nil {
+		return sonic.Marshal(rc.ResponsesResponseInstructionsArray)
+	}
+	// If both are nil, return null
+	return sonic.Marshal(nil)
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
+// It determines whether "content" is a string or array and assigns to the appropriate field.
+// It also handles direct string/array content without a wrapper object.
+func (rc *ResponsesResponseInstructions) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var stringContent string
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+		rc.ResponsesResponseInstructionsStr = &stringContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct array of ContentBlock
+	var arrayContent []ResponsesMessage
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+		rc.ResponsesResponseInstructionsArray = arrayContent
+		return nil
+	}
+
+	return fmt.Errorf("content field is neither a string nor an array of Messages")
 }
 
 type ResponsesPrompt struct {
@@ -109,7 +212,7 @@ type ResponsesParametersReasoning struct {
 	Summary         *string `json:"summary,omitempty"`          // "auto" | "concise" | "detailed"
 }
 
-type ResponsesResponseConversation struct {
+type ResponsesResponseConversationStruct struct {
 	ID string `json:"id"` // The unique ID of the conversation
 }
 
@@ -467,7 +570,7 @@ const (
 
 // ResponsesInputMessageContent is a union type that can be either a string or array of content blocks
 type ResponsesMessageContent struct {
-	ContentStr    *string                         // Simple text content
+	ContentStr    *string                        // Simple text content
 	ContentBlocks []ResponsesMessageContentBlock // Rich content with multiple media types
 }
 
@@ -1413,13 +1516,13 @@ type ResponsesToolMCP struct {
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object
 type ResponsesToolMCPAllowedTools struct {
 	// Either a simple array of tool names or a filter object
-	ToolNames []string                           `json:",omitempty"`
+	ToolNames []string                            `json:",omitempty"`
 	Filter    *ResponsesToolMCPAllowedToolsFilter `json:",omitempty"`
 }
 
 // ResponsesToolMCPAllowedToolsFilter - A filter object to specify which tools are allowed
 type ResponsesToolMCPAllowedToolsFilter struct {
-	ReadOnly  *bool     `json:"read_only,omitempty"`  // Whether tool is read-only
+	ReadOnly  *bool    `json:"read_only,omitempty"`  // Whether tool is read-only
 	ToolNames []string `json:"tool_names,omitempty"` // List of allowed tool names
 }
 
@@ -1433,7 +1536,7 @@ type ResponsesToolMCPAllowedToolsApprovalSetting struct {
 
 // ResponsesToolMCPAllowedToolsApprovalFilter - Filter for approval settings
 type ResponsesToolMCPAllowedToolsApprovalFilter struct {
-	ReadOnly  *bool     `json:"read_only,omitempty"`  // Whether tool is read-only
+	ReadOnly  *bool    `json:"read_only,omitempty"`  // Whether tool is read-only
 	ToolNames []string `json:"tool_names,omitempty"` // List of tool names
 }
 

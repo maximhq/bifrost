@@ -470,24 +470,33 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 	if !ok {
 		return res, nil, nil
 	}
-
-	// Get the hash from context
-	hash, ok := (*ctx).Value(requestHashKey).(string)
-	if !ok {
-		plugin.logger.Warn(PluginLoggerPrefix + " Hash is not a string, continuing without caching")
-		return res, nil, nil
-	}
-
 	// Check cache type to optimize embedding handling
 	var embedding []float32
+	var hash string
 	var shouldStoreEmbeddings = true
+	var shouldStoreHash = true
 
 	if (*ctx).Value(CacheTypeKey) != nil {
 		cacheTypeVal, ok := (*ctx).Value(CacheTypeKey).(CacheType)
-		if ok && cacheTypeVal == CacheTypeDirect {
-			// For direct-only caching, skip embedding operations entirely
-			shouldStoreEmbeddings = false
-			plugin.logger.Debug(PluginLoggerPrefix + " Skipping embedding operations for direct-only cache type")
+		if ok {
+			if cacheTypeVal == CacheTypeDirect {
+				// For direct-only caching, skip embedding operations entirely
+				shouldStoreEmbeddings = false
+				plugin.logger.Debug(PluginLoggerPrefix + " Skipping embedding operations for direct-only cache type")
+			} else if cacheTypeVal == CacheTypeSemantic {
+				shouldStoreHash = false
+				plugin.logger.Debug(PluginLoggerPrefix + " Skipping hash operations for semantic cache type")
+			}
+		}
+	}
+
+	if shouldStoreHash {
+		// Get the hash from context
+		hash, ok = (*ctx).Value(requestHashKey).(string)
+		if !ok {
+			shouldStoreHash = false
+			plugin.logger.Warn(PluginLoggerPrefix + " Hash is not a string, its, continuing without caching")
+			return res, nil, nil
 		}
 	}
 

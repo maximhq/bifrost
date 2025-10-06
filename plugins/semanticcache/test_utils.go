@@ -300,7 +300,7 @@ func CreateBasicResponsesRequest(content string, temperature float64, maxTokens 
 	userRole := schemas.ResponsesInputMessageRoleUser
 	return &schemas.BifrostResponsesRequest{
 		Provider: schemas.OpenAI,
-		Model:    "gpt-4o-mini",
+		Model:    "gpt-4o",
 		Input: []schemas.ResponsesMessage{
 			{
 				Role: &userRole,
