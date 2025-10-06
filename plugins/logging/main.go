@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	PluginName = "bifrost-http-logging"
+	PluginName = "logging"
 )
 
 // ContextKey is a custom type for context keys to prevent collisions
@@ -37,8 +37,8 @@ const (
 
 // Context keys for logging optimization
 const (
-	DroppedCreateContextKey ContextKey = "bifrost-logging-dropped"
-	CreatedTimestampKey     ContextKey = "bifrost-logging-created-timestamp"
+	DroppedCreateContextKey ContextKey = "logging-dropped"
+	CreatedTimestampKey     ContextKey = "logging-created-timestamp"
 )
 
 // UpdateLogData contains data for log entry updates
@@ -59,7 +59,8 @@ type UpdateLogData struct {
 // LogMessage represents a message in the logging queue
 type LogMessage struct {
 	Operation          LogOperation
-	RequestID          string
+	RequestID          string                             // Unique ID for the request
+	ParentRequestID    string                             // Unique ID for the parent request
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	InitialData        *InitialLogData                    // For create operations
 	SemanticCacheDebug *schemas.BifrostCacheDebug         // For semantic cache operations
@@ -224,6 +225,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		p.logger.Error("request-id not found in context or is empty")
 		return req, nil, nil
 	}
+
 	createdTimestamp := time.Now()
 	// If request type is streaming we create a stream accumulator
 	if bifrost.IsStreamRequestType(req.RequestType) {
@@ -271,13 +273,22 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	// Queue the log creation message (non-blocking) - Using sync.Pool
 	logMsg := p.getLogMessage()
 	logMsg.Operation = LogOperationCreate
-	logMsg.RequestID = requestID
+
+	// If fallback request ID is present, use it instead of the primary request ID
+	fallbackRequestID, ok := (*ctx).Value(schemas.BifrostContextKeyFallbackRequestID).(string)
+	if ok && fallbackRequestID != "" {
+		logMsg.RequestID = fallbackRequestID
+		logMsg.ParentRequestID = requestID
+	} else {
+		logMsg.RequestID = requestID
+	}
+
 	logMsg.Timestamp = createdTimestamp
 	logMsg.InitialData = initialData
 
 	go func(logMsg *LogMessage) {
 		defer p.putLogMessage(logMsg) // Return to pool when done
-		if err := p.insertInitialLogEntry(p.ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.InitialData); err != nil {
+		if err := p.insertInitialLogEntry(p.ctx, logMsg.RequestID, logMsg.ParentRequestID, logMsg.Timestamp, logMsg.InitialData); err != nil {
 			p.logger.Error("failed to insert initial log entry for request %s: %v", logMsg.RequestID, err)
 		} else {
 			// Call callback for initial log creation (WebSocket "create" message)
@@ -323,6 +334,11 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	if !ok || requestID == "" {
 		p.logger.Error("request-id not found in context or is empty")
 		return result, bifrostErr, nil
+	}
+	// If fallback request ID is present, use it instead of the primary request ID
+	fallbackRequestID, ok := (*ctx).Value(schemas.BifrostContextKeyFallbackRequestID).(string)
+	if ok && fallbackRequestID != "" {
+		requestID = fallbackRequestID
 	}
 	requestType, _, _ := bifrost.GetRequestFields(result, bifrostErr)
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular

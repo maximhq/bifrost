@@ -114,7 +114,17 @@ func (provider *SGLProvider) Responses(ctx context.Context, key schemas.Key, req
 
 // Embedding is not supported by the SGL provider.
 func (provider *SGLProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("embedding", "sgl")
+	return handleOpenAIEmbeddingRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/embeddings",
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the SGL API.

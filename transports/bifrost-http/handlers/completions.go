@@ -194,12 +194,14 @@ type TranscriptionRequest struct {
 
 // parseFallbacks extracts fallbacks from string array and converts to Fallback structs
 func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
-	fallbacks := make([]schemas.Fallback, len(fallbackStrings))
-	for i, fallback := range fallbackStrings {
+	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
+	for _, fallback := range fallbackStrings {
 		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		fallbacks[i] = schemas.Fallback{
-			Provider: fallbackProvider,
-			Model:    fallbackModelName,
+		if fallbackProvider != "" && fallbackModelName != "" {
+			fallbacks = append(fallbacks, schemas.Fallback{
+				Provider: fallbackProvider,
+				Model:    fallbackModelName,
+			})
 		}
 	}
 	return fallbacks, nil

@@ -1,7 +1,13 @@
 "use client";
 
 import FullPageLoader from "@/components/fullPageLoader";
-import { getErrorMessage, useGetCoreConfigQuery, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
+import {
+	getErrorMessage,
+	useLazyGetCoreConfigQuery,
+	useLazyGetCustomersQuery,
+	useLazyGetTeamsQuery,
+	useLazyGetVirtualKeysQuery,
+} from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -10,45 +16,57 @@ import TeamsTable from "./views/teamsTable";
 
 export default function TeamsCustomersPage() {
 	const [activeTab, setActiveTab] = useState("teams");
+	const [governanceEnabled, setGovernanceEnabled] = useState<boolean | null>(null);
 
-	// Fetch all data with RTK Query
-	const { data: virtualKeysData, error: vkError, isLoading: vkLoading, refetch: refetchVirtualKeys } = useGetVirtualKeysQuery();
-	const { data: teamsData, error: teamsError, isLoading: teamsLoading, refetch: refetchTeams } = useGetTeamsQuery({});
-	const { data: customersData, error: customersError, isLoading: customersLoading, refetch: refetchCustomers } = useGetCustomersQuery();
-	const { data: coreConfig, error: configError, isLoading: configLoading } = useGetCoreConfigQuery({ fromDB: true });
+	// Lazy query hooks
+	const [triggerGetVirtualKeys, { data: virtualKeysData, error: vkError, isLoading: vkLoading }] = useLazyGetVirtualKeysQuery();
+	const [triggerGetTeams, { data: teamsData, error: teamsError, isLoading: teamsLoading }] = useLazyGetTeamsQuery();
+	const [triggerGetCustomers, { data: customersData, error: customersError, isLoading: customersLoading }] = useLazyGetCustomersQuery();
+	const [triggerGetConfig] = useLazyGetCoreConfigQuery();
 
-	const isLoading = vkLoading || teamsLoading || customersLoading || configLoading;
+	const isLoading = vkLoading || teamsLoading || customersLoading || governanceEnabled === null;
 
-	// Handle errors
+	// Check governance and trigger queries conditionally
 	useEffect(() => {
-		if (configLoading) return;
-		if (configError) {
-			toast.error(`Failed to load core config: ${getErrorMessage(configError)}`);
-			return;
-		}
+		triggerGetConfig({ fromDB: true }).then((res) => {
+			if (res.data && res.data.client_config.enable_governance) {
+				setGovernanceEnabled(true);
+				// Trigger lazy queries only when governance is enabled
+				triggerGetVirtualKeys();
+				triggerGetTeams({});
+				triggerGetCustomers();
+			} else {
+				setGovernanceEnabled(false);
+				toast.error("Governance is not enabled. Please enable it in the config.");
+			}
+		});
+	}, [triggerGetConfig, triggerGetVirtualKeys, triggerGetTeams, triggerGetCustomers]);
 
-		if (coreConfig && !coreConfig?.client_config?.enable_governance) {
-			toast.error("Governance is not enabled. Please enable it in the core settings.");
-			return;
+	// Handle query errors - show consolidated error if all APIs fail
+	useEffect(() => {
+		if (vkError && teamsError && customersError) {
+			// If all three APIs fail, suggest resetting bifrost
+			toast.error("Failed to load governance data. Please reset Bifrost to enable governance properly.");
+		} else {
+			// Show individual errors if only some APIs fail
+			if (vkError) {
+				toast.error(`Failed to load virtual keys: ${getErrorMessage(vkError)}`);
+			}
+			if (teamsError) {
+				toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
+			}
+			if (customersError) {
+				toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
+			}
 		}
-
-		if (vkError) {
-			toast.error(`Failed to load virtual keys: ${getErrorMessage(vkError)}`);
-		}
-
-		if (teamsError) {
-			toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
-		}
-
-		if (customersError) {
-			toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
-		}
-	}, [configError, coreConfig, vkError, teamsError, customersError]);
+	}, [vkError, teamsError, customersError]);
 
 	const handleRefresh = () => {
-		refetchVirtualKeys();
-		refetchTeams();
-		refetchCustomers();
+		if (governanceEnabled) {
+			triggerGetVirtualKeys();
+			triggerGetTeams({});
+			triggerGetCustomers();
+		}
 	};
 
 	if (isLoading) {

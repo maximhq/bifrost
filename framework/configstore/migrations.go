@@ -25,6 +25,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOpenAIUseResponsesAPIColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowedOriginsJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowDirectKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -295,6 +301,50 @@ func migrationAddOpenAIUseResponsesAPIColumn(ctx context.Context, db *gorm.DB) e
 
 			if !migrator.HasColumn(&TableKey{}, "open_ai_use_responses_api") {
 				if err := migrator.AddColumn(&TableKey{}, "open_ai_use_responses_api"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "add_allowed_origins_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&TableClientConfig{}, "allowed_origins_json") {
+				if err := migrator.AddColumn(&TableClientConfig{}, "allowed_origins_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "add_allow_direct_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&TableClientConfig{}, "allow_direct_keys") {
+				if err := migrator.AddColumn(&TableClientConfig{}, "allow_direct_keys"); err != nil {
 					return err
 				}
 			}
