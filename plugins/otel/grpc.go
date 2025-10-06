@@ -29,7 +29,7 @@ func (c *OtelClientGRPC) Emit(ctx context.Context, rs []*ResourceSpan) error {
 	return err
 }
 
-// Cleanup closes the gRPC connection
+// Close closes the gRPC connection
 func (c *OtelClientGRPC) Close() error {
 	if c.conn != nil {
 		return c.conn.Close()

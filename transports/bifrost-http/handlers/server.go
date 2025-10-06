@@ -315,6 +315,17 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, plugi
 	if err := s.Client.ReloadPlugin(newPlugin); err != nil {
 		return err
 	}
+	for i, existing := range s.Plugins {
+		if existing.GetName() == name {
+			s.Plugins[i] = newPlugin
+			goto updated
+		}
+	}
+	s.Plugins = append(s.Plugins, newPlugin)
+updated:
+	if s.Config != nil && s.Config.LoadedPlugins != nil {
+		s.Config.LoadedPlugins[name] = true
+	}
 	return nil
 }
 
@@ -322,6 +333,15 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, plugi
 func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error {
 	if err := s.Client.RemovePlugin(name); err != nil {
 		return err
+	}
+	for i, existing := range s.Plugins {
+		if existing.GetName() == name {
+			s.Plugins = append(s.Plugins[:i], s.Plugins[i+1:]...)
+			break
+		}
+	}
+	if s.Config != nil && s.Config.LoadedPlugins != nil {
+		delete(s.Config.LoadedPlugins, name)
 	}
 	return nil
 }

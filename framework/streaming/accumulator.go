@@ -309,7 +309,7 @@ func (a *Accumulator) cleanupOldAccumulators() {
 	a.streamAccumulators.Range(func(key, value interface{}) bool {
 		accumulator := value.(*StreamAccumulator)
 		if accumulator.Timestamp.Before(time.Now().Add(-a.ttl)) {
-			a.streamAccumulators.Delete(key)
+			a.cleanupStreamAccumulator(key.(string))			
 		}
 		count++
 		return true

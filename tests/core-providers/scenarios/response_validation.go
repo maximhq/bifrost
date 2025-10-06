@@ -274,7 +274,7 @@ func extractToolCallNames(response *schemas.BifrostResponse) []string {
 
 		for _, choice := range choices {
 			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
-				for _, toolCall := range *choice.Message.ChatAssistantMessage.ToolCalls {
+				for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
 					if toolCall.Function.Name != nil {
 						toolNames = append(toolNames, *toolCall.Function.Name)
 					}
@@ -298,7 +298,7 @@ func validateToolCalls(t *testing.T, response *schemas.BifrostResponse, expectat
 			}
 
 			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
-				totalToolCalls += len(*choice.Message.ChatAssistantMessage.ToolCalls)
+				totalToolCalls += len(choice.Message.ChatAssistantMessage.ToolCalls)
 			}
 		}
 	}
@@ -337,7 +337,7 @@ func validateSpecificToolCalls(response *schemas.BifrostResponse, expectedCalls 
 		if response.Choices != nil {
 			for _, message := range response.Choices {
 				if message.Message.ChatAssistantMessage != nil && message.Message.ChatAssistantMessage.ToolCalls != nil {
-					for _, toolCall := range *message.Message.ChatAssistantMessage.ToolCalls {
+					for _, toolCall := range message.Message.ChatAssistantMessage.ToolCalls {
 						if toolCall.Function.Name != nil && *toolCall.Function.Name == expected.FunctionName {
 							arguments := toolCall.Function.Arguments
 							found = true

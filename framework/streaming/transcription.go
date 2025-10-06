@@ -31,11 +31,13 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
-	defer accumulator.mu.Unlock()
-	if isFinalChunk {
-		// Before unlocking, we cleanup
-		defer a.cleanupStreamAccumulator(requestID)
-	}
+	defer func() {
+		accumulator.mu.Unlock()
+		if isFinalChunk {
+			// Before unlocking, we cleanup
+			defer a.cleanupStreamAccumulator(requestID)
+		}
+	}()
 	data := &AccumulatedData{
 		RequestID:      requestID,
 		Status:         "success",

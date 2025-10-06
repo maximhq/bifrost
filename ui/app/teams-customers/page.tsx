@@ -59,7 +59,7 @@ export default function TeamsCustomersPage() {
 		<div className="flex w-full flex-row gap-4">
 			<div className="flex min-w-[200px] flex-col gap-1 rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
 				{["teams", "customers"].map((tab) => (
-					<div
+					<button
 						key={tab}
 						className={cn(
 							"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
@@ -68,9 +68,10 @@ export default function TeamsCustomersPage() {
 								: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
 						)}
 						onClick={() => setActiveTab(tab)}
+						type="button"
 					>
 						{tab.replace("-", " ").charAt(0).toUpperCase() + tab.replace("-", " ").slice(1)}
-					</div>
+					</button>
 				))}
 			</div>
 			<div className="w-full pt-4">

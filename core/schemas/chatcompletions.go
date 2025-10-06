@@ -14,7 +14,7 @@ type ChatParameters struct {
 	LogProbs            *bool               `json:"logprobs,omitempty"`              // Number of logprobs to return
 	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"` // Maximum number of tokens to generate
 	Metadata            *map[string]any     `json:"metadata,omitempty"`              // Metadata to be returned with the response
-	Modalities          []string           `json:"modalities,omitempty"`            // Modalities to be returned with the response
+	Modalities          []string            `json:"modalities,omitempty"`            // Modalities to be returned with the response
 	ParallelToolCalls   *bool               `json:"parallel_tool_calls,omitempty"`
 	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`  // Penalizes repeated tokens
 	PromptCacheKey      *string             `json:"prompt_cache_key,omitempty"`  // Prompt cache key
@@ -24,7 +24,7 @@ type ChatParameters struct {
 	Seed                *int                `json:"seed,omitempty"`
 	ServiceTier         *string             `json:"service_tier,omitempty"`
 	StreamOptions       *ChatStreamOptions  `json:"stream_options,omitempty"`
-	Stop                []string           `json:"stop,omitempty"`
+	Stop                []string            `json:"stop,omitempty"`
 	Store               *bool               `json:"store,omitempty"`
 	Temperature         *float64            `json:"temperature,omitempty"`
 	TopLogProbs         *int                `json:"top_logprobs,omitempty"`
@@ -71,7 +71,7 @@ type ToolFunctionParameters struct {
 	Description *string                `json:"description,omitempty"` // Description of the parameters
 	Required    []string               `json:"required,omitempty"`    // Required parameter names
 	Properties  map[string]interface{} `json:"properties,omitempty"`  // Parameter properties
-	Enum        []string              `json:"enum,omitempty"`        // Enum values for the parameters
+	Enum        []string               `json:"enum,omitempty"`        // Enum values for the parameters
 }
 
 type ChatToolCustom struct {
@@ -89,7 +89,7 @@ type ChatToolCustomGrammarFormat struct {
 	Syntax     string `json:"syntax"`     // "lark" | "regex"
 }
 
-// Combined tool choices for all providers, make sure to check the provider's
+// ChatToolChoiceType  for all providers, make sure to check the provider's
 // documentation to see which tool choices are supported.
 type ChatToolChoiceType string
 
@@ -178,7 +178,7 @@ type ChatToolChoiceAllowedToolsTool struct {
 
 // MESSAGES
 
-// ModelChatMessageRole represents the role of a chat message
+// ChatMessageRole represents the role of a chat message
 type ChatMessageRole string
 
 const (
@@ -296,7 +296,7 @@ type ChatToolMessage struct {
 type ChatAssistantMessage struct {
 	Refusal     *string                          `json:"refusal,omitempty"`
 	Annotations []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
-	ToolCalls   []ChatAssistantMessageToolCall  `json:"tool_calls,omitempty"`
+	ToolCalls   []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
 }
 
 // ChatAssistantMessageAnnotation represents an annotation in a response.

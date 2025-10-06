@@ -44,7 +44,7 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 			inferenceConfig.TopP = bifrostReq.Params.TopP
 		}
 		if bifrostReq.Params.ExtraParams != nil {
-			if stop, ok := schemas.SafeExtractStringSlicePointer(bifrostReq.Params.ExtraParams["stop"]); ok {
+			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				inferenceConfig.StopSequences = stop
 			}
 		}
