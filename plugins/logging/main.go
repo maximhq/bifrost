@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,10 +16,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/pricing"
+	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 const (
-	PluginName = "bifrost-http-logging"
+	PluginName = "logging"
 )
 
 // ContextKey is a custom type for context keys to prevent collisions
@@ -35,8 +37,8 @@ const (
 
 // Context keys for logging optimization
 const (
-	DroppedCreateContextKey ContextKey = "bifrost-logging-dropped"
-	CreatedTimestampKey     ContextKey = "bifrost-logging-created-timestamp"
+	DroppedCreateContextKey ContextKey = "logging-dropped"
+	CreatedTimestampKey     ContextKey = "logging-created-timestamp"
 )
 
 // UpdateLogData contains data for log entry updates
@@ -44,9 +46,9 @@ type UpdateLogData struct {
 	Status              string
 	TokenUsage          *schemas.LLMUsage
 	Cost                *float64 // Cost in dollars from pricing plugin
-	OutputMessage       *schemas.BifrostMessage
-	EmbeddingOutput     *[]schemas.BifrostEmbedding
-	ToolCalls           *[]schemas.ToolCall
+	OutputMessage       *schemas.ChatMessage
+	EmbeddingOutput     []schemas.BifrostEmbedding
+	ToolCalls           []schemas.ChatAssistantMessageToolCall
 	ErrorDetails        *schemas.BifrostError
 	Model               string                     // May be different from request
 	Object              string                     // May be different from request
@@ -54,27 +56,16 @@ type UpdateLogData struct {
 	TranscriptionOutput *schemas.BifrostTranscribe // For non-streaming transcription responses
 }
 
-// StreamUpdateData contains lightweight data for streaming delta updates
-type StreamUpdateData struct {
-	ErrorDetails        *schemas.BifrostError
-	Model               string // May be different from request
-	Object              string // May be different from request
-	TokenUsage          *schemas.LLMUsage
-	Cost                *float64                    // Cost in dollars from pricing plugin
-	Delta               *schemas.BifrostStreamDelta // The actual streaming delta
-	FinishReason        *string                     // If the stream is finished
-	TranscriptionOutput *schemas.BifrostTranscribe  // For transcription stream responses
-}
-
 // LogMessage represents a message in the logging queue
 type LogMessage struct {
 	Operation          LogOperation
-	RequestID          string
-	Timestamp          time.Time                  // Of the preHook/postHook call
-	InitialData        *InitialLogData            // For create operations
-	SemanticCacheDebug *schemas.BifrostCacheDebug // For semantic cache operations
-	UpdateData         *UpdateLogData             // For update operations
-	StreamUpdateData   *StreamUpdateData          // For stream update operations
+	RequestID          string                             // Unique ID for the request
+	ParentRequestID    string                             // Unique ID for the parent request
+	Timestamp          time.Time                          // Of the preHook/postHook call
+	InitialData        *InitialLogData                    // For create operations
+	SemanticCacheDebug *schemas.BifrostCacheDebug         // For semantic cache operations
+	UpdateData         *UpdateLogData                     // For update operations
+	StreamResponse     *streaming.ProcessedStreamResponse // For streaming delta updates
 }
 
 // InitialLogData contains data for initial log entry creation
@@ -82,53 +73,31 @@ type InitialLogData struct {
 	Provider           string
 	Model              string
 	Object             string
-	InputHistory       []schemas.BifrostMessage
-	Params             *schemas.ModelParameters
+	InputHistory       []schemas.ChatMessage
+	Params             interface{}
 	SpeechInput        *schemas.SpeechInput
 	TranscriptionInput *schemas.TranscriptionInput
-	Tools              *[]schemas.Tool
+	Tools              []schemas.ChatTool
 }
 
 // LogCallback is a function that gets called when a new log entry is created
 type LogCallback func(*logstore.Log)
 
-// StreamChunk represents a single streaming chunk
-type StreamChunk struct {
-	Timestamp          time.Time                   // When chunk was received
-	Delta              *schemas.BifrostStreamDelta // The actual delta content
-	FinishReason       *string                     // If this is the final chunk
-	TokenUsage         *schemas.LLMUsage           // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug  // Semantic cache debug if available
-	Cost               *float64                    // Cost in dollars from pricing plugin
-	ErrorDetails       *schemas.BifrostError       // Error if any
-}
-
-// StreamAccumulator manages accumulation of streaming chunks
-type StreamAccumulator struct {
-	RequestID      string
-	Chunks         []*StreamChunk
-	IsComplete     bool
-	FinalTimestamp time.Time
-	Object         string // Store object type once for the entire stream
-	mu             sync.Mutex
-}
-
 // LoggerPlugin implements the schemas.Plugin interface
 type LoggerPlugin struct {
-	store              logstore.LogStore
-	pricingManager     *pricing.PricingManager
-	mu                 sync.Mutex
-	done               chan struct{}
-	wg                 sync.WaitGroup
-	logger             schemas.Logger
-	logCallback        LogCallback
-	droppedRequests    atomic.Int64
-	cleanupTicker      *time.Ticker // Ticker for cleaning up old processing logs
-	logMsgPool         sync.Pool    // Pool for reusing LogMessage structs
-	updateDataPool     sync.Pool    // Pool for reusing UpdateLogData structs
-	streamDataPool     sync.Pool    // Pool for reusing StreamUpdateData structs
-	streamChunkPool    sync.Pool    // Pool for reusing StreamChunk structs
-	streamAccumulators sync.Map     // Track accumulators by request ID (atomic)
+	ctx             context.Context
+	store           logstore.LogStore
+	pricingManager  *pricing.PricingManager
+	mu              sync.Mutex
+	done            chan struct{}
+	wg              sync.WaitGroup
+	logger          schemas.Logger
+	logCallback     LogCallback
+	droppedRequests atomic.Int64
+	cleanupTicker   *time.Ticker           // Ticker for cleaning up old processing logs
+	logMsgPool      sync.Pool              // Pool for reusing LogMessage structs
+	updateDataPool  sync.Pool              // Pool for reusing UpdateLogData structs
+	accumulator     *streaming.Accumulator // Accumulator for streaming chunks
 }
 
 // retryOnNotFound retries a function up to 3 times with 1-second delays if it returns logstore.ErrNotFound
@@ -165,7 +134,7 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 }
 
 // Init creates new logger plugin with given log store
-func Init(logger schemas.Logger, logsStore logstore.LogStore, pricingManager *pricing.PricingManager) (*LoggerPlugin, error) {
+func Init(ctx context.Context, logger schemas.Logger, logsStore logstore.LogStore, pricingManager *pricing.PricingManager) (*LoggerPlugin, error) {
 	if logsStore == nil {
 		return nil, fmt.Errorf("logs store cannot be nil")
 	}
@@ -174,6 +143,7 @@ func Init(logger schemas.Logger, logsStore logstore.LogStore, pricingManager *pr
 	}
 
 	plugin := &LoggerPlugin{
+		ctx:            ctx,
 		store:          logsStore,
 		pricingManager: pricingManager,
 		done:           make(chan struct{}),
@@ -188,25 +158,13 @@ func Init(logger schemas.Logger, logsStore logstore.LogStore, pricingManager *pr
 				return &UpdateLogData{}
 			},
 		},
-		streamDataPool: sync.Pool{
-			New: func() interface{} {
-				return &StreamUpdateData{}
-			},
-		},
-		streamChunkPool: sync.Pool{
-			New: func() interface{} {
-				return &StreamChunk{}
-			},
-		},
-		streamAccumulators: sync.Map{},
+		accumulator: streaming.NewAccumulator(pricingManager, logger),
 	}
 
 	// Prewarm the pools for better performance at startup
 	for range 1000 {
 		plugin.logMsgPool.Put(&LogMessage{})
 		plugin.updateDataPool.Put(&UpdateLogData{})
-		plugin.streamDataPool.Put(&StreamUpdateData{})
-		plugin.streamChunkPool.Put(&StreamChunk{})
 	}
 
 	// Start cleanup ticker (runs every 30 seconds)
@@ -220,12 +178,10 @@ func Init(logger schemas.Logger, logsStore logstore.LogStore, pricingManager *pr
 // cleanupWorker periodically removes old processing logs
 func (p *LoggerPlugin) cleanupWorker() {
 	defer p.wg.Done()
-
 	for {
 		select {
 		case <-p.cleanupTicker.C:
 			p.cleanupOldProcessingLogs()
-
 		case <-p.done:
 			return
 		}
@@ -237,12 +193,9 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	// Calculate timestamp for 5 minutes ago
 	fiveMinutesAgo := time.Now().Add(-1 * 5 * time.Minute)
 	// Delete processing logs older than 5 minutes using the store
-	if err := p.store.CleanupLogs(fiveMinutesAgo); err != nil {
+	if err := p.store.Flush(p.ctx, fiveMinutesAgo); err != nil {
 		p.logger.Error("failed to cleanup old processing logs: %v", err)
 	}
-
-	// Clean up old stream accumulators
-	p.cleanupOldStreamAccumulators()
 }
 
 // SetLogCallback sets a callback function that will be called for each log entry
@@ -266,51 +219,76 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	}
 
 	// Extract request ID from context
-	requestID, ok := (*ctx).Value(schemas.BifrostContextKey("request-id")).(string)
+	requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
 		// Log error but don't fail the request
 		p.logger.Error("request-id not found in context or is empty")
 		return req, nil, nil
 	}
 
-	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
-	if !ok {
-		p.logger.Error("request type not found in context")
-		return req, nil, nil
+	createdTimestamp := time.Now()
+	// If request type is streaming we create a stream accumulator
+	if bifrost.IsStreamRequestType(req.RequestType) {
+		p.accumulator.CreateStreamAccumulator(requestID, createdTimestamp)
 	}
-
 	// Prepare initial log data
-	objectType := p.determineObjectType(requestType)
-	inputHistory := p.extractInputHistory(req.Input)
+	objectType := p.determineObjectType(req.RequestType)
+	inputHistory := p.extractInputHistory(req)
 
 	initialData := &InitialLogData{
-		Provider:           string(req.Provider),
-		Model:              req.Model,
-		Object:             objectType,
-		InputHistory:       inputHistory,
-		Params:             req.Params,
-		SpeechInput:        req.Input.SpeechInput,
-		TranscriptionInput: req.Input.TranscriptionInput,
+		Provider:     string(req.Provider),
+		Model:        req.Model,
+		Object:       objectType,
+		InputHistory: inputHistory,
 	}
 
-	if req.Params != nil && req.Params.Tools != nil {
-		initialData.Tools = req.Params.Tools
-	}
+	switch req.RequestType {
+	case schemas.TextCompletionRequest:
+		initialData.Params = req.TextCompletionRequest.Params
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		initialData.Params = req.ChatRequest.Params
+		if req.ChatRequest.Params != nil && req.ChatRequest.Params.Tools != nil {
+			initialData.Tools = req.ChatRequest.Params.Tools
+		}
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		initialData.Params = req.ResponsesRequest.Params
 
-	// Store created timestamp in context for latency calculation optimization
-	createdTimestamp := time.Now()
+		if req.ResponsesRequest.Params != nil && req.ResponsesRequest.Params.Tools != nil {
+			var tools []schemas.ChatTool
+			for _, tool := range req.ResponsesRequest.Params.Tools {
+				tools = append(tools, *tool.ToChatTool())
+			}
+			initialData.Tools = tools
+		}
+	case schemas.EmbeddingRequest:
+		initialData.Params = req.EmbeddingRequest.Params
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		initialData.Params = req.SpeechRequest.Params
+		initialData.SpeechInput = req.SpeechRequest.Input
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		initialData.Params = req.TranscriptionRequest.Params
+		initialData.TranscriptionInput = req.TranscriptionRequest.Input
+	}
 	*ctx = context.WithValue(*ctx, CreatedTimestampKey, createdTimestamp)
-
 	// Queue the log creation message (non-blocking) - Using sync.Pool
 	logMsg := p.getLogMessage()
 	logMsg.Operation = LogOperationCreate
-	logMsg.RequestID = requestID
+
+	// If fallback request ID is present, use it instead of the primary request ID
+	fallbackRequestID, ok := (*ctx).Value(schemas.BifrostContextKeyFallbackRequestID).(string)
+	if ok && fallbackRequestID != "" {
+		logMsg.RequestID = fallbackRequestID
+		logMsg.ParentRequestID = requestID
+	} else {
+		logMsg.RequestID = requestID
+	}
+
 	logMsg.Timestamp = createdTimestamp
 	logMsg.InitialData = initialData
 
 	go func(logMsg *LogMessage) {
 		defer p.putLogMessage(logMsg) // Return to pool when done
-		if err := p.insertInitialLogEntry(logMsg.RequestID, logMsg.Timestamp, logMsg.InitialData); err != nil {
+		if err := p.insertInitialLogEntry(p.ctx, logMsg.RequestID, logMsg.ParentRequestID, logMsg.Timestamp, logMsg.InitialData); err != nil {
 			p.logger.Error("failed to insert initial log entry for request %s: %v", logMsg.RequestID, err)
 		} else {
 			// Call callback for initial log creation (WebSocket "create" message)
@@ -340,159 +318,119 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 }
 
 // PostHook is called after a response is received - FULLY ASYNC, NO DATABASE I/O
-func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.logger.Debug("[logging] PostHook called")
 	if ctx == nil {
 		// Log error but don't fail the request
 		p.logger.Error("context is nil in PostHook")
-		return result, err, nil
+		return result, bifrostErr, nil
 	}
-
 	// Check if the create operation was dropped - if so, skip the update
 	if dropped, ok := (*ctx).Value(DroppedCreateContextKey).(bool); ok && dropped {
 		// Create was dropped, skip update to avoid wasted processing and errors
-		return result, err, nil
+		return result, bifrostErr, nil
 	}
-
-	// Extract request ID from context
-	requestID, ok := (*ctx).Value(schemas.BifrostContextKey("request-id")).(string)
+	requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
-		// Log error but don't fail the request
 		p.logger.Error("request-id not found in context or is empty")
-		return result, err, nil
+		return result, bifrostErr, nil
 	}
-
-	provider, ok := (*ctx).Value(schemas.BifrostContextKeyRequestProvider).(schemas.ModelProvider)
-	if !ok {
-		p.logger.Error("provider not found in context")
-		return result, err, nil
+	// If fallback request ID is present, use it instead of the primary request ID
+	fallbackRequestID, ok := (*ctx).Value(schemas.BifrostContextKeyFallbackRequestID).(string)
+	if ok && fallbackRequestID != "" {
+		requestID = fallbackRequestID
 	}
-
-	model, ok := (*ctx).Value(schemas.BifrostContextKeyRequestModel).(string)
-	if !ok {
-		p.logger.Error("model not found in context")
-		return result, err, nil
-	}
-	// Check if this is a streaming response
-	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
-	if !ok {
-		p.logger.Error("request type missing/invalid in PostHook for request %s", requestID)
-		return result, err, nil
-	}
-	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
-	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest
-
+	requestType, _, _ := bifrost.GetRequestFields(result, bifrostErr)
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
 	logMsg.RequestID = requestID
 	logMsg.Timestamp = time.Now()
-
-	isFinalChunk := bifrost.IsFinalChunk(ctx)
-
-	if isChatStreaming {
-		// Handle text-based streaming with ordered accumulation
-		return p.handleStreamingResponse(ctx, result, err)
-	} else if isAudioStreaming {
-		// Handle speech/transcription streaming with original flow
-		logMsg.Operation = LogOperationStreamUpdate
-
-		// Prepare lightweight streaming update data
-		streamUpdateData := p.getStreamUpdateData()
-
+	if bifrost.IsStreamRequestType(requestType) {
+		p.logger.Debug("[logging] processing streaming response")
+		streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
 		if err != nil {
-			// Error case
-			streamUpdateData.ErrorDetails = err
-		} else if result != nil {
-			if result.Model != "" {
-				streamUpdateData.Model = model
-			}
-
-			// Update object type if available
-			if result.Object != "" {
-				streamUpdateData.Object = result.Object
-			}
-
-			// Token usage
-			if result.Usage != nil && result.Usage.TotalTokens > 0 {
-				streamUpdateData.TokenUsage = result.Usage
-			}
-
-			// Extract token usage from speech and transcription streaming (lightweight)
-			if result.Speech != nil && result.Speech.Usage != nil && streamUpdateData.TokenUsage == nil {
-				streamUpdateData.TokenUsage = &schemas.LLMUsage{
-					PromptTokens:     result.Speech.Usage.InputTokens,
-					CompletionTokens: result.Speech.Usage.OutputTokens,
-					TotalTokens:      result.Speech.Usage.TotalTokens,
-				}
-			}
-			if result.Transcribe != nil && result.Transcribe.Usage != nil && streamUpdateData.TokenUsage == nil {
-				transcriptionUsage := result.Transcribe.Usage
-				streamUpdateData.TokenUsage = &schemas.LLMUsage{}
-
-				if transcriptionUsage.InputTokens != nil {
-					streamUpdateData.TokenUsage.PromptTokens = *transcriptionUsage.InputTokens
-				}
-				if transcriptionUsage.OutputTokens != nil {
-					streamUpdateData.TokenUsage.CompletionTokens = *transcriptionUsage.OutputTokens
-				}
-				if transcriptionUsage.TotalTokens != nil {
-					streamUpdateData.TokenUsage.TotalTokens = *transcriptionUsage.TotalTokens
-				}
-			}
-			if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil && result.Transcribe.Text != "" {
-				streamUpdateData.TranscriptionOutput = result.Transcribe
-			}
+			p.logger.Error("failed to process streaming response: %v", err)
+			return result, bifrostErr, err
 		}
-
-		logMsg.StreamUpdateData = streamUpdateData
+		if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
+			// Prepare final log data
+			logMsg.Operation = LogOperationStreamUpdate
+			logMsg.StreamResponse = streamResponse
+			go func() {
+				defer p.putLogMessage(logMsg) // Return to pool when done
+				processingErr := retryOnNotFound(p.ctx, func() error {
+					return p.updateStreamingLogEntry(p.ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.StreamResponse, streamResponse.Type == streaming.StreamResponseTypeFinal)
+				})
+				if processingErr != nil {
+					p.logger.Error("failed to process stream update for request %s: %v", logMsg.RequestID, processingErr)
+				} else {
+					// Call callback immediately for both streaming and regular updates
+					// UI will handle debouncing if needed
+					p.mu.Lock()
+					if p.logCallback != nil {
+						if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
+							p.logCallback(updatedEntry)
+						}
+					}
+					p.mu.Unlock()
+				}
+			}()
+		}
 	} else {
 		// Handle regular response
 		logMsg.Operation = LogOperationUpdate
-
 		// Prepare update data (latency will be calculated in background worker)
 		updateData := p.getUpdateLogData()
-
-		if err != nil {
+		if bifrostErr != nil {
 			// Error case
 			updateData.Status = "error"
-			updateData.ErrorDetails = err
+			updateData.ErrorDetails = bifrostErr
 		} else if result != nil {
 			// Success case
 			updateData.Status = "success"
-
 			if result.Model != "" {
-				updateData.Model = model
+				updateData.Model = result.Model
 			}
-
 			// Update object type if available
 			if result.Object != "" {
 				updateData.Object = result.Object
 			}
-
 			// Token usage
 			if result.Usage != nil && result.Usage.TotalTokens > 0 {
 				updateData.TokenUsage = result.Usage
 			}
-
 			// Output message and tool calls
 			if len(result.Choices) > 0 {
 				choice := result.Choices[0]
-
 				// Check if this is a non-stream response choice
 				if choice.BifrostNonStreamResponseChoice != nil {
 					updateData.OutputMessage = &choice.BifrostNonStreamResponseChoice.Message
-
 					// Extract tool calls if present
-					if choice.BifrostNonStreamResponseChoice.Message.AssistantMessage != nil &&
-						choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls != nil {
-						updateData.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.AssistantMessage.ToolCalls
+					if choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
+						choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
+						updateData.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
 					}
 				}
 			}
+			if result.ResponsesResponse != nil {
+				outputMessages := result.ResponsesResponse.Output
+				if len(outputMessages) > 0 {
+					chatMessages := schemas.ToChatMessages(outputMessages)
+					if len(chatMessages) > 0 {
+						lastMessage := chatMessages[len(chatMessages)-1]
+						updateData.OutputMessage = &lastMessage
 
-			if result.Data != nil {
-				updateData.EmbeddingOutput = &result.Data
+						// Extract tool calls if present
+						if lastMessage.ChatAssistantMessage != nil &&
+							lastMessage.ChatAssistantMessage.ToolCalls != nil {
+							updateData.ToolCalls = lastMessage.ChatAssistantMessage.ToolCalls
+						}
+					}
+				}
 			}
-
+			if result.Data != nil {
+				updateData.EmbeddingOutput = result.Data
+			}
 			// Handle speech and transcription outputs for NON-streaming responses
 			if result.Speech != nil {
 				updateData.SpeechOutput = result.Speech
@@ -524,63 +462,42 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 			}
 		}
-
 		logMsg.UpdateData = updateData
-	}
-
-	// Both streaming and regular updates now use the same async pattern
-	go func() {
-		defer p.putLogMessage(logMsg) // Return to pool when done
-
-		// Return pooled data structures to their respective pools
-		defer func() {
-			if logMsg.UpdateData != nil {
-				p.putUpdateLogData(logMsg.UpdateData)
+		go func() {
+			defer p.putLogMessage(logMsg) // Return to pool when done
+			// Return pooled data structures to their respective pools
+			defer func() {
+				if logMsg.UpdateData != nil {
+					p.putUpdateLogData(logMsg.UpdateData)
+				}
+			}()
+			if result != nil {
+				logMsg.SemanticCacheDebug = result.ExtraFields.CacheDebug
 			}
-			if logMsg.StreamUpdateData != nil {
-				p.putStreamUpdateData(logMsg.StreamUpdateData)
+			if logMsg.UpdateData != nil && p.pricingManager != nil {
+				cost := p.pricingManager.CalculateCostWithCacheDebug(result)
+				logMsg.UpdateData.Cost = &cost
+			}
+			// Here we pass plugin level context for background processing to avoid context cancellation
+			processingErr := retryOnNotFound(p.ctx, func() error {
+				return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.UpdateData)
+			})
+			if processingErr != nil {
+				p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
+			} else {
+				// Call callback immediately for both streaming and regular updates
+				// UI will handle debouncing if needed
+				p.mu.Lock()
+				if p.logCallback != nil {
+					if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
+						p.logCallback(updatedEntry)
+					}
+				}
+				p.mu.Unlock()
 			}
 		}()
-
-		if result != nil {
-			logMsg.SemanticCacheDebug = result.ExtraFields.CacheDebug
-		}
-
-		if logMsg.UpdateData != nil && p.pricingManager != nil {
-			cost := p.pricingManager.CalculateCostWithCacheDebug(result, provider, model, requestType)
-			logMsg.UpdateData.Cost = &cost
-		}
-		if logMsg.StreamUpdateData != nil && isFinalChunk && p.pricingManager != nil {
-			cost := p.pricingManager.CalculateCostWithCacheDebug(result, provider, model, requestType)
-			logMsg.StreamUpdateData.Cost = &cost
-		}
-
-		var processingErr error
-		if logMsg.Operation == LogOperationStreamUpdate {
-			processingErr = retryOnNotFound(*ctx, func() error {
-				return p.processStreamUpdate(*ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.StreamUpdateData, isFinalChunk)
-			})
-		} else {
-			processingErr = retryOnNotFound(*ctx, func() error {
-				return p.updateLogEntry(*ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.UpdateData)
-			})
-		}
-		if processingErr != nil {
-			p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
-		} else {
-			// Call callback immediately for both streaming and regular updates
-			// UI will handle debouncing if needed
-			p.mu.Lock()
-			if p.logCallback != nil {
-				if updatedEntry, getErr := p.getLogEntry(logMsg.RequestID); getErr == nil {
-					p.logCallback(updatedEntry)
-				}
-			}
-			p.mu.Unlock()
-		}
-	}()
-
-	return result, err, nil
+	}
+	return result, bifrostErr, nil
 }
 
 // Cleanup is called when the plugin is being shut down
@@ -589,23 +506,11 @@ func (p *LoggerPlugin) Cleanup() error {
 	if p.cleanupTicker != nil {
 		p.cleanupTicker.Stop()
 	}
-
 	// Signal the background worker to stop
 	close(p.done)
-
 	// Wait for the background worker to finish processing remaining items
 	p.wg.Wait()
-
-	// Clean up all stream accumulators
-	p.streamAccumulators.Range(func(key, value interface{}) bool {
-		acc := value.(*StreamAccumulator)
-		for _, c := range acc.Chunks {
-			p.putStreamChunk(c)
-		}
-		p.streamAccumulators.Delete(key)
-		return true
-	})
-
+	p.accumulator.Cleanup()
 	// GORM handles connection cleanup automatically
 	return nil
 }
@@ -621,6 +526,10 @@ func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) stri
 		return "chat.completion"
 	case schemas.ChatCompletionStreamRequest:
 		return "chat.completion.chunk"
+	case schemas.ResponsesRequest:
+		return "response"
+	case schemas.ResponsesStreamRequest:
+		return "response.completion.chunk"
 	case schemas.EmbeddingRequest:
 		return "list"
 	case schemas.SpeechRequest:
@@ -636,43 +545,61 @@ func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) stri
 }
 
 // extractInputHistory extracts input history from request input
-func (p *LoggerPlugin) extractInputHistory(input schemas.RequestInput) []schemas.BifrostMessage {
-	if input.ChatCompletionInput != nil {
-		return *input.ChatCompletionInput
+// extractInputHistory extracts input history from request input
+func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) []schemas.ChatMessage {
+	if request.ChatRequest != nil {
+		return request.ChatRequest.Input
 	}
-	if input.TextCompletionInput != nil {
-		// Convert text completion to message format
-		return []schemas.BifrostMessage{
+	if request.ResponsesRequest != nil {
+		messages := schemas.ToChatMessages(request.ResponsesRequest.Input)
+		if len(messages) > 0 {
+			return messages
+		}
+	}
+	if request.TextCompletionRequest != nil {
+		var text string
+		if request.TextCompletionRequest.Input.PromptStr != nil {
+			text = *request.TextCompletionRequest.Input.PromptStr
+		} else {
+			var stringBuilder strings.Builder
+			for _, prompt := range request.TextCompletionRequest.Input.PromptArray {
+				stringBuilder.WriteString(prompt)
+			}
+			text = stringBuilder.String()
+		}
+		return []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
-					ContentStr: input.TextCompletionInput,
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: &text,
 				},
 			},
 		}
 	}
-	if input.EmbeddingInput != nil {
-		texts := input.EmbeddingInput.Texts
+	if request.EmbeddingRequest != nil {
+		texts := request.EmbeddingRequest.Input.Texts
 
-		if len(texts) == 0 && input.EmbeddingInput.Text != nil {
-			texts = []string{*input.EmbeddingInput.Text}
+		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {
+			texts = []string{*request.EmbeddingRequest.Input.Text}
 		}
 
-		contentBlocks := make([]schemas.ContentBlock, len(texts))
+		contentBlocks := make([]schemas.ChatContentBlock, len(texts))
 		for i, text := range texts {
-			contentBlocks[i] = schemas.ContentBlock{
-				Type: schemas.ContentBlockTypeText,
-				Text: &text,
+			// Create a per-iteration copy to avoid reusing the same memory address
+			t := text
+			contentBlocks[i] = schemas.ChatContentBlock{
+				Type: schemas.ChatContentBlockTypeText,
+				Text: &t,
 			}
 		}
-		return []schemas.BifrostMessage{
+		return []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
-					ContentBlocks: &contentBlocks,
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentBlocks: contentBlocks,
 				},
 			},
 		}
 	}
-	return []schemas.BifrostMessage{}
+	return []schemas.ChatMessage{}
 }

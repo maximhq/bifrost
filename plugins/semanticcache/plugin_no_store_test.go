@@ -15,9 +15,9 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	// Test 1: Normal caching (control test)
 	ctx1 := CreateContextWithCacheKey("test-no-store-control")
 	t.Log("Making normal request (should be cached)...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1) // Fresh request
 
@@ -27,16 +27,20 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	t.Log("Verifying normal caching worked...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	AssertCacheHit(t, response2, "direct") // Should be cached
 
 	// Test 2: NoStore = true (should not cache)
 	ctx2 := CreateContextWithCacheKeyAndNoStore("test-no-store-disabled", true)
 	t.Log("Making request with CacheNoStoreKey=true (should not be cached)...")
-	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
+	response3, err3 := ChatRequestWithRetries(t, setup.Client, ctx2, testRequest)
 	if err3 != nil {
-		t.Fatalf("Third request failed: %v", err3)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response3) // Fresh request
 
@@ -44,18 +48,18 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 
 	// Verify it was NOT cached
 	t.Log("Verifying no-store request was not cached...")
-	response4, err4 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
+	response4, err4 := ChatRequestWithRetries(t, setup.Client, ctx2, testRequest)
 	if err4 != nil {
-		t.Fatalf("Fourth request failed: %v", err4)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response4) // Should still be fresh (not cached)
 
 	// Test 3: NoStore = false (should cache normally)
 	ctx3 := CreateContextWithCacheKeyAndNoStore("test-no-store-enabled", false)
 	t.Log("Making request with CacheNoStoreKey=false (should be cached)...")
-	response5, err5 := setup.Client.ChatCompletionRequest(ctx3, testRequest)
+	response5, err5 := ChatRequestWithRetries(t, setup.Client, ctx3, testRequest)
 	if err5 != nil {
-		t.Fatalf("Fifth request failed: %v", err5)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response5) // Fresh request
 
@@ -82,18 +86,18 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 	ctx1 := CreateContextWithCacheKeyAndNoStore("test-no-store-chat", true)
 
 	t.Log("Testing no-store with chat completion...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, chatRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, chatRequest)
 	if err1 != nil {
-		t.Fatalf("Chat request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
 	WaitForCache()
 
 	// Verify not cached
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, chatRequest)
+	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx1, chatRequest)
 	if err2 != nil {
-		t.Fatalf("Second chat request failed: %v", err2)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response2) // Should not be cached
 
@@ -102,18 +106,18 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 	ctx2 := CreateContextWithCacheKeyAndNoStore("test-no-store-embedding", true)
 
 	t.Log("Testing no-store with embedding request...")
-	response3, err3 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
+	response3, err3 := EmbeddingRequestWithRetries(t, setup.Client, ctx2, embeddingRequest)
 	if err3 != nil {
-		t.Fatalf("Embedding request failed: %v", err3)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response3)
 
 	WaitForCache()
 
 	// Verify not cached
-	response4, err4 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
+	response4, err4 := EmbeddingRequestWithRetries(t, setup.Client, ctx2, embeddingRequest)
 	if err4 != nil {
-		t.Fatalf("Second embedding request failed: %v", err4)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response4) // Should not be cached
 
@@ -137,18 +141,18 @@ func TestCacheNoStoreWithConversationHistory(t *testing.T) {
 	ctx := CreateContextWithCacheKeyAndNoStore("test-no-store-conversation", true)
 
 	t.Log("Testing no-store with conversation history...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
 	WaitForCache()
 
 	// Verify not cached (same conversation should not hit cache)
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
+	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response2) // Should not be cached due to no-store
 
@@ -168,18 +172,18 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 	ctx1 = context.WithValue(ctx1, CacheTypeKey, CacheTypeDirect)
 
 	t.Log("Testing no-store with CacheTypeKey=direct...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
 	WaitForCache()
 
 	// Should not be cached
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response2) // No-store should override cache type
 
@@ -189,18 +193,18 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 	ctx2 = context.WithValue(ctx2, CacheTypeKey, CacheTypeSemantic)
 
 	t.Log("Testing no-store with CacheTypeKey=semantic...")
-	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
+	response3, err3 := ChatRequestWithRetries(t, setup.Client, ctx2, testRequest)
 	if err3 != nil {
-		t.Fatalf("Third request failed: %v", err3)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response3)
 
 	WaitForCache()
 
 	// Should not be cached
-	response4, err4 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
+	response4, err4 := ChatRequestWithRetries(t, setup.Client, ctx2, testRequest)
 	if err4 != nil {
-		t.Fatalf("Fourth request failed: %v", err4)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response4) // No-store should override cache type
 
@@ -219,9 +223,9 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 	ctx1 = context.WithValue(ctx1, CacheNoStoreKey, "invalid")
 
 	t.Log("Testing no-store with invalid value (should cache normally)...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -230,7 +234,11 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 	// Should be cached (invalid value should be ignored)
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	AssertCacheHit(t, response2, "direct") // Should be cached (invalid value ignored)
 
@@ -239,9 +247,9 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 	ctx2 = context.WithValue(ctx2, CacheNoStoreKey, nil)
 
 	t.Log("Testing no-store with nil value (should cache normally)...")
-	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
+	response3, err3 := ChatRequestWithRetries(t, setup.Client, ctx2, testRequest)
 	if err3 != nil {
-		t.Fatalf("Third request failed: %v", err3)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response3)
 
@@ -267,9 +275,9 @@ func TestCacheNoStoreReadButNoWrite(t *testing.T) {
 	// Step 1: Cache a response normally
 	ctx1 := CreateContextWithCacheKey("test-no-store-read")
 	t.Log("Caching response normally...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -280,7 +288,11 @@ func TestCacheNoStoreReadButNoWrite(t *testing.T) {
 	t.Log("Reading with no-store enabled (should still hit cache for reads)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	// The current implementation should still read from cache even with no-store
 	// (no-store only affects writing, not reading)

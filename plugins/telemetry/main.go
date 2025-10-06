@@ -44,8 +44,8 @@ type PrometheusPlugin struct {
 	CostTotal             *prometheus.CounterVec
 }
 
-// NewPrometheusPlugin creates a new PrometheusPlugin with initialized metrics.
-func Init(pricingManager *pricing.PricingManager, logger schemas.Logger) *PrometheusPlugin {
+// Init creates a new PrometheusPlugin with initialized metrics.
+func Init(pricingManager *pricing.PricingManager, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if pricingManager == nil {
 		logger.Warn("telemetry plugin requires pricing manager to calculate cost, all cost calculations will be skipped.")
 	}
@@ -60,7 +60,7 @@ func Init(pricingManager *pricing.PricingManager, logger schemas.Logger) *Promet
 		OutputTokensTotal:     bifrostOutputTokensTotal,
 		CacheHitsTotal:        bifrostCacheHitsTotal,
 		CostTotal:             bifrostCostTotal,
-	}
+	}, nil
 }
 
 // GetName returns the name of the plugin.
@@ -81,13 +81,11 @@ func (p *PrometheusPlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 //   - Request latency
 //   - Total request count
 func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	if result == nil {
-		return result, bifrostErr, nil
-	}
+	requestType, provider, model := bifrost.GetRequestFields(result, bifrostErr)
 
-	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
+	startTime, ok := (*ctx).Value(startTimeKey).(time.Time)
 	if !ok {
-		log.Println("Warning: request type not found in context for Prometheus PostHook")
+		log.Println("Warning: startTime not found in context for Prometheus PostHook")
 		return result, bifrostErr, nil
 	}
 
@@ -107,41 +105,17 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		// This is the final chunk - continue with metrics recording
 	}
 
-	startTime, ok := (*ctx).Value(startTimeKey).(time.Time)
-	if !ok {
-		log.Println("Warning: startTime not found in context for Prometheus PostHook")
-		return result, bifrostErr, nil
-	}
-
-	provider, ok := (*ctx).Value(schemas.BifrostContextKeyRequestProvider).(schemas.ModelProvider)
-	if !ok {
-		log.Println("Warning: provider not found in context for Prometheus PostHook")
-		return result, bifrostErr, nil
-	}
-
-	model, ok := (*ctx).Value(schemas.BifrostContextKeyRequestModel).(string)
-	if !ok {
-		log.Println("Warning: model not found in context for Prometheus PostHook")
-		return result, bifrostErr, nil
-	}
-
-	method, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
-	if !ok {
-		log.Println("Warning: method not found in context for Prometheus PostHook")
-		return result, bifrostErr, nil
-	}
-
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
 	go func() {
 		cost := 0.0
-		if p.pricingManager != nil {
-			cost = p.pricingManager.CalculateCostWithCacheDebug(result, provider, model, requestType)
+		if p.pricingManager != nil && result != nil {
+			cost = p.pricingManager.CalculateCostWithCacheDebug(result)
 		}
 
 		labelValues := map[string]string{
 			"provider": string(provider),
 			"model":    model,
-			"method":   string(method),
+			"method":   string(requestType),
 		}
 
 		// Get all prometheus labels from context
@@ -167,29 +141,34 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 		// Record error and success counts
 		if bifrostErr != nil {
-			p.ErrorRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+			// Add reason to label values
+			errorLabelValues := append(promLabelValues[:3], bifrostErr.Error.Message) // provider, model, method, reason
+			errorLabelValues = append(errorLabelValues, promLabelValues[3:]...)       // then custom labels
+			p.ErrorRequestsTotal.WithLabelValues(errorLabelValues...).Inc()
 		} else {
 			p.SuccessRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 		}
 
-		// Record input and output tokens
-		if result.Usage != nil {
-			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(result.Usage.PromptTokens))
-			p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(result.Usage.CompletionTokens))
-		}
-
-		// Record cache hits with cache type
-		if result.ExtraFields.CacheDebug != nil && result.ExtraFields.CacheDebug.CacheHit {
-			cacheType := "unknown"
-			if result.ExtraFields.CacheDebug.HitType != nil {
-				cacheType = *result.ExtraFields.CacheDebug.HitType
+		if result != nil {
+			// Record input and output tokens
+			if result.Usage != nil {
+				p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(result.Usage.PromptTokens))
+				p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(result.Usage.CompletionTokens))
 			}
 
-			// Add cache_type to label values
-			cacheHitLabelValues := append(promLabelValues[:3], cacheType)             // provider, model, method, cache_type
-			cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[3:]...) // then custom labels
+			// Record cache hits with cache type
+			if result.ExtraFields.CacheDebug != nil && result.ExtraFields.CacheDebug.CacheHit {
+				cacheType := "unknown"
+				if result.ExtraFields.CacheDebug.HitType != nil {
+					cacheType = *result.ExtraFields.CacheDebug.HitType
+				}
 
-			p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
+				// Add cache_type to label values
+				cacheHitLabelValues := append(promLabelValues[:3], cacheType)             // provider, model, method, cache_type
+				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[3:]...) // then custom labels
+
+				p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
+			}
 		}
 	}()
 

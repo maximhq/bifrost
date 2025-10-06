@@ -14,9 +14,7 @@ import (
 
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}, logger schemas.Logger) {
-	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")
-
 	if err := json.NewEncoder(ctx).Encode(data); err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err), logger)
@@ -28,7 +26,7 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string, logger 
 	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     &statusCode,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 		},
 	}

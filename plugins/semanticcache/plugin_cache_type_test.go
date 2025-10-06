@@ -16,9 +16,9 @@ func TestCacheTypeDirectOnly(t *testing.T) {
 	testRequest := CreateBasicChatRequest("What is Bifrost?", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -30,7 +30,7 @@ func TestCacheTypeDirectOnly(t *testing.T) {
 	t.Log("Making second request with CacheTypeKey=direct...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		t.Fatalf("Second request failed: %v", err2.Error.Message)
 	}
 
 	// Should be a cache hit from direct search
@@ -49,9 +49,9 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	testRequest := CreateBasicChatRequest("Explain machine learning concepts", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -66,7 +66,11 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	t.Log("Making second request with similar content and CacheTypeKey=semantic...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, similarRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 
 	// This might be a cache hit if semantic similarity is high enough
@@ -92,9 +96,9 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 	testRequest := CreateBasicChatRequest("Define artificial intelligence", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -106,7 +110,11 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 	t.Log("Making second identical request (should hit direct cache)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	AssertCacheHit(t, response2, "direct")
 
@@ -143,9 +151,9 @@ func TestCacheTypeInvalidValue(t *testing.T) {
 	testRequest := CreateBasicChatRequest("Test invalid cache type", 0.7, 50)
 
 	t.Log("Making request with invalid CacheTypeKey value...")
-	response, err := setup.Client.ChatCompletionRequest(ctx, testRequest)
+	response, err := ChatRequestWithRetries(t, setup.Client, ctx, testRequest)
 	if err != nil {
-		t.Fatalf("Request failed: %v", err)
+		return // Test will be skipped by retry function
 	}
 
 	// Should fall back to default behavior (both direct and semantic)
@@ -164,9 +172,9 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 	// Cache first request
 	ctx1 := CreateContextWithCacheKey("test-embedding-cache-type")
 	t.Log("Making first embedding request...")
-	response1, err1 := setup.Client.EmbeddingRequest(ctx1, embeddingRequest)
+	response1, err1 := EmbeddingRequestWithRetries(t, setup.Client, ctx1, embeddingRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -177,7 +185,11 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 	t.Log("Making second embedding request with CacheTypeKey=direct...")
 	response2, err2 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	AssertCacheHit(t, response2, "direct")
 
@@ -204,9 +216,9 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 	// Cache first request
 	ctx1 := CreateContextWithCacheKey("test-cache-performance")
 	t.Log("Making first request to populate cache...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 

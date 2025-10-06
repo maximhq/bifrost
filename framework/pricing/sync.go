@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,25 +18,25 @@ import (
 //   - No previous sync record exists
 //   - Previous sync timestamp is invalid/corrupted
 //   - Sync interval has elapsed since last successful sync
-func (pm *PricingManager) checkAndSyncPricing() error {
+func (pm *PricingManager) checkAndSyncPricing(ctx context.Context) error {
 	// Skip sync if no config store is available
 	if pm.configStore == nil {
 		return nil
 	}
 
 	// Determine if sync is needed and perform it
-	needsSync, reason := pm.shouldSyncPricing()
+	needsSync, reason := pm.shouldSyncPricing(ctx)
 	if needsSync {
 		pm.logger.Debug("pricing sync needed: %s", reason)
-		return pm.syncPricing()
+		return pm.syncPricing(ctx)
 	}
 
 	return nil
 }
 
 // shouldSyncPricing determines if pricing data should be synced and returns the reason
-func (pm *PricingManager) shouldSyncPricing() (bool, string) {
-	config, err := pm.configStore.GetConfig(LastPricingSyncKey)
+func (pm *PricingManager) shouldSyncPricing(ctx context.Context) (bool, string) {
+	config, err := pm.configStore.GetConfig(ctx, LastPricingSyncKey)
 	if err != nil {
 		return true, "no previous sync record found"
 	}
@@ -54,16 +55,16 @@ func (pm *PricingManager) shouldSyncPricing() (bool, string) {
 }
 
 // syncPricing syncs pricing data from URL to database and updates cache
-func (pm *PricingManager) syncPricing() error {
-	pm.logger.Debug("Starting pricing data synchronization for governance")
+func (pm *PricingManager) syncPricing(ctx context.Context) error {
+	pm.logger.Debug("starting pricing data synchronization for governance")
 
 	// Load pricing data from URL
-	pricingData, err := pm.loadPricingFromURL()
+	pricingData, err := pm.loadPricingFromURL(ctx)
 	if err != nil {
 		// Check if we have existing data in database
-		pricingRecords, err := pm.configStore.GetModelPrices()
-		if err != nil {
-			return fmt.Errorf("failed to get pricing records: %w", err)
+		pricingRecords, pricingErr := pm.configStore.GetModelPrices(ctx)
+		if pricingErr != nil {
+			return fmt.Errorf("failed to get pricing records: %w", pricingErr)
 		}
 		if len(pricingRecords) > 0 {
 			pm.logger.Error("failed to load pricing data from URL, but existing data found in database: %v", err)
@@ -74,9 +75,9 @@ func (pm *PricingManager) syncPricing() error {
 	}
 
 	// Update database in transaction
-	err = pm.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
+	err = pm.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		// Clear existing pricing data
-		if err := pm.configStore.DeleteModelPrices(tx); err != nil {
+		if err := pm.configStore.DeleteModelPrices(ctx, tx); err != nil {
 			return fmt.Errorf("failed to clear existing pricing data: %v", err)
 		}
 
@@ -96,7 +97,7 @@ func (pm *PricingManager) syncPricing() error {
 			// Mark as seen
 			seen[key] = true
 
-			if err := pm.configStore.CreateModelPrices(&pricing, tx); err != nil {
+			if err := pm.configStore.CreateModelPrices(ctx, &pricing, tx); err != nil {
 				return fmt.Errorf("failed to create pricing record for model %s: %w", pricing.Model, err)
 			}
 		}
@@ -117,12 +118,12 @@ func (pm *PricingManager) syncPricing() error {
 	}
 
 	// Update last sync time
-	if err := pm.configStore.UpdateConfig(config); err != nil {
+	if err := pm.configStore.UpdateConfig(ctx, config); err != nil {
 		pm.logger.Warn("Failed to update last sync time: %v", err)
 	}
 
 	// Reload cache from database
-	if err := pm.loadPricingFromDatabase(); err != nil {
+	if err := pm.loadPricingFromDatabase(ctx); err != nil {
 		return fmt.Errorf("failed to reload pricing cache: %w", err)
 	}
 
@@ -131,14 +132,17 @@ func (pm *PricingManager) syncPricing() error {
 }
 
 // loadPricingFromURL loads pricing data from the remote URL
-func (pm *PricingManager) loadPricingFromURL() (PricingData, error) {
+func (pm *PricingManager) loadPricingFromURL(ctx context.Context) (PricingData, error) {
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, PricingFileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
 	// Make HTTP request
-	resp, err := client.Get(PricingFileURL)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download pricing data: %w", err)
 	}
@@ -166,8 +170,8 @@ func (pm *PricingManager) loadPricingFromURL() (PricingData, error) {
 }
 
 // loadPricingIntoMemory loads pricing data from URL into memory cache
-func (pm *PricingManager) loadPricingIntoMemory() error {
-	pricingData, err := pm.loadPricingFromURL()
+func (pm *PricingManager) loadPricingIntoMemory(ctx context.Context) error {
+	pricingData, err := pm.loadPricingFromURL(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load pricing data from URL: %w", err)
 	}
@@ -187,12 +191,12 @@ func (pm *PricingManager) loadPricingIntoMemory() error {
 }
 
 // loadPricingFromDatabase loads pricing data from database into memory cache
-func (pm *PricingManager) loadPricingFromDatabase() error {
+func (pm *PricingManager) loadPricingFromDatabase(ctx context.Context) error {
 	if pm.configStore == nil {
 		return nil
 	}
 
-	pricingRecords, err := pm.configStore.GetModelPrices()
+	pricingRecords, err := pm.configStore.GetModelPrices(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load pricing from database: %w", err)
 	}
@@ -212,15 +216,15 @@ func (pm *PricingManager) loadPricingFromDatabase() error {
 }
 
 // startSyncWorker starts the background sync worker
-func (pm *PricingManager) startSyncWorker() {
+func (pm *PricingManager) startSyncWorker(ctx context.Context) {
 	// Use a ticker that checks every hour, but only sync when needed
 	pm.syncTicker = time.NewTicker(1 * time.Hour)
 	pm.wg.Add(1)
-	go pm.syncWorker()
+	go pm.syncWorker(ctx)
 }
 
 // syncWorker runs the background sync check
-func (pm *PricingManager) syncWorker() {
+func (pm *PricingManager) syncWorker(ctx context.Context) {
 	defer pm.wg.Done()
 	defer pm.syncTicker.Stop()
 
@@ -228,7 +232,7 @@ func (pm *PricingManager) syncWorker() {
 		select {
 		case <-pm.syncTicker.C:
 			// Check and sync pricing data - this handles the sync internally
-			if err := pm.checkAndSyncPricing(); err != nil {
+			if err := pm.checkAndSyncPricing(ctx); err != nil {
 				pm.logger.Error("background pricing sync failed: %v", err)
 			}
 

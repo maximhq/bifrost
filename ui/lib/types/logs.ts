@@ -85,7 +85,15 @@ export interface BifrostTranscribe {
 }
 
 // Message content types
-export type MessageContentType = "text" | "image_url" | "input_audio";
+export type MessageContentType =
+	| "text"
+	| "image_url"
+	| "input_audio"
+	| "input_text"
+	| "input_file"
+	| "output_text"
+	| "refusal"
+	| "reasoning";
 
 export interface ContentBlock {
 	type: MessageContentType;
@@ -100,11 +108,11 @@ export interface ContentBlock {
 	};
 }
 
-export type MessageContent = string | ContentBlock[];
+export type ChatMessageContent = string | ContentBlock[];
 
-export interface BifrostMessage {
+export interface ChatMessage {
 	role: "assistant" | "user" | "system" | "chatbot" | "tool";
-	content: MessageContent;
+	content: ChatMessageContent;
 	tool_call_id?: string;
 	refusal?: string;
 	annotations?: Annotation[];
@@ -237,8 +245,8 @@ export interface LogEntry {
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
 	model: string;
-	input_history: BifrostMessage[];
-	output_message?: BifrostMessage;
+	input_history: ChatMessage[];
+	output_message?: ChatMessage;
 	embedding_output?: BifrostEmbedding[];
 	params?: ModelParameters;
 	speech_input?: SpeechInput;

@@ -37,7 +37,6 @@ func runAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		scenarios.RunImageBase64Test,
 		scenarios.RunMultipleImagesTest,
 		scenarios.RunCompleteEnd2EndTest,
-		scenarios.RunProviderSpecificTest,
 		scenarios.RunSpeechSynthesisTest,
 		scenarios.RunSpeechSynthesisAdvancedTest,
 		scenarios.RunSpeechSynthesisStreamTest,
@@ -47,6 +46,7 @@ func runAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		scenarios.RunTranscriptionStreamTest,
 		scenarios.RunTranscriptionStreamAdvancedTest,
 		scenarios.RunEmbeddingTest,
+		scenarios.RunReasoningTest,
 	}
 
 	// Execute all test scenarios
@@ -76,12 +76,12 @@ func printTestSummary(t *testing.T, testConfig config.ComprehensiveTestConfig) {
 		{"ImageBase64", testConfig.Scenarios.ImageBase64},
 		{"MultipleImages", testConfig.Scenarios.MultipleImages},
 		{"CompleteEnd2End", testConfig.Scenarios.CompleteEnd2End},
-		{"ProviderSpecific", testConfig.Scenarios.ProviderSpecific},
 		{"SpeechSynthesis", testConfig.Scenarios.SpeechSynthesis},
 		{"SpeechSynthesisStream", testConfig.Scenarios.SpeechSynthesisStream},
 		{"Transcription", testConfig.Scenarios.Transcription},
 		{"TranscriptionStream", testConfig.Scenarios.TranscriptionStream},
 		{"Embedding", testConfig.Scenarios.Embedding && testConfig.EmbeddingModel != ""},
+		{"Reasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 	}
 
 	supported := 0

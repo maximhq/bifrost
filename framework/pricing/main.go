@@ -1,7 +1,9 @@
 package pricing
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,10 +27,14 @@ type PricingManager struct {
 	pricingData map[string]configstore.TableModelPricing
 	mu          sync.RWMutex
 
+	modelPool map[schemas.ModelProvider][]string
+
 	// Background sync worker
 	syncTicker *time.Ticker
 	done       chan struct{}
 	wg         sync.WaitGroup
+	syncCtx    context.Context
+	syncCancel context.CancelFunc
 }
 
 // PricingData represents the structure of the pricing.json file
@@ -66,42 +72,49 @@ type PricingEntry struct {
 	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
 }
 
-func Init(configStore configstore.ConfigStore, logger schemas.Logger) (*PricingManager, error) {
+// Init initializes the pricing manager
+func Init(ctx context.Context, configStore configstore.ConfigStore, logger schemas.Logger) (*PricingManager, error) {
 	pm := &PricingManager{
 		configStore: configStore,
 		logger:      logger,
 		pricingData: make(map[string]configstore.TableModelPricing),
+		modelPool:   make(map[schemas.ModelProvider][]string),
 		done:        make(chan struct{}),
 	}
 
+	logger.Info("initializing pricing manager...")
+
 	if configStore != nil {
 		// Load initial pricing data
-		if err := pm.loadPricingFromDatabase(); err != nil {
+		if err := pm.loadPricingFromDatabase(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
 		}
 
 		// For the bootup we sync pricing data from file to database
-		if err := pm.syncPricing(); err != nil {
+		if err := pm.syncPricing(ctx); err != nil {
 			return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 		}
-		
 	} else {
 		// Load pricing data from config memory
-		if err := pm.loadPricingIntoMemory(); err != nil {
+		if err := pm.loadPricingIntoMemory(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load pricing data from config memory: %w", err)
 		}
 	}
 
+	// Populate model pool with normalized providers
+	pm.populateModelPool()
+
 	// Start background sync worker
-	pm.startSyncWorker()
+	pm.syncCtx, pm.syncCancel = context.WithCancel(ctx)
+	pm.startSyncWorker(pm.syncCtx)
 	pm.configStore = configStore
 	pm.logger = logger
 
 	return pm, nil
 }
 
-func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType) float64 {
-	if result == nil || provider == "" || model == "" || requestType == "" {
+func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse) float64 {
+	if result == nil {
 		return 0.0
 	}
 
@@ -157,14 +170,14 @@ func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse, provide
 
 	cost := 0.0
 	if usage != nil || audioSeconds != nil || audioTokenDetails != nil {
-		cost = pm.CalculateCostFromUsage(string(provider), model, usage, requestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
+		cost = pm.CalculateCostFromUsage(string(result.ExtraFields.Provider), result.ExtraFields.ModelRequested, usage, result.ExtraFields.RequestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
 	}
 
 	return cost
 }
 
-func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType) float64 {
-	if result == nil || provider == "" || model == "" || requestType == "" {
+func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostResponse) float64 {
+	if result == nil {
 		return 0.0
 	}
 	cacheDebug := result.ExtraFields.CacheDebug
@@ -183,7 +196,7 @@ func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostRes
 			// Don't over-bill cache hits if fields are missing.
 			return 0
 		} else {
-			baseCost := pm.CalculateCost(result, provider, model, requestType)
+			baseCost := pm.CalculateCost(result)
 			var semanticCacheCost float64
 			if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
 				semanticCacheCost = pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.LLMUsage{
@@ -197,10 +210,13 @@ func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostRes
 		}
 	}
 
-	return pm.CalculateCost(result, provider, model, requestType)
+	return pm.CalculateCost(result)
 }
 
 func (pm *PricingManager) Cleanup() error {
+	if pm.syncCancel != nil {
+		pm.syncCancel()
+	}
 	if pm.syncTicker != nil {
 		pm.syncTicker.Stop()
 	}
@@ -236,8 +252,18 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 	}
 
 	totalTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int { return u.TotalTokens })
-	promptTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int { return u.PromptTokens })
-	completionTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int { return u.CompletionTokens })
+	promptTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int {
+		if u.ResponsesExtendedResponseUsage != nil {
+			return u.ResponsesExtendedResponseUsage.InputTokens
+		}
+		return u.PromptTokens
+	})
+	completionTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int {
+		if u.ResponsesExtendedResponseUsage != nil {
+			return u.ResponsesExtendedResponseUsage.OutputTokens
+		}
+		return u.CompletionTokens
+	})
 
 	// Special handling for audio operations with duration-based pricing
 	if (requestType == schemas.SpeechRequest || requestType == schemas.TranscriptionRequest) && audioSeconds != nil && *audioSeconds > 0 {
@@ -325,6 +351,80 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 	return totalCost
 }
 
+// populateModelPool populates the model pool with all available models per provider (thread-safe)
+func (pm *PricingManager) populateModelPool() {
+	// Acquire write lock for the entire rebuild operation
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	// Clear existing model pool
+	pm.modelPool = make(map[schemas.ModelProvider][]string)
+
+	// Map to track unique models per provider
+	providerModels := make(map[schemas.ModelProvider]map[string]bool)
+
+	// Iterate through all pricing data to collect models per provider
+	for _, pricing := range pm.pricingData {
+		// Normalize provider before adding to model pool
+		normalizedProvider := schemas.ModelProvider(normalizeProvider(pricing.Provider))
+
+		// Initialize map for this provider if not exists
+		if providerModels[normalizedProvider] == nil {
+			providerModels[normalizedProvider] = make(map[string]bool)
+		}
+
+		// Add model to the provider's model set (using map for deduplication)
+		providerModels[normalizedProvider][pricing.Model] = true
+	}
+
+	// Convert sets to slices and assign to modelPool
+	for provider, modelSet := range providerModels {
+		models := make([]string, 0, len(modelSet))
+		for model := range modelSet {
+			models = append(models, model)
+		}
+		pm.modelPool[provider] = models
+	}
+
+	// Log the populated model pool for debugging
+	totalModels := 0
+	for provider, models := range pm.modelPool {
+		totalModels += len(models)
+		pm.logger.Debug("populated %d models for provider %s", len(models), string(provider))
+	}
+	pm.logger.Info("populated model pool with %d models across %d providers", totalModels, len(pm.modelPool))
+}
+
+// GetModelsForProvider returns all available models for a given provider (thread-safe)
+func (pm *PricingManager) GetModelsForProvider(provider schemas.ModelProvider) []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	models, exists := pm.modelPool[provider]
+	if !exists {
+		return []string{}
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]string, len(models))
+	copy(result, models)
+	return result
+}
+
+// GetProvidersForModel returns all providers for a given model (thread-safe)
+func (pm *PricingManager) GetProvidersForModel(model string) []schemas.ModelProvider {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	providers := make([]schemas.ModelProvider, 0)
+	for provider, models := range pm.modelPool {
+		if slices.Contains(models, model) {
+			providers = append(providers, provider)
+		}
+	}
+	return providers
+}
+
 // getPricing returns pricing information for a model (thread-safe)
 func (pm *PricingManager) getPricing(model, provider string, requestType schemas.RequestType) (*configstore.TableModelPricing, bool) {
 	pm.mu.RLock()
@@ -332,12 +432,22 @@ func (pm *PricingManager) getPricing(model, provider string, requestType schemas
 
 	pricing, ok := pm.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
 	if !ok {
+		// Lookup in vertex if gemini not found
 		if provider == string(schemas.Gemini) {
 			pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
 			if ok {
 				return &pricing, true
 			}
 		}
+
+		// Lookup in chat if responses not found
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+			pricing, ok = pm.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			if ok {
+				return &pricing, true
+			}
+		}
+
 		return nil, false
 	}
 	return &pricing, true

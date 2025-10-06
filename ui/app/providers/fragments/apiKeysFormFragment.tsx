@@ -4,38 +4,33 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { ModelPlaceholders } from "@/lib/constants/config";
 import { isRedacted } from "@/lib/utils/validation";
 import { Info } from "lucide-react";
-import { Control } from "react-hook-form";
+import { Control, UseFormReturn } from "react-hook-form";
 
 interface Props {
 	control: Control<any>;
 	providerName: string;
+	form: UseFormReturn<any>;
 }
 
-// Model placeholders based on provider type
-const MODEL_PLACEHOLDERS = {
-	default: "e.g. gpt-4, gpt-3.5-turbo. Leave blank for all models.",
-	openai: "e.g. gpt-4, gpt-3.5-turbo, gpt-4-turbo, gpt-4o",
-	azure: "e.g. gpt-4, gpt-3.5-turbo (must match deployment mappings)",
-	bedrock: "e.g. claude-v2, titan-text-express-v1",
-	vertex: "e.g. gemini-pro, text-bison, chat-bison",
-};
-
-export function ApiKeyFormFragment({ control, providerName }: Props) {
+export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
 	const modelsPlaceholder = isAzure
-		? MODEL_PLACEHOLDERS.azure
+		? ModelPlaceholders.azure
 		: isBedrock
-			? MODEL_PLACEHOLDERS.bedrock
+			? ModelPlaceholders.bedrock
 			: isVertex
-				? MODEL_PLACEHOLDERS.vertex
-				: MODEL_PLACEHOLDERS.openai;
+				? ModelPlaceholders.vertex
+				: ModelPlaceholders.openai;
+	const isOpenAI = providerName === "openai";
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
@@ -67,7 +62,7 @@ export function ApiKeyFormFragment({ control, providerName }: Props) {
 						/>
 					</div>
 				)}
-				<div>
+				<div className="h-[80px]">
 					<FormField
 						control={control}
 						name={`key.weight`}
@@ -91,13 +86,29 @@ export function ApiKeyFormFragment({ control, providerName }: Props) {
 								<FormControl>
 									<Input
 										placeholder="1.0"
-										className="w-20"
-										{...field}
+										className="w-[220px]"
+										value={field.value === undefined || field.value === null ? "" : String(field.value)}
 										onChange={(e) => {
-											const v = e.target.value.trim();
-											field.onChange(v === "" ? undefined : Number(v));
+											// Clear error while typing
+											form.clearErrors("key.weight");
+											// Keep as string during typing to allow partial input
+											field.onChange(e.target.value === "" ? "" : e.target.value);
 										}}
-										type="string"
+										onBlur={(e) => {
+											const v = e.target.value.trim();
+											if (v !== "") {
+												const num = parseFloat(v);
+												if (!isNaN(num)) {
+													field.onChange(num);
+												} else {
+													form.setError("key.weight", { message: "Weight must be a valid number" });
+												}
+											}
+											field.onBlur();
+										}}
+										name={field.name}
+										ref={field.ref}
+										type="text"
 									/>
 								</FormControl>
 								<FormMessage />
@@ -133,6 +144,30 @@ export function ApiKeyFormFragment({ control, providerName }: Props) {
 					</FormItem>
 				)}
 			/>
+			{isOpenAI && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name={`key.openai_key_config.use_responses_api`}
+						render={({ field }) => (
+							<FormItem>
+								<FormControl>
+									<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+										<div className="space-y-0.5">
+											<label htmlFor="enforce-governance" className="text-sm font-medium">
+												Use Responses API
+											</label>
+											<p className="text-muted-foreground text-sm">Use the Responses API instead of the Chat Completion API.</p>
+										</div>
+										<Switch id="enforce-governance" size="md" checked={field.value} onCheckedChange={field.onChange} />
+									</div>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
 			{isAzure && (
 				<div className="space-y-4">
 					<FormField

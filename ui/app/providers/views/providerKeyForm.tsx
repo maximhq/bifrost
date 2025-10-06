@@ -1,17 +1,16 @@
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { modelProviderKeySchema } from "@/lib/types/schemas";
-import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
 import { useForm } from "react-hook-form";
-import { ApiKeyFormFragment } from "../fragments";
-import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
-import { v4 as uuid } from "uuid";
 import { toast } from "sonner";
-import FormFooter from "@/components/formFooter";
+import { v4 as uuid } from "uuid";
+import { z } from "zod";
+import { ApiKeyFormFragment } from "../fragments";
 interface Props {
 	provider: ModelProvider;
 	keyIndex: number;
@@ -28,7 +27,7 @@ type ProviderKeyFormData = z.infer<typeof providerKeyFormSchema>;
 
 export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }: Props) {
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
-	const form = useForm<ProviderKeyFormData>({
+	const form = useForm({
 		resolver: zodResolver(providerKeyFormSchema),
 		mode: "onChange",
 		reValidateMode: "onChange",
@@ -42,7 +41,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 		},
 	});
 
-	const onSubmit = (value: ProviderKeyFormData) => {
+	const onSubmit = (value: any) => {
 		const keys = provider.keys ?? [];
 		const updatedKeys = [...keys.slice(0, keyIndex), value.key, ...keys.slice(keyIndex + 1)];
 		updateProvider({
@@ -62,7 +61,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-				<ApiKeyFormFragment control={form.control} providerName={provider.name} />
+				<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
 
 				<div className="bg:white dark:bg-card pt-6">
 					<div className="flex justify-end space-x-3">

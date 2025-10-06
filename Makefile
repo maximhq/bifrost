@@ -3,7 +3,7 @@
 # Variables
 HOST ?= localhost
 PORT ?= 8080
-APP_DIR ?=
+APP_DIR ?= 
 PROMETHEUS_LABELS ?=
 LOG_STYLE ?= json
 LOG_LEVEL ?= info
@@ -16,7 +16,7 @@ BLUE=\033[0;34m
 CYAN=\033[0;36m
 NC=\033[0m # No Color
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-build
+.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-build cleanup-enterprise
 
 all: help
 
@@ -34,7 +34,12 @@ help: ## Show this help message
 	@echo "  LOG_LEVEL Logger level: debug|info|warn|error (default: info)"
 	@echo "  APP_DIR           App data directory inside container (default: /app/data)"
 
-install-ui:
+cleanup-enterprise: ## Clean up enterprise directories if present
+	@echo "$(GREEN)Cleaning up enterprise...$(NC)"
+	@if [ -d "ui/app/enterprise" ]; then rm -rf ui/app/enterprise; fi
+	@echo "$(GREEN)Enterprise cleaned up$(NC)"
+
+install-ui: cleanup-enterprise
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
 	@echo "$(GREEN)Node.js and npm are installed$(NC)"

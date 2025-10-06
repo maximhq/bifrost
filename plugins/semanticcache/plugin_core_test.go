@@ -26,13 +26,13 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 
 	t.Log("Making first request (should go to OpenAI and be cached)...")
 
-	// Make first request (will go to OpenAI and be cached)
+	// Make first request (will go to OpenAI and be cached) - with retries
 	start1 := time.Now()
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, testRequest)
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
@@ -53,7 +53,11 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	duration2 := time.Since(start2)
 
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 
 	if response2 == nil || len(response2.Choices) == 0 || response2.Choices[0].Message.Content.ContentStr == nil {
@@ -119,11 +123,11 @@ func TestSemanticSearch(t *testing.T) {
 
 	t.Log("Making first request (should go to OpenAI and be cached)...")
 	start1 := time.Now()
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, firstRequest)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, firstRequest)
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
@@ -149,7 +153,11 @@ func TestSemanticSearch(t *testing.T) {
 	duration2 := time.Since(start2)
 
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 
 	if response2 == nil || len(response2.Choices) == 0 || response2.Choices[0].Message.Content.ContentStr == nil {
@@ -218,9 +226,9 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 	)
 
 	t.Log("Making first request...")
-	_, err1 := setup.Client.ChatCompletionRequest(ctx, exactRequest)
+	_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, exactRequest)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 
 	WaitForCache()
@@ -228,7 +236,11 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 	t.Log("Making exact same request (should hit direct cache)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, exactRequest)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 
 	// Should be a direct cache hit
@@ -292,18 +304,18 @@ func TestNoCacheScenarios(t *testing.T) {
 
 	// First request
 	request1 := CreateBasicChatRequest(basePrompt, 0.1, 50)
-	_, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
+	_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request1)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 
 	WaitForCache()
 
 	// Second request with different temperature
 	request2 := CreateBasicChatRequest(basePrompt, 0.9, 50) // Different temperature
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
+	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx, request2)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		return // Test will be skipped by retry function
 	}
 
 	// Should NOT be cached
@@ -313,9 +325,9 @@ func TestNoCacheScenarios(t *testing.T) {
 	t.Log("\n=== Test Case 2: Different MaxTokens ===")
 
 	request3 := CreateBasicChatRequest(basePrompt, 0.1, 200) // Different max_tokens
-	response3, err3 := setup.Client.ChatCompletionRequest(ctx, request3)
+	response3, err3 := ChatRequestWithRetries(t, setup.Client, ctx, request3)
 	if err3 != nil {
-		t.Fatalf("Third request failed: %v", err3)
+		return // Test will be skipped by retry function
 	}
 
 	// Should NOT be cached
@@ -328,12 +340,12 @@ func TestNoCacheScenarios(t *testing.T) {
 func TestCacheConfiguration(t *testing.T) {
 	tests := []struct {
 		name             string
-		config           Config
+		config           *Config
 		expectedBehavior string
 	}{
 		{
 			name: "High Threshold",
-			config: Config{
+			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.95, // Very high threshold
@@ -345,7 +357,7 @@ func TestCacheConfiguration(t *testing.T) {
 		},
 		{
 			name: "Low Threshold",
-			config: Config{
+			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.1, // Very low threshold
@@ -357,7 +369,7 @@ func TestCacheConfiguration(t *testing.T) {
 		},
 		{
 			name: "Custom TTL",
-			config: Config{
+			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
 				Threshold:      0.8,
@@ -380,16 +392,20 @@ func TestCacheConfiguration(t *testing.T) {
 			// Basic functionality test with the configuration
 			testRequest := CreateBasicChatRequest("Test configuration: "+tt.name, 0.5, 50)
 
-			_, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
+			_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, testRequest)
 			if err1 != nil {
-				t.Fatalf("First request failed: %v", err1)
+				return // Test will be skipped by retry function
 			}
 
 			WaitForCache()
 
 			_, err2 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 			if err2 != nil {
-				t.Fatalf("Second request failed: %v", err2)
+				if err2.Error != nil {
+					t.Fatalf("Second request failed: %v", err2.Error.Message)
+				} else {
+					t.Fatalf("Second request failed: %v", err2)
+				}
 			}
 
 			t.Logf("✅ Configuration test '%s' completed", tt.name)

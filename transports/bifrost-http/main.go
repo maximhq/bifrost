@@ -2,7 +2,7 @@
 // for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
 //
 // The HTTP service provides the following main endpoints:
-//   - /v1/text/completions: For text completion requests
+//   - /v1/completions: For text completion requests
 //   - /v1/chat/completions: For chat completion requests
 //   - /v1/mcp/tool/execute: For MCP tool execution requests
 //   - /providers/*: For provider configuration management
@@ -54,36 +54,14 @@ package main
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"mime"
-	"net"
 	"os"
-	"os/signal"
-	"path"
-	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
-	"time"
 
-	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/pricing"
-	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/plugins/semanticcache"
-	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 //go:embed all:ui
@@ -92,24 +70,7 @@ var uiContent embed.FS
 var Version string
 
 var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-
-// Command line flags
-var (
-	port   string // Port to run the server on
-	host   string // Host to bind the server to
-	appDir string // Application data directory
-
-	logLevel       string // Logger level: debug, info, warn, error
-	logOutputStyle string // Logger output style: json, pretty
-)
-
-const (
-	DefaultHost           = "localhost"
-	DefaultPort           = "8080"
-	DefaultAppDir         = "./bifrost-data"
-	DefaultLogLevel       = string(schemas.LogLevelInfo)
-	DefaultLogOutputStyle = string(schemas.LoggerOutputTypeJSON)
-)
+var server *handlers.BifrostHTTPServer
 
 // init initializes command line flags and validates required configuration.
 // It sets up the following flags:
@@ -123,6 +84,7 @@ func init() {
 	if Version == "" {
 		Version = "v1.0.0"
 	}
+	// Printing version
 	versionLine := fmt.Sprintf("║%s%s%s║", strings.Repeat(" ", (61-2-len(Version))/2), Version, strings.Repeat(" ", (61-2-len(Version)+1)/2))
 	// Welcome to bifrost!
 	fmt.Printf(`
@@ -144,450 +106,40 @@ func init() {
 ╚═══════════════════════════════════════════════════════════╝
 
 `, versionLine)
-	handlers.SetVersion(Version)
 	// Set default host from environment variable or use localhost
 	defaultHost := os.Getenv("BIFROST_HOST")
 	if defaultHost == "" {
-		defaultHost = DefaultHost
+		defaultHost = handlers.DefaultHost
 	}
-
-	flag.StringVar(&port, "port", DefaultPort, "Port to run the server on")
-	flag.StringVar(&host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
-	flag.StringVar(&appDir, "app-dir", DefaultAppDir, "Application data directory (contains config.json and logs)")
-	flag.StringVar(&logLevel, "log-level", DefaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
-	flag.StringVar(&logOutputStyle, "log-style", DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
+	// Initializing server
+	server = handlers.NewBifrostHTTPServer(Version, uiContent)
+	// Updating server properties from flags
+	flag.StringVar(&server.Port, "port", handlers.DefaultPort, "Port to run the server on")
+	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
+	flag.StringVar(&server.AppDir, "app-dir", handlers.DefaultAppDir, "Application data directory (contains config.json and logs)")
+	flag.StringVar(&server.LogLevel, "log-level", handlers.DefaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
+	flag.StringVar(&server.LogOutputStyle, "log-style", handlers.DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
 	flag.Parse()
-
 	// Configure logger from flags
-	logger.SetOutputType(schemas.LoggerOutputType(logOutputStyle))
-	logger.SetLevel(schemas.LogLevel(logLevel))
-}
-
-// registerCollectorSafely attempts to register a Prometheus collector,
-// handling the case where it may already be registered.
-// It logs any errors that occur during registration, except for AlreadyRegisteredError.
-func registerCollectorSafely(collector prometheus.Collector) {
-	if err := prometheus.Register(collector); err != nil {
-		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-			logger.Error("failed to register prometheus collector: %v", err)
-		}
-	}
-}
-
-// corsMiddleware handles CORS headers for localhost and configured allowed origins
-func corsMiddleware(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		origin := string(ctx.Request.Header.Peek("Origin"))
-
-		// Check if origin is allowed (localhost always allowed + configured origins)
-		if handlers.IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins) {
-			ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
-		}
-
-		ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-		ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
-		ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
-
-		// Handle preflight OPTIONS requests
-		if string(ctx.Method()) == "OPTIONS" {
-			ctx.SetStatusCode(fasthttp.StatusOK)
-			return
-		}
-
-		next(ctx)
-	}
-}
-
-// uiHandler serves the embedded Next.js UI files
-func uiHandler(ctx *fasthttp.RequestCtx) {
-	// Get the request path
-	requestPath := string(ctx.Path())
-
-	// Clean the path to prevent directory traversal
-	cleanPath := path.Clean(requestPath)
-
-	// Handle .txt files (Next.js RSC payload files) - map from /{page}.txt to /{page}/index.txt
-	if strings.HasSuffix(cleanPath, ".txt") {
-		// Remove .txt extension and add /index.txt
-		basePath := strings.TrimSuffix(cleanPath, ".txt")
-		if basePath == "/" || basePath == "" {
-			basePath = "/index"
-		}
-		cleanPath = basePath + "/index.txt"
-	}
-
-	// Remove leading slash and add ui prefix
-	if cleanPath == "/" {
-		cleanPath = "ui/index.html"
-	} else {
-		cleanPath = "ui" + cleanPath
-	}
-
-	// Check if this is a static asset request (has file extension)
-	hasExtension := strings.Contains(filepath.Base(cleanPath), ".")
-
-	// Try to read the file from embedded filesystem
-	data, err := uiContent.ReadFile(cleanPath)
-	if err != nil {
-
-		// If it's a static asset (has extension) and not found, return 404
-		if hasExtension {
-			ctx.SetStatusCode(fasthttp.StatusNotFound)
-			ctx.SetBodyString("404 - Static asset not found: " + requestPath)
-			return
-		}
-
-		// For routes without extensions (SPA routing), try {path}/index.html first
-		if !hasExtension {
-			indexPath := cleanPath + "/index.html"
-			data, err = uiContent.ReadFile(indexPath)
-			if err == nil {
-				cleanPath = indexPath
-			} else {
-				// If that fails, serve root index.html as fallback
-				data, err = uiContent.ReadFile("ui/index.html")
-				if err != nil {
-					ctx.SetStatusCode(fasthttp.StatusNotFound)
-					ctx.SetBodyString("404 - File not found")
-					return
-				}
-				cleanPath = "ui/index.html"
-			}
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusNotFound)
-			ctx.SetBodyString("404 - File not found")
-			return
-		}
-	}
-
-	// Set content type based on file extension
-	ext := filepath.Ext(cleanPath)
-	contentType := mime.TypeByExtension(ext)
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	ctx.SetContentType(contentType)
-
-	// Set cache headers for static assets
-	if strings.HasPrefix(cleanPath, "ui/_next/static/") {
-		ctx.Response.Header.Set("Cache-Control", "public, max-age=31536000, immutable")
-	} else if ext == ".html" {
-		ctx.Response.Header.Set("Cache-Control", "no-cache")
-	} else {
-		ctx.Response.Header.Set("Cache-Control", "public, max-age=3600")
-	}
-
-	// Send the file content
-	ctx.SetBody(data)
-}
-
-// GetDefaultConfigDir returns the OS-specific default configuration directory for Bifrost.
-// This follows standard conventions:
-// - Linux/macOS: ~/.config/bifrost
-// - Windows: %APPDATA%\bifrost
-// - If appDir is provided (non-empty), it returns that instead
-func getDefaultConfigDir(appDir string) string {
-	// If appDir is provided, use it directly
-	if appDir != "" && appDir != "./bifrost-data" {
-		return appDir
-	}
-
-	// Get OS-specific config directory
-	var configDir string
-	switch runtime.GOOS {
-	case "windows":
-		// Windows: %APPDATA%\bifrost
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			configDir = filepath.Join(appData, "bifrost")
-		} else {
-			// Fallback to user home directory
-			if homeDir, err := os.UserHomeDir(); err == nil {
-				configDir = filepath.Join(homeDir, "AppData", "Roaming", "bifrost")
-			}
-		}
-	default:
-		// Linux, macOS and other Unix-like systems: ~/.config/bifrost
-		if homeDir, err := os.UserHomeDir(); err == nil {
-			configDir = filepath.Join(homeDir, ".config", "bifrost")
-		}
-	}
-
-	// If we couldn't determine the config directory, fall back to current directory
-	if configDir == "" {
-		configDir = "./bifrost-data"
-	}
-
-	return configDir
+	logger.SetOutputType(schemas.LoggerOutputType(server.LogOutputStyle))
+	logger.SetLevel(schemas.LogLevel(server.LogLevel))
+	// Setting up logger
+	handlers.SetLogger(logger)
+	
 }
 
 // main is the entry point of the application.
-// It:
-// 1. Initializes Prometheus collectors for monitoring
-// 2. Reads and parses configuration from the specified config file
-// 3. Initializes the Bifrost client with the configuration
-// 4. Sets up HTTP routes for text and chat completions
-// 5. Starts the HTTP server on the specified host and port
-//
-// The server exposes the following endpoints:
-//   - POST /v1/text/completions: For text completion requests
-//   - POST /v1/chat/completions: For chat completion requests
-//   - GET /metrics: For Prometheus metrics
 func main() {
 	ctx := context.Background()
-	configDir := getDefaultConfigDir(appDir)
-	// Ensure app directory exists
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		logger.Fatal("failed to create app directory %s: %v", configDir, err)
-	}
-
-	// Register Prometheus collectors
-	registerCollectorSafely(collectors.NewGoCollector())
-	registerCollectorSafely(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-
-	// Initialize high-performance configuration store with dedicated database
-	config, err := lib.LoadConfig(ctx, configDir)
+	err := server.Bootstrap(ctx)
 	if err != nil {
-		logger.Fatal("failed to load config %v", err)
-	}
-
-	// Initialize pricing manager
-	pricingManager, err := pricing.Init(config.ConfigStore, logger)
-	if err != nil {
-		logger.Error("failed to initialize pricing manager: %v", err)
-	}
-
-	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
-	// The account interface now benefits from ultra-fast config access times via in-memory storage
-	account := lib.NewBaseAccount(config)
-
-	// Initialize plugins
-	loadedPlugins := []schemas.Plugin{}
-
-	telemetry.InitPrometheusMetrics(config.ClientConfig.PrometheusLabels)
-	logger.Debug("prometheus Go/Process collectors registered.")
-
-	promPlugin := telemetry.Init(pricingManager, logger)
-
-	loadedPlugins = append(loadedPlugins, promPlugin)
-
-	var loggingPlugin *logging.LoggerPlugin
-	var loggingHandler *handlers.LoggingHandler
-	var wsHandler *handlers.WebSocketHandler
-
-	if config.ClientConfig.EnableLogging && config.LogsStore != nil {
-		// Use dedicated logs database with high-scale optimizations
-		loggingPlugin, err = logging.Init(logger, config.LogsStore, pricingManager)
-		if err != nil {
-			logger.Fatal("failed to initialize logging plugin: %v", err)
-		}
-
-		loadedPlugins = append(loadedPlugins, loggingPlugin)
-		loggingHandler = handlers.NewLoggingHandler(loggingPlugin.GetPluginLogManager(), logger)
-		wsHandler = handlers.NewWebSocketHandler(loggingPlugin.GetPluginLogManager(), logger, config.ClientConfig.AllowedOrigins)
-	}
-
-	var governancePlugin *governance.GovernancePlugin
-	var governanceHandler *handlers.GovernanceHandler
-
-	if config.ClientConfig.EnableGovernance {
-		// Initialize governance plugin
-		governancePlugin, err = governance.Init(ctx, &governance.Config{
-			IsVkMandatory: &config.ClientConfig.EnforceGovernanceHeader,
-		}, logger, config.ConfigStore, config.GovernanceConfig, pricingManager)
-		if err != nil {
-			logger.Error("failed to initialize governance plugin: %s", err.Error())
-		} else {
-			loadedPlugins = append(loadedPlugins, governancePlugin)
-
-			governanceHandler, err = handlers.NewGovernanceHandler(governancePlugin, config.ConfigStore, logger)
-			if err != nil {
-				logger.Error("failed to initialize governance handler: %s", err.Error())
-			}
-		}
-	}
-
-	// Currently we support first party plugins only
-	// Eventually same flow will be used for third party plugins
-	for _, plugin := range config.Plugins {
-		if !plugin.Enabled {
- 			logger.Debug("plugin %s is disabled, skipping initialization", plugin.Name)
-			continue
-		}
-		switch strings.ToLower(plugin.Name) {
-		case maxim.PluginName:
-
-			var maximConfig maxim.Config
-			if plugin.Config != nil {
-				configBytes, err := json.Marshal(plugin.Config)
-				if err != nil {
-					logger.Fatal("failed to marshal maxim config: %v", err)
-				}
-				if err := json.Unmarshal(configBytes, &maximConfig); err != nil {
-					logger.Fatal("failed to unmarshal maxim config: %v", err)
-				}
-			}
-
-			maximPlugin, err := maxim.Init(maximConfig)
-			if err != nil {
-				logger.Warn("failed to initialize maxim plugin: %v", err)
-			} else {
-				loadedPlugins = append(loadedPlugins, maximPlugin)
-			}
-		case semanticcache.PluginName:
-			if config.VectorStore == nil {
-				logger.Error("vector store is required to initialize semantic cache plugin, skipping initialization")
-				continue
-			}
-
-			// Convert config map to semanticcache.Config struct
-			var semCacheConfig semanticcache.Config
-			if plugin.Config != nil {
-				configBytes, err := json.Marshal(plugin.Config)
-				if err != nil {
-					logger.Fatal("failed to marshal semantic cache config: %v", err)
-				}
-				if err := json.Unmarshal(configBytes, &semCacheConfig); err != nil {
-					logger.Fatal("failed to unmarshal semantic cache config: %v", err)
-				}
-			}
-
-			semanticCachePlugin, err := semanticcache.Init(ctx, semCacheConfig, logger, config.VectorStore)
-			if err != nil {
-				logger.Error("failed to initialize semantic cache: %v", err)
-			} else {
-				loadedPlugins = append(loadedPlugins, semanticCachePlugin)
-				logger.Info("successfully initialized semantic cache")
-			}
-		}
-	}
-
-	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account:            account,
-		InitialPoolSize:    config.ClientConfig.InitialPoolSize,
-		DropExcessRequests: config.ClientConfig.DropExcessRequests,
-		Plugins:            loadedPlugins,
-		MCPConfig:          config.MCPConfig,
-		Logger:             logger,
-	})
-	if err != nil {
-		logger.Fatal("failed to initialize bifrost: %v", err)
-	}
-
-	config.SetBifrostClient(client)
-
-	// Initialize handlers
-	providerHandler := handlers.NewProviderHandler(config, client, logger)
-	completionHandler := handlers.NewCompletionHandler(client, config, logger)
-	mcpHandler := handlers.NewMCPHandler(client, logger, config)
-	integrationHandler := handlers.NewIntegrationHandler(client, config)
-	configHandler := handlers.NewConfigHandler(client, logger, config)
-	pluginsHandler := handlers.NewPluginsHandler(config.ConfigStore, logger)
-
-	var cacheHandler *handlers.CacheHandler
-	for _, plugin := range loadedPlugins {
-		if plugin.GetName() == semanticcache.PluginName {
-			cacheHandler = handlers.NewCacheHandler(plugin, logger)
-		}
-	}
-
-	// Set up WebSocket callback for real-time log updates
-	if wsHandler != nil && loggingPlugin != nil {
-		loggingPlugin.SetLogCallback(wsHandler.BroadcastLogUpdate)
-		// Start WebSocket heartbeat
-		wsHandler.StartHeartbeat()
-	}
-
-	r := router.New()
-
-	// Register all handler routes
-	providerHandler.RegisterRoutes(r)
-	completionHandler.RegisterRoutes(r)
-	mcpHandler.RegisterRoutes(r)
-	integrationHandler.RegisterRoutes(r)
-	configHandler.RegisterRoutes(r)
-	pluginsHandler.RegisterRoutes(r)
-	if cacheHandler != nil {
-		cacheHandler.RegisterRoutes(r)
-	}
-	if governanceHandler != nil {
-		governanceHandler.RegisterRoutes(r)
-	}
-	if loggingHandler != nil {
-		loggingHandler.RegisterRoutes(r)
-	}
-	if wsHandler != nil {
-		wsHandler.RegisterRoutes(r)
-	}
-
-	// Add Prometheus /metrics endpoint
-	r.GET("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()))
-
-	// Add UI routes - serve the embedded Next.js build
-	r.GET("/", uiHandler)
-	r.GET("/{filepath:*}", uiHandler)
-
-	r.NotFound = func(ctx *fasthttp.RequestCtx) {
-		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()), logger)
-	}
-
-	// Apply CORS middleware to all routes
-	corsHandler := corsMiddleware(config, r.Handler)
-
-	// Create fasthttp server instance
-	server := &fasthttp.Server{
-		Handler:            corsHandler,
-		MaxRequestBodySize: config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
-	}
-
-	// Create channels for signal and error handling
-	sigChan := make(chan os.Signal, 1)
-	errChan := make(chan error, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Start server in a goroutine
-	serverAddr := net.JoinHostPort(host, port)
-	go func() {
-		logger.Info("successfully started bifrost, serving UI on http://%s:%s", host, port)
-		if err := server.ListenAndServe(serverAddr); err != nil {
-			errChan <- err
-		}
-	}()
-
-	// Wait for either termination signal or server error
-	select {
-	case sig := <-sigChan:
-		logger.Info("received signal %v, initiating graceful shutdown...", sig)
-		// Create shutdown context with timeout
-		shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		// Perform graceful shutdown
-		if err := server.Shutdown(); err != nil {
-			logger.Error("error during graceful shutdown: %v", err)
-		} else {
-			logger.Info("server gracefully shutdown")
-		}
-
-		// Wait for shutdown to complete or timeout
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			// Cleanup resources
-			if wsHandler != nil {
-				wsHandler.Stop()
-			}
-			client.Shutdown()
-		}()
-
-		select {
-		case <-done:
-			logger.Info("cleanup completed")
-		case <-shutdownCtx.Done():
-			logger.Warn("cleanup timed out after 30 seconds")
-		}
-
-	case err := <-errChan:
-		logger.Error("server failed to start: %v", err)
+		logger.Error("failed to bootstrap server: %v", err)
 		os.Exit(1)
 	}
+	err = server.Start()
+	if err != nil {
+		logger.Error("failed to start server: %v", err)
+		os.Exit(1)
+	}
+	logger.Info("🏁 server stopped")
 }

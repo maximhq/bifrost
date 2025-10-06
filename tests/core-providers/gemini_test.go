@@ -24,6 +24,7 @@ func TestGemini(t *testing.T) {
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:             schemas.Gemini,
 		ChatModel:            "gemini-2.0-flash",
+		VisionModel:          "gemini-2.0-flash",
 		TextModel:            "", // Gemini doesn't support text completion
 		EmbeddingModel:       "text-embedding-004",
 		TranscriptionModel:   "gemini-2.5-flash",
@@ -41,7 +42,6 @@ func TestGemini(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			Embedding:             true,
 			Transcription:         true,
 			TranscriptionStream:   true,

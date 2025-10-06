@@ -8,10 +8,11 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 // insertInitialLogEntry creates a new log entry in the database using GORM
-func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Time, data *InitialLogData) error {
+func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID string, parentRequestID string, timestamp time.Time, data *InitialLogData) error {
 	entry := &logstore.Log{
 		ID:        requestID,
 		Timestamp: timestamp,
@@ -29,7 +30,11 @@ func (p *LoggerPlugin) insertInitialLogEntry(requestID string, timestamp time.Ti
 		TranscriptionInputParsed: data.TranscriptionInput,
 	}
 
-	return p.store.Create(entry)
+	if parentRequestID != "" {
+		entry.ParentRequestID = &parentRequestID
+	}
+
+	return p.store.Create(ctx, entry)
 }
 
 // updateLogEntry updates an existing log entry using GORM
@@ -133,22 +138,22 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, tim
 			updates["error_details"] = tempEntry.ErrorDetails
 		}
 	}
-	return p.store.Update(requestID, updates)
+	return p.store.Update(ctx, requestID, updates)
 }
 
-// processStreamUpdate handles streaming updates using GORM
-func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string, timestamp time.Time, cacheDebug *schemas.BifrostCacheDebug, data *StreamUpdateData, isFinalChunk bool) error {
+// updateStreamingLogEntry handles streaming updates using GORM
+func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID string, timestamp time.Time, cacheDebug *schemas.BifrostCacheDebug, streamResponse *streaming.ProcessedStreamResponse, isFinalChunk bool) error {
+	p.logger.Debug("[logging] updating streaming log entry %s", requestID)
 	updates := make(map[string]interface{})
-
 	// Handle error case first
-	if data.ErrorDetails != nil {
+	if streamResponse.Data.ErrorDetails != nil {
 		latency, err := p.calculateLatency(ctx, requestID, timestamp)
 		if err != nil {
 			// If we can't get created_at, just update status and error
 			tempEntry := &logstore.Log{}
-			tempEntry.ErrorDetailsParsed = data.ErrorDetails
+			tempEntry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
 			if err := tempEntry.SerializeFields(); err == nil {
-				return p.store.Update(requestID, map[string]interface{}{
+				return p.store.Update(ctx, requestID, map[string]interface{}{
 					"status":        "error",
 					"error_details": tempEntry.ErrorDetails,
 					"timestamp":     timestamp,
@@ -158,11 +163,11 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 		}
 
 		tempEntry := &logstore.Log{}
-		tempEntry.ErrorDetailsParsed = data.ErrorDetails
+		tempEntry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
 		if err := tempEntry.SerializeFields(); err != nil {
 			return fmt.Errorf("failed to serialize error details: %w", err)
 		}
-		return p.store.Update(requestID, map[string]interface{}{
+		return p.store.Update(ctx, requestID, map[string]interface{}{
 			"status":        "error",
 			"latency":       latency,
 			"timestamp":     timestamp,
@@ -175,71 +180,42 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 	updates["timestamp"] = timestamp
 
 	// Calculate latency when stream finishes
-	var needsLatency bool
-	var latency float64
 	tempEntry := &logstore.Log{}
 
-	if isFinalChunk {
-		// Stream is finishing, calculate latency
-		var err error
-		latency, err = p.calculateLatency(ctx, requestID, timestamp)
-		if err != nil {
-			return fmt.Errorf("failed to get created_at for latency calculation: %w", err)
-		}
-		needsLatency = true
-	}
-
-	// Add latency if this is the final chunk
-	if needsLatency {
-		updates["latency"] = latency
-	}
+	updates["latency"] = streamResponse.Data.Latency
 
 	// Update model if provided
-	if data.Model != "" {
-		updates["model"] = data.Model
+	if streamResponse.Data.Model != "" {
+		updates["model"] = streamResponse.Data.Model
 	}
 
 	// Update object type if provided
-	if data.Object != "" {
-		updates["object_type"] = data.Object // Note: using object_type for database column
+	if streamResponse.Data.Object != "" {
+		updates["object_type"] = streamResponse.Data.Object // Note: using object_type for database column
 	}
 
 	// Update token usage if provided
-	if data.TokenUsage != nil {
-		tempEntry.TokenUsageParsed = data.TokenUsage
+	if streamResponse.Data.TokenUsage != nil {
+		tempEntry.TokenUsageParsed = streamResponse.Data.TokenUsage
 		if err := tempEntry.SerializeFields(); err == nil {
 			updates["token_usage"] = tempEntry.TokenUsage
-			updates["prompt_tokens"] = data.TokenUsage.PromptTokens
-			updates["completion_tokens"] = data.TokenUsage.CompletionTokens
-			updates["total_tokens"] = data.TokenUsage.TotalTokens
+			updates["prompt_tokens"] = streamResponse.Data.TokenUsage.PromptTokens
+			updates["completion_tokens"] = streamResponse.Data.TokenUsage.CompletionTokens
+			updates["total_tokens"] = streamResponse.Data.TokenUsage.TotalTokens
 		}
 	}
 
 	// Handle cost from pricing plugin
-	if data.Cost != nil {
-		updates["cost"] = *data.Cost
+	if streamResponse.Data.Cost != nil {
+		updates["cost"] = *streamResponse.Data.Cost
 	}
-
 	// Handle finish reason - if present, mark as complete
 	if isFinalChunk {
 		updates["status"] = "success"
 	}
-
-	// Process delta content and tool calls if present
-	if data.Delta != nil {
-		deltaUpdates, err := p.prepareDeltaUpdates(requestID, data.Delta)
-		if err != nil {
-			return fmt.Errorf("failed to prepare delta updates: %w", err)
-		}
-		// Merge delta updates into main updates
-		for key, value := range deltaUpdates {
-			updates[key] = value
-		}
-	}
-
 	// Handle transcription output from stream updates
-	if data.TranscriptionOutput != nil {
-		tempEntry.TranscriptionOutputParsed = data.TranscriptionOutput
+	if streamResponse.Data.TranscriptionOutput != nil {
+		tempEntry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
 		// Here we just log error but move one vs breaking the entire logging flow
 		if err := tempEntry.SerializeFields(); err != nil {
 			p.logger.Warn("failed to serialize transcription output: %v", err)
@@ -247,7 +223,15 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 			updates["transcription_output"] = tempEntry.TranscriptionOutput
 		}
 	}
-
+	// Handle speech output from stream updates
+	if streamResponse.Data.AudioOutput != nil {
+		tempEntry.SpeechOutputParsed = streamResponse.Data.AudioOutput
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize speech output: %v", err)
+		} else {
+			updates["speech_output"] = tempEntry.SpeechOutput
+		}
+	}
 	// Handle cache debug
 	if cacheDebug != nil {
 		tempEntry.CacheDebugParsed = cacheDebug
@@ -257,12 +241,28 @@ func (p *LoggerPlugin) processStreamUpdate(ctx context.Context, requestID string
 			updates["cache_debug"] = tempEntry.CacheDebug
 		}
 	}
-
+	if streamResponse.Data.ToolCalls != nil {
+		tempEntry.ToolCallsParsed = streamResponse.Data.ToolCalls
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize tool calls: %v", err)
+		} else {
+			updates["tool_calls"] = tempEntry.ToolCalls
+		}
+	}
+	// Create content summary
+	if streamResponse.Data.OutputMessage != nil {
+		tempEntry.OutputMessageParsed = streamResponse.Data.OutputMessage
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize output message: %v", err)
+		} else {
+			updates["output_message"] = tempEntry.OutputMessage
+			updates["content_summary"] = tempEntry.ContentSummary
+		}
+	}
 	// Only perform update if there's something to update
 	if len(updates) > 0 {
-		return p.store.Update(requestID, updates)
+		return p.store.Update(ctx, requestID, updates)
 	}
-
 	return nil
 }
 
@@ -275,7 +275,7 @@ func (p *LoggerPlugin) calculateLatency(ctx context.Context, requestID string, c
 	var originalEntry *logstore.Log
 	err := retryOnNotFound(ctx, func() error {
 		var opErr error
-		originalEntry, opErr = p.store.FindFirst(map[string]interface{}{"id": requestID}, "created_at")
+		originalEntry, opErr = p.store.FindFirst(ctx, map[string]interface{}{"id": requestID}, "created_at")
 		return opErr
 	})
 	if err != nil {
@@ -284,97 +284,9 @@ func (p *LoggerPlugin) calculateLatency(ctx context.Context, requestID string, c
 	return float64(currentTime.Sub(originalEntry.CreatedAt).Nanoseconds()) / 1e6, nil
 }
 
-// prepareDeltaUpdates prepares updates for streaming delta content without executing them
-func (p *LoggerPlugin) prepareDeltaUpdates(requestID string, delta *schemas.BifrostStreamDelta) (map[string]interface{}, error) {
-	// Only fetch existing content if we have content or tool calls to append
-	if (delta.Content == nil || *delta.Content == "") && len(delta.ToolCalls) == 0 && delta.Refusal == nil {
-		return map[string]interface{}{}, nil
-	}
-
-	// Get current entry
-	var currentEntry *logstore.Log
-	currentEntry, err := p.store.FindFirst(map[string]interface{}{"id": requestID}, "output_message")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get existing entry: %w", err)
-	}
-
-	// Parse existing message or create new one
-	var outputMessage *schemas.BifrostMessage
-	if currentEntry.OutputMessage != "" {
-		outputMessage = &schemas.BifrostMessage{}
-		// Attempt to deserialize; use parsed message only if successful
-		if err := currentEntry.DeserializeFields(); err == nil && currentEntry.OutputMessageParsed != nil {
-			outputMessage = currentEntry.OutputMessageParsed
-		} else {
-			// Create new message if parsing fails
-			outputMessage = &schemas.BifrostMessage{
-				Role:    schemas.ModelChatMessageRoleAssistant,
-				Content: schemas.MessageContent{},
-			}
-		}
-	} else {
-		// Create new message
-		outputMessage = &schemas.BifrostMessage{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{},
-		}
-	}
-
-	// Handle role (usually in first chunk)
-	if delta.Role != nil {
-		outputMessage.Role = schemas.ModelChatMessageRole(*delta.Role)
-	}
-
-	// Append content
-	if delta.Content != nil && *delta.Content != "" {
-		p.appendContentToMessage(outputMessage, *delta.Content)
-	}
-
-	// Handle refusal
-	if delta.Refusal != nil && *delta.Refusal != "" {
-		if outputMessage.AssistantMessage == nil {
-			outputMessage.AssistantMessage = &schemas.AssistantMessage{}
-		}
-		if outputMessage.AssistantMessage.Refusal == nil {
-			outputMessage.AssistantMessage.Refusal = delta.Refusal
-		} else {
-			*outputMessage.AssistantMessage.Refusal += *delta.Refusal
-		}
-	}
-
-	// Accumulate tool calls
-	if len(delta.ToolCalls) > 0 {
-		p.accumulateToolCallsInMessage(outputMessage, delta.ToolCalls)
-	}
-
-	// Update the database with new content
-	tempEntry := &logstore.Log{
-		OutputMessageParsed: outputMessage,
-	}
-	if outputMessage.AssistantMessage != nil && outputMessage.AssistantMessage.ToolCalls != nil {
-		tempEntry.ToolCallsParsed = outputMessage.AssistantMessage.ToolCalls
-	}
-
-	if err := tempEntry.SerializeFields(); err != nil {
-		return nil, fmt.Errorf("failed to serialize fields: %w", err)
-	}
-
-	updates := map[string]interface{}{
-		"output_message":  tempEntry.OutputMessage,
-		"content_summary": tempEntry.ContentSummary,
-	}
-
-	// Also update tool_calls field for backward compatibility
-	if tempEntry.ToolCalls != "" {
-		updates["tool_calls"] = tempEntry.ToolCalls
-	}
-
-	return updates, nil
-}
-
 // getLogEntry retrieves a log entry by ID using GORM
-func (p *LoggerPlugin) getLogEntry(requestID string) (*logstore.Log, error) {
-	entry, err := p.store.FindFirst(map[string]interface{}{"id": requestID})
+func (p *LoggerPlugin) getLogEntry(ctx context.Context, requestID string) (*logstore.Log, error) {
+	entry, err := p.store.FindFirst(ctx, map[string]interface{}{"id": requestID})
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +294,7 @@ func (p *LoggerPlugin) getLogEntry(requestID string) (*logstore.Log, error) {
 }
 
 // SearchLogs searches logs with filters and pagination using GORM
-func (p *LoggerPlugin) SearchLogs(filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error) {
+func (p *LoggerPlugin) SearchLogs(ctx context.Context, filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	// Set default pagination if not provided
 	if pagination.Limit == 0 {
 		pagination.Limit = 50
@@ -394,14 +306,14 @@ func (p *LoggerPlugin) SearchLogs(filters logstore.SearchFilters, pagination log
 		pagination.Order = "desc"
 	}
 	// Build base query with all filters applied
-	return p.store.SearchLogs(filters, pagination)
+	return p.store.SearchLogs(ctx, filters, pagination)
 }
 
 // GetAvailableModels returns all unique models from logs
-func (p *LoggerPlugin) GetAvailableModels() []string {
+func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
 	modelSet := make(map[string]bool)
 	// Query distinct models from logs
-	result, err := p.store.FindAll("model IS NOT NULL AND model != ''", "model")
+	result, err := p.store.FindAll(ctx, "model IS NOT NULL AND model != ''", "model")
 	if err != nil {
 		p.logger.Error("failed to get available models: %w", err)
 		return []string{}

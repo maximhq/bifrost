@@ -54,8 +54,8 @@ for plugin_dir in plugins/*/; do
     if [[ "$VERSION" == *"-"* ]]; then
       # VERSION has prerelease, so include all versions but prefer stable
       ALL_TAGS=$(git tag -l "plugins/${plugin_name}/v*" | sort -V)
-      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-')
-      PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-')
+      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
+      PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
 
       if [ -n "$STABLE_TAGS" ]; then
         # Get the highest stable version
@@ -68,7 +68,7 @@ for plugin_dir in plugins/*/; do
       fi
     else
       # VERSION has no prerelease, so only consider stable releases
-      LATEST_PLUGIN_TAG=$(git tag -l "plugins/${plugin_name}/v*" | grep -v '\-' | sort -V | tail -1)
+      LATEST_PLUGIN_TAG=$(git tag -l "plugins/${plugin_name}/v*" | grep -v '\-' | sort -V | tail -1 || true)
       echo "latest plugin tag (stable only): $LATEST_PLUGIN_TAG"
     fi
 

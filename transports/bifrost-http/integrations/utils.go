@@ -53,6 +53,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -150,348 +151,6 @@ type RouteConfig struct {
 	StreamConfig           *StreamConfig       // Optional: Streaming configuration (if nil, streaming not supported)
 	PreCallback            PreRequestCallback  // Optional: called after parsing but before Bifrost processing
 	PostCallback           PostRequestCallback // Optional: called after request processing
-}
-
-// DefaultParameters defines the common parameters that most providers support
-var DefaultParameters = map[string]bool{
-	"max_tokens":  true,
-	"temperature": true,
-	"top_p":       true,
-	"stream":      true,
-	"tools":       true,
-	"tool_choice": true,
-}
-
-// ProviderParameterSchema defines which parameters are valid for each provider
-type ProviderParameterSchema struct {
-	ValidParams map[string]bool // Parameters that are supported by this provider
-}
-
-// ParameterValidator validates and filters parameters for specific providers
-type ParameterValidator struct {
-	schemas map[schemas.ModelProvider]ProviderParameterSchema
-}
-
-// NewParameterValidator creates a new validator with provider schemas
-func NewParameterValidator() *ParameterValidator {
-	return &ParameterValidator{
-		schemas: buildProviderSchemas(),
-	}
-}
-
-// ValidateAndFilterParams filters out invalid parameters for the target provider
-func (v *ParameterValidator) ValidateAndFilterParams(
-	provider schemas.ModelProvider,
-	params *schemas.ModelParameters,
-) *schemas.ModelParameters {
-	if params == nil {
-		return nil
-	}
-
-	schema, exists := v.schemas[provider]
-	if !exists {
-		// Unknown provider, return all params (fallback behavior)
-		return params
-	}
-
-	filteredParams := &schemas.ModelParameters{
-		ExtraParams: make(map[string]interface{}),
-	}
-
-	// Filter standard parameters
-	if params.MaxTokens != nil && schema.ValidParams["max_tokens"] {
-		filteredParams.MaxTokens = params.MaxTokens
-	}
-
-	if params.Temperature != nil && schema.ValidParams["temperature"] {
-		filteredParams.Temperature = params.Temperature
-	}
-
-	if params.TopP != nil && schema.ValidParams["top_p"] {
-		filteredParams.TopP = params.TopP
-	}
-
-	if params.TopK != nil && schema.ValidParams["top_k"] {
-		filteredParams.TopK = params.TopK
-	}
-
-	if params.PresencePenalty != nil && schema.ValidParams["presence_penalty"] {
-		filteredParams.PresencePenalty = params.PresencePenalty
-	}
-
-	if params.FrequencyPenalty != nil && schema.ValidParams["frequency_penalty"] {
-		filteredParams.FrequencyPenalty = params.FrequencyPenalty
-	}
-
-	if params.StopSequences != nil && schema.ValidParams["stop_sequences"] {
-		filteredParams.StopSequences = params.StopSequences
-	}
-
-	if params.Tools != nil && schema.ValidParams["tools"] {
-		filteredParams.Tools = params.Tools
-	}
-
-	if params.ToolChoice != nil && schema.ValidParams["tool_choice"] {
-		filteredParams.ToolChoice = params.ToolChoice
-	}
-
-	if params.User != nil && schema.ValidParams["user"] {
-		filteredParams.User = params.User
-	}
-
-	if params.EncodingFormat != nil && schema.ValidParams["encoding_format"] {
-		filteredParams.EncodingFormat = params.EncodingFormat
-	}
-
-	if params.Dimensions != nil && schema.ValidParams["dimensions"] {
-		filteredParams.Dimensions = params.Dimensions
-	}
-
-	// Parallel tool calls
-	if params.ParallelToolCalls != nil && schema.ValidParams["parallel_tool_calls"] {
-		filteredParams.ParallelToolCalls = params.ParallelToolCalls
-	}
-
-	// Filter extra parameters
-	for key, value := range params.ExtraParams {
-		if schema.ValidParams[key] {
-			filteredParams.ExtraParams[key] = value
-		}
-	}
-
-	// Check if all standard pointer fields are nil and ExtraParams is empty
-	if hasNoValidFields(filteredParams) && len(filteredParams.ExtraParams) == 0 {
-		return nil
-	}
-
-	return filteredParams
-}
-
-// hasNoValidFields checks if all standard pointer fields in ModelParameters are nil
-func hasNoValidFields(params *schemas.ModelParameters) bool {
-	return params.ToolChoice == nil &&
-		params.Tools == nil &&
-		params.Temperature == nil &&
-		params.TopP == nil &&
-		params.TopK == nil &&
-		params.MaxTokens == nil &&
-		params.StopSequences == nil &&
-		params.PresencePenalty == nil &&
-		params.FrequencyPenalty == nil &&
-		params.ParallelToolCalls == nil &&
-		params.EncodingFormat == nil &&
-		params.Dimensions == nil &&
-		params.User == nil
-}
-
-// buildProviderSchemas defines which parameters are valid for each provider
-func buildProviderSchemas() map[schemas.ModelProvider]ProviderParameterSchema {
-	// Define parameter groups to avoid repetition
-	openAIParams := map[string]bool{
-		"frequency_penalty":       true,
-		"presence_penalty":        true,
-		"n":                       true,
-		"stop":                    true,
-		"logprobs":                true,
-		"top_logprobs":            true,
-		"logit_bias":              true,
-		"seed":                    true,
-		"user":                    true,
-		"response_format":         true,
-		"parallel_tool_calls":     true,
-		"max_completion_tokens":   true,
-		"metadata":                true,
-		"modalities":              true,
-		"prediction":              true,
-		"reasoning_effort":        true,
-		"service_tier":            true,
-		"store":                   true,
-		"speed":                   true,
-		"language":                true,
-		"prompt":                  true,
-		"include":                 true,
-		"timestamp_granularities": true,
-		"encoding_format":         true,
-		"dimensions":              true,
-		"stream_options":          true,
-	}
-
-	anthropicParams := map[string]bool{
-		"stop_sequences": true,
-		"system":         true,
-		"metadata":       true,
-		"mcp_servers":    true,
-		"service_tier":   true,
-		"thinking":       true,
-		"top_k":          true,
-	}
-
-	cohereParams := map[string]bool{
-		"frequency_penalty":  true,
-		"presence_penalty":   true,
-		"k":                  true,
-		"p":                  true,
-		"truncate":           true,
-		"return_likelihoods": true,
-		"logit_bias":         true,
-		"stop_sequences":     true,
-	}
-
-	mistralParams := map[string]bool{
-		"frequency_penalty":   true,
-		"presence_penalty":    true,
-		"safe_mode":           true,
-		"n":                   true,
-		"parallel_tool_calls": true,
-		"prediction":          true,
-		"prompt_mode":         true,
-		"random_seed":         true,
-		"response_format":     true,
-		"safe_prompt":         true,
-		"top_k":               true,
-	}
-
-	groqParams := map[string]bool{
-		"n":                true,
-		"reasoning_effort": true,
-		"reasoning_format": true,
-		"service_tier":     true,
-		"stop":             true,
-	}
-
-	ollamaParams := map[string]bool{
-		"num_ctx":          true,
-		"num_gpu":          true,
-		"num_thread":       true,
-		"repeat_penalty":   true,
-		"repeat_last_n":    true,
-		"seed":             true,
-		"tfs_z":            true,
-		"mirostat":         true,
-		"mirostat_tau":     true,
-		"mirostat_eta":     true,
-		"format":           true,
-		"keep_alive":       true,
-		"low_vram":         true,
-		"main_gpu":         true,
-		"min_p":            true,
-		"num_batch":        true,
-		"num_keep":         true,
-		"num_predict":      true,
-		"numa":             true,
-		"penalize_newline": true,
-		"raw":              true,
-		"typical_p":        true,
-		"use_mlock":        true,
-		"use_mmap":         true,
-		"vocab_only":       true,
-	}
-
-	// Vertex supports both OpenAI and Anthropic models, plus its own specific parameters
-	vertexParams := mergeWithDefaults(openAIParams)
-	// Add Anthropic-specific parameters for Claude models on Vertex
-	for k, v := range anthropicParams {
-		vertexParams[k] = v
-	}
-	// Add Vertex-specific parameters
-	vertexSpecificParams := map[string]bool{
-		"task_type":            true, // For embeddings
-		"title":                true, // For embeddings
-		"autoTruncate":         true, // For embeddings
-		"outputDimensionality": true, // For embeddings (maps to dimensions)
-	}
-	for k, v := range vertexSpecificParams {
-		vertexParams[k] = v
-	}
-
-	// Bedrock supports both Anthropic and Mistral models, plus its own specific parameters
-	bedrockParams := mergeWithDefaults(anthropicParams)
-	// Add Mistral-specific parameters for Mistral models on Bedrock
-	for k, v := range mistralParams {
-		bedrockParams[k] = v
-	}
-	// Add Bedrock-specific parameters
-	bedrockSpecificParams := map[string]bool{
-		"max_tokens_to_sample": true, // Anthropic models use this instead of max_tokens
-		"toolConfig":           true, // Bedrock-specific tool configuration
-		"input_type":           true, // For Cohere embeddings
-	}
-	for k, v := range bedrockSpecificParams {
-		bedrockParams[k] = v
-	}
-
-	geminiParams := mergeWithDefaults(openAIParams)
-	geminiParams["top_k"] = true
-	geminiParams["stop_sequences"] = true
-
-	openRouterSpecificParams := map[string]bool{
-		"transforms": true,
-		"models":     true,
-		"route":      true,
-		"provider":   true,
-		"prediction": true, // Reduce latency by providing the model with a predicted output
-		"top_a":      true, // Range: [0, 1]
-		"min_p":      true, // Range: [0, 1]
-	}
-	openRouterParams := mergeWithDefaults(openAIParams)
-	for k, v := range openRouterSpecificParams {
-		openRouterParams[k] = v
-	}
-
-	return map[schemas.ModelProvider]ProviderParameterSchema{
-		schemas.OpenAI:     {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Azure:      {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Anthropic:  {ValidParams: mergeWithDefaults(anthropicParams)},
-		schemas.Cohere:     {ValidParams: mergeWithDefaults(cohereParams)},
-		schemas.Mistral:    {ValidParams: mergeWithDefaults(mistralParams)},
-		schemas.Groq:       {ValidParams: mergeWithDefaults(groqParams)},
-		schemas.Bedrock:    {ValidParams: bedrockParams},
-		schemas.Vertex:     {ValidParams: vertexParams},
-		schemas.Ollama:     {ValidParams: mergeWithDefaults(ollamaParams)},
-		schemas.Cerebras:   {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.SGL:        {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Parasail:   {ValidParams: mergeWithDefaults(openAIParams)},
-		schemas.Gemini:     {ValidParams: geminiParams},
-		schemas.OpenRouter: {ValidParams: openRouterParams},
-	}
-}
-
-// mergeWithDefaults merges provider-specific parameters with default parameters
-func mergeWithDefaults(providerParams map[string]bool) map[string]bool {
-	result := make(map[string]bool, len(DefaultParameters)+len(providerParams))
-
-	// Copy default parameters
-	for k, v := range DefaultParameters {
-		result[k] = v
-	}
-
-	// Add provider-specific parameters
-	for k, v := range providerParams {
-		result[k] = v
-	}
-
-	return result
-}
-
-// Global parameter validator instance
-var globalParamValidator = NewParameterValidator()
-
-// SetGlobalParameterValidator sets the shared ParameterValidator instance.
-// It’s primarily intended for test setup or one-time overrides.
-// Note: calling this at runtime from multiple goroutines is not safe for concurrent use.
-func SetGlobalParameterValidator(v *ParameterValidator) {
-	if v != nil {
-		globalParamValidator = v
-	}
-}
-
-// ValidateAndFilterParamsForProvider is a convenience function that uses the global validator
-// to filter parameters for a specific provider. This is the main function integrations should use.
-func ValidateAndFilterParamsForProvider(
-	provider schemas.ModelProvider,
-	params *schemas.ModelParameters,
-) *schemas.ModelParameters {
-	return globalParamValidator.ValidateAndFilterParams(provider, params)
 }
 
 // GenericRouter provides a reusable router implementation for all integrations.
@@ -675,8 +334,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Invalid request"))
 			return
 		}
-		if bifrostReq.Model == "" {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Model parameter is required"))
+
+		// Extract and parse fallbacks from the request if present
+		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
 		// Auto-detect auth mode for Anthropic: API keys use standard provider,
@@ -716,7 +377,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		if isStreaming {
-			g.handleStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx)
+			g.handleStreamingRequest(ctx, config, bifrostReq, bifrostCtx)
 		} else {
 			g.handleNonStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx)
 		}
@@ -729,16 +390,16 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
-	if bifrostReq.Input.TextCompletionInput != nil {
-		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.ChatCompletionInput != nil {
-		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.EmbeddingInput != nil {
-		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.SpeechInput != nil {
-		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.TranscriptionInput != nil {
-		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq)
+	if bifrostReq.TextCompletionRequest != nil {
+		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq.TextCompletionRequest)
+	} else if bifrostReq.ChatRequest != nil {
+		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq.ChatRequest)
+	} else if bifrostReq.EmbeddingRequest != nil {
+		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq.EmbeddingRequest)
+	} else if bifrostReq.SpeechRequest != nil {
+		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq.SpeechRequest)
+	} else if bifrostReq.TranscriptionRequest != nil {
+		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
 	}
 
 	// Handle errors
@@ -788,7 +449,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
-func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
+func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
 	// Set common SSE headers
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
@@ -799,12 +460,12 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
-	if bifrostReq.Input.ChatCompletionInput != nil {
-		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.SpeechInput != nil {
-		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq)
-	} else if bifrostReq.Input.TranscriptionInput != nil {
-		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq)
+	if bifrostReq.ChatRequest != nil {
+		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq.ChatRequest)
+	} else if bifrostReq.SpeechRequest != nil {
+		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq.SpeechRequest)
+	} else if bifrostReq.TranscriptionRequest != nil {
+		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -1071,6 +732,7 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter Err
 	}
 
 	ctx.SetContentType("application/json")
+
 	responseBody, err := json.Marshal(response)
 	if err != nil {
 		g.sendError(ctx, errorConverter, newBifrostError(err, "failed to encode response"))
@@ -1080,198 +742,13 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter Err
 	ctx.SetBody(responseBody)
 }
 
-// ValidProviders is a pre-computed map for efficient O(1) provider validation.
-var ValidProviders = map[schemas.ModelProvider]bool{
-	schemas.OpenAI:     true,
-	schemas.Azure:      true,
-	schemas.Anthropic:  true,
-	schemas.Bedrock:    true,
-	schemas.Cohere:     true,
-	schemas.Vertex:     true,
-	schemas.Mistral:    true,
-	schemas.Ollama:     true,
-	schemas.Groq:       true,
-	schemas.SGL:        true,
-	schemas.Parasail:   true,
-	schemas.Cerebras:   true,
-	schemas.Gemini:     true,
-	schemas.OpenRouter: true,
-}
-
-// ParseModelString extracts provider and model from a model string.
-// For model strings like "anthropic/claude", it returns ("anthropic", "claude").
-// For model strings like "claude", it returns ("", "claude").
-func ParseModelString(model string, defaultProvider schemas.ModelProvider, checkProviderFromModel bool) (schemas.ModelProvider, string) {
-	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
-	if strings.Contains(model, "/") {
-		parts := strings.SplitN(model, "/", 2)
-		if len(parts) == 2 {
-			extractedProvider := parts[0]
-			extractedModel := parts[1]
-
-			return schemas.ModelProvider(extractedProvider), extractedModel
-		}
-	}
-
-	//TODO add model wise check for provider
-
-	// No provider prefix found, return empty provider and the original model
-	return defaultProvider, model
-}
-
-// GetProviderFromModel determines the appropriate provider based on model name patterns
-// This function uses comprehensive pattern matching to identify the correct provider
-// for various model naming conventions used across different AI providers.
-func GetProviderFromModel(model string) schemas.ModelProvider {
-	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
-	if strings.Contains(model, "/") {
-		parts := strings.SplitN(model, "/", 2)
-		if len(parts) > 1 {
-			extractedProvider := parts[0]
-
-			if ValidProviders[schemas.ModelProvider(extractedProvider)] {
-				return schemas.ModelProvider(extractedProvider)
-			}
-		}
-	}
-
-	// Normalize model name for case-insensitive matching
-	modelLower := strings.ToLower(strings.TrimSpace(model))
-
-	// Azure OpenAI Models - check first to prevent false positives from OpenAI "gpt" patterns
-	if isAzureModel(modelLower) {
-		return schemas.Azure
-	}
-
-	// OpenAI Models - comprehensive pattern matching
-	if isOpenAIModel(modelLower) {
-		return schemas.OpenAI
-	}
-
-	// Anthropic Models - Claude family
-	if isAnthropicModel(modelLower) {
-		return schemas.Anthropic
-	}
-
-	// Google Vertex AI Models - Gemini and Palm family
-	if isVertexModel(modelLower) {
-		return schemas.Vertex
-	}
-
-	// AWS Bedrock Models - various model providers through Bedrock
-	if isBedrockModel(modelLower) {
-		return schemas.Bedrock
-	}
-
-	// Cohere Models - Command and Embed family
-	if isCohereModel(modelLower) {
-		return schemas.Cohere
-	}
-
-	// Google GenAI Models - Gemini and Palm family
-	if isGeminiModel(modelLower) {
-		return schemas.Gemini
-	}
-
-	// Default to OpenAI for unknown models (most LiteLLM compatible)
-	return schemas.OpenAI
-}
-
-// isOpenAIModel checks for OpenAI model patterns
-func isOpenAIModel(model string) bool {
-	// Exclude Azure models to prevent overlap
-	if strings.Contains(model, "azure/") {
-		return false
-	}
-
-	openaiPatterns := []string{
-		"gpt", "davinci", "curie", "babbage", "ada", "o1", "o3", "o4",
-		"text-embedding", "dall-e", "whisper", "tts", "chatgpt",
-	}
-
-	return matchesAnyPattern(model, openaiPatterns)
-}
-
-// isAzureModel checks for Azure OpenAI specific patterns
-func isAzureModel(model string) bool {
-	azurePatterns := []string{
-		"azure", "model-router", "computer-use-preview",
-	}
-
-	return matchesAnyPattern(model, azurePatterns)
-}
-
-// isAnthropicModel checks for Anthropic Claude model patterns
-func isAnthropicModel(model string) bool {
-	anthropicPatterns := []string{
-		"claude", "anthropic/",
-	}
-
-	return matchesAnyPattern(model, anthropicPatterns)
-}
-
-var geminiRegexp = regexp.MustCompile(`\b(gemini|gemini-embedding|palm|bison|gecko)\b`)
-
-// isGeminiModel checks for Google Gemini model patterns using strict regex matching
-func isGeminiModel(model string) bool {
-	return geminiRegexp.MatchString(model)
-}
-
-// isVertexModel checks for Google Vertex AI model patterns
-func isVertexModel(model string) bool {
-	vertexPatterns := []string{
-		"gemini", "palm", "bison", "gecko", "vertex/", "google/",
-	}
-
-	return matchesAnyPattern(model, vertexPatterns)
-}
-
-// isBedrockModel checks for AWS Bedrock model patterns
-func isBedrockModel(model string) bool {
-	bedrockPatterns := []string{
-		"bedrock", "bedrock.amazonaws.com/", "bedrock/",
-		"amazon.titan", "amazon.nova", "aws/amazon.",
-		"ai21.jamba", "ai21.j2", "aws/ai21.",
-		"meta.llama", "aws/meta.",
-		"stability.stable-diffusion", "stability.sd3", "aws/stability.",
-		"anthropic.claude", "aws/anthropic.",
-		"cohere.command", "cohere.embed", "aws/cohere.",
-		"mistral.mistral", "mistral.mixtral", "aws/mistral.",
-		"titan-text", "titan-embed", "nova-micro", "nova-lite", "nova-pro",
-		"jamba-instruct", "j2-ultra", "j2-mid",
-		"llama-2", "llama-3", "llama-3.1", "llama-3.2",
-		"stable-diffusion-xl", "sd3-large",
-	}
-
-	return matchesAnyPattern(model, bedrockPatterns)
-}
-
-// isCohereModel checks for Cohere model patterns
-func isCohereModel(model string) bool {
-	coherePatterns := []string{
-		"command-", "embed-", "cohere",
-	}
-
-	return matchesAnyPattern(model, coherePatterns)
-}
-
-// matchesAnyPattern checks if the model matches any of the given patterns
-func matchesAnyPattern(model string, patterns []string) bool {
-	for _, pattern := range patterns {
-		if strings.Contains(model, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error, message string) *schemas.BifrostError {
 	if err == nil {
 		return &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: message,
 			},
 		}
@@ -1279,35 +756,117 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,
 		},
 	}
 }
 
-// MapFinishReasonToProvider maps OpenAI-compatible finish reasons to provider-specific format
-func MapFinishReasonToProvider(finishReason string, targetProvider schemas.ModelProvider) string {
-	switch targetProvider {
-	case schemas.Anthropic:
-		return mapFinishReasonToAnthropic(finishReason)
-	default:
-		// For OpenAI, Azure, and other providers, pass through as-is
-		return finishReason
+// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
+func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
+	// Check if the request has a fallbacks field ([]string)
+	fallbacks, err := g.extractFallbacksFromRequest(req)
+	if err != nil {
+		return fmt.Errorf("failed to extract fallbacks: %w", err)
 	}
+
+	if len(fallbacks) == 0 {
+		return nil // No fallbacks to process
+	}
+
+	// Parse fallbacks from strings to Fallback structs
+	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
+	for _, fallbackStr := range fallbacks {
+		if fallbackStr == "" {
+			continue // Skip empty strings
+		}
+
+		// Use ParseModelString to extract provider and model
+		provider, model := schemas.ParseModelString(fallbackStr, bifrostReq.Provider)
+
+		parsedFallback := schemas.Fallback{
+			Provider: provider,
+			Model:    model,
+		}
+		parsedFallbacks = append(parsedFallbacks, parsedFallback)
+	}
+
+	if len(parsedFallbacks) == 0 {
+		return nil // No valid fallbacks found
+	}
+
+	// Add fallbacks to the main BifrostRequest
+	bifrostReq.Fallbacks = parsedFallbacks
+
+	// Also add fallbacks to the specific request type if it exists
+	switch bifrostReq.RequestType {
+	case schemas.TextCompletionRequest:
+		if bifrostReq.TextCompletionRequest != nil {
+			bifrostReq.TextCompletionRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		if bifrostReq.ChatRequest != nil {
+			bifrostReq.ChatRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		if bifrostReq.ResponsesRequest != nil {
+			bifrostReq.ResponsesRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.EmbeddingRequest:
+		if bifrostReq.EmbeddingRequest != nil {
+			bifrostReq.EmbeddingRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		if bifrostReq.SpeechRequest != nil {
+			bifrostReq.SpeechRequest.Fallbacks = parsedFallbacks
+		}
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		if bifrostReq.TranscriptionRequest != nil {
+			bifrostReq.TranscriptionRequest.Fallbacks = parsedFallbacks
+		}
+	}
+
+	return nil
 }
 
-// mapFinishReasonToAnthropic maps OpenAI finish reasons to Anthropic format
-func mapFinishReasonToAnthropic(finishReason string) string {
-	switch finishReason {
-	case "stop":
-		return "end_turn"
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	default:
-		// Pass through other reasons like "pause_turn", "refusal", "stop_sequence", etc.
-		return finishReason
+// extractFallbacksFromRequest uses reflection to extract fallbacks field from any request type
+func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, error) {
+	if req == nil {
+		return nil, nil
 	}
+
+	// Try to use reflection to find a "fallbacks" field
+	reqValue := reflect.ValueOf(req)
+	if reqValue.Kind() == reflect.Ptr {
+		reqValue = reqValue.Elem()
+	}
+
+	if reqValue.Kind() != reflect.Struct {
+		return nil, nil // Not a struct, no fallbacks
+	}
+
+	// Look for the "fallbacks" field
+	fallbacksField := reqValue.FieldByName("fallbacks")
+	if !fallbacksField.IsValid() {
+		return nil, nil // No fallbacks field found
+	}
+
+	// Handle different types of fallbacks field
+	switch fallbacksField.Kind() {
+	case reflect.Slice:
+		if fallbacksField.Type().Elem().Kind() == reflect.String {
+			// []string case
+			fallbacks := make([]string, fallbacksField.Len())
+			for i := 0; i < fallbacksField.Len(); i++ {
+				fallbacks[i] = fallbacksField.Index(i).String()
+			}
+			return fallbacks, nil
+		}
+	case reflect.String:
+		// Single string case - treat as one fallback
+		return []string{fallbacksField.String()}, nil
+	}
+
+	return nil, nil
 }

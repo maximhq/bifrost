@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -62,112 +63,199 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 	}
 }
 
-// Tool definitions for testing
-var WeatherToolDefinition = schemas.Tool{
-	Type: "function",
-	Function: schemas.Function{
-		Name:        "get_weather",
-		Description: "Get the current weather in a given location",
-		Parameters: schemas.FunctionParameters{
-			Type: "object",
-			Properties: map[string]interface{}{
-				"location": map[string]interface{}{
-					"type":        "string",
-					"description": "The city and state, e.g. San Francisco, CA",
-				},
-				"unit": map[string]interface{}{
-					"type": "string",
-					"enum": []string{"celsius", "fahrenheit"},
-				},
+type SampleToolType string
+
+const (
+	SampleToolTypeWeather   SampleToolType = "weather"
+	SampleToolTypeCalculate SampleToolType = "calculate"
+	SampleToolTypeTime      SampleToolType = "time"
+)
+
+var SampleToolFunctions = map[SampleToolType]*schemas.ChatToolFunction{
+	SampleToolTypeWeather:   WeatherToolFunction,
+	SampleToolTypeCalculate: CalculatorToolFunction,
+	SampleToolTypeTime:      TimeToolFunction,
+}
+
+var sampleToolDescriptions = map[SampleToolType]string{
+	SampleToolTypeWeather:   "Get the current weather in a given location",
+	SampleToolTypeCalculate: "Perform basic mathematical calculations",
+	SampleToolTypeTime:      "Get the current time in a specific timezone",
+}
+
+var WeatherToolFunction = &schemas.ChatToolFunction{
+	Parameters: &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: map[string]interface{}{
+			"location": map[string]interface{}{
+				"type":        "string",
+				"description": "The city and state, e.g. San Francisco, CA",
 			},
-			Required: []string{"location"},
+			"unit": map[string]interface{}{
+				"type": "string",
+				"enum": []string{"celsius", "fahrenheit"},
+			},
 		},
+		Required: []string{"location"},
 	},
 }
 
-var CalculatorToolDefinition = schemas.Tool{
-	Type: "function",
-	Function: schemas.Function{
-		Name:        "calculate",
-		Description: "Perform basic mathematical calculations",
-		Parameters: schemas.FunctionParameters{
-			Type: "object",
-			Properties: map[string]interface{}{
-				"expression": map[string]interface{}{
-					"type":        "string",
-					"description": "The mathematical expression to evaluate, e.g. '2 + 3' or '10 * 5'",
-				},
+var CalculatorToolFunction = &schemas.ChatToolFunction{
+	Parameters: &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: map[string]interface{}{
+			"expression": map[string]interface{}{
+				"type":        "string",
+				"description": "The mathematical expression to evaluate, e.g. '2 + 3' or '10 * 5'",
 			},
-			Required: []string{"expression"},
 		},
+		Required: []string{"expression"},
 	},
 }
 
-var TimeToolDefinition = schemas.Tool{
-	Type: "function",
-	Function: schemas.Function{
-		Name:        "get_current_time",
-		Description: "Get the current time in a specific timezone",
-		Parameters: schemas.FunctionParameters{
-			Type: "object",
-			Properties: map[string]interface{}{
-				"timezone": map[string]interface{}{
-					"type":        "string",
-					"description": "The timezone identifier, e.g. 'America/New_York' or 'UTC'",
-				},
+var TimeToolFunction = &schemas.ChatToolFunction{
+	Parameters: &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: map[string]interface{}{
+			"timezone": map[string]interface{}{
+				"type":        "string",
+				"description": "The timezone identifier, e.g. 'America/New_York' or 'UTC'",
 			},
-			Required: []string{"timezone"},
 		},
+		Required: []string{"timezone"},
 	},
 }
 
-// Test images for testing
-const TestImageURL = "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg"
-const TestImageBase64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k="
+func GetSampleChatTool(toolName SampleToolType) *schemas.ChatTool {
+	function, ok := SampleToolFunctions[toolName]
+	if !ok {
+		return nil
+	}
+
+	description, ok := sampleToolDescriptions[toolName]
+	if !ok {
+		return nil
+	}
+
+	return &schemas.ChatTool{
+		Type: "function",
+		Function: &schemas.ChatToolFunction{
+			Name:        string(toolName),
+			Description: bifrost.Ptr(description),
+			Parameters:  function.Parameters,
+		},
+	}
+}
+
+func GetSampleResponsesTool(toolName SampleToolType) *schemas.ResponsesTool {
+	function, ok := SampleToolFunctions[toolName]
+	if !ok {
+		return nil
+	}
+
+	description, ok := sampleToolDescriptions[toolName]
+	if !ok {
+		return nil
+	}
+
+	return &schemas.ResponsesTool{
+		Type:        "function",
+		Name:        bifrost.Ptr(string(toolName)),
+		Description: bifrost.Ptr(description),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{
+			Parameters: function.Parameters,
+		},
+	}
+}
+
+// Test image of an ant
+const TestImageURL = "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Carpenter_ant_Tanzania_crop.jpg/1200px-Carpenter_ant_Tanzania_crop.png"
+
+// Test image of the Eiffel Tower
+const TestImageURL2 = "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/La_Tour_Eiffel_vue_de_la_Tour_Saint-Jacques%2C_Paris_ao%C3%BBt_2014_%282%29.jpg/960px-La_Tour_Eiffel_vue_de_la_Tour_Saint-Jacques%2C_Paris_ao%C3%BBt_2014_%282%29.png"
+
+// Test image base64 of a grey solid
+const TestImageBase64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAoDASIAAhEBAxEB/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k="
+
+// GetLionBase64Image loads and returns the lion base64 image data from file
+func GetLionBase64Image() (string, error) {
+	data, err := os.ReadFile("scenarios/media/lion_base64.txt")
+	if err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + string(data), nil
+}
 
 // CreateSpeechInput creates a basic speech input for testing
-func CreateSpeechInput(text, voice, format string) *schemas.SpeechInput {
-	return &schemas.SpeechInput{
-		Input: text,
-		VoiceConfig: schemas.SpeechVoiceInput{
-			Voice: &voice,
+func CreateSpeechRequest(text, voice, format string) *schemas.BifrostSpeechRequest {
+	return &schemas.BifrostSpeechRequest{
+		Input: &schemas.SpeechInput{
+			Input: text,
 		},
-		ResponseFormat: format,
+		Params: &schemas.SpeechParameters{
+			VoiceConfig: &schemas.SpeechVoiceInput{
+				Voice: &voice,
+			},
+			ResponseFormat: format,
+		},
 	}
 }
 
 // CreateTranscriptionInput creates a basic transcription input for testing
-func CreateTranscriptionInput(audioData []byte, language, responseFormat *string) *schemas.TranscriptionInput {
-	return &schemas.TranscriptionInput{
-		File:           audioData,
-		Language:       language,
-		ResponseFormat: responseFormat,
+func CreateTranscriptionInput(audioData []byte, language, responseFormat *string) *schemas.BifrostTranscriptionRequest {
+	return &schemas.BifrostTranscriptionRequest{
+		Input: &schemas.TranscriptionInput{
+			File: audioData,
+		},
+		Params: &schemas.TranscriptionParameters{
+			Language:       language,
+			ResponseFormat: responseFormat,
+		},
 	}
 }
 
 // Helper functions for creating requests
-func CreateBasicChatMessage(content string) schemas.BifrostMessage {
-	return schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
+func CreateBasicChatMessage(content string) schemas.ChatMessage {
+	return schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
 			ContentStr: bifrost.Ptr(content),
 		},
 	}
 }
 
-func CreateImageMessage(text, imageURL string) schemas.BifrostMessage {
-	return schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
-			ContentBlocks: &[]schemas.ContentBlock{
-				{
-					Type: schemas.ContentBlockTypeText,
-					Text: bifrost.Ptr(text),
-				},
-				{
-					Type: schemas.ContentBlockTypeImage,
-					ImageURL: &schemas.ImageURLStruct{
-						URL: imageURL,
+func CreateBasicResponsesMessage(content string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{
+			ContentStr: bifrost.Ptr(content),
+		},
+	}
+}
+
+func CreateImageChatMessage(text, imageURL string) schemas.ChatMessage {
+	return schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
+			ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: bifrost.Ptr(text)},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
+			},
+		},
+	}
+}
+
+func CreateImageResponsesMessage(text, imageURL string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: bifrost.Ptr(text)},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+						ImageURL: bifrost.Ptr(imageURL),
 					},
 				},
 			},
@@ -175,14 +263,28 @@ func CreateImageMessage(text, imageURL string) schemas.BifrostMessage {
 	}
 }
 
-func CreateToolMessage(content string, toolCallID string) schemas.BifrostMessage {
-	return schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleTool,
-		Content: schemas.MessageContent{
+func CreateToolChatMessage(content string, toolCallID string) schemas.ChatMessage {
+	return schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleTool,
+		Content: schemas.ChatMessageContent{
 			ContentStr: bifrost.Ptr(content),
 		},
-		ToolMessage: &schemas.ToolMessage{
-			ToolCallID: &toolCallID,
+		ChatToolMessage: &schemas.ChatToolMessage{
+			ToolCallID: bifrost.Ptr(toolCallID),
+		},
+	}
+}
+
+func CreateToolResponsesMessage(content string, toolCallID string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: bifrost.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		// Note: function_call_output messages don't have a role field per OpenAI API
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: bifrost.Ptr(toolCallID),
+			// Set ResponsesFunctionToolCallOutput for OpenAI's native Responses API
+			ResponsesFunctionToolCallOutput: &schemas.ResponsesFunctionToolCallOutput{
+				ResponsesFunctionToolCallOutputStr: bifrost.Ptr(content),
+			},
 		},
 	}
 }
@@ -190,129 +292,173 @@ func CreateToolMessage(content string, toolCallID string) schemas.BifrostMessage
 // GetResultContent returns the string content from a BifrostResponse
 // It looks through all choices and returns content from the first choice that has any
 func GetResultContent(result *schemas.BifrostResponse) string {
-	if result == nil || len(result.Choices) == 0 {
+	if result == nil || (result.Choices == nil && result.ResponsesResponse == nil) {
 		return ""
 	}
 
-	// Try to find content from any choice, prioritizing non-empty content
-	for _, choice := range result.Choices {
-		if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
-			return *choice.Message.Content.ContentStr
-		} else if choice.Message.Content.ContentBlocks != nil {
-			var builder strings.Builder
-			for _, block := range *choice.Message.Content.ContentBlocks {
-				if block.Text != nil {
-					builder.WriteString(*block.Text)
+	if result.Choices != nil {
+		// Try to find content from any choice, prioritizing non-empty content
+		for _, choice := range result.Choices {
+			if choice.BifrostTextCompletionResponseChoice != nil && choice.BifrostTextCompletionResponseChoice.Text != nil {
+				return *choice.Text
+			}
+
+			// Check if content has any data (either ContentStr or ContentBlocks)
+			if choice.Message.Content.ContentStr != nil || choice.Message.Content.ContentBlocks != nil {
+				if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
+					return *choice.Message.Content.ContentStr
+				} else if choice.Message.Content.ContentBlocks != nil {
+					var builder strings.Builder
+					for _, block := range choice.Message.Content.ContentBlocks {
+						if block.Text != nil {
+							builder.WriteString(*block.Text)
+						}
+					}
+					content := builder.String()
+					if content != "" {
+						return content
+					}
 				}
 			}
-			content := builder.String()
-			if content != "" {
-				return content
+		}
+
+		// Fallback to first choice if no content found
+		if len(result.Choices) > 0 {
+			choice := result.Choices[0]
+			if choice.Message.Content.ContentStr != nil || choice.Message.Content.ContentBlocks != nil {
+				if choice.Message.Content.ContentStr != nil {
+					return *choice.Message.Content.ContentStr
+				} else if choice.Message.Content.ContentBlocks != nil {
+					var builder strings.Builder
+					for _, block := range choice.Message.Content.ContentBlocks {
+						if block.Text != nil {
+							builder.WriteString(*block.Text)
+						}
+					}
+					return builder.String()
+				}
+			}
+		}
+	} else if result.ResponsesResponse != nil {
+		for _, output := range result.ResponsesResponse.Output {
+			if output.Content != nil {
+				if output.Content.ContentStr != nil {
+					return *output.Content.ContentStr
+				} else if output.Content.ContentBlocks != nil {
+					var builder strings.Builder
+					for _, block := range output.Content.ContentBlocks {
+						if block.Text != nil {
+							builder.WriteString(*block.Text)
+						}
+					}
+					content := builder.String()
+					if content != "" {
+						return content
+					}
+				}
 			}
 		}
 	}
 
-	// Fallback to first choice if no content found
-	if result.Choices[0].Message.Content.ContentStr != nil {
-		return *result.Choices[0].Message.Content.ContentStr
-	} else if result.Choices[0].Message.Content.ContentBlocks != nil {
-		var builder strings.Builder
-		for _, block := range *result.Choices[0].Message.Content.ContentBlocks {
-			if block.Text != nil {
-				builder.WriteString(*block.Text)
-			}
-		}
-		return builder.String()
-	}
 	return ""
 }
 
-// MergeModelParameters performs a shallow merge of two ModelParameters instances.
-// Non-nil fields from the override parameter take precedence over the base parameter.
-// Returns a new ModelParameters instance with the merged values.
-func MergeModelParameters(base *schemas.ModelParameters, override *schemas.ModelParameters) *schemas.ModelParameters {
-	if base == nil && override == nil {
-		return &schemas.ModelParameters{}
-	}
-	if base == nil {
-		return copyModelParameters(override)
-	}
-	if override == nil {
-		return copyModelParameters(base)
-	}
-
-	// Start with a copy of base parameters
-	result := copyModelParameters(base)
-
-	// Override with non-nil fields from override
-	if override.MaxTokens != nil {
-		result.MaxTokens = override.MaxTokens
-	}
-	if override.Temperature != nil {
-		result.Temperature = override.Temperature
-	}
-	if override.TopP != nil {
-		result.TopP = override.TopP
-	}
-	if override.TopK != nil {
-		result.TopK = override.TopK
-	}
-	if override.FrequencyPenalty != nil {
-		result.FrequencyPenalty = override.FrequencyPenalty
-	}
-	if override.PresencePenalty != nil {
-		result.PresencePenalty = override.PresencePenalty
-	}
-	if override.StopSequences != nil {
-		result.StopSequences = override.StopSequences
-	}
-	if override.Tools != nil {
-		result.Tools = override.Tools
-	}
-	if override.ToolChoice != nil {
-		result.ToolChoice = override.ToolChoice
-	}
-	if override.ParallelToolCalls != nil {
-		result.ParallelToolCalls = override.ParallelToolCalls
-	}
-	if override.EncodingFormat != nil {
-		result.EncodingFormat = override.EncodingFormat
-	}
-	if override.Dimensions != nil {
-		result.Dimensions = override.Dimensions
-	}
-	if override.User != nil {
-		result.User = override.User
-	}
-	if override.ExtraParams != nil {
-		result.ExtraParams = override.ExtraParams
-	}
-
-	return result
+// ToolCallInfo represents extracted tool call information for both API formats
+type ToolCallInfo struct {
+	Name      string
+	Arguments string
+	ID        string
 }
 
-// copyModelParameters creates a shallow copy of a ModelParameters instance
-func copyModelParameters(src *schemas.ModelParameters) *schemas.ModelParameters {
-	if src == nil {
-		return &schemas.ModelParameters{}
+// ExtractToolCalls extracts tool call information from a BifrostResponse for both Chat Completions and Responses API
+func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
+	if response == nil {
+		return nil
 	}
 
-	return &schemas.ModelParameters{
-		MaxTokens:         src.MaxTokens,
-		Temperature:       src.Temperature,
-		TopP:              src.TopP,
-		TopK:              src.TopK,
-		FrequencyPenalty:  src.FrequencyPenalty,
-		PresencePenalty:   src.PresencePenalty,
-		StopSequences:     src.StopSequences,
-		Tools:             src.Tools,
-		ToolChoice:        src.ToolChoice,
-		ParallelToolCalls: src.ParallelToolCalls,
-		EncodingFormat:    src.EncodingFormat,
-		Dimensions:        src.Dimensions,
-		User:              src.User,
-		ExtraParams:       src.ExtraParams,
+	var toolCalls []ToolCallInfo
+
+	// Extract from Chat Completions API format
+	if response.Choices != nil {
+		for _, choice := range response.Choices {
+			if choice.Message.ChatAssistantMessage != nil &&
+				choice.Message.ChatAssistantMessage.ToolCalls != nil {
+
+				chatToolCalls := choice.Message.ChatAssistantMessage.ToolCalls
+				for _, toolCall := range chatToolCalls {
+					info := ToolCallInfo{
+						Arguments: toolCall.Function.Arguments,
+					}
+					if toolCall.Function.Name != nil {
+						info.Name = *toolCall.Function.Name
+					}
+					if toolCall.ID != nil {
+						info.ID = *toolCall.ID
+					}
+
+					// Only append if we have at least some meaningful data
+					// (Name, ID, or non-empty Arguments)
+					if info.Name != "" || info.ID != "" || info.Arguments != "" {
+						toolCalls = append(toolCalls, info)
+					}
+				}
+			}
+		}
 	}
+
+	// Extract from Responses API format
+	if response.ResponsesResponse != nil {
+		for _, output := range response.ResponsesResponse.Output {
+			// Check for function calls in assistant messages
+			// Only process if this is a function_call type with ResponsesToolMessage
+			if output.ResponsesToolMessage != nil &&
+				output.Type != nil &&
+				*output.Type == "function_call" {
+
+				info := ToolCallInfo{}
+
+				if output.Name != nil {
+					info.Name = *output.Name
+				}
+				if output.ResponsesToolMessage.CallID != nil {
+					info.ID = *output.ResponsesToolMessage.CallID
+				}
+
+				// Get arguments from embedded function tool call if available
+				if output.Arguments != nil {
+					info.Arguments = *output.Arguments
+				}
+
+				// Only append if we have at least one of Name, ID, or Arguments
+				if info.Name != "" || info.ID != "" || info.Arguments != "" {
+					toolCalls = append(toolCalls, info)
+				}
+			}
+		}
+	}
+
+	return toolCalls
+}
+
+// getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
+func getEmbeddingVector(embedding schemas.BifrostEmbeddingResponse) ([]float32, error) {
+	if embedding.EmbeddingArray != nil {
+		return embedding.EmbeddingArray, nil
+	}
+
+	if embedding.Embedding2DArray != nil {
+		// For 2D arrays, return the first vector
+		if len(embedding.Embedding2DArray) > 0 {
+			return embedding.Embedding2DArray[0], nil
+		}
+		return nil, fmt.Errorf("2D embedding array is empty")
+	}
+
+	if embedding.EmbeddingStr != nil {
+		return nil, fmt.Errorf("string embeddings not supported for vector extraction")
+	}
+
+	return nil, fmt.Errorf("no valid embedding data found")
 }
 
 // --- Additional test helpers appended below (imported on demand) ---
@@ -332,17 +478,15 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 		format = "mp3"
 	}
 
-	req := &schemas.BifrostRequest{
+	req := &schemas.BifrostSpeechRequest{
 		Provider: provider,
 		Model:    ttsModel,
-		Input: schemas.RequestInput{
-			SpeechInput: &schemas.SpeechInput{
-				Input: text,
-				VoiceConfig: schemas.SpeechVoiceInput{
-					Voice: &voice,
-				},
-				ResponseFormat: format,
+		Input:    &schemas.SpeechInput{Input: text},
+		Params: &schemas.SpeechParameters{
+			VoiceConfig: &schemas.SpeechVoiceInput{
+				Voice: &voice,
 			},
+			ResponseFormat: format,
 		},
 	}
 
@@ -369,4 +513,30 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 	t.Cleanup(func() { _ = os.Remove(tempPath) })
 
 	return resp.Speech.Audio, tempPath
+}
+
+func GetErrorMessage(err *schemas.BifrostError) string {
+	if err == nil {
+		return ""
+	}
+
+	errorType := ""
+	if err.Type != nil && *err.Type != "" {
+		errorType = *err.Type
+	}
+
+	if errorType == "" && err.Error.Type != nil && *err.Error.Type != "" {
+		errorType = *err.Error.Type
+	}
+
+	errorCode := ""
+	if err.Error.Code != nil && *err.Error.Code != "" {
+		errorCode = *err.Error.Code
+	}
+
+	errorMessage := err.Error.Message
+
+	errorString := fmt.Sprintf("%s %s: %s", errorType, errorCode, errorMessage)
+
+	return errorString
 }

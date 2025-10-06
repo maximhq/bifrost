@@ -11,6 +11,7 @@ type ConfigStoreType string
 // ConfigStoreTypeSQLite is the type of config store for SQLite.
 const (
 	ConfigStoreTypeSQLite ConfigStoreType = "sqlite"
+	ConfigStoreTypePostgres ConfigStoreType = "postgres"	
 )
 
 // Config represents the configuration for the config store.
@@ -51,7 +52,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal sqlite config: %w", err)
 		}
 		c.Config = &sqliteConfig
-
+	case ConfigStoreTypePostgres:
+		var postgresConfig PostgresConfig
+		if err := json.Unmarshal(temp.Config, &postgresConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal postgres config: %w", err)
+		}
+		c.Config = &postgresConfig
 	default:
 		return fmt.Errorf("unknown config store type: %s", temp.Type)
 	}

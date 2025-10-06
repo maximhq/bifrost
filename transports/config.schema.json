@@ -174,22 +174,83 @@
         "type": {
           "type": "string",
           "enum": [
-            "sqlite"
+            "sqlite",
+            "postgres"
           ],
           "description": "Configuration store type"
         },
         "config": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Database file path"
+          "anyOf": [
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "sqlite"
+                  }
+                }
+              },
+              "then": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Database file path"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "postgres"
+                  }
+                }
+              },
+              "then": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "Database host"
+                  },
+                  "port": {
+                    "type": "string",
+                    "description": "Database port"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "Database user"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                  },
+                  "db_name": {
+                    "type": "string",
+                    "description": "Database name"
+                  },
+                  "ssl_mode": {
+                    "type": "string",
+                    "description": "Database SSL mode"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
+                "additionalProperties": false
+              }
             }
-          },
-          "required": [
-            "path"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "additionalProperties": false
@@ -205,44 +266,382 @@
         "type": {
           "type": "string",
           "enum": [
-            "sqlite"
+            "sqlite",
+            "postgres"
           ],
           "description": "Logs store type"
         },
         "config": {
           "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Database file path"
+          "oneOf": [
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "sqlite"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Database file path"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "postgres"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "Database host"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "description": "Database port"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "Database user"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                  },
+                  "db_name": {
+                    "type": "string",
+                    "description": "Database name"
+                  },
+                  "ssl_mode": {
+                    "type": "string",
+                    "description": "Database SSL mode"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
+                "additionalProperties": false
+              }
             }
-          },
-          "required": [
-            "path"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "additionalProperties": false
     },
     "plugins": {
-      "type": "object",
+      "type": "array",
       "description": "Plugins configuration",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Enable plugins"
+      "items": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "name"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable plugins"
+          },
+          "name": {
+            "type": "string",
+            "description": "Name of the plugin (built-in: telemetry, logging, governance, maxim, semanticcache, otel, or custom plugin name)"
+          },
+          "config": {
+            "type": "object",
+            "description": "Configuration for the plugin"
+          }
         },
-        "name":{
-          "type": "string",
-          "description": "Name of the plugin"
-        },
-        "config":{
-          "type": "object",
-          "description": "Configuration for the plugin"
-        }
-      },
-      "additionalProperties": false
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "telemetry"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the telemetry plugin (Prometheus metrics)",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "logging"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the logging plugin",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "governance"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the governance plugin",
+                  "properties": {
+                    "is_vk_mandatory": {
+                      "type": "boolean",
+                      "description": "Whether virtual key (x-bf-vk header) is mandatory for all requests"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "maxim"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Maxim SDK integration plugin",
+                  "properties": {
+                    "api_key": {
+                      "type": "string",
+                      "description": "API key for Maxim SDK authentication"
+                    },
+                    "log_repo_id": {
+                      "type": "string",
+                      "description": "Optional default ID for the Maxim logger instance"
+                    }
+                  },
+                  "required": [
+                    "api_key"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "semanticcache"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the semantic cache plugin",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "description": "Provider to use for generating embeddings",
+                      "enum": [
+                        "openai",
+                        "anthropic",
+                        "gemini",
+                        "bedrock",
+                        "azure",
+                        "cohere",
+                        "mistral",
+                        "groq",
+                        "ollama",
+                        "openrouter",
+                        "vertex",
+                        "cerebras",
+                        "parasail",
+                        "sgl"
+                      ]
+                    },
+                    "keys": {
+                      "type": "array",
+                      "description": "API keys for the embedding provider",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1
+                    },
+                    "embedding_model": {
+                      "type": "string",
+                      "description": "Model to use for generating embeddings (optional)"
+                    },
+                    "cleanup_on_shutdown": {
+                      "type": "boolean",
+                      "description": "Clean up cache on shutdown (default: false)"
+                    },
+                    "ttl": {
+                      "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      ]
+                    },
+                    "threshold": {
+                      "type": "number",
+                      "description": "Cosine similarity threshold for semantic matching (default: 0.8)",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "vector_store_namespace": {
+                      "type": "string",
+                      "description": "Namespace for vector store (optional)"
+                    },
+                    "dimension": {
+                      "type": "integer",
+                      "description": "Dimension for vector store embeddings",
+                      "minimum": 1
+                    },
+                    "conversation_history_threshold": {
+                      "type": "integer",
+                      "description": "Skip caching for requests with more than this number of messages in conversation history (default: 3)",
+                      "minimum": 0
+                    },
+                    "cache_by_model": {
+                      "type": "boolean",
+                      "description": "Include model in cache key (default: true)"
+                    },
+                    "cache_by_provider": {
+                      "type": "boolean",
+                      "description": "Include provider in cache key (default: true)"
+                    },
+                    "exclude_system_prompt": {
+                      "type": "boolean",
+                      "description": "Exclude system prompt in cache key (default: false)"
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "keys",
+                    "dimension"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "otel"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the OpenTelemetry plugin",
+                  "properties": {
+                    "collector_url": {
+                      "type": "string",
+                      "description": "URL of the OpenTelemetry collector",
+                      "oneOf": [
+                        {
+                          "format": "uri"
+                        },
+                        {
+                          "pattern": "^[^:\\s]+:\\d+$"
+                        }
+                      ]
+                    },
+                    "trace_type": {
+                      "type": "string",
+                      "description": "Type of trace to use for the OTEL collector",
+                      "enum": [
+                        "otel"
+                      ]
+                    },
+                    "protocol": {
+                      "type": "string",
+                      "description": "Protocol to use for the OTEL collector",
+                      "enum": [
+                        "http",
+                        "grpc"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "collector_url",
+                    "trace_type",
+                    "protocol"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false,

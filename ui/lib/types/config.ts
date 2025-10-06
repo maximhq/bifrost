@@ -16,6 +16,14 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 	return KnownProvidersNames.includes(provider.toLowerCase() as KnownProvider);
 };
 
+export interface OpenAIKeyConfig {
+	use_responses_api: boolean;
+}
+
+export const DefaultOpenAIKeyConfig: OpenAIKeyConfig = {
+	use_responses_api: false,
+} as const satisfies Required<OpenAIKeyConfig>;
+
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
 	endpoint: string;
@@ -68,6 +76,7 @@ export interface ModelProviderKey {
 	value?: string;
 	models?: string[];
 	weight: number;
+	openai_key_config?: OpenAIKeyConfig;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;

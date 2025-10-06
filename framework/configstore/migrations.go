@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/maximhq/bifrost/framework/configstore/internal/migration"
@@ -8,24 +9,37 @@ import (
 )
 
 // Migrate performs the necessary database migrations.
-func triggerMigrations(db *gorm.DB) error {
-	if err := migrationInit(db); err != nil {
+func triggerMigrations(ctx context.Context, db *gorm.DB) error {
+	if err := migrationInit(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationMany2ManyJoinTable(db); err != nil {
+	if err := migrationMany2ManyJoinTable(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddCustomProviderConfigJSONColumn(db); err != nil {
+	if err := migrationAddCustomProviderConfigJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddVirtualKeyProviderConfigTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOpenAIUseResponsesAPIColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowedOriginsJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowDirectKeysColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
 }
 
 // migrationInit is the first migration
-func migrationInit(db *gorm.DB) error {
+func migrationInit(ctx context.Context, db *gorm.DB) error {
 	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
 		ID: "init",
 		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&TableConfigHash{}) {
 				if err := migrator.CreateTable(&TableConfigHash{}); err != nil {
@@ -120,6 +134,7 @@ func migrationInit(db *gorm.DB) error {
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			// Drop children first, then parents (adjust if your actual FKs differ)
 			if err := migrator.DropTable(&TableVirtualKey{}); err != nil {
@@ -184,10 +199,11 @@ func migrationInit(db *gorm.DB) error {
 }
 
 // createMany2ManyJoinTable creates a many-to-many join table for the given tables.
-func migrationMany2ManyJoinTable(db *gorm.DB) error {
+func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB) error {
 	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
 		ID: "many2manyjoin",
 		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			// create the many-to-many join table for virtual keys and keys
@@ -222,14 +238,113 @@ func migrationMany2ManyJoinTable(db *gorm.DB) error {
 	return nil
 }
 
-func migrationAddCustomProviderConfigJSONColumn(db *gorm.DB) error {
+func migrationAddCustomProviderConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
 		ID: "addcustomproviderconfigjsoncolumn",
 		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
 			if !migrator.HasColumn(&TableProvider{}, "custom_provider_config_json") {
 				if err := migrator.AddColumn(&TableProvider{}, "custom_provider_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "addvirtualkeyproviderconfig",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasTable(&TableVirtualKeyProviderConfig{}) {
+				if err := migrator.CreateTable(&TableVirtualKeyProviderConfig{}); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if err := migrator.DropTable(&TableVirtualKeyProviderConfig{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddOpenAIUseResponsesAPIColumn(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "add_open_ai_use_responses_api_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&TableKey{}, "open_ai_use_responses_api") {
+				if err := migrator.AddColumn(&TableKey{}, "open_ai_use_responses_api"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "add_allowed_origins_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&TableClientConfig{}, "allowed_origins_json") {
+				if err := migrator.AddColumn(&TableClientConfig{}, "allowed_origins_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "add_allow_direct_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&TableClientConfig{}, "allow_direct_keys") {
+				if err := migrator.AddColumn(&TableClientConfig{}, "allow_direct_keys"); err != nil {
 					return err
 				}
 			}

@@ -6,11 +6,6 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/anthropic"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/genai"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/langchain"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/litellm"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations/openai"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -23,11 +18,11 @@ type IntegrationHandler struct {
 func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *IntegrationHandler {
 	// Initialize all available integration routers
 	extensions := []integrations.ExtensionRouter{
-		openai.NewOpenAIRouter(client, handlerStore),
-		anthropic.NewAnthropicRouter(client, handlerStore),
-		genai.NewGenAIRouter(client, handlerStore),
-		litellm.NewLiteLLMRouter(client, handlerStore),
-		langchain.NewLangChainRouter(client, handlerStore),
+		integrations.NewOpenAIRouter(client, handlerStore),
+		integrations.NewAnthropicRouter(client, handlerStore),
+		integrations.NewGenAIRouter(client, handlerStore),
+		integrations.NewLiteLLMRouter(client, handlerStore),
+		integrations.NewLangChainRouter(client, handlerStore),
 	}
 
 	return &IntegrationHandler{

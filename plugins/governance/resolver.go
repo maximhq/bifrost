@@ -93,20 +93,20 @@ func (r *BudgetResolver) EvaluateRequest(ctx *context.Context, evaluationRequest
 		}
 	}
 
-	// 2. Check model filtering
-	if !r.isModelAllowed(vk, evaluationRequest.Model) {
-		return &EvaluationResult{
-			Decision:   DecisionModelBlocked,
-			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", evaluationRequest.Model),
-			VirtualKey: vk,
-		}
-	}
-
-	// 3. Check provider filtering
+	// 2. Check provider filtering
 	if !r.isProviderAllowed(vk, evaluationRequest.Provider) {
 		return &EvaluationResult{
 			Decision:   DecisionProviderBlocked,
 			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", evaluationRequest.Provider),
+			VirtualKey: vk,
+		}
+	}
+
+	// 3. Check model filtering
+	if !r.isModelAllowed(vk, evaluationRequest.Provider, evaluationRequest.Model) {
+		return &EvaluationResult{
+			Decision:   DecisionModelBlocked,
+			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", evaluationRequest.Model),
 			VirtualKey: vk,
 		}
 	}
@@ -117,7 +117,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *context.Context, evaluationRequest
 	}
 
 	// 5. Check budget hierarchy (VK → Team → Customer)
-	if budgetResult := r.checkBudgetHierarchy(vk); budgetResult != nil {
+	if budgetResult := r.checkBudgetHierarchy(*ctx, vk); budgetResult != nil {
 		return budgetResult
 	}
 
@@ -141,23 +141,38 @@ func (r *BudgetResolver) EvaluateRequest(ctx *context.Context, evaluationRequest
 }
 
 // isModelAllowed checks if the requested model is allowed for this VK
-func (r *BudgetResolver) isModelAllowed(vk *configstore.TableVirtualKey, model string) bool {
+func (r *BudgetResolver) isModelAllowed(vk *configstore.TableVirtualKey, provider schemas.ModelProvider, model string) bool {
 	// Empty AllowedModels means all models are allowed
-	if len(vk.AllowedModels) == 0 {
+	if len(vk.ProviderConfigs) == 0 {
 		return true
 	}
 
-	return slices.Contains(vk.AllowedModels, model)
+	for _, pc := range vk.ProviderConfigs {
+		if pc.Provider == string(provider) {
+			if len(pc.AllowedModels) == 0 {
+				return true
+			}
+			return slices.Contains(pc.AllowedModels, model)
+		}
+	}
+
+	return false
 }
 
 // isProviderAllowed checks if the requested provider is allowed for this VK
 func (r *BudgetResolver) isProviderAllowed(vk *configstore.TableVirtualKey, provider schemas.ModelProvider) bool {
 	// Empty AllowedProviders means all providers are allowed
-	if len(vk.AllowedProviders) == 0 {
+	if len(vk.ProviderConfigs) == 0 {
 		return true
 	}
 
-	return slices.Contains(vk.AllowedProviders, string(provider))
+	for _, pc := range vk.ProviderConfigs {
+		if pc.Provider == string(provider) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // checkRateLimits checks the VK's rate limits using flexible approach
@@ -215,9 +230,9 @@ func (r *BudgetResolver) checkRateLimits(vk *configstore.TableVirtualKey) *Evalu
 }
 
 // checkBudgetHierarchy checks the budget hierarchy atomically (VK → Team → Customer)
-func (r *BudgetResolver) checkBudgetHierarchy(vk *configstore.TableVirtualKey) *EvaluationResult {
+func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstore.TableVirtualKey) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
-	if err := r.store.CheckBudget(vk); err != nil {
+	if err := r.store.CheckBudget(ctx, vk); err != nil {
 		r.logger.Debug(fmt.Sprintf("Atomic budget check failed for VK %s: %s", vk.ID, err.Error()))
 
 		return &EvaluationResult{

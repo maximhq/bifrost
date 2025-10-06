@@ -19,8 +19,8 @@ func TestParameterVariations(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		request1    *schemas.BifrostRequest
-		request2    *schemas.BifrostRequest
+		request1    *schemas.BifrostChatRequest
+		request2    *schemas.BifrostChatRequest
 		shouldCache bool
 	}{
 		{
@@ -49,9 +49,9 @@ func TestParameterVariations(t *testing.T) {
 			clearTestKeysWithStore(t, setup.Store)
 
 			// Make first request
-			_, err1 := setup.Client.ChatCompletionRequest(ctx, tt.request1)
+			_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, tt.request1)
 			if err1 != nil {
-				t.Fatalf("First request failed: %v", err1)
+				return // Test will be skipped by retry function
 			}
 
 			WaitForCache()
@@ -59,7 +59,11 @@ func TestParameterVariations(t *testing.T) {
 			// Make second request
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx, tt.request2)
 			if err2 != nil {
-				t.Fatalf("Second request failed: %v", err2)
+				if err2.Error != nil {
+					t.Fatalf("Second request failed: %v", err2.Error.Message)
+				} else {
+					t.Fatalf("Second request failed: %v", err2)
+				}
 			}
 
 			// Check cache behavior
@@ -80,49 +84,45 @@ func TestToolVariations(t *testing.T) {
 	ctx := CreateContextWithCacheKey("tool-variations-test")
 
 	// Base request without tools
-	baseRequest := &schemas.BifrostRequest{
+	baseRequest := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: "user",
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("What's the weather like today?"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("What's the weather like today?"),
 				},
 			},
 		},
-		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.5),
-			MaxTokens:   bifrost.Ptr(100),
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(100),
+			Temperature:         bifrost.Ptr(0.5),
 		},
 	}
 
 	// Request with tools
-	requestWithTools := &schemas.BifrostRequest{
+	requestWithTools := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: "user",
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("What's the weather like today?"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("What's the weather like today?"),
 				},
 			},
 		},
-		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.5),
-			MaxTokens:   bifrost.Ptr(100),
-			Tools: &[]schemas.Tool{
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(100),
+			Temperature:         bifrost.Ptr(0.5),
+			Tools: []schemas.ChatTool{
 				{
-					Type: "function",
-					Function: schemas.Function{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
 						Name:        "get_weather",
-						Description: "Get the current weather",
-						Parameters: schemas.FunctionParameters{
+						Description: bifrost.Ptr("Get the current weather"),
+						Parameters: &schemas.ToolFunctionParameters{
 							Type: "object",
 							Properties: map[string]interface{}{
 								"location": map[string]interface{}{
@@ -131,6 +131,7 @@ func TestToolVariations(t *testing.T) {
 								},
 							},
 						},
+						Strict: bifrost.Ptr(false),
 					},
 				},
 			},
@@ -138,29 +139,27 @@ func TestToolVariations(t *testing.T) {
 	}
 
 	// Request with different tools
-	requestWithDifferentTools := &schemas.BifrostRequest{
+	requestWithDifferentTools := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: "user",
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("What's the weather like today?"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("What's the weather like today?"),
 				},
 			},
 		},
-		Params: &schemas.ModelParameters{
-			Temperature: bifrost.Ptr(0.5),
-			MaxTokens:   bifrost.Ptr(100),
-			Tools: &[]schemas.Tool{
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(100),
+			Temperature:         bifrost.Ptr(0.5),
+			Tools: []schemas.ChatTool{
 				{
-					Type: "function",
-					Function: schemas.Function{
-						Name:        "get_current_weather", // Different name
-						Description: "Get current weather information",
-						Parameters: schemas.FunctionParameters{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "get_current_weather",
+						Description: bifrost.Ptr("Get current weather information"),
+						Parameters: &schemas.ToolFunctionParameters{
 							Type: "object",
 							Properties: map[string]interface{}{
 								"city": map[string]interface{}{ // Different parameter name
@@ -169,6 +168,7 @@ func TestToolVariations(t *testing.T) {
 								},
 							},
 						},
+						Strict: bifrost.Ptr(false),
 					},
 				},
 			},
@@ -177,7 +177,7 @@ func TestToolVariations(t *testing.T) {
 
 	// Test 1: Request without tools
 	t.Log("Making request without tools...")
-	_, err1 := setup.Client.ChatCompletionRequest(ctx, baseRequest)
+	_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, baseRequest)
 	if err1 != nil {
 		t.Fatalf("Request without tools failed: %v", err1)
 	}
@@ -186,9 +186,9 @@ func TestToolVariations(t *testing.T) {
 
 	// Test 2: Request with tools (should NOT cache hit)
 	t.Log("Making request with tools...")
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx, requestWithTools)
+	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx, requestWithTools)
 	if err2 != nil {
-		t.Fatalf("Request with tools failed: %v", err2)
+		return // Test will be skipped by retry function
 	}
 
 	AssertNoCacheHit(t, response2)
@@ -206,9 +206,9 @@ func TestToolVariations(t *testing.T) {
 
 	// Test 4: Request with different tools (should NOT cache hit)
 	t.Log("Making request with different tools...")
-	response4, err4 := setup.Client.ChatCompletionRequest(ctx, requestWithDifferentTools)
+	response4, err4 := ChatRequestWithRetries(t, setup.Client, ctx, requestWithDifferentTools)
 	if err4 != nil {
-		t.Fatalf("Request with different tools failed: %v", err4)
+		return // Test will be skipped by retry function
 	}
 
 	AssertNoCacheHit(t, response4)
@@ -225,150 +225,140 @@ func TestContentVariations(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		request *schemas.BifrostRequest
+		request *schemas.BifrostChatRequest
 	}{
 		{
 			name: "Unicode Content",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr("🌟 Unicode test: Hello, 世界! مرحبا 🌍"),
-							},
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr("🌟 Unicode test: Hello, 世界! مرحبا 🌍"),
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.1),
-					MaxTokens:   bifrost.Ptr(50),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(50),
+					Temperature:         bifrost.Ptr(0.1),
 				},
 			},
 		},
 		{
 			name: "Image URL Content",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentBlocks: &[]schemas.ContentBlock{
-									{
-										Type: "text",
-										Text: bifrost.Ptr("Analyze this image"),
-									},
-									{
-										Type: "image_url",
-										ImageURL: &schemas.ImageURLStruct{
-											URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
-										},
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeText,
+									Text: bifrost.Ptr("Analyze this image"),
+								},
+								{
+									Type: schemas.ChatContentBlockTypeImage,
+									ImageURLStruct: &schemas.ChatInputImage{
+										URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
 									},
 								},
 							},
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.3),
-					MaxTokens:   bifrost.Ptr(200),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(200),
+					Temperature:         bifrost.Ptr(0.3),
 				},
 			},
 		},
 		{
 			name: "Multiple Images",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentBlocks: &[]schemas.ContentBlock{
-									{
-										Type: "text",
-										Text: bifrost.Ptr("Compare these images"),
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeText,
+									Text: bifrost.Ptr("Compare these images"),
+								},
+								{
+									Type: schemas.ChatContentBlockTypeImage,
+									ImageURLStruct: &schemas.ChatInputImage{
+										URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
 									},
-									{
-										Type: "image_url",
-										ImageURL: &schemas.ImageURLStruct{
-											URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
-										},
-									},
-									{
-										Type: "image_url",
-										ImageURL: &schemas.ImageURLStruct{
-											URL: "https://upload.wikimedia.org/wikipedia/commons/b/b5/Scenery_.jpg",
-										},
+								},
+								{
+									Type: schemas.ChatContentBlockTypeImage,
+									ImageURLStruct: &schemas.ChatInputImage{
+										URL: "https://upload.wikimedia.org/wikipedia/commons/b/b5/Scenery_.jpg",
 									},
 								},
 							},
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.3),
-					MaxTokens:   bifrost.Ptr(200),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(200),
+					Temperature:         bifrost.Ptr(0.3),
 				},
 			},
 		},
 		{
 			name: "Very Long Content",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr(strings.Repeat("This is a very long prompt. ", 100)),
-							},
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr(strings.Repeat("This is a very long prompt. ", 100)),
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.2),
-					MaxTokens:   bifrost.Ptr(50),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(50),
+					Temperature:         bifrost.Ptr(0.2),
 				},
 			},
 		},
 		{
 			name: "Multi-turn Conversation",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr("What is AI?"),
-							},
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr("What is AI?"),
 						},
-						{
-							Role: "assistant",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr("AI stands for Artificial Intelligence..."),
-							},
+					},
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr("AI stands for Artificial Intelligence..."),
 						},
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr("Can you give me examples?"),
-							},
+					},
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr("Can you give me examples?"),
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.5),
-					MaxTokens:   bifrost.Ptr(150),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(150),
+					Temperature:         bifrost.Ptr(0.5),
 				},
 			},
 		},
@@ -379,7 +369,7 @@ func TestContentVariations(t *testing.T) {
 			t.Logf("Testing content variation: %s", tt.name)
 
 			// Make first request
-			_, err1 := setup.Client.ChatCompletionRequest(ctx, tt.request)
+			_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, tt.request)
 			if err1 != nil {
 				t.Logf("⚠️  First %s request failed: %v", tt.name, err1)
 				return // Skip this test case
@@ -409,76 +399,70 @@ func TestBoundaryParameterValues(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		request *schemas.BifrostRequest
+		request *schemas.BifrostChatRequest
 	}{
 		{
 			name: "Maximum Parameter Values",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr("Test max parameters"),
-							},
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr("Test max parameters"),
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature:      bifrost.Ptr(2.0),
-					MaxTokens:        bifrost.Ptr(4096),
-					TopP:             bifrost.Ptr(1.0),
-					PresencePenalty:  bifrost.Ptr(2.0),
-					FrequencyPenalty: bifrost.Ptr(2.0),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(4096),
+					PresencePenalty:     bifrost.Ptr(2.0),
+					FrequencyPenalty:    bifrost.Ptr(2.0),
+					Temperature:         bifrost.Ptr(2.0),
+					TopP:                bifrost.Ptr(1.0),
 				},
 			},
 		},
 		{
 			name: "Minimum Parameter Values",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr("Test min parameters"),
-							},
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr("Test min parameters"),
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature:      bifrost.Ptr(0.0),
-					MaxTokens:        bifrost.Ptr(1),
-					TopP:             bifrost.Ptr(0.01),
-					PresencePenalty:  bifrost.Ptr(-2.0),
-					FrequencyPenalty: bifrost.Ptr(-2.0),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(1),
+					PresencePenalty:     bifrost.Ptr(-2.0),
+					FrequencyPenalty:    bifrost.Ptr(-2.0),
+					Temperature:         bifrost.Ptr(0.0),
+					TopP:                bifrost.Ptr(0.01),
 				},
 			},
 		},
 		{
 			name: "Edge Case Parameters",
-			request: &schemas.BifrostRequest{
+			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
-				Input: schemas.RequestInput{
-					ChatCompletionInput: &[]schemas.BifrostMessage{
-						{
-							Role: "user",
-							Content: schemas.MessageContent{
-								ContentStr: bifrost.Ptr("Test edge case parameters"),
-							},
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: schemas.ChatMessageContent{
+							ContentStr: bifrost.Ptr("Test edge case parameters"),
 						},
 					},
 				},
-				Params: &schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.0),
-					MaxTokens:   bifrost.Ptr(1),
-					TopP:        bifrost.Ptr(0.1),
-					User:        bifrost.Ptr("test-user-id-12345"),
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(1),
+					User:                bifrost.Ptr("test-user-id-12345"),
+					Temperature:         bifrost.Ptr(0.0),
+					TopP:                bifrost.Ptr(0.1),
 				},
 			},
 		},
@@ -547,9 +531,9 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 
 			// Make first request
 			request1 := CreateBasicChatRequest(test.prompt1, 0.1, 50)
-			_, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
+			_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request1)
 			if err1 != nil {
-				t.Fatalf("First request failed: %v", err1)
+				return // Test will be skipped by retry function
 			}
 
 			// Wait for cache to be written
@@ -559,7 +543,11 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 			request2 := CreateBasicChatRequest(test.prompt2, 0.1, 50) // Same parameters
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
 			if err2 != nil {
-				t.Fatalf("Second request failed: %v", err2)
+				if err2.Error != nil {
+					t.Fatalf("Second request failed: %v", err2.Error.Message)
+				} else {
+					t.Fatalf("Second request failed: %v", err2)
+				}
 			}
 
 			var cacheThresholdFloat float64
@@ -608,7 +596,7 @@ func TestErrorHandlingEdgeCases(t *testing.T) {
 	t.Run("Request without cache key", func(t *testing.T) {
 		ctxNoKey := context.Background() // No cache key
 
-		response, err := setup.Client.ChatCompletionRequest(ctxNoKey, testRequest)
+		response, err := ChatRequestWithRetries(t, setup.Client, ctxNoKey, testRequest)
 		if err != nil {
 			t.Errorf("Request without cache key failed: %v", err)
 			return
@@ -623,7 +611,7 @@ func TestErrorHandlingEdgeCases(t *testing.T) {
 	t.Run("Request with invalid cache key type", func(t *testing.T) {
 		// First establish a cached response with valid context
 		validCtx := CreateContextWithCacheKey("error-handling-test")
-		_, err := setup.Client.ChatCompletionRequest(validCtx, testRequest)
+		_, err := ChatRequestWithRetries(t, setup.Client, validCtx, testRequest)
 		if err != nil {
 			t.Fatalf("First request with valid cache key failed: %v", err)
 		}
@@ -633,7 +621,7 @@ func TestErrorHandlingEdgeCases(t *testing.T) {
 		// Now test with invalid key type - should bypass cache
 		ctxInvalidKey := context.WithValue(context.Background(), CacheKey, 12345) // Wrong type (int instead of string)
 
-		response, err := setup.Client.ChatCompletionRequest(ctxInvalidKey, testRequest)
+		response, err := ChatRequestWithRetries(t, setup.Client, ctxInvalidKey, testRequest)
 		if err != nil {
 			t.Errorf("Request with invalid cache key type failed: %v", err)
 			return

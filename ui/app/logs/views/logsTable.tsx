@@ -78,8 +78,8 @@ export function LogsDataTable({
 	return (
 		<div className="space-y-2">
 			<LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} />
-			<div className="rounded-sm border">
-				<Table>
+			<div className="rounded-sm border max-h-[calc(100vh-20rem)]">
+				<Table containerClassName="max-h-[calc(100vh-20rem)]">
 					<TableHeader className="px-2">
 						{table.getHeaderGroups().map((headerGroup) => (
 							<TableRow key={headerGroup.id}>

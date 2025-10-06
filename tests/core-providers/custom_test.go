@@ -21,9 +21,9 @@ func TestCustomProvider(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  config.ProviderOpenAICustom,
-		ChatModel: "llama-3.3-70b-versatile",
-		TextModel: "", // OpenAI doesn't support text completion in newer models
+		Provider:       config.ProviderOpenAICustom,
+		ChatModel:      "llama-3.3-70b-versatile",
+		TextModel:      "", // OpenAI doesn't support text completion in newer models
 		EmbeddingModel: "", // groq custom base: embeddings not supported
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
@@ -38,11 +38,7 @@ func TestCustomProvider(t *testing.T) {
 			ImageBase64:           false,
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			Embedding:             false,
-		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
 		},
 	}
 
@@ -62,19 +58,19 @@ func TestCustomProvider_DisallowedOperation(t *testing.T) {
 	defer cancel()
 	defer client.Shutdown()
 
-
 	// Create a speech request to the custom provider
 	prompt := "The future of artificial intelligence is"
-	request := &schemas.BifrostRequest{
+	request := &schemas.BifrostSpeechRequest{
 		Provider: config.ProviderOpenAICustom, // Use the custom provider
-		Model:    "llama-3.3-70b-versatile", // Use a model that exists for this provider
-		Input: schemas.RequestInput{
-			SpeechInput: &schemas.SpeechInput{
-				Input: prompt,
-			},
+		Model:    "llama-3.3-70b-versatile",   // Use a model that exists for this provider
+		Input: &schemas.SpeechInput{
+			Input: prompt,
 		},
-		Params: &schemas.ModelParameters{
-			MaxTokens: bifrost.Ptr(100),
+		Params: &schemas.SpeechParameters{
+			VoiceConfig: &schemas.SpeechVoiceInput{
+				Voice: bifrost.Ptr("alloy"),
+			},
+			ResponseFormat: "mp3",
 		},
 	}
 
@@ -89,7 +85,7 @@ func TestCustomProvider_DisallowedOperation(t *testing.T) {
 	msg := strings.ToLower(bifrostErr.Error.Message)
 	assert.Contains(t, msg, "not supported", "error should indicate operation is not supported")
 	assert.Contains(t, msg, string(config.ProviderOpenAICustom), "error should mention refusing provider")
-	assert.Equal(t, config.ProviderOpenAICustom, bifrostErr.Provider, "error should be attributed to the custom provider")
+	assert.Equal(t, config.ProviderOpenAICustom, bifrostErr.ExtraFields.Provider, "error should be attributed to the custom provider")
 }
 
 func TestCustomProvider_MismatchedIdentity(t *testing.T) {
@@ -103,21 +99,19 @@ func TestCustomProvider_MismatchedIdentity(t *testing.T) {
 	// Use a provider that doesn't exist
 	wrongProvider := schemas.ModelProvider("wrong-provider")
 
-	request := &schemas.BifrostRequest{
+	request := &schemas.BifrostChatRequest{
 		Provider: wrongProvider,
 		Model:    "llama-3.3-70b-versatile",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: schemas.ModelChatMessageRoleUser,
-					Content: schemas.MessageContent{
-						ContentStr: bifrost.Ptr("Hello! What's the capital of France?"),
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr("Hello! What's the capital of France?"),
 				},
 			},
 		},
-		Params: &schemas.ModelParameters{
-			MaxTokens: bifrost.Ptr(100),
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(100),
 		},
 	}
 
@@ -131,5 +125,5 @@ func TestCustomProvider_MismatchedIdentity(t *testing.T) {
 	msg := strings.ToLower(bifrostErr.Error.Message)
 	assert.Contains(t, msg, "unsupported provider", "error should mention unsupported provider")
 	assert.Contains(t, msg, strings.ToLower(string(wrongProvider)), "error should mention the wrong provider")
-	assert.Equal(t, wrongProvider, bifrostErr.Provider, "error should include the unsupported provider identity")
+	assert.Equal(t, wrongProvider, bifrostErr.ExtraFields.Provider, "error should include the unsupported provider identity")
 }

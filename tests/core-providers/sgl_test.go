@@ -17,12 +17,13 @@ func TestSGL(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.SGL,
-		ChatModel: "Qwen2.5-VL-7B-Instruct",
-		TextModel: "", // SGL doesn't support text completion
-		EmbeddingModel: "", // SGL doesn't support embedding
+		Provider:       schemas.SGL,
+		ChatModel:      "qwen/qwen2.5-0.5b-instruct",
+		VisionModel:    "Qwen/Qwen2.5-VL-7B-Instruct",
+		TextModel:      "qwen/qwen2.5-0.5b-instruct",
+		EmbeddingModel: "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
 		Scenarios: config.TestScenarios{
-			TextCompletion:        false, // Not supported
+			TextCompletion:        true,
 			SimpleChat:            true,
 			ChatCompletionStream:  true,
 			MultiTurnConversation: true,
@@ -34,8 +35,7 @@ func TestSGL(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
-			Embedding:             false,
+			Embedding:             true,
 		},
 	}
 

@@ -8,11 +8,11 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // RunTranscriptionTest executes the transcription test scenario
@@ -58,27 +58,26 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 			t.Run(tc.name, func(t *testing.T) {
 				// Step 1: Generate TTS audio
 				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
-				ttsRequest := &schemas.BifrostRequest{
+				ttsRequest := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel,
-					Input: schemas.RequestInput{
-						SpeechInput: &schemas.SpeechInput{
-							Input: tc.text,
-							VoiceConfig: schemas.SpeechVoiceInput{
-								Voice: &voice,
-							},
-							ResponseFormat: tc.format,
-						},
+					Input: &schemas.SpeechInput{
+						Input: tc.text,
 					},
-					Params:    MergeModelParameters(&schemas.ModelParameters{}, testConfig.CustomParams),
+					Params: &schemas.SpeechParameters{
+						VoiceConfig: &schemas.SpeechVoiceInput{
+							Voice: &voice,
+						},
+						ResponseFormat: tc.format,
+					},
 					Fallbacks: testConfig.Fallbacks,
 				}
 
 				ttsResponse, err := client.SpeechRequest(ctx, ttsRequest)
-				require.Nilf(t, err, "TTS generation failed for round-trip test: %v", err)
-				require.NotNil(t, ttsResponse.Speech)
-				require.NotNil(t, ttsResponse.Speech.Audio)
-				require.Greater(t, len(ttsResponse.Speech.Audio), 0, "TTS returned empty audio")
+				RequireNoError(t, err, "TTS generation failed for round-trip test")
+				if ttsResponse.Speech == nil || ttsResponse.Speech.Audio == nil || len(ttsResponse.Speech.Audio) == 0 {
+					t.Fatal("TTS returned invalid or empty audio for round-trip test")
+				}
 
 				// Save temp audio file
 				tempDir := os.TempDir()
@@ -94,31 +93,55 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				t.Logf("🔄 Generated TTS audio for round-trip: %s (%d bytes)", audioFileName, len(ttsResponse.Speech.Audio))
 
 				// Step 2: Transcribe the generated audio
-				transcriptionRequest := &schemas.BifrostRequest{
+				transcriptionRequest := &schemas.BifrostTranscriptionRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.TranscriptionModel,
-					Input: schemas.RequestInput{
-						TranscriptionInput: &schemas.TranscriptionInput{
-							File:           ttsResponse.Speech.Audio,
-							Language:       bifrost.Ptr("en"),
-							Format:         bifrost.Ptr("mp3"),
-							ResponseFormat: tc.responseFormat,
-						},
+					Input: &schemas.TranscriptionInput{
+						File: ttsResponse.Speech.Audio,
 					},
-					Params: MergeModelParameters(&schemas.ModelParameters{
-						Temperature: bifrost.Ptr(0.0), // Deterministic
-					}, testConfig.CustomParams),
+					Params: &schemas.TranscriptionParameters{
+						Language:       bifrost.Ptr("en"),
+						Format:         bifrost.Ptr("mp3"),
+						ResponseFormat: tc.responseFormat,
+					},
 					Fallbacks: testConfig.Fallbacks,
 				}
 
-				transcriptionResponse, err := client.TranscriptionRequest(ctx, transcriptionRequest)
-				require.Nilf(t, err, "Transcription failed for round-trip test: %v", err)
-				require.NotNil(t, transcriptionResponse)
-				require.NotNil(t, transcriptionResponse.Transcribe)
+				retryConfig := GetTestRetryConfigForScenario("Transcription_RoundTrip", testConfig)
+				retryContext := TestRetryContext{
+					ScenarioName: "Transcription_RoundTrip_" + tc.name,
+					ExpectedBehavior: map[string]interface{}{
+						"transcribe_audio": true,
+						"round_trip_test":  true,
+						"original_text":    tc.text,
+					},
+					TestMetadata: map[string]interface{}{
+						"provider":     testConfig.Provider,
+						"model":        testConfig.TranscriptionModel,
+						"audio_format": tc.format,
+					},
+				}
+
+				// Enhanced validation for transcription
+				expectations := TranscriptionExpectations(10) // Expect at least some content
+				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+				transcriptionResponse, bifrostErr := WithTestRetry(t, retryConfig, retryContext, expectations, "Transcription_RoundTrip_"+tc.name, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return client.TranscriptionRequest(ctx, transcriptionRequest)
+				})
+				if bifrostErr != nil {
+					t.Fatalf("❌ Transcription_RoundTrip_"+tc.name+" request failed after retries: %v", GetErrorMessage(bifrostErr))
+				}
 
 				// Validate round-trip: check if transcribed text contains key words from original
+				if transcriptionResponse.Transcribe == nil {
+					t.Fatal("Transcription response missing transcribe data")
+				}
+
 				transcribedText := transcriptionResponse.Transcribe.Text
-				require.NotEmpty(t, transcribedText, "Transcribed text should not be empty")
+				if transcribedText == "" {
+					t.Fatal("Transcribed text should not be empty")
+				}
 
 				// Normalize for comparison (lowercase, remove punctuation)
 				originalWords := strings.Fields(strings.ToLower(tc.text))
@@ -198,20 +221,17 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 					audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, tc.text, "primary", "mp3")
 
 					// Test transcription
-					request := &schemas.BifrostRequest{
+					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.TranscriptionModel,
-						Input: schemas.RequestInput{
-							TranscriptionInput: &schemas.TranscriptionInput{
-								File:           audioData,
-								Language:       tc.language,
-								Format:         bifrost.Ptr("mp3"),
-								ResponseFormat: tc.responseFormat,
-							},
+						Input: &schemas.TranscriptionInput{
+							File: audioData,
 						},
-						Params: MergeModelParameters(&schemas.ModelParameters{
-							Temperature: bifrost.Ptr(0.0),
-						}, testConfig.CustomParams),
+						Params: &schemas.TranscriptionParameters{
+							Language:       tc.language,
+							Format:         bifrost.Ptr("mp3"),
+							ResponseFormat: tc.responseFormat,
+						},
 						Fallbacks: testConfig.Fallbacks,
 					}
 
@@ -245,17 +265,16 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			for _, format := range formats {
 				t.Run("Format_"+format, func(t *testing.T) {
 					formatCopy := format
-					request := &schemas.BifrostRequest{
+					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.TranscriptionModel,
-						Input: schemas.RequestInput{
-							TranscriptionInput: &schemas.TranscriptionInput{
-								File:           audioData,
-								Format:         bifrost.Ptr("mp3"),
-								ResponseFormat: &formatCopy,
-							},
+						Input: &schemas.TranscriptionInput{
+							File: audioData,
 						},
-						Params:    MergeModelParameters(&schemas.ModelParameters{}, testConfig.CustomParams),
+						Params: &schemas.TranscriptionParameters{
+							Format:         bifrost.Ptr("mp3"),
+							ResponseFormat: &formatCopy,
+						},
 						Fallbacks: testConfig.Fallbacks,
 					}
 
@@ -277,21 +296,18 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextMedium, "secondary", "mp3")
 
 			// Test with custom parameters and temperature
-			request := &schemas.BifrostRequest{
+			request := &schemas.BifrostTranscriptionRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.TranscriptionModel,
-				Input: schemas.RequestInput{
-					TranscriptionInput: &schemas.TranscriptionInput{
-						File:           audioData,
-						Language:       bifrost.Ptr("en"),
-						Format:         bifrost.Ptr("mp3"),
-						Prompt:         bifrost.Ptr("This audio contains technical terminology and proper nouns."),
-						ResponseFormat: bifrost.Ptr("json"), // Use json instead of verbose_json for whisper-1
-					},
+				Input: &schemas.TranscriptionInput{
+					File: audioData,
 				},
-				Params: MergeModelParameters(&schemas.ModelParameters{
-					Temperature: bifrost.Ptr(0.2),
-				}, testConfig.CustomParams),
+				Params: &schemas.TranscriptionParameters{
+					Language:       bifrost.Ptr("en"),
+					Format:         bifrost.Ptr("mp3"),
+					Prompt:         bifrost.Ptr("This audio contains technical terminology and proper nouns."),
+					ResponseFormat: bifrost.Ptr("json"), // Use json instead of verbose_json for whisper-1
+				},
 				Fallbacks: testConfig.Fallbacks,
 			}
 
@@ -314,17 +330,16 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			for _, lang := range languages {
 				t.Run("Language_"+lang, func(t *testing.T) {
 					langCopy := lang
-					request := &schemas.BifrostRequest{
+					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.TranscriptionModel,
-						Input: schemas.RequestInput{
-							TranscriptionInput: &schemas.TranscriptionInput{
-								File:     audioData,
-								Format:   bifrost.Ptr("mp3"),
-								Language: &langCopy,
-							},
+						Input: &schemas.TranscriptionInput{
+							File: audioData,
 						},
-						Params:    MergeModelParameters(&schemas.ModelParameters{}, testConfig.CustomParams),
+						Params: &schemas.TranscriptionParameters{
+							Format:   bifrost.Ptr("mp3"),
+							Language: &langCopy,
+						},
 						Fallbacks: testConfig.Fallbacks,
 					}
 

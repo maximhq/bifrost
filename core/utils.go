@@ -13,14 +13,6 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
-func attachContextKeys(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) context.Context {
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestType, requestType)
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestProvider, req.Provider)
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestModel, req.Model)
-
-	return ctx
-}
-
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
 // Some providers like Ollama and SGL are keyless and don't require API keys.
 func providerRequiresKey(providerKey schemas.ModelProvider) bool {
@@ -65,7 +57,7 @@ func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 func newBifrostError(err error) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: err.Error(),
 			Error:   err,
 		},
@@ -77,7 +69,7 @@ func newBifrostError(err error) *schemas.BifrostError {
 func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: message,
 		},
 	}
@@ -129,7 +121,7 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest
+	return reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest
 }
 
 func IsFinalChunk(ctx *context.Context) bool {
@@ -147,4 +139,13 @@ func IsFinalChunk(ctx *context.Context) bool {
 	}
 
 	return false
+}
+
+// GetRequestFields extracts the request type, provider, and model from the result or error
+func GetRequestFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, model string) {
+	if result != nil {
+		return result.ExtraFields.RequestType, result.ExtraFields.Provider, result.ExtraFields.ModelRequested
+	}
+
+	return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
 }

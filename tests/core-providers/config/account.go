@@ -30,24 +30,25 @@ type TestScenarios struct {
 	ImageBase64           bool
 	MultipleImages        bool
 	CompleteEnd2End       bool
-	ProviderSpecific      bool
 	SpeechSynthesis       bool // Text-to-speech functionality
 	SpeechSynthesisStream bool // Streaming text-to-speech functionality
 	Transcription         bool // Speech-to-text functionality
 	TranscriptionStream   bool // Streaming speech-to-text functionality
 	Embedding             bool // Embedding functionality
+	Reasoning             bool // Reasoning/thinking functionality via Responses API
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
 type ComprehensiveTestConfig struct {
 	Provider             schemas.ModelProvider
-	ChatModel            string
 	TextModel            string
+	ChatModel            string
+	VisionModel          string
+	ReasoningModel       string
 	EmbeddingModel       string
 	TranscriptionModel   string
 	SpeechSynthesisModel string
 	Scenarios            TestScenarios
-	CustomParams         *schemas.ModelParameters
 	Fallbacks            []schemas.Fallback
 	SkipReason           string // Reason to skip certain tests
 }
@@ -107,14 +108,28 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("ANTHROPIC_API_KEY"),
-				Models: []string{"claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20240620", "claude-2.1"},
+				Models: []string{},
 				Weight: 1.0,
 			},
 		}, nil
 	case schemas.Bedrock:
 		return []schemas.Key{
 			{
-				Models: []string{"anthropic.claude-v2:1", "mistral.mixtral-8x7b-instruct-v0:1", "mistral.mistral-large-2402-v1:0", "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Models: []string{},
+				Weight: 1.0,
+				BedrockKeyConfig: &schemas.BedrockKeyConfig{
+					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
+					SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
+					SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
+					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
+					ARN:          bifrost.Ptr(os.Getenv("AWS_ARN")),
+					Deployments: map[string]string{
+						"claude-sonnet-4": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+					},
+				},
+			},
+			{
+				Models: []string{"amazon.titan-embed-text-v2:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -128,7 +143,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("COHERE_API_KEY"),
-				Models: []string{"command-a-03-2025", "c4ai-aya-vision-8b"},
+				Models: []string{},
 				Weight: 1.0,
 			},
 		}, nil
@@ -136,13 +151,13 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("AZURE_API_KEY"),
-				Models: []string{"gpt-4o", "text-embedding-3-small"},
+				Models: []string{"gpt-4o", "text-embedding-ada-002"},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: os.Getenv("AZURE_ENDPOINT"),
 					Deployments: map[string]string{
 						"gpt-4o":                 "gpt-4o-aug",
-						"text-embedding-3-small": "text-embedding-3-small-deployment",
+						"text-embedding-ada-002": "text-embedding-ada-002",
 					},
 					// Use environment variable for API version with fallback to current preview version
 					// Note: This is a preview API version that may change over time. Update as needed.
@@ -224,9 +239,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     3, // Higher retries for production-grade provider
+				RetryBackoffInitial:            500 * time.Millisecond,
+				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -238,9 +253,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				BaseURL:                        getEnvWithDefault("GROQ_OPENAI_BASE_URL", "https://api.groq.com/openai"),
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     4, // Higher retries for Groq (can be flaky)
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                10 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -262,16 +277,24 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		}, nil
 	case schemas.Anthropic:
 		return &schemas.ProviderConfig{
-			NetworkConfig:            schemas.DefaultNetworkConfig,
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     3, // Claude is generally reliable
+				RetryBackoffInitial:            500 * time.Millisecond,
+				RetryBackoffMax:                8 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.Bedrock:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     5, // AWS services can have occasional issues
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                20 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -280,16 +303,24 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		}, nil
 	case schemas.Cohere:
 		return &schemas.ProviderConfig{
-			NetworkConfig:            schemas.DefaultNetworkConfig,
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     4, // Cohere can be variable
+				RetryBackoffInitial:            750 * time.Millisecond,
+				RetryBackoffMax:                10 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.Azure:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     3, // Azure OpenAI is generally reliable
+				RetryBackoffInitial:            500 * time.Millisecond,
+				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -300,9 +331,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     3, // Google Cloud is generally reliable
+				RetryBackoffInitial:            500 * time.Millisecond,
+				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
@@ -313,63 +344,107 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     2, // Local service, fewer retries needed
+				RetryBackoffInitial:            250 * time.Millisecond,
+				RetryBackoffMax:                4 * time.Second,
 				BaseURL:                        getEnvWithDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
 			},
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.Mistral:
 		return &schemas.ProviderConfig{
-			NetworkConfig:            schemas.DefaultNetworkConfig,
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     4, // Mistral can be variable
+				RetryBackoffInitial:            750 * time.Millisecond,
+				RetryBackoffMax:                10 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.Groq:
 		return &schemas.ProviderConfig{
-			NetworkConfig:            schemas.DefaultNetworkConfig,
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     5, // Groq can be flaky at times
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                15 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.SGL:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				BaseURL:                        os.Getenv("SGL_BASE_URL"),
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     5, // SGL (self-hosted) can be variable
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                15 * time.Second,
 			},
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.Parasail:
 		return &schemas.ProviderConfig{
-			NetworkConfig:            schemas.DefaultNetworkConfig,
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     5, // Parasail can be variable
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.Cerebras:
 		return &schemas.ProviderConfig{
-			NetworkConfig:            schemas.DefaultNetworkConfig,
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     4, // Cerebras is reasonably stable
+				RetryBackoffInitial:            750 * time.Millisecond,
+				RetryBackoffMax:                10 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.Gemini:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     4, // Gemini can be variable
+				RetryBackoffInitial:            750 * time.Millisecond,
+				RetryBackoffMax:                12 * time.Second,
 			},
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 60,
-				MaxRetries:                     1,
-				RetryBackoffInitial:            100 * time.Millisecond,
-				RetryBackoffMax:                2 * time.Second,
+				MaxRetries:                     4, // OpenRouter can be variable (proxy service)
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
 			},
-			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
@@ -381,7 +456,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	{
 		Provider:             schemas.OpenAI,
 		ChatModel:            "gpt-4o-mini",
-		TextModel:            "", // OpenAI doesn't support text completion in newer models
+		TextModel:            "",        // OpenAI doesn't support text completion in newer models
+		ReasoningModel:       "o1-mini", // OpenAI reasoning model
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "tts-1",
 		Scenarios: TestScenarios{
@@ -397,12 +473,12 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       true, // OpenAI supports TTS
 			SpeechSynthesisStream: true, // OpenAI supports streaming TTS
 			Transcription:         true, // OpenAI supports STT with Whisper
 			TranscriptionStream:   true, // OpenAI supports streaming STT
 			Embedding:             true,
+			Reasoning:             true, // OpenAI supports reasoning via o1 models
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -425,7 +501,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -453,7 +528,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -481,7 +555,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           false, // Check if supported
 			MultipleImages:        false, // Check if supported
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -509,7 +582,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported yet
 			SpeechSynthesisStream: false, // Not supported yet
 			Transcription:         false, // Not supported yet
@@ -537,7 +609,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -564,7 +635,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -592,7 +662,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -620,7 +689,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -648,7 +716,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           false,
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -679,7 +746,6 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
 			Transcription:         true,
@@ -707,12 +773,11 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
 			SpeechSynthesis:       false,
 			SpeechSynthesisStream: false,
 			Transcription:         false,
 			TranscriptionStream:   false,
-			Embedding:             false, 
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

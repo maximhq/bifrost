@@ -59,14 +59,14 @@ type ErrorResponse struct {
 }
 
 // RegisterRoutes registers all provider management routes
-func (h *ProviderHandler) RegisterRoutes(r *router.Router) {
+func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	// Provider CRUD operations
-	r.GET("/api/providers", h.listProviders)
-	r.GET("/api/providers/{provider}", h.getProvider)
-	r.POST("/api/providers", h.addProvider)
-	r.PUT("/api/providers/{provider}", h.updateProvider)
-	r.DELETE("/api/providers/{provider}", h.deleteProvider)
-	r.GET("/api/keys", h.listKeys)
+	r.GET("/api/providers", ChainMiddlewares(h.listProviders, middlewares...))
+	r.GET("/api/providers/{provider}", ChainMiddlewares(h.getProvider, middlewares...))
+	r.POST("/api/providers", ChainMiddlewares(h.addProvider, middlewares...))
+	r.PUT("/api/providers/{provider}", ChainMiddlewares(h.updateProvider, middlewares...))
+	r.DELETE("/api/providers/{provider}", ChainMiddlewares(h.deleteProvider, middlewares...))
+	r.GET("/api/keys", ChainMiddlewares(h.listKeys, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -201,7 +201,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Add provider to store (env vars will be processed by store)
-	if err := h.store.AddProvider(payload.Provider, config); err != nil {
+	if err := h.store.AddProvider(ctx, payload.Provider, config); err != nil {
 		h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", payload.Provider, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err), h.logger)
 		return
@@ -355,14 +355,14 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update provider config in store (env vars will be processed by store)
-	if err := h.store.UpdateProviderConfig(provider, config); err != nil {
+	if err := h.store.UpdateProviderConfig(ctx, provider, config); err != nil {
 		if !errors.Is(err, lib.ErrNotFound) {
 			h.logger.Warn(fmt.Sprintf("Failed to update provider %s: %v", provider, err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err), h.logger)
 			return
 		}
 		// Creating provider instance with current config
-		if addErr := h.store.AddProvider(provider, config); addErr != nil {
+		if addErr := h.store.AddProvider(ctx, provider, config); addErr != nil {
 			h.logger.Warn(fmt.Sprintf("Failed to add provider %s: %v", provider, addErr))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to upsert provider: %v", addErr), h.logger)
 			return
@@ -419,7 +419,7 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Remove provider from store
-	if err := h.store.RemoveProvider(provider); err != nil {
+	if err := h.store.RemoveProvider(ctx, provider); err != nil {
 		h.logger.Warn(fmt.Sprintf("Failed to remove provider %s: %v", provider, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove provider: %v", err), h.logger)
 		return

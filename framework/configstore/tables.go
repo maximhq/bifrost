@@ -66,6 +66,9 @@ type TableKey struct {
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
 
+	// OpenAI config fields (embedded)
+	OpenAIUseResponsesAPI *bool `gorm:"type:boolean" json:"openai_use_responses_api,omitempty"`
+
 	// Azure config fields (embedded instead of separate table for simplicity)
 	AzureEndpoint        *string `gorm:"type:text" json:"azure_endpoint,omitempty"`
 	AzureAPIVersion      *string `gorm:"type:varchar(50)" json:"azure_api_version,omitempty"`
@@ -86,6 +89,7 @@ type TableKey struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	Models           []string                  `gorm:"-" json:"models"`
+	OpenAIKeyConfig  *schemas.OpenAIKeyConfig  `gorm:"-" json:"openai_key_config,omitempty"`
 	AzureKeyConfig   *schemas.AzureKeyConfig   `gorm:"-" json:"azure_key_config,omitempty"`
 	VertexKeyConfig  *schemas.VertexKeyConfig  `gorm:"-" json:"vertex_key_config,omitempty"`
 	BedrockKeyConfig *schemas.BedrockKeyConfig `gorm:"-" json:"bedrock_key_config,omitempty"`
@@ -120,7 +124,7 @@ type TableClientConfig struct {
 	EnableGovernance        bool      `gorm:"" json:"enable_governance"`
 	EnforceGovernanceHeader bool      `gorm:"" json:"enforce_governance_header"`
 	AllowDirectKeys         bool      `gorm:"" json:"allow_direct_keys"`
-	MaxRequestBodySizeMB    int       `gorm:"" json:"max_request_body_size_mb"`
+	MaxRequestBodySizeMB    int       `gorm:"default:100" json:"max_request_body_size_mb"`
 	CreatedAt               time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt               time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -242,6 +246,12 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.ModelsJSON = string(data)
 	} else {
 		k.ModelsJSON = "[]"
+	}
+
+	if k.OpenAIKeyConfig != nil {
+		k.OpenAIUseResponsesAPI = &k.OpenAIKeyConfig.UseResponsesAPI
+	} else {
+		k.OpenAIUseResponsesAPI = nil
 	}
 
 	if k.AzureKeyConfig != nil {
@@ -422,6 +432,13 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	if k.ModelsJSON != "" {
 		if err := json.Unmarshal([]byte(k.ModelsJSON), &k.Models); err != nil {
 			return err
+		}
+	}
+
+	// Reconstruct OpenAI config if fields are present
+	if k.OpenAIUseResponsesAPI != nil {
+		k.OpenAIKeyConfig = &schemas.OpenAIKeyConfig{
+			UseResponsesAPI: *k.OpenAIUseResponsesAPI,
 		}
 	}
 
@@ -616,13 +633,12 @@ type TableTeam struct {
 
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type TableVirtualKey struct {
-	ID               string   `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name             string   `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
-	Description      string   `gorm:"type:text" json:"description,omitempty"`
-	Value            string   `gorm:"uniqueIndex:idx_virtual_key_value;type:varchar(255);not null" json:"value"` // The virtual key value
-	IsActive         bool     `gorm:"default:true" json:"is_active"`
-	AllowedModels    []string `gorm:"type:text;serializer:json" json:"allowed_models"`    // Empty means all models allowed
-	AllowedProviders []string `gorm:"type:text;serializer:json" json:"allowed_providers"` // Empty means all providers allowed
+	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
+	Description     string                          `gorm:"type:text" json:"description,omitempty"`
+	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:varchar(255);not null" json:"value"` // The virtual key value
+	IsActive        bool                            `gorm:"default:true" json:"is_active"`
+	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means all providers allowed
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
 	TeamID      *string    `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
@@ -639,6 +655,15 @@ type TableVirtualKey struct {
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
+}
+
+// TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
+type TableVirtualKeyProviderConfig struct {
+	ID            uint     `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID  string   `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider      string   `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight        float64  `gorm:"default:1.0" json:"weight"`
+	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // Empty means all models allowed
 }
 
 // TableModelPricing represents pricing information for AI models
@@ -675,11 +700,14 @@ type TableModelPricing struct {
 }
 
 // Table names
-func (TableBudget) TableName() string       { return "governance_budgets" }
-func (TableRateLimit) TableName() string    { return "governance_rate_limits" }
-func (TableCustomer) TableName() string     { return "governance_customers" }
-func (TableTeam) TableName() string         { return "governance_teams" }
-func (TableVirtualKey) TableName() string   { return "governance_virtual_keys" }
+func (TableBudget) TableName() string     { return "governance_budgets" }
+func (TableRateLimit) TableName() string  { return "governance_rate_limits" }
+func (TableCustomer) TableName() string   { return "governance_customers" }
+func (TableTeam) TableName() string       { return "governance_teams" }
+func (TableVirtualKey) TableName() string { return "governance_virtual_keys" }
+func (TableVirtualKeyProviderConfig) TableName() string {
+	return "governance_virtual_key_provider_configs"
+}
 func (TableConfig) TableName() string       { return "governance_config" }
 func (TableModelPricing) TableName() string { return "governance_model_pricing" }
 
@@ -784,9 +812,9 @@ func (vk *TableVirtualKey) AfterAutoMigrate(tx *gorm.DB) error {
 			RETURN NEW;
 		END;
 		$$ LANGUAGE plpgsql;
-		
+
 		DROP TRIGGER IF EXISTS vk_exclusion_trigger ON governance_virtual_keys;
-		CREATE TRIGGER vk_exclusion_trigger 
+		CREATE TRIGGER vk_exclusion_trigger
 			BEFORE INSERT OR UPDATE ON governance_virtual_keys
 			FOR EACH ROW EXECUTE FUNCTION check_vk_exclusion();
 	`).Error

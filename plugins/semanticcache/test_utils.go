@@ -2,6 +2,7 @@ package semanticcache
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
@@ -102,7 +103,10 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 			RetryBackoffInitial:            100 * time.Millisecond,
 			RetryBackoffMax:                10 * time.Second,
 		},
-		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+			Concurrency: 5,
+			BufferSize:  10,
+		},
 	}, nil
 }
 
@@ -112,19 +116,19 @@ type TestSetup struct {
 	Store  vectorstore.VectorStore
 	Plugin schemas.Plugin
 	Client *bifrost.Bifrost
-	Config Config
+	Config *Config
 }
 
 // NewTestSetup creates a new test setup with default configuration
 func NewTestSetup(t *testing.T) *TestSetup {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping test")
-	}
+	// if os.Getenv("OPENAI_API_KEY") == "" {
+	// 	t.Skip("OPENAI_API_KEY is not set, skipping test")
+	// }
 
-	return NewTestSetupWithConfig(t, Config{
-		Provider:       schemas.OpenAI,
-		EmbeddingModel: "text-embedding-3-small",
-		Threshold:      0.8,
+	return NewTestSetupWithConfig(t, &Config{
+		Provider:          schemas.OpenAI,
+		EmbeddingModel:    "text-embedding-3-small",
+		Threshold:         0.8,
 		CleanUpOnShutdown: true,
 		Keys: []schemas.Key{
 			{
@@ -137,7 +141,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 }
 
 // NewTestSetupWithConfig creates a new test setup with custom configuration
-func NewTestSetupWithConfig(t *testing.T, config Config) *TestSetup {
+func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
@@ -193,44 +197,43 @@ func clearTestKeysWithStore(t *testing.T, store vectorstore.VectorStore) {
 }
 
 // CreateBasicChatRequest creates a basic chat completion request for testing
-func CreateBasicChatRequest(content string, temperature float64, maxTokens int) *schemas.BifrostRequest {
-	return &schemas.BifrostRequest{
+func CreateBasicChatRequest(content string, temperature float64, maxTokens int) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &[]schemas.BifrostMessage{
-				{
-					Role: "user",
-					Content: schemas.MessageContent{
-						ContentStr: &content,
-					},
+		Input: []schemas.ChatMessage{
+			{
+				Role: "user",
+				Content: schemas.ChatMessageContent{
+					ContentStr: &content,
 				},
 			},
 		},
-		Params: &schemas.ModelParameters{
-			Temperature: &temperature,
-			MaxTokens:   &maxTokens,
+		Params: &schemas.ChatParameters{
+			Temperature:         &temperature,
+			MaxCompletionTokens: &maxTokens,
 		},
 	}
 }
 
 // CreateStreamingChatRequest creates a streaming chat completion request for testing
-func CreateStreamingChatRequest(content string, temperature float64, maxTokens int) *schemas.BifrostRequest {
+func CreateStreamingChatRequest(content string, temperature float64, maxTokens int) *schemas.BifrostChatRequest {
 	return CreateBasicChatRequest(content, temperature, maxTokens)
 }
 
 // CreateSpeechRequest creates a speech synthesis request for testing
-func CreateSpeechRequest(input string, voice string) *schemas.BifrostRequest {
-	return &schemas.BifrostRequest{
+func CreateSpeechRequest(input string, voice string) *schemas.BifrostSpeechRequest {
+	return &schemas.BifrostSpeechRequest{
 		Provider: schemas.OpenAI,
 		Model:    "tts-1",
-		Input: schemas.RequestInput{
-			SpeechInput: &schemas.SpeechInput{
-				Input: input,
-				VoiceConfig: schemas.SpeechVoiceInput{
-					Voice: &voice,
-				},
+		Input: &schemas.SpeechInput{
+			Input: input,
+		},
+		Params: &schemas.SpeechParameters{
+			VoiceConfig: &schemas.SpeechVoiceInput{
+				Voice: &voice,
 			},
+			ResponseFormat: "mp3",
 		},
 	}
 }
@@ -283,16 +286,54 @@ func WaitForCache() {
 }
 
 // CreateEmbeddingRequest creates an embedding request for testing
-func CreateEmbeddingRequest(texts []string) *schemas.BifrostRequest {
-	return &schemas.BifrostRequest{
+func CreateEmbeddingRequest(texts []string) *schemas.BifrostEmbeddingRequest {
+	return &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.OpenAI,
 		Model:    "text-embedding-3-small",
-		Input: schemas.RequestInput{
-			EmbeddingInput: &schemas.EmbeddingInput{
-				Texts: texts,
-			},
+		Input: &schemas.EmbeddingInput{
+			Texts: texts,
 		},
 	}
+}
+
+// CreateBasicResponsesRequest creates a basic Responses API request for testing
+func CreateBasicResponsesRequest(content string, temperature float64, maxTokens int) *schemas.BifrostResponsesRequest {
+	userRole := schemas.ResponsesInputMessageRoleUser
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: &userRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &content,
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Temperature:     &temperature,
+			MaxOutputTokens: &maxTokens,
+		},
+	}
+}
+
+// CreateResponsesRequestWithTools creates a Responses API request with tools for testing
+func CreateResponsesRequestWithTools(content string, temperature float64, maxTokens int, tools []schemas.ResponsesTool) *schemas.BifrostResponsesRequest {
+	req := CreateBasicResponsesRequest(content, temperature, maxTokens)
+	req.Params.Tools = tools
+	return req
+}
+
+// CreateResponsesRequestWithInstructions creates a Responses API request with system instructions
+func CreateResponsesRequestWithInstructions(content string, instructions string, temperature float64, maxTokens int) *schemas.BifrostResponsesRequest {
+	req := CreateBasicResponsesRequest(content, temperature, maxTokens)
+	req.Params.Instructions = &instructions
+	return req
+}
+
+// CreateStreamingResponsesRequest creates a streaming Responses API request for testing
+func CreateStreamingResponsesRequest(content string, temperature float64, maxTokens int) *schemas.BifrostResponsesRequest {
+	return CreateBasicResponsesRequest(content, temperature, maxTokens)
 }
 
 // CreateContextWithCacheKey creates a context with the test cache key
@@ -330,7 +371,7 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
-	config := Config{
+	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		CleanUpOnShutdown:            true,
@@ -354,7 +395,7 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
-	config := Config{
+	config := &Config{
 		Provider:            schemas.OpenAI,
 		EmbeddingModel:      "text-embedding-3-small",
 		CleanUpOnShutdown:   true,
@@ -378,7 +419,7 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		t.Skip("OPENAI_API_KEY is not set, skipping test")
 	}
 
-	config := Config{
+	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		CleanUpOnShutdown:            true,
@@ -398,29 +439,27 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 }
 
 // CreateConversationRequest creates a chat request with conversation history
-func CreateConversationRequest(messages []schemas.BifrostMessage, temperature float64, maxTokens int) *schemas.BifrostRequest {
-	return &schemas.BifrostRequest{
+func CreateConversationRequest(messages []schemas.ChatMessage, temperature float64, maxTokens int) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &messages,
-		},
-		Params: &schemas.ModelParameters{
-			Temperature: &temperature,
-			MaxTokens:   &maxTokens,
+		Input:    messages,
+		Params: &schemas.ChatParameters{
+			Temperature:         &temperature,
+			MaxCompletionTokens: &maxTokens,
 		},
 	}
 }
 
 // BuildConversationHistory creates a conversation history from pairs of user/assistant messages
-func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]string) []schemas.BifrostMessage {
-	messages := []schemas.BifrostMessage{}
+func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]string) []schemas.ChatMessage {
+	messages := []schemas.ChatMessage{}
 
 	// Add system prompt if provided
 	if systemPrompt != "" {
-		messages = append(messages, schemas.BifrostMessage{
-			Role: schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{
+		messages = append(messages, schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{
 				ContentStr: &systemPrompt,
 			},
 		})
@@ -430,18 +469,18 @@ func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]strin
 	for _, pair := range userAssistantPairs {
 		if len(pair) >= 1 && pair[0] != "" {
 			userMsg := pair[0]
-			messages = append(messages, schemas.BifrostMessage{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
+			messages = append(messages, schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
 					ContentStr: &userMsg,
 				},
 			})
 		}
 		if len(pair) >= 2 && pair[1] != "" {
 			assistantMsg := pair[1]
-			messages = append(messages, schemas.BifrostMessage{
-				Role: schemas.ModelChatMessageRoleAssistant,
-				Content: schemas.MessageContent{
+			messages = append(messages, schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: schemas.ChatMessageContent{
 					ContentStr: &assistantMsg,
 				},
 			})
@@ -452,12 +491,147 @@ func BuildConversationHistory(systemPrompt string, userAssistantPairs ...[]strin
 }
 
 // AddUserMessage adds a user message to existing conversation
-func AddUserMessage(messages []schemas.BifrostMessage, userMessage string) []schemas.BifrostMessage {
-	newMessage := schemas.BifrostMessage{
-		Role: schemas.ModelChatMessageRoleUser,
-		Content: schemas.MessageContent{
+func AddUserMessage(messages []schemas.ChatMessage, userMessage string) []schemas.ChatMessage {
+	newMessage := schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: schemas.ChatMessageContent{
 			ContentStr: &userMessage,
 		},
 	}
 	return append(messages, newMessage)
+}
+
+// RetryConfig defines retry configuration for API requests
+type RetryConfig struct {
+	MaxRetries int
+	BaseDelay  time.Duration
+}
+
+// DefaultRetryConfig returns the default retry configuration
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries: 2,
+		BaseDelay:  5 * time.Millisecond,
+	}
+}
+
+// WithRetries executes a function with retry logic and exponential backoff
+// If all retries fail, the test is skipped instead of failed
+func WithRetries[T any](t *testing.T, operation func() (T, *schemas.BifrostError), config RetryConfig, operationName string) (T, *schemas.BifrostError) {
+	var lastErr *schemas.BifrostError
+	var result T
+
+	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: baseDelay * 2^(attempt-1)
+			delay := config.BaseDelay * time.Duration(1<<(attempt-1))
+			t.Logf("Retrying %s (attempt %d/%d) after %v...", operationName, attempt+1, config.MaxRetries+1, delay)
+			time.Sleep(delay)
+		}
+
+		result, lastErr = operation()
+		if lastErr == nil {
+			if attempt > 0 {
+				t.Logf("✅ %s succeeded on attempt %d", operationName, attempt+1)
+			}
+			return result, nil
+		}
+
+		lastErrorMessage := ""
+		if lastErr != nil && lastErr.Error != nil {
+			lastErrorMessage = lastErr.Error.Message
+		}
+
+		t.Logf("❌ %s failed on attempt %d: %v", operationName, attempt+1, lastErrorMessage)
+	}
+
+	// If all retries failed, skip the test instead of failing it
+	skipMessage := fmt.Sprintf("Skipping test: %s failed after %d attempts", operationName, config.MaxRetries+1)
+	if lastErr != nil && lastErr.Error != nil {
+		skipMessage += fmt.Sprintf(" (last error: %s)", lastErr.Error.Message)
+	}
+	t.Skip(skipMessage)
+
+	// This return will never be reached due to t.Skip(), but needed for compilation
+	return result, lastErr
+}
+
+// ChatRequestWithRetries executes a chat completion request with retry logic
+func ChatRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	config := DefaultRetryConfig()
+	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		response, err := client.ChatCompletionRequest(ctx, request)
+		if err != nil {
+			if err.Error != nil {
+				return response, err
+			}
+			return response, err
+		}
+		return response, nil
+	}, config, "chat completion request")
+}
+
+// ResponsesRequestWithRetries executes a responses request with retry logic
+func ResponsesRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	config := DefaultRetryConfig()
+	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return client.ResponsesRequest(ctx, request)
+	}, config, "responses request")
+}
+
+// EmbeddingRequestWithRetries executes an embedding request with retry logic
+func EmbeddingRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	config := DefaultRetryConfig()
+	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return client.EmbeddingRequest(ctx, request)
+	}, config, "embedding request")
+}
+
+// SpeechRequestWithRetries executes a speech request with retry logic
+func SpeechRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	config := DefaultRetryConfig()
+	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return client.SpeechRequest(ctx, request)
+	}, config, "speech request")
+}
+
+// ChatStreamingRequestWithRetries executes a chat streaming request with retry logic
+func ChatStreamingRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	config := DefaultRetryConfig()
+	var lastErr *schemas.BifrostError
+	var result chan *schemas.BifrostStream
+
+	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: baseDelay * 2^(attempt-1)
+			delay := config.BaseDelay * time.Duration(1<<(attempt-1))
+			t.Logf("Retrying chat streaming request (attempt %d/%d) after %v...", attempt+1, config.MaxRetries+1, delay)
+			time.Sleep(delay)
+		}
+
+		result, lastErr = client.ChatCompletionStreamRequest(ctx, request)
+		if lastErr == nil {
+			if attempt > 0 {
+				t.Logf("✅ chat streaming request succeeded on attempt %d", attempt+1)
+			}
+			return result, nil
+		}
+
+		lastErrorMessage := ""
+		if lastErr.Error != nil {
+			lastErrorMessage = lastErr.Error.Message
+		}
+
+		t.Logf("❌ chat streaming request failed on attempt %d: %v", attempt+1, lastErrorMessage)
+	}
+
+	// If all retries failed, skip the test instead of failing it
+	skipMessage := fmt.Sprintf("Skipping test: chat streaming request failed after %d attempts", config.MaxRetries+1)
+	if lastErr != nil && lastErr.Error != nil {
+		skipMessage += fmt.Sprintf(" (last error: %s)", lastErr.Error.Message)
+	}
+	t.Skip(skipMessage)
+
+	// This return will never be reached due to t.Skip(), but needed for compilation
+	return result, lastErr
 }

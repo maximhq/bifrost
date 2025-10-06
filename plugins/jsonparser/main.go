@@ -12,8 +12,7 @@ import (
 )
 
 const (
-	PluginName                = "streaming-json-parser"
-	EnableStreamingJSONParser = "enable-streaming-json-parser"
+	PluginName = "streaming-json-parser"
 )
 
 type Usage string
@@ -49,6 +48,12 @@ type PluginConfig struct {
 	CleanupInterval time.Duration
 	MaxAge          time.Duration
 }
+
+type ContextKey string
+
+const (
+	EnableStreamingJSONParser ContextKey = "enable-streaming-json-parser"
+)
 
 // Init creates a new JSON parser plugin instance with custom configuration
 func Init(config PluginConfig) (*JsonParserPlugin, error) {
@@ -89,13 +94,13 @@ func (p *JsonParserPlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 
 // PostHook processes streaming responses by accumulating chunks and making accumulated content valid JSON
 func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	// Check if plugin should run based on usage type
-	if !p.shouldRun(ctx) {
+	// If there's an error, don't process
+	if err != nil {
 		return result, err, nil
 	}
 
-	// If there's an error, don't process
-	if err != nil {
+	// Check if plugin should run based on usage type
+	if !p.shouldRun(ctx, result.ExtraFields.RequestType) {
 		return result, err, nil
 	}
 
@@ -128,7 +133,7 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 						if !p.isValidJSON(fixedContent) {
 							err = &schemas.BifrostError{
-								Error: schemas.ErrorField{
+								Error: &schemas.ErrorField{
 									Message: "Invalid JSON in streaming response",
 								},
 								StreamControl: &schemas.StreamControl{
@@ -168,7 +173,7 @@ func (p *JsonParserPlugin) getRequestID(ctx *context.Context, result *schemas.Bi
 
 	// Try to get from context if not available in result
 	if ctx != nil {
-		if requestID, ok := (*ctx).Value(schemas.BifrostContextKey("request-id")).(string); ok && requestID != "" {
+		if requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string); ok && requestID != "" {
 			return requestID
 		}
 	}
@@ -201,10 +206,9 @@ func (p *JsonParserPlugin) accumulateContent(requestID, newContent string) strin
 }
 
 // shouldRun determines if the plugin should process the request based on usage type
-func (p *JsonParserPlugin) shouldRun(ctx *context.Context) bool {
+func (p *JsonParserPlugin) shouldRun(ctx *context.Context, requestType schemas.RequestType) bool {
 	// Run only for chat completion stream requests
-	requestType, ok := (*ctx).Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
-	if !ok || requestType != schemas.ChatCompletionStreamRequest {
+	if requestType != schemas.ChatCompletionStreamRequest {
 		return false
 	}
 

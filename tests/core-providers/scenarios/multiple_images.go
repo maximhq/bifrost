@@ -2,14 +2,13 @@ package scenarios
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // RunMultipleImagesTest executes the multiple images test scenario
@@ -20,25 +19,31 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 	}
 
 	t.Run("MultipleImages", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		// Load lion base64 image for comparison
+		lionBase64, err := GetLionBase64Image()
+		if err != nil {
+			t.Fatalf("Failed to load lion base64 image: %v", err)
+		}
+
+		messages := []schemas.ChatMessage{
 			{
-				Role: schemas.ModelChatMessageRoleUser,
-				Content: schemas.MessageContent{
-					ContentBlocks: &[]schemas.ContentBlock{
+				Role: schemas.ChatMessageRoleUser,
+				Content: schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
 						{
-							Type: schemas.ContentBlockTypeText,
-							Text: bifrost.Ptr("Compare these two images - what are the similarities and differences?"),
+							Type: schemas.ChatContentBlockTypeText,
+							Text: bifrost.Ptr("Compare these two images - what are the similarities and differences? Both are animals, but what are the specific differences between them?"),
 						},
 						{
-							Type: schemas.ContentBlockTypeImage,
-							ImageURL: &schemas.ImageURLStruct{
-								URL: TestImageURL,
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: TestImageURL, // Ant image
 							},
 						},
 						{
-							Type: schemas.ContentBlockTypeImage,
-							ImageURL: &schemas.ImageURLStruct{
-								URL: TestImageBase64,
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: lionBase64, // Lion image
 							},
 						},
 					},
@@ -46,26 +51,79 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			},
 		}
 
-		request := &schemas.BifrostRequest{
+		request := &schemas.BifrostChatRequest{
 			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
-			Input: schemas.RequestInput{
-				ChatCompletionInput: &messages,
+			Model:    testConfig.VisionModel,
+			Input:    messages,
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(300),
 			},
-			Params: MergeModelParameters(&schemas.ModelParameters{
-				MaxTokens: bifrost.Ptr(300),
-			}, testConfig.CustomParams),
 			Fallbacks: testConfig.Fallbacks,
 		}
 
-		response, err := client.ChatCompletionRequest(ctx, request)
-		require.Nilf(t, err, "Multiple images test failed: %v", err)
-		require.NotNil(t, response)
-		require.NotEmpty(t, response.Choices)
+		// Use retry framework for multiple image processing (more complex, can be flaky)
+		retryConfig := GetTestRetryConfigForScenario("MultipleImages", testConfig)
+		retryContext := TestRetryContext{
+			ScenarioName: "MultipleImages",
+			ExpectedBehavior: map[string]interface{}{
+				"should_compare_images":        true,
+				"should_identify_similarities": true,
+				"should_identify_differences":  true,
+				"multiple_image_processing":    true,
+			},
+			TestMetadata: map[string]interface{}{
+				"provider":          testConfig.Provider,
+				"model":             testConfig.VisionModel,
+				"image_count":       2,
+				"mixed_formats":     true,                                                                                               // URL and base64
+				"expected_keywords": []string{"different", "differences", "contrast", "unlike", "comparison", "compare", "both", "two"}, // 🎯 Comparison-specific terms
+			},
+		}
+
+		// Enhanced validation for multiple image comparison (ant vs lion)
+		expectations := VisionExpectations([]string{"ant", "lion"}) // Basic expectation - should identify both as animals with differences
+		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+		expectations.MinContentLength = 30   // Should provide comparative analysis
+		expectations.MaxContentLength = 1500 // Multiple images can generate verbose responses
+		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
+			"only see one", "cannot compare", "missing image",
+			"single image", "unable to view the second",
+		}...) // Failure to process multiple images indicators
+
+		response, bifrostError := WithTestRetry(t, retryConfig, retryContext, expectations, "MultipleImages", func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return client.ChatCompletionRequest(ctx, request)
+		})
+
+		// Validation now happens inside WithTestRetry - no need to check again
+		if bifrostError != nil {
+			t.Fatalf("❌ Multiple images request failed after retries: %v", GetErrorMessage(bifrostError))
+		}
 
 		content := GetResultContent(response)
-		assert.NotEmpty(t, content, "Response content should not be empty")
 
-		t.Logf("✅ Multiple images result: %s", content)
+		// Additional validation for ant vs lion comparison
+		contentLower := strings.ToLower(content)
+		foundAnimalRef := strings.Contains(contentLower, "ant") || strings.Contains(contentLower, "lion") ||
+			strings.Contains(contentLower, "insect") || strings.Contains(contentLower, "cat") ||
+			strings.Contains(contentLower, "animal")
+		foundComparison := strings.Contains(contentLower, "different") || strings.Contains(contentLower, "compare") ||
+			strings.Contains(contentLower, "contrast") || strings.Contains(contentLower, "versus")
+
+		if foundAnimalRef && foundComparison {
+			t.Logf("✅ Model successfully identified animals and made comparisons: %s", content)
+		} else if foundAnimalRef {
+			t.Logf("✅ Model identified animals but may not have made clear comparisons")
+		} else {
+			t.Logf("⚠️ Model may not have clearly identified the animals in the images")
+		}
+
+		// Check for substantial response indicating both images were processed
+		if len(content) > 50 {
+			t.Logf("✅ Generated substantial comparison response (%d chars)", len(content))
+		} else {
+			t.Logf("⚠️ Comparison response seems brief: %s", content)
+		}
+
+		t.Logf("✅ Multiple images comparison completed: %s", content)
 	})
 }

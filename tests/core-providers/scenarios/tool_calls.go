@@ -3,6 +3,7 @@ package scenarios
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -12,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// RunToolCallsTest executes the tool calls test scenario
+// RunToolCallsTest executes the tool calls test scenario using dual API testing framework
 func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig config.ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ToolCalls {
 		t.Logf("Tool calls not supported for provider %s", testConfig.Provider)
@@ -20,60 +21,124 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 	}
 
 	t.Run("ToolCalls", func(t *testing.T) {
-		messages := []schemas.BifrostMessage{
+		chatMessages := []schemas.ChatMessage{
 			CreateBasicChatMessage("What's the weather like in New York? answer in celsius"),
 		}
-
-		params := MergeModelParameters(&schemas.ModelParameters{
-			Tools:     &[]schemas.Tool{WeatherToolDefinition},
-			MaxTokens: bifrost.Ptr(150),
-		}, testConfig.CustomParams)
-
-		request := &schemas.BifrostRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
-			Input: schemas.RequestInput{
-				ChatCompletionInput: &messages,
-			},
-			Params:    params,
-			Fallbacks: testConfig.Fallbacks,
+		responsesMessages := []schemas.ResponsesMessage{
+			CreateBasicResponsesMessage("What's the weather like in New York? answer in celsius"),
 		}
 
-		response, err := client.ChatCompletionRequest(ctx, request)
-		require.Nilf(t, err, "Tool calls failed: %v", err)
-		require.NotNil(t, response)
-		require.NotEmpty(t, response.Choices)
+		// Get tools for both APIs using the new GetSampleTool function
+		chatTool := GetSampleChatTool(SampleToolTypeWeather)           // Chat Completions API
+		responsesTool := GetSampleResponsesTool(SampleToolTypeWeather) // Responses API
 
-		// Find at least one choice with valid tool calls
-		foundValidToolCall := false
-		for i, choice := range response.Choices {
-			message := choice.Message
-			if message.AssistantMessage != nil && message.AssistantMessage.ToolCalls != nil {
-				toolCalls := *message.AssistantMessage.ToolCalls
-				// Iterate through all tool calls, not just the first one
-				for j, toolCall := range toolCalls {
-					if toolCall.Function.Name != nil && *toolCall.Function.Name == "get_weather" {
-						// Verify arguments contain location
-						var args map[string]interface{}
-						err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args)
-						if err == nil {
-							if _, hasLocation := args["location"]; hasLocation {
-								foundValidToolCall = true
-								t.Logf("✅ Tool call arguments for choice %d, tool call %d: %s", i, j, toolCall.Function.Arguments)
-								break // Found valid tool call, can break from this inner loop
+		// Use specialized tool call retry configuration
+		retryConfig := ToolCallRetryConfig(string(SampleToolTypeWeather))
+		retryContext := TestRetryContext{
+			ScenarioName: "ToolCalls",
+			ExpectedBehavior: map[string]interface{}{
+				"expected_tool_name": string(SampleToolTypeWeather),
+				"required_location":  "new york",
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ChatModel,
+			},
+		}
+
+		// Enhanced tool call validation (same for both APIs)
+		expectations := ToolCallExpectations(string(SampleToolTypeWeather), []string{"location"})
+		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+		// Add additional tool-specific validations
+		expectations.ExpectedToolCalls[0].ArgumentTypes = map[string]string{
+			"location": "string",
+		}
+
+		// Create operations for both Chat Completions and Responses API
+		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+			chatReq := &schemas.BifrostChatRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    chatMessages,
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(150),
+					Tools:               []schemas.ChatTool{*chatTool},
+				},
+				Fallbacks: testConfig.Fallbacks,
+			}
+			return client.ChatCompletionRequest(ctx, chatReq)
+		}
+
+		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+			responsesReq := &schemas.BifrostResponsesRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    responsesMessages,
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{*responsesTool},
+				},
+			}
+			return client.ResponsesRequest(ctx, responsesReq)
+		}
+
+		// Execute dual API test - passes only if BOTH APIs succeed
+		result := WithDualAPITestRetry(t,
+			retryConfig,
+			retryContext,
+			expectations,
+			"ToolCalls",
+			chatOperation,
+			responsesOperation)
+
+		// Validate both APIs succeeded
+		if !result.BothSucceeded {
+			var errors []string
+			if result.ChatCompletionsError != nil {
+				errors = append(errors, "Chat Completions: "+GetErrorMessage(result.ChatCompletionsError))
+			}
+			if result.ResponsesAPIError != nil {
+				errors = append(errors, "Responses API: "+GetErrorMessage(result.ResponsesAPIError))
+			}
+			if len(errors) == 0 {
+				errors = append(errors, "One or both APIs failed validation (see logs above)")
+			}
+			t.Fatalf("❌ ToolCalls dual API test failed: %v", errors)
+		}
+
+		// Verify location argument mentions New York using universal tool extraction
+		validateLocationInToolCalls := func(response *schemas.BifrostResponse, apiName string) {
+			toolCalls := ExtractToolCalls(response)
+			locationFound := false
+
+			for _, toolCall := range toolCalls {
+				if toolCall.Name == string(SampleToolTypeWeather) {
+					var args map[string]interface{}
+					if json.Unmarshal([]byte(toolCall.Arguments), &args) == nil {
+						if location, exists := args["location"].(string); exists {
+							lowerLocation := strings.ToLower(location)
+							if strings.Contains(lowerLocation, "new york") || strings.Contains(lowerLocation, "nyc") {
+								locationFound = true
+								t.Logf("✅ %s tool call has correct location: %s", apiName, location)
+								break
 							}
 						}
 					}
 				}
-				if foundValidToolCall {
-					break // Found valid tool call, can break from choices loop
-				}
 			}
+
+			require.True(t, locationFound, "%s API tool call should specify New York as the location", apiName)
 		}
 
-		if !foundValidToolCall {
-			t.Logf("❌ No valid tool calls found in any choice, response: %s", GetResultContent(response))
+		// Validate both API responses
+		if result.ChatCompletionsResponse != nil {
+			validateLocationInToolCalls(result.ChatCompletionsResponse, "Chat Completions")
 		}
-		require.True(t, foundValidToolCall, "Expected at least one choice to have valid tool call for 'get_weather' with 'location' argument")
+
+		if result.ResponsesAPIResponse != nil {
+			validateLocationInToolCalls(result.ResponsesAPIResponse, "Responses")
+		}
+
+		t.Logf("🎉 Both Chat Completions and Responses APIs passed ToolCalls test!")
 	})
 }

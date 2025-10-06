@@ -92,13 +92,9 @@ export default function SpeechView({ speechInput, speechOutput, isStreaming }: S
 						Speech Output
 					</div>
 					<div className="space-y-4 p-6">
-						{isStreaming ? (
-							<div className="font-mono text-xs">Output was streamed and is not available.</div>
-						) : (
-							<AudioErrorBoundary>
-								<AudioPlayer src={speechOutput?.audio || ""} />
-							</AudioErrorBoundary>
-						)}
+						<AudioErrorBoundary>
+							<AudioPlayer src={speechOutput?.audio || ""} />
+						</AudioErrorBoundary>
 					</div>
 				</div>
 			)}

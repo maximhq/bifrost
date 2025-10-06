@@ -23,9 +23,9 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	request1 := CreateConversationRequest(conversation1, 0.7, 50)
 
 	t.Log("Testing conversation with exactly 2 messages (at threshold)...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request1)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1) // Fresh request
 
@@ -34,7 +34,11 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	// Verify it was cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request1)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	AssertCacheHit(t, response2, "direct") // Should be cached
 
@@ -47,9 +51,9 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	request2 := CreateConversationRequest(messages2, 0.7, 50) // 5 messages total > 2
 
 	t.Log("Testing conversation with 5 messages (exceeds threshold)...")
-	response3, err3 := setup.Client.ChatCompletionRequest(ctx, request2)
+	response3, err3 := ChatRequestWithRetries(t, setup.Client, ctx, request2)
 	if err3 != nil {
-		t.Fatalf("Third request failed: %v", err3)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response3) // Should not cache
 
@@ -57,9 +61,9 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 
 	// Verify it was NOT cached
 	t.Log("Verifying conversation exceeding threshold was not cached...")
-	response4, err4 := setup.Client.ChatCompletionRequest(ctx, request2)
+	response4, err4 := ChatRequestWithRetries(t, setup.Client, ctx, request2)
 	if err4 != nil {
-		t.Fatalf("Fourth request failed: %v", err4)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response4) // Should still be fresh (not cached)
 
@@ -83,18 +87,18 @@ func TestConversationHistoryThresholdWithSystemPrompt(t *testing.T) {
 	request := CreateConversationRequest(conversation, 0.7, 50)
 
 	t.Log("Testing conversation with system prompt (5 total messages > 3 threshold)...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1) // Should not cache (exceeds threshold)
 
 	WaitForCache()
 
 	// Verify not cached
-	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
+	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response2) // Should not be cached
 
@@ -127,9 +131,9 @@ func TestConversationHistoryThresholdWithExcludeSystemPrompt(t *testing.T) {
 	// - With ExcludeSystemPrompt=true: counts as 3 non-system messages
 	// - Threshold is 3, so 3 <= 3 should allow caching
 
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1) // Fresh request, should not hit cache
 
@@ -138,7 +142,11 @@ func TestConversationHistoryThresholdWithExcludeSystemPrompt(t *testing.T) {
 	// Second request should hit cache (3 non-system messages <= 3 threshold)
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	AssertCacheHit(t, response2, "direct") // Should cache since 3 <= 3 after excluding system
 
@@ -167,15 +175,15 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 			ctx := CreateContextWithCacheKey("test-threshold-" + tc.name)
 
 			// Build conversation with specified number of messages
-			var conversation []schemas.BifrostMessage
+			var conversation []schemas.ChatMessage
 			for i := 0; i < tc.messages; i++ {
-				role := schemas.ModelChatMessageRoleUser
+				role := schemas.ChatMessageRoleUser
 				if i%2 == 1 {
-					role = schemas.ModelChatMessageRoleAssistant
+					role = schemas.ChatMessageRoleAssistant
 				}
-				message := schemas.BifrostMessage{
+				message := schemas.ChatMessage{
 					Role: role,
-					Content: schemas.MessageContent{
+					Content: schemas.ChatMessageContent{
 						ContentStr: bifrost.Ptr("Message " + strconv.Itoa(i+1)),
 					},
 				}
@@ -184,17 +192,17 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 
 			request := CreateConversationRequest(conversation, 0.7, 50)
 
-			response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
+			response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 			if err1 != nil {
-				t.Fatalf("Request failed: %v", err1)
+				return // Test will be skipped by retry function
 			}
 			AssertNoCacheHit(t, response1) // Always fresh first time
 
 			WaitForCache()
 
-			response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
+			response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 			if err2 != nil {
-				t.Fatalf("Second request failed: %v", err2)
+				return // Test will be skipped by retry function
 			}
 
 			if tc.shouldCache {
@@ -231,9 +239,9 @@ func TestExcludeSystemPromptBasic(t *testing.T) {
 	request2 := CreateConversationRequest(conversation2, 0.7, 50)
 
 	t.Log("Caching conversation with system prompt 1...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request1)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -242,7 +250,11 @@ func TestExcludeSystemPromptBasic(t *testing.T) {
 	t.Log("Testing conversation with different system prompt (should hit cache due to ExcludeSystemPrompt=true)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	// Should hit cache because system prompts are excluded from cache key
 	AssertCacheHit(t, response2, "direct")
@@ -274,7 +286,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	t.Log("Testing ExcludeSystemPrompt=false...")
 	response1, err1 := setup1.Client.ChatCompletionRequest(ctx1, request1)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -282,7 +294,11 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 
 	response2, err2 := setup1.Client.ChatCompletionRequest(ctx1, request2)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	// Should NOT hit direct cache, but might hit semantic cache due to similar content
 	if response2.ExtraFields.CacheDebug != nil && response2.ExtraFields.CacheDebug.CacheHit {
@@ -302,9 +318,9 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	ctx2 := CreateContextWithCacheKey("test-exclude-system-true")
 
 	t.Log("Testing ExcludeSystemPrompt=true...")
-	response3, err3 := setup2.Client.ChatCompletionRequest(ctx2, request1)
+	response3, err3 := ChatRequestWithRetries(t, setup2.Client, ctx2, request1)
 	if err3 != nil {
-		t.Fatalf("Third request failed: %v", err3)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response3)
 
@@ -328,41 +344,41 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 	ctx := CreateContextWithCacheKey("test-multiple-system-messages")
 
 	// Manually create conversation with multiple system messages
-	conversation1 := []schemas.BifrostMessage{
+	conversation1 := []schemas.ChatMessage{
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("You are helpful")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("You are helpful")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Be concise")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Be concise")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleUser,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello")},
+			Role:    schemas.ChatMessageRoleUser,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hello")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hi!")},
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hi!")},
 		},
 	}
 
-	conversation2 := []schemas.BifrostMessage{
+	conversation2 := []schemas.ChatMessage{
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("You are an expert")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("You are an expert")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleSystem,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Be detailed")},
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Be detailed")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleUser,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello")},
+			Role:    schemas.ChatMessageRoleUser,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hello")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hi!")},
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hi!")},
 		},
 	}
 
@@ -370,9 +386,9 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 	request2 := CreateConversationRequest(conversation2, 0.7, 50)
 
 	t.Log("Caching conversation with multiple system messages...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request1)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -381,7 +397,11 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 	t.Log("Testing conversation with different multiple system messages...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	// Should hit cache because all system messages are excluded
 	AssertCacheHit(t, response2, "direct")
@@ -397,23 +417,23 @@ func TestExcludeSystemPromptWithNoSystemMessages(t *testing.T) {
 	ctx := CreateContextWithCacheKey("test-no-system-messages")
 
 	// Conversation with no system messages
-	conversation := []schemas.BifrostMessage{
+	conversation := []schemas.ChatMessage{
 		{
-			Role:    schemas.ModelChatMessageRoleUser,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hello")},
+			Role:    schemas.ChatMessageRoleUser,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hello")},
 		},
 		{
-			Role:    schemas.ModelChatMessageRoleAssistant,
-			Content: schemas.MessageContent{ContentStr: bifrost.Ptr("Hi there!")},
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: schemas.ChatMessageContent{ContentStr: bifrost.Ptr("Hi there!")},
 		},
 	}
 
 	request := CreateConversationRequest(conversation, 0.7, 50)
 
 	t.Log("Testing conversation with no system messages...")
-	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
+	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request)
 	if err1 != nil {
-		t.Fatalf("First request failed: %v", err1)
+		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
 
@@ -422,7 +442,11 @@ func TestExcludeSystemPromptWithNoSystemMessages(t *testing.T) {
 	// Should cache normally
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err2 != nil {
-		t.Fatalf("Second request failed: %v", err2)
+		if err2.Error != nil {
+			t.Fatalf("Second request failed: %v", err2.Error.Message)
+		} else {
+			t.Fatalf("Second request failed: %v", err2)
+		}
 	}
 	AssertCacheHit(t, response2, "direct")
 

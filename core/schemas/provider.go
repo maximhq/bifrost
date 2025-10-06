@@ -65,8 +65,8 @@ type ProxyType string
 const (
 	// NoProxy indicates no proxy should be used
 	NoProxy ProxyType = "none"
-	// HttpProxy indicates an HTTP proxy should be used
-	HttpProxy ProxyType = "http"
+	// HTTPProxy indicates an HTTP proxy should be used
+	HTTPProxy ProxyType = "http"
 	// Socks5Proxy indicates a SOCKS5 proxy should be used
 	Socks5Proxy ProxyType = "socks5"
 	// EnvProxy indicates the proxy should be read from environment variables
@@ -96,27 +96,27 @@ type AllowedRequests struct {
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
-func (ar *AllowedRequests) IsOperationAllowed(operation Operation) bool {
+func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	if ar == nil {
 		return true // Default to allowed if no restrictions
 	}
 
 	switch operation {
-	case OperationTextCompletion:
+	case TextCompletionRequest:
 		return ar.TextCompletion
-	case OperationChatCompletion:
+	case ChatCompletionRequest:
 		return ar.ChatCompletion
-	case OperationChatCompletionStream:
+	case ChatCompletionStreamRequest:
 		return ar.ChatCompletionStream
-	case OperationEmbedding:
+	case EmbeddingRequest:
 		return ar.Embedding
-	case OperationSpeech:
+	case SpeechRequest:
 		return ar.Speech
-	case OperationSpeechStream:
+	case SpeechStreamRequest:
 		return ar.SpeechStream
-	case OperationTranscription:
+	case TranscriptionRequest:
 		return ar.Transcription
-	case OperationTranscriptionStream:
+	case TranscriptionStreamRequest:
 		return ar.TranscriptionStream
 	default:
 		return false // Default to not allowed for unknown operations
@@ -130,7 +130,7 @@ type CustomProviderConfig struct {
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
-func (cpc *CustomProviderConfig) IsOperationAllowed(operation Operation) bool {
+func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool {
 	if cpc == nil || cpc.AllowedRequests == nil {
 		return true // Default to allowed if no restrictions
 	}
@@ -149,19 +149,6 @@ type ProviderConfig struct {
 	SendBackRawResponse  bool                  `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
 	CustomProviderConfig *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 }
-
-type Operation string
-
-const (
-	OperationTextCompletion       Operation = "text_completion"
-	OperationChatCompletion       Operation = "chat_completion"
-	OperationChatCompletionStream Operation = "chat_completion_stream"
-	OperationEmbedding            Operation = "embedding"
-	OperationSpeech               Operation = "speech"
-	OperationSpeechStream         Operation = "speech_stream"
-	OperationTranscription        Operation = "transcription"
-	OperationTranscriptionStream  Operation = "transcription_stream"
-)
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
 	if config.ConcurrencyAndBufferSize.Concurrency == 0 {
@@ -203,19 +190,23 @@ type Provider interface {
 	// GetProviderKey returns the provider's identifier
 	GetProviderKey() ModelProvider
 	// TextCompletion performs a text completion request
-	TextCompletion(ctx context.Context, model string, key Key, text string, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	TextCompletion(ctx context.Context, key Key, request *BifrostTextCompletionRequest) (*BifrostResponse, *BifrostError)
 	// ChatCompletion performs a chat completion request
-	ChatCompletion(ctx context.Context, model string, key Key, messages []BifrostMessage, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	ChatCompletion(ctx context.Context, key Key, request *BifrostChatRequest) (*BifrostResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
-	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, messages []BifrostMessage, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostChatRequest) (chan *BifrostStream, *BifrostError)
+	// Responses performs a completion request using the Responses API (uses chat completion request internally for non-openai providers)
+	Responses(ctx context.Context, key Key, request *BifrostResponsesRequest) (*BifrostResponse, *BifrostError)
+	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
+	ResponsesStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostResponsesRequest) (chan *BifrostStream, *BifrostError)
 	// Embedding performs an embedding request
-	Embedding(ctx context.Context, model string, key Key, input *EmbeddingInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	Embedding(ctx context.Context, key Key, request *BifrostEmbeddingRequest) (*BifrostResponse, *BifrostError)
 	// Speech performs a text to speech request
-	Speech(ctx context.Context, model string, key Key, input *SpeechInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	Speech(ctx context.Context, key Key, request *BifrostSpeechRequest) (*BifrostResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
-	SpeechStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, input *SpeechInput, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	SpeechStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostSpeechRequest) (chan *BifrostStream, *BifrostError)
 	// Transcription performs a transcription request
-	Transcription(ctx context.Context, model string, key Key, input *TranscriptionInput, params *ModelParameters) (*BifrostResponse, *BifrostError)
+	Transcription(ctx context.Context, key Key, request *BifrostTranscriptionRequest) (*BifrostResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
-	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, model string, key Key, input *TranscriptionInput, params *ModelParameters) (chan *BifrostStream, *BifrostError)
+	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStream, *BifrostError)
 }

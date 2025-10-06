@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/pricing"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"gorm.io/gorm"
@@ -133,7 +134,11 @@ type Config struct {
 	EnvKeys map[string][]configstore.EnvKeyInfo
 
 	// Plugin configs
-	Plugins []*schemas.PluginConfig
+	Plugins       []*schemas.PluginConfig
+	LoadedPlugins map[string]bool
+
+	// Pricing manager
+	PricingManager *pricing.PricingManager
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
@@ -186,7 +191,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if os.IsNotExist(err) {
 			logger.Info("config file not found at path: %s, initializing with default values", absConfigFilePath)
 			// Initializing with default values
-			config.ConfigStore, err = configstore.NewConfigStore(&configstore.Config{
+			config.ConfigStore, err = configstore.NewConfigStore(ctx, &configstore.Config{
 				Enabled: true,
 				Type:    configstore.ConfigStoreTypeSQLite,
 				Config: &configstore.SQLiteConfig{
@@ -197,7 +202,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				return nil, fmt.Errorf("failed to initialize config store: %w", err)
 			}
 			// Checking if client config already exist
-			clientConfig, err := config.ConfigStore.GetClientConfig()
+			clientConfig, err := config.ConfigStore.GetClientConfig(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get client config: %w", err)
 			}
@@ -209,17 +214,16 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					clientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
 				}
 			}
-			err = config.ConfigStore.UpdateClientConfig(clientConfig)
+			err = config.ConfigStore.UpdateClientConfig(ctx, clientConfig)
 			if err != nil {
 				return nil, fmt.Errorf("failed to update client config: %w", err)
 			}
 			config.ClientConfig = *clientConfig
 			// Checking if log store config already exist
-			logStoreConfig, err := config.ConfigStore.GetLogsStoreConfig()
+			logStoreConfig, err := config.ConfigStore.GetLogsStoreConfig(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get logs store config: %w", err)
 			}
-			logger.Debug("log store config from DB: %v", logStoreConfig)
 			if logStoreConfig == nil {
 				logStoreConfig = &logstore.Config{
 					Enabled: true,
@@ -230,24 +234,25 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				}
 			}
 			logger.Info("config store initialized; initializing logs store.")
-			config.LogsStore, err = logstore.NewLogStore(logStoreConfig, logger)
+			config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize logs store: %v", err)
 			}
-			err = config.ConfigStore.UpdateLogsStoreConfig(logStoreConfig)
+			logger.Info("logs store initialized.")
+			err = config.ConfigStore.UpdateLogsStoreConfig(ctx, logStoreConfig)
 			if err != nil {
 				return nil, fmt.Errorf("failed to update logs store config: %w", err)
 			}
 			// No providers in database, auto-detect from environment
-			providers, err := config.ConfigStore.GetProvidersConfig()
+			providers, err := config.ConfigStore.GetProvidersConfig(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get providers config: %w", err)
 			}
 			if providers == nil {
-				config.autoDetectProviders()
+				config.autoDetectProviders(ctx)
 				providers = config.Providers
 				// Store providers config in database
-				err = config.ConfigStore.UpdateProvidersConfig(providers)
+				err = config.ConfigStore.UpdateProvidersConfig(ctx, providers)
 				if err != nil {
 					return nil, fmt.Errorf("failed to update providers config: %w", err)
 				}
@@ -263,6 +268,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 							Value:            dbKey.Value,
 							Models:           dbKey.Models,
 							Weight:           dbKey.Weight,
+							OpenAIKeyConfig:  dbKey.OpenAIKeyConfig,
 							AzureKeyConfig:   dbKey.AzureKeyConfig,
 							VertexKeyConfig:  dbKey.VertexKeyConfig,
 							BedrockKeyConfig: dbKey.BedrockKeyConfig,
@@ -286,7 +292,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				config.Providers = processedProviders
 			}
 			// Checking if MCP config already exists
-			mcpConfig, err := config.ConfigStore.GetMCPConfig()
+			mcpConfig, err := config.ConfigStore.GetMCPConfig(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get MCP config: %w", err)
 			}
@@ -294,11 +300,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				if err := config.processMCPEnvVars(); err != nil {
 					logger.Warn("failed to process MCP env vars: %v", err)
 				}
-				if err := config.ConfigStore.UpdateMCPConfig(config.MCPConfig, config.EnvKeys); err != nil {
+				if err := config.ConfigStore.UpdateMCPConfig(ctx, config.MCPConfig, config.EnvKeys); err != nil {
 					return nil, fmt.Errorf("failed to update MCP config: %w", err)
 				}
 				// Refresh from store to ensure parity with persisted state
-				if mcpConfig, err = config.ConfigStore.GetMCPConfig(); err != nil {
+				if mcpConfig, err = config.ConfigStore.GetMCPConfig(ctx); err != nil {
 					return nil, fmt.Errorf("failed to get MCP config after update: %w", err)
 				}
 				config.MCPConfig = mcpConfig
@@ -307,7 +313,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				config.MCPConfig = mcpConfig
 			}
 			// Checking if plugins already exist
-			plugins, err := config.ConfigStore.GetPlugins()
+			plugins, err := config.ConfigStore.GetPlugins(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get plugins: %w", err)
 			}
@@ -331,7 +337,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			}
 			// Load environment variable tracking
 			var dbEnvKeys map[string][]configstore.EnvKeyInfo
-			if dbEnvKeys, err = config.ConfigStore.GetEnvKeys(); err != nil {
+			if dbEnvKeys, err = config.ConfigStore.GetEnvKeys(ctx); err != nil {
 				return nil, err
 			}
 			config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
@@ -346,10 +352,16 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					})
 				}
 			}
-			err = config.ConfigStore.UpdateEnvKeys(config.EnvKeys)
+			err = config.ConfigStore.UpdateEnvKeys(ctx, config.EnvKeys)
 			if err != nil {
 				return nil, fmt.Errorf("failed to update env keys: %w", err)
 			}
+			// Initializing pricing manager
+			pricingManager, err := pricing.Init(ctx, config.ConfigStore, logger)
+			if err != nil {
+				logger.Warn("failed to initialize pricing manager: %v", err)
+			}
+			config.PricingManager = pricingManager
 			return config, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -366,7 +378,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 	// Initializing config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
-		config.ConfigStore, err = configstore.NewConfigStore(configData.ConfigStoreConfig, logger)
+		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -375,7 +387,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 	// Initializing log store
 	if configData.LogsStoreConfig != nil && configData.LogsStoreConfig.Enabled {
-		config.LogsStore, err = logstore.NewLogStore(configData.LogsStoreConfig, logger)
+		config.LogsStore, err = logstore.NewLogStore(ctx, configData.LogsStoreConfig, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -391,7 +403,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			logger.Fatal("failed to connect to vector store: %v", err)
 		}
 		if config.ConfigStore != nil {
-			err = config.ConfigStore.UpdateVectorStoreConfig(configData.VectorStoreConfig)
+			err = config.ConfigStore.UpdateVectorStoreConfig(ctx, configData.VectorStoreConfig)
 			if err != nil {
 				logger.Warn("failed to update vector store config: %v", err)
 			}
@@ -407,7 +419,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 	var clientConfig *configstore.ClientConfig
 	if config.ConfigStore != nil {
-		clientConfig, err = config.ConfigStore.GetClientConfig()
+		clientConfig, err = config.ConfigStore.GetClientConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get client config from store: %v", err)
 		}
@@ -436,7 +448,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store")
-			err = config.ConfigStore.UpdateClientConfig(&config.ClientConfig)
+			err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig)
 			if err != nil {
 				logger.Warn("failed to update client config: %v", err)
 			}
@@ -448,7 +460,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	var processedProviders map[schemas.ModelProvider]configstore.ProviderConfig
 	if config.ConfigStore != nil {
 		logger.Debug("getting providers config from store")
-		processedProviders, err = config.ConfigStore.GetProvidersConfig()
+		processedProviders, err = config.ConfigStore.GetProvidersConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get providers config from store: %v", err)
 		}
@@ -500,7 +512,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 					// Process Azure key config if present
 					if key.AzureKeyConfig != nil {
-						if err := config.processAzureKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
+						if err := config.processAzureKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
 							config.cleanupEnvKeys(provider, "", newEnvKeys)
 							logger.Warn("failed to process Azure key config env vars for %s: %v", provider, err)
 							continue
@@ -509,7 +521,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 					// Process Vertex key config if present
 					if key.VertexKeyConfig != nil {
-						if err := config.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
+						if err := config.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
 							config.cleanupEnvKeys(provider, "", newEnvKeys)
 							logger.Warn("failed to process Vertex key config env vars for %s: %v", provider, err)
 							continue
@@ -518,7 +530,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 					// Process Bedrock key config if present
 					if key.BedrockKeyConfig != nil {
-						if err := config.processBedrockKeyConfigEnvVars(&cfg.Keys[i], provider, i, newEnvKeys); err != nil {
+						if err := config.processBedrockKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
 							config.cleanupEnvKeys(provider, "", newEnvKeys)
 							logger.Warn("failed to process Bedrock key config env vars for %s: %v", provider, err)
 							continue
@@ -530,15 +542,15 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			// Store processed configurations in memory
 			config.Providers = processedProviders
 		} else {
-			config.autoDetectProviders()
+			config.autoDetectProviders(ctx)
 		}
 		if config.ConfigStore != nil {
 			logger.Debug("updating providers config in store")
-			err = config.ConfigStore.UpdateProvidersConfig(processedProviders)
+			err = config.ConfigStore.UpdateProvidersConfig(ctx, processedProviders)
 			if err != nil {
 				logger.Warn("failed to update providers config: %v", err)
 			}
-			if err := config.ConfigStore.UpdateEnvKeys(config.EnvKeys); err != nil {
+			if err := config.ConfigStore.UpdateEnvKeys(ctx, config.EnvKeys); err != nil {
 				logger.Warn("failed to update env keys: %v", err)
 			}
 		}
@@ -549,7 +561,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	var mcpConfig *schemas.MCPConfig
 	if config.ConfigStore != nil {
 		logger.Debug("getting MCP config from store")
-		mcpConfig, err = config.ConfigStore.GetMCPConfig()
+		mcpConfig, err = config.ConfigStore.GetMCPConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get MCP config from store: %v", err)
 		}
@@ -566,7 +578,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		}
 		if config.ConfigStore != nil {
 			logger.Debug("updating MCP config in store")
-			err = config.ConfigStore.UpdateMCPConfig(config.MCPConfig, config.EnvKeys)
+			err = config.ConfigStore.UpdateMCPConfig(ctx, config.MCPConfig, config.EnvKeys)
 			if err != nil {
 				logger.Warn("failed to update MCP config: %v", err)
 			}
@@ -578,7 +590,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	var governanceConfig *configstore.GovernanceConfig
 	if config.ConfigStore != nil {
 		logger.Debug("getting governance config from store")
-		governanceConfig, err = config.ConfigStore.GetGovernanceConfig()
+		governanceConfig, err = config.ConfigStore.GetGovernanceConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get governance config from store: %v", err)
 		}
@@ -592,31 +604,31 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 		if config.ConfigStore != nil {
 			logger.Debug("updating governance config in store")
-			if err := config.ConfigStore.ExecuteTransaction(func(tx *gorm.DB) error {
+			if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 				// Create budgets
 				for _, budget := range config.GovernanceConfig.Budgets {
-					if err := config.ConfigStore.CreateBudget(&budget, tx); err != nil {
+					if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
 						return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
 					}
 				}
 
 				// Create rate limits
 				for _, rateLimit := range config.GovernanceConfig.RateLimits {
-					if err := config.ConfigStore.CreateRateLimit(&rateLimit, tx); err != nil {
+					if err := config.ConfigStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
 						return fmt.Errorf("failed to create rate limit %s: %w", rateLimit.ID, err)
 					}
 				}
 
 				// Create customers
 				for _, customer := range config.GovernanceConfig.Customers {
-					if err := config.ConfigStore.CreateCustomer(&customer, tx); err != nil {
+					if err := config.ConfigStore.CreateCustomer(ctx, &customer, tx); err != nil {
 						return fmt.Errorf("failed to create customer %s: %w", customer.ID, err)
 					}
 				}
 
 				// Create teams
 				for _, team := range config.GovernanceConfig.Teams {
-					if err := config.ConfigStore.CreateTeam(&team, tx); err != nil {
+					if err := config.ConfigStore.CreateTeam(ctx, &team, tx); err != nil {
 						return fmt.Errorf("failed to create team %s: %w", team.ID, err)
 					}
 				}
@@ -640,7 +652,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					}
 					virtualKey.Keys = existingKeys
 
-					if err := config.ConfigStore.CreateVirtualKey(&virtualKey, tx); err != nil {
+					if err := config.ConfigStore.CreateVirtualKey(ctx, &virtualKey, tx); err != nil {
 						return fmt.Errorf("failed to create virtual key %s: %w", virtualKey.ID, err)
 					}
 				}
@@ -656,7 +668,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 	if config.ConfigStore != nil {
 		logger.Debug("getting plugins from store")
-		plugins, err := config.ConfigStore.GetPlugins()
+		plugins, err := config.ConfigStore.GetPlugins(ctx)
 		if err != nil {
 			logger.Warn("failed to get plugins from store: %v", err)
 		}
@@ -711,7 +723,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						logger.Warn("failed to remove provider keys from semantic cache config: %v", err)
 					}
 				}
-				if err := config.ConfigStore.CreatePlugin(pluginConfig); err != nil {
+				if err := config.ConfigStore.CreatePlugin(ctx, pluginConfig); err != nil {
 					logger.Warn("failed to update plugin: %v", err)
 				}
 			}
@@ -722,7 +734,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 	// Initialize env keys
 	if config.ConfigStore != nil {
-		envKeys, err := config.ConfigStore.GetEnvKeys()
+		envKeys, err := config.ConfigStore.GetEnvKeys(ctx)
 		if err != nil {
 			logger.Warn("failed to get env keys from store: %v", err)
 		}
@@ -733,7 +745,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		config.EnvKeys = make(map[string][]configstore.EnvKeyInfo)
 	}
 
-	logger.Info("successfully loaded configuration")
+	// Initializing pricing manager
+	pricingManager, err := pricing.Init(ctx, config.ConfigStore, logger)
+	if err != nil {
+		logger.Warn("failed to initialize pricing manager: %v", err)
+	}
+	config.PricingManager = pricingManager
+
 	return config, nil
 }
 
@@ -880,9 +898,10 @@ func (s *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 	redactedConfig.Keys = make([]schemas.Key, len(config.Keys))
 	for i, key := range config.Keys {
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:     key.ID,
-			Models: key.Models, // Copy slice reference - read-only so safe
-			Weight: key.Weight,
+			ID:              key.ID,
+			Models:          key.Models, // Copy slice reference - read-only so safe
+			Weight:          key.Weight,
+			OpenAIKeyConfig: key.OpenAIKeyConfig,
 		}
 
 		// Redact API key value
@@ -1026,7 +1045,7 @@ func (s *Config) GetAllProviders() ([]schemas.ModelProvider, error) {
 //   - Processes environment variables in API keys, and key-level configs
 //   - Stores the processed configuration in memory
 //   - Updates metadata and timestamps
-func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.ProviderConfig) error {
+func (s *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1069,7 +1088,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 
 		// Process Azure key config if present
 		if key.AzureKeyConfig != nil {
-			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Azure key config env vars: %w", err)
 			}
@@ -1077,7 +1096,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 
 		// Process Vertex key config if present
 		if key.VertexKeyConfig != nil {
-			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Vertex key config env vars: %w", err)
 			}
@@ -1085,7 +1104,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 
 		// Process Bedrock key config if present
 		if key.BedrockKeyConfig != nil {
-			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Bedrock key config env vars: %w", err)
 			}
@@ -1095,13 +1114,13 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 	s.Providers[provider] = config
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.AddProvider(provider, config, s.EnvKeys); err != nil {
+		if err := s.ConfigStore.AddProvider(ctx, provider, config, s.EnvKeys); err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				return ErrNotFound
 			}
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
-		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateEnvKeys(ctx, s.EnvKeys); err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				return ErrNotFound
 			}
@@ -1129,7 +1148,7 @@ func (s *Config) AddProvider(provider schemas.ModelProvider, config configstore.
 // Parameters:
 //   - provider: The provider to update
 //   - config: The new configuration
-func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config configstore.ProviderConfig) error {
+func (s *Config) UpdateProviderConfig(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1174,7 +1193,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 
 		// Process Azure key config if present
 		if key.AzureKeyConfig != nil {
-			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processAzureKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Azure key config env vars: %w", err)
 			}
@@ -1182,7 +1201,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 
 		// Process Vertex key config if present
 		if key.VertexKeyConfig != nil {
-			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processVertexKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Vertex key config env vars: %w", err)
 			}
@@ -1190,7 +1209,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 
 		// Process Bedrock key config if present
 		if key.BedrockKeyConfig != nil {
-			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, i, newEnvKeys); err != nil {
+			if err := s.processBedrockKeyConfigEnvVars(&config.Keys[i], provider, newEnvKeys); err != nil {
 				s.cleanupEnvKeys(provider, "", newEnvKeys)
 				return fmt.Errorf("failed to process Bedrock key config env vars: %w", err)
 			}
@@ -1200,10 +1219,10 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 	s.Providers[provider] = config
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.UpdateProvider(provider, config, s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateProvider(ctx, provider, config, s.EnvKeys); err != nil {
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
-		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateEnvKeys(ctx, s.EnvKeys); err != nil {
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
@@ -1213,7 +1232,7 @@ func (s *Config) UpdateProviderConfig(provider schemas.ModelProvider, config con
 }
 
 // RemoveProvider removes a provider configuration from memory.
-func (s *Config) RemoveProvider(provider schemas.ModelProvider) error {
+func (s *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1225,10 +1244,10 @@ func (s *Config) RemoveProvider(provider schemas.ModelProvider) error {
 	s.cleanupEnvKeys(provider, "", nil)
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.DeleteProvider(provider); err != nil {
+		if err := s.ConfigStore.DeleteProvider(ctx, provider); err != nil {
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
-		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateEnvKeys(ctx, s.EnvKeys); err != nil {
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
@@ -1321,7 +1340,7 @@ func (s *Config) SetBifrostClient(client *bifrost.Bifrost) {
 //   - Validates that the MCP client doesn't already exist
 //   - Processes environment variables in the MCP client configuration
 //   - Stores the processed configuration in memory
-func (s *Config) AddMCPClient(clientConfig schemas.MCPClientConfig) error {
+func (s *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
 	if s.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -1366,10 +1385,10 @@ func (s *Config) AddMCPClient(clientConfig schemas.MCPClientConfig) error {
 	}
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.UpdateMCPConfig(s.MCPConfig, s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateMCPConfig(ctx, s.MCPConfig, s.EnvKeys); err != nil {
 			return fmt.Errorf("failed to update MCP config in store: %w", err)
 		}
-		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateEnvKeys(ctx, s.EnvKeys); err != nil {
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
@@ -1384,7 +1403,7 @@ func (s *Config) AddMCPClient(clientConfig schemas.MCPClientConfig) error {
 //   - Validates that the MCP client exists
 //   - Removes the MCP client from the configuration
 //   - Removes the MCP client from the Bifrost client
-func (s *Config) RemoveMCPClient(name string) error {
+func (s *Config) RemoveMCPClient(ctx context.Context, name string) error {
 	if s.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -1410,10 +1429,10 @@ func (s *Config) RemoveMCPClient(name string) error {
 	s.cleanupEnvKeys("", name, nil)
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.UpdateMCPConfig(s.MCPConfig, s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateMCPConfig(ctx, s.MCPConfig, s.EnvKeys); err != nil {
 			return fmt.Errorf("failed to update MCP config in store: %w", err)
 		}
-		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateEnvKeys(ctx, s.EnvKeys); err != nil {
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
@@ -1428,7 +1447,7 @@ func (s *Config) RemoveMCPClient(name string) error {
 //   - name: Name of the client to edit
 //   - toolsToAdd: Tools to add to the client
 //   - toolsToRemove: Tools to remove from the client
-func (s *Config) EditMCPClientTools(name string, toolsToAdd []string, toolsToRemove []string) error {
+func (s *Config) EditMCPClientTools(ctx context.Context, name string, toolsToAdd []string, toolsToRemove []string) error {
 	if s.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -1453,10 +1472,10 @@ func (s *Config) EditMCPClientTools(name string, toolsToAdd []string, toolsToRem
 	}
 
 	if s.ConfigStore != nil {
-		if err := s.ConfigStore.UpdateMCPConfig(s.MCPConfig, s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateMCPConfig(ctx, s.MCPConfig, s.EnvKeys); err != nil {
 			return fmt.Errorf("failed to update MCP config in store: %w", err)
 		}
-		if err := s.ConfigStore.UpdateEnvKeys(s.EnvKeys); err != nil {
+		if err := s.ConfigStore.UpdateEnvKeys(ctx, s.EnvKeys); err != nil {
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
@@ -1778,7 +1797,7 @@ func (s *Config) getFieldValue(key schemas.Key, fieldName string) string {
 //   - The detected API key with weight 1.0
 //   - Empty models list (provider will use default models)
 //   - Default concurrency and buffer size settings
-func (s *Config) autoDetectProviders() {
+func (s *Config) autoDetectProviders(ctx context.Context) {
 	// Define common environment variable patterns for each provider
 	providerEnvVars := map[schemas.ModelProvider][]string{
 		schemas.OpenAI:    {"OPENAI_API_KEY", "OPENAI_KEY"},
@@ -1829,7 +1848,7 @@ func (s *Config) autoDetectProviders() {
 	if detectedCount > 0 {
 		logger.Info("auto-configured %d provider(s) from environment variables", detectedCount)
 		if s.ConfigStore != nil {
-			if err := s.ConfigStore.UpdateProvidersConfig(s.Providers); err != nil {
+			if err := s.ConfigStore.UpdateProvidersConfig(ctx, s.Providers); err != nil {
 				logger.Error("failed to update providers in store: %v", err)
 			}
 		}
@@ -1837,7 +1856,7 @@ func (s *Config) autoDetectProviders() {
 }
 
 // processAzureKeyConfigEnvVars processes environment variables in Azure key configuration
-func (s *Config) processAzureKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, keyIndex int, newEnvKeys map[string]struct{}) error {
+func (s *Config) processAzureKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, newEnvKeys map[string]struct{}) error {
 	azureConfig := key.AzureKeyConfig
 
 	// Process Endpoint
@@ -1880,7 +1899,7 @@ func (s *Config) processAzureKeyConfigEnvVars(key *schemas.Key, provider schemas
 }
 
 // processVertexKeyConfigEnvVars processes environment variables in Vertex key configuration
-func (s *Config) processVertexKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, keyIndex int, newEnvKeys map[string]struct{}) error {
+func (s *Config) processVertexKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, newEnvKeys map[string]struct{}) error {
 	vertexConfig := key.VertexKeyConfig
 
 	// Process ProjectID
@@ -1938,7 +1957,7 @@ func (s *Config) processVertexKeyConfigEnvVars(key *schemas.Key, provider schema
 }
 
 // processBedrockKeyConfigEnvVars processes environment variables in Bedrock key configuration
-func (s *Config) processBedrockKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, keyIndex int, newEnvKeys map[string]struct{}) error {
+func (s *Config) processBedrockKeyConfigEnvVars(key *schemas.Key, provider schemas.ModelProvider, newEnvKeys map[string]struct{}) error {
 	bedrockConfig := key.BedrockKeyConfig
 
 	// Process AccessKey
@@ -2036,11 +2055,11 @@ func (s *Config) processBedrockKeyConfigEnvVars(key *schemas.Key, provider schem
 }
 
 // GetVectorStoreConfigRedacted retrieves the vector store configuration with password redacted for safe external exposure
-func (s *Config) GetVectorStoreConfigRedacted() (*vectorstore.Config, error) {
+func (s *Config) GetVectorStoreConfigRedacted(ctx context.Context) (*vectorstore.Config, error) {
 	var err error
 	var vectorStoreConfig *vectorstore.Config
 	if s.ConfigStore != nil {
-		vectorStoreConfig, err = s.ConfigStore.GetVectorStoreConfig()
+		vectorStoreConfig, err = s.ConfigStore.GetVectorStoreConfig(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get vector store config: %w", err)
 		}

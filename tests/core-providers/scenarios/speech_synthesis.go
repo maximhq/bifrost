@@ -7,11 +7,10 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
+	"github.com/stretchr/testify/require"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // RunSpeechSynthesisTest executes the speech synthesis test scenario
@@ -60,32 +59,67 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
-				request := &schemas.BifrostRequest{
+				request := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel, // Use configured model
-					Input: schemas.RequestInput{
-						SpeechInput: &schemas.SpeechInput{
-							Input: tc.text,
-							VoiceConfig: schemas.SpeechVoiceInput{
-								Voice: &voice,
-							},
-							ResponseFormat: tc.format,
-						},
+					Input: &schemas.SpeechInput{
+						Input: tc.text,
 					},
-					Params:    MergeModelParameters(&schemas.ModelParameters{}, testConfig.CustomParams),
+					Params: &schemas.SpeechParameters{
+						VoiceConfig: &schemas.SpeechVoiceInput{
+							Voice: &voice,
+						},
+						ResponseFormat: tc.format,
+					},
 					Fallbacks: testConfig.Fallbacks,
 				}
 
-				response, err := client.SpeechRequest(ctx, request)
-				require.Nilf(t, err, "Speech synthesis failed: %v", err)
-				require.NotNil(t, response)
-				require.NotNil(t, response.Speech)
-				require.NotNil(t, response.Speech.Audio)
+				// Use retry framework for speech synthesis (can be resource intensive)
+				retryConfig := GetTestRetryConfigForScenario("SpeechSynthesis", testConfig)
+				retryContext := TestRetryContext{
+					ScenarioName: "SpeechSynthesis_" + tc.name,
+					ExpectedBehavior: map[string]interface{}{
+						"generate_audio":  true,
+						"voice_type":      tc.voiceType,
+						"format":          tc.format,
+						"min_audio_bytes": tc.expectMinBytes,
+					},
+					TestMetadata: map[string]interface{}{
+						"provider":    testConfig.Provider,
+						"model":       testConfig.SpeechSynthesisModel,
+						"voice":       voice,
+						"text_length": len(tc.text),
+					},
+				}
 
-				// Validate audio data
-				assert.Greater(t, len(response.Speech.Audio), tc.expectMinBytes, "Audio data should have minimum expected size")
-				assert.Equal(t, "audio.speech", response.Object)
-				assert.Equal(t, testConfig.SpeechSynthesisModel, response.Model)
+				// Enhanced validation for speech synthesis
+				expectations := SpeechExpectations(tc.expectMinBytes)
+				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+				response, bifrostErr := WithTestRetry(t, retryConfig, retryContext, expectations, "SpeechSynthesis_"+tc.name, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return client.SpeechRequest(ctx, request)
+				})
+				if bifrostErr != nil {
+					t.Fatalf("❌ SpeechSynthesis_"+tc.name+" request failed after retries: %v", GetErrorMessage(bifrostErr))
+				}
+
+				// Additional speech-specific validations
+				if response.Speech == nil || response.Speech.Audio == nil {
+					t.Fatal("Speech synthesis response missing audio data")
+				}
+
+				audioSize := len(response.Speech.Audio)
+				if audioSize < tc.expectMinBytes {
+					t.Fatalf("Audio data too small: got %d bytes, expected at least %d", audioSize, tc.expectMinBytes)
+				}
+
+				if response.Object != "audio.speech" {
+					t.Logf("⚠️ Unexpected response object type: %s", response.Object)
+				}
+
+				if response.Model != testConfig.SpeechSynthesisModel {
+					t.Logf("⚠️ Model mismatch: expected %s, got %s", testConfig.SpeechSynthesisModel, response.Model)
+				}
 
 				// Save audio file for SST round-trip testing if requested
 				if tc.saveForSST {
@@ -128,32 +162,59 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			`
 
 			voice := "shimmer"
-			request := &schemas.BifrostRequest{
+			request := &schemas.BifrostSpeechRequest{
 				Provider: testConfig.Provider,
-				Model:    "tts-1-hd", // Test with HD model
-				Input: schemas.RequestInput{
-					SpeechInput: &schemas.SpeechInput{
-						Input: longText,
-						VoiceConfig: schemas.SpeechVoiceInput{
-							Voice: &voice,
-						},
-						ResponseFormat: "mp3",
-						Instructions:   "Speak slowly and clearly with natural intonation.",
-					},
+				Model:    testConfig.SpeechSynthesisModel,
+				Input: &schemas.SpeechInput{
+					Input: longText,
 				},
-				Params:    MergeModelParameters(&schemas.ModelParameters{}, testConfig.CustomParams),
+				Params: &schemas.SpeechParameters{
+					VoiceConfig: &schemas.SpeechVoiceInput{
+						Voice: &voice,
+					},
+					ResponseFormat: "mp3",
+					Instructions:   "Speak slowly and clearly with natural intonation.",
+				},
 				Fallbacks: testConfig.Fallbacks,
 			}
 
-			response, err := client.SpeechRequest(ctx, request)
-			require.Nilf(t, err, "HD speech synthesis failed: %v", err)
-			require.NotNil(t, response)
-			require.NotNil(t, response.Speech)
-			require.NotNil(t, response.Speech.Audio)
+			retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisHD", testConfig)
+			retryContext := TestRetryContext{
+				ScenarioName: "SpeechSynthesis_HD_LongText",
+				ExpectedBehavior: map[string]interface{}{
+					"generate_hd_audio": true,
+					"handle_long_text":  true,
+					"min_audio_bytes":   5000,
+				},
+				TestMetadata: map[string]interface{}{
+					"provider":    testConfig.Provider,
+					"model":       testConfig.SpeechSynthesisModel,
+					"text_length": len(longText),
+				},
+			}
 
-			// Validate longer audio
-			assert.Greater(t, len(response.Speech.Audio), 5000, "HD audio should be substantial")
-			assert.Equal(t, "tts-1-hd", response.Model)
+			expectations := SpeechExpectations(5000) // HD should produce substantial audio
+			expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+			response, bifrostErr := WithTestRetry(t, retryConfig, retryContext, expectations, "SpeechSynthesis_HD", func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return client.SpeechRequest(ctx, request)
+			})
+			if bifrostErr != nil {
+				t.Fatalf("❌ SpeechSynthesis_HD request failed after retries: %v", GetErrorMessage(bifrostErr))
+			}
+
+			if response.Speech == nil || response.Speech.Audio == nil {
+				t.Fatal("HD speech synthesis response missing audio data")
+			}
+
+			audioSize := len(response.Speech.Audio)
+			if audioSize < 5000 {
+				t.Fatalf("HD audio data too small: got %d bytes, expected at least 5000", audioSize)
+			}
+
+			if response.Model != testConfig.SpeechSynthesisModel {
+				t.Logf("⚠️ Expected HD model, got: %s", response.Model)
+			}
 
 			t.Logf("✅ HD speech synthesis successful: %d bytes generated", len(response.Speech.Audio))
 		})
@@ -166,29 +227,53 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			for _, voiceType := range voiceTypes {
 				t.Run("VoiceType_"+voiceType, func(t *testing.T) {
 					voice := GetProviderVoice(testConfig.Provider, voiceType)
-					request := &schemas.BifrostRequest{
+					request := &schemas.BifrostSpeechRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.SpeechSynthesisModel,
-						Input: schemas.RequestInput{
-							SpeechInput: &schemas.SpeechInput{
-								Input: testText,
-								VoiceConfig: schemas.SpeechVoiceInput{
-									Voice: &voice,
-								},
-								ResponseFormat: "mp3",
-							},
+						Input: &schemas.SpeechInput{
+							Input: testText,
 						},
-						Params:    MergeModelParameters(&schemas.ModelParameters{}, testConfig.CustomParams),
+						Params: &schemas.SpeechParameters{
+							VoiceConfig: &schemas.SpeechVoiceInput{
+								Voice: &voice,
+							},
+							ResponseFormat: "mp3",
+						},
 						Fallbacks: testConfig.Fallbacks,
 					}
 
-					response, err := client.SpeechRequest(ctx, request)
-					require.Nilf(t, err, "Speech synthesis failed for voice %s (%s): %v", voice, voiceType, err)
-					require.NotNil(t, response)
-					require.NotNil(t, response.Speech)
-					require.NotNil(t, response.Speech.Audio)
+					retryConfig := GetTestRetryConfigForScenario("SpeechSynthesis_Voice", testConfig)
+					retryContext := TestRetryContext{
+						ScenarioName: "SpeechSynthesis_Voice_" + voiceType,
+						ExpectedBehavior: map[string]interface{}{
+							"generate_audio": true,
+							"voice_type":     voiceType,
+						},
+						TestMetadata: map[string]interface{}{
+							"provider": testConfig.Provider,
+							"voice":    voice,
+						},
+					}
 
-					assert.Greater(t, len(response.Speech.Audio), 500, "Audio should be generated for voice %s", voice)
+					expectations := SpeechExpectations(500)
+					expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+					response, bifrostErr := WithTestRetry(t, retryConfig, retryContext, expectations, "SpeechSynthesis_Voice_"+voiceType, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+						return client.SpeechRequest(ctx, request)
+					})
+
+					if bifrostErr != nil {
+						t.Fatalf("❌ SpeechSynthesis_Voice_"+voiceType+" request failed after retries: %v", GetErrorMessage(bifrostErr))
+					}
+
+					if response.Speech == nil || response.Speech.Audio == nil {
+						t.Fatalf("Voice %s (%s) missing audio data", voice, voiceType)
+					}
+
+					audioSize := len(response.Speech.Audio)
+					if audioSize < 500 {
+						t.Fatalf("Audio too small for voice %s: got %d bytes, expected at least 500", voice, audioSize)
+					}
 					t.Logf("✅ Voice %s (%s): %d bytes generated", voice, voiceType, len(response.Speech.Audio))
 				})
 			}

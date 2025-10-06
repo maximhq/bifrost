@@ -30,19 +30,19 @@ func NewMCPHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.Co
 }
 
 // RegisterRoutes registers all MCP-related routes
-func (h *MCPHandler) RegisterRoutes(r *router.Router) {
+func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...BifrostHTTPMiddleware) {
 	// MCP tool execution endpoint
-	r.POST("/v1/mcp/tool/execute", h.executeTool)
-	r.GET("/api/mcp/clients", h.getMCPClients)
-	r.POST("/api/mcp/client", h.addMCPClient)
-	r.PUT("/api/mcp/client/{name}", h.editMCPClientTools)
-	r.DELETE("/api/mcp/client/{name}", h.removeMCPClient)
-	r.POST("/api/mcp/client/{name}/reconnect", h.reconnectMCPClient)
+	r.POST("/v1/mcp/tool/execute", ChainMiddlewares(h.executeTool, middlewares...))
+	r.GET("/api/mcp/clients", ChainMiddlewares(h.getMCPClients, middlewares...))
+	r.POST("/api/mcp/client", ChainMiddlewares(h.addMCPClient, middlewares...))
+	r.PUT("/api/mcp/client/{name}", ChainMiddlewares(h.editMCPClientTools, middlewares...))
+	r.DELETE("/api/mcp/client/{name}", ChainMiddlewares(h.removeMCPClient, middlewares...))
+	r.POST("/api/mcp/client/{name}/reconnect", ChainMiddlewares(h.reconnectMCPClient, middlewares...))
 }
 
 // executeTool handles POST /v1/mcp/tool/execute - Execute MCP tool
 func (h *MCPHandler) executeTool(ctx *fasthttp.RequestCtx) {
-	var req schemas.ToolCall
+	var req schemas.ChatAssistantMessageToolCall
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
 		return
@@ -147,7 +147,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.AddMCPClient(req); err != nil {
+	if err := h.store.AddMCPClient(ctx, req); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add MCP client: %v", err), h.logger)
 		return
 	}
@@ -175,7 +175,7 @@ func (h *MCPHandler) editMCPClientTools(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.EditMCPClientTools(name, req.ToolsToExecute, req.ToolsToSkip); err != nil {
+	if err := h.store.EditMCPClientTools(ctx, name, req.ToolsToExecute, req.ToolsToSkip); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to edit MCP client tools: %v", err), h.logger)
 		return
 	}
@@ -194,7 +194,7 @@ func (h *MCPHandler) removeMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.RemoveMCPClient(name); err != nil {
+	if err := h.store.RemoveMCPClient(ctx, name); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove MCP client: %v", err), h.logger)
 		return
 	}

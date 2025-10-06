@@ -9,8 +9,6 @@ require (
 	github.com/stretchr/testify v1.10.0
 )
 
-replace github.com/maximhq/bifrost/core => ../../core
-
 require (
 	cloud.google.com/go/compute/metadata v0.8.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect

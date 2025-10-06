@@ -2,6 +2,7 @@
 package configstore
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -14,93 +15,103 @@ import (
 type ConfigStore interface {
 
 	// Client config CRUD
-	UpdateClientConfig(config *ClientConfig) error
-	GetClientConfig() (*ClientConfig, error)
+	UpdateClientConfig(ctx context.Context, config *ClientConfig) error
+	GetClientConfig(ctx context.Context) (*ClientConfig, error)
 
 	// Provider config CRUD
-	UpdateProvidersConfig(providers map[schemas.ModelProvider]ProviderConfig) error
-	AddProvider(provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
-	UpdateProvider(provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
-	DeleteProvider(provider schemas.ModelProvider) error
-	GetProvidersConfig() (map[schemas.ModelProvider]ProviderConfig, error)
+	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig) error
+	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
+	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
+	DeleteProvider(ctx context.Context, provider schemas.ModelProvider) error
+	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 
 	// MCP config CRUD
-	UpdateMCPConfig(config *schemas.MCPConfig, envKeys map[string][]EnvKeyInfo) error
-	GetMCPConfig() (*schemas.MCPConfig, error)
+	UpdateMCPConfig(ctx context.Context, config *schemas.MCPConfig, envKeys map[string][]EnvKeyInfo) error
+	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
 
 	// Vector store config CRUD
-	UpdateVectorStoreConfig(config *vectorstore.Config) error
-	GetVectorStoreConfig() (*vectorstore.Config, error)
+	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
+	GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error)
 
 	// Logs store config CRUD
-	UpdateLogsStoreConfig(config *logstore.Config) error
-	GetLogsStoreConfig() (*logstore.Config, error)
+	UpdateLogsStoreConfig(ctx context.Context, config *logstore.Config) error
+	GetLogsStoreConfig(ctx context.Context) (*logstore.Config, error)
 
 	// ENV keys CRUD
-	UpdateEnvKeys(keys map[string][]EnvKeyInfo) error
-	GetEnvKeys() (map[string][]EnvKeyInfo, error)
+	UpdateEnvKeys(ctx context.Context, keys map[string][]EnvKeyInfo) error
+	GetEnvKeys(ctx context.Context) (map[string][]EnvKeyInfo, error)
 
 	// Config CRUD
-	GetConfig(key string) (*TableConfig, error)
-	UpdateConfig(config *TableConfig, tx ...*gorm.DB) error
+	GetConfig(ctx context.Context, key string) (*TableConfig, error)
+	UpdateConfig(ctx context.Context, config *TableConfig, tx ...*gorm.DB) error
 
 	// Plugins CRUD
-	GetPlugins() ([]TablePlugin, error)
-	GetPlugin(name string) (*TablePlugin, error)
-	CreatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error
-	UpdatePlugin(plugin *TablePlugin, tx ...*gorm.DB) error
-	DeletePlugin(name string, tx ...*gorm.DB) error
+	GetPlugins(ctx context.Context) ([]TablePlugin, error)
+	GetPlugin(ctx context.Context, name string) (*TablePlugin, error)
+	CreatePlugin(ctx context.Context, plugin *TablePlugin, tx ...*gorm.DB) error
+	UpdatePlugin(ctx context.Context, plugin *TablePlugin, tx ...*gorm.DB) error
+	DeletePlugin(ctx context.Context, name string, tx ...*gorm.DB) error
 
 	// Governance config CRUD
-	GetVirtualKeys() ([]TableVirtualKey, error)
-	GetVirtualKey(id string) (*TableVirtualKey, error)
-	CreateVirtualKey(virtualKey *TableVirtualKey, tx ...*gorm.DB) error
-	UpdateVirtualKey(virtualKey *TableVirtualKey, tx ...*gorm.DB) error
-	DeleteVirtualKey(id string) error
+	GetVirtualKeys(ctx context.Context) ([]TableVirtualKey, error)
+	GetVirtualKey(ctx context.Context, id string) (*TableVirtualKey, error)
+	GetVirtualKeyByValue(ctx context.Context, value string) (*TableVirtualKey, error)
+	CreateVirtualKey(ctx context.Context, virtualKey *TableVirtualKey, tx ...*gorm.DB) error
+	UpdateVirtualKey(ctx context.Context, virtualKey *TableVirtualKey, tx ...*gorm.DB) error
+	DeleteVirtualKey(ctx context.Context, id string) error
+
+	// Virtual key provider config CRUD
+	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]TableVirtualKeyProviderConfig, error)
+	CreateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error
+	UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *TableVirtualKeyProviderConfig, tx ...*gorm.DB) error
+	DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
 
 	// Team CRUD
-	GetTeams(customerID string) ([]TableTeam, error)
-	GetTeam(id string) (*TableTeam, error)
-	CreateTeam(team *TableTeam, tx ...*gorm.DB) error
-	UpdateTeam(team *TableTeam, tx ...*gorm.DB) error
-	DeleteTeam(id string) error
+	GetTeams(ctx context.Context, customerID string) ([]TableTeam, error)
+	GetTeam(ctx context.Context, id string) (*TableTeam, error)
+	CreateTeam(ctx context.Context, team *TableTeam, tx ...*gorm.DB) error
+	UpdateTeam(ctx context.Context, team *TableTeam, tx ...*gorm.DB) error
+	DeleteTeam(ctx context.Context, id string) error
 
 	// Customer CRUD
-	GetCustomers() ([]TableCustomer, error)
-	GetCustomer(id string) (*TableCustomer, error)
-	CreateCustomer(customer *TableCustomer, tx ...*gorm.DB) error
-	UpdateCustomer(customer *TableCustomer, tx ...*gorm.DB) error
-	DeleteCustomer(id string) error
+	GetCustomers(ctx context.Context) ([]TableCustomer, error)
+	GetCustomer(ctx context.Context, id string) (*TableCustomer, error)
+	CreateCustomer(ctx context.Context, customer *TableCustomer, tx ...*gorm.DB) error
+	UpdateCustomer(ctx context.Context, customer *TableCustomer, tx ...*gorm.DB) error
+	DeleteCustomer(ctx context.Context, id string) error
 
 	// Rate limit CRUD
-	GetRateLimit(id string) (*TableRateLimit, error)
-	CreateRateLimit(rateLimit *TableRateLimit, tx ...*gorm.DB) error
-	UpdateRateLimit(rateLimit *TableRateLimit, tx ...*gorm.DB) error
-	UpdateRateLimits(rateLimits []*TableRateLimit, tx ...*gorm.DB) error
+	GetRateLimit(ctx context.Context, id string) (*TableRateLimit, error)
+	CreateRateLimit(ctx context.Context, rateLimit *TableRateLimit, tx ...*gorm.DB) error
+	UpdateRateLimit(ctx context.Context, rateLimit *TableRateLimit, tx ...*gorm.DB) error
+	UpdateRateLimits(ctx context.Context, rateLimits []*TableRateLimit, tx ...*gorm.DB) error
 
 	// Budget CRUD
-	GetBudgets() ([]TableBudget, error)
-	GetBudget(id string, tx ...*gorm.DB) (*TableBudget, error)
-	CreateBudget(budget *TableBudget, tx ...*gorm.DB) error
-	UpdateBudget(budget *TableBudget, tx ...*gorm.DB) error
-	UpdateBudgets(budgets []*TableBudget, tx ...*gorm.DB) error
+	GetBudgets(ctx context.Context) ([]TableBudget, error)
+	GetBudget(ctx context.Context, id string, tx ...*gorm.DB) (*TableBudget, error)
+	CreateBudget(ctx context.Context, budget *TableBudget, tx ...*gorm.DB) error
+	UpdateBudget(ctx context.Context, budget *TableBudget, tx ...*gorm.DB) error
+	UpdateBudgets(ctx context.Context, budgets []*TableBudget, tx ...*gorm.DB) error
 
-	GetGovernanceConfig() (*GovernanceConfig, error)
+	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)
 
 	// Model pricing CRUD
-	GetModelPrices() ([]TableModelPricing, error)
-	CreateModelPrices(pricing *TableModelPricing, tx ...*gorm.DB) error
-	DeleteModelPrices(tx ...*gorm.DB) error
+	GetModelPrices(ctx context.Context) ([]TableModelPricing, error)
+	CreateModelPrices(ctx context.Context, pricing *TableModelPricing, tx ...*gorm.DB) error
+	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
 	// Key management
-	GetKeysByIDs(ids []string) ([]TableKey, error)
+	GetKeysByIDs(ctx context.Context, ids []string) ([]TableKey, error)
 
 	// Generic transaction manager
-	ExecuteTransaction(fn func(tx *gorm.DB) error) error
+	ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error
+
+	// Cleanup
+	Close(ctx context.Context) error
 }
 
 // NewConfigStore creates a new config store based on the configuration
-func NewConfigStore(config *Config, logger schemas.Logger) (ConfigStore, error) {
+func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) (ConfigStore, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -111,9 +122,14 @@ func NewConfigStore(config *Config, logger schemas.Logger) (ConfigStore, error) 
 	switch config.Type {
 	case ConfigStoreTypeSQLite:
 		if sqliteConfig, ok := config.Config.(*SQLiteConfig); ok {
-			return newSqliteConfigStore(sqliteConfig, logger)
+			return newSqliteConfigStore(ctx, sqliteConfig, logger)
 		}
 		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
+	case ConfigStoreTypePostgres:
+		if postgresConfig, ok := config.Config.(*PostgresConfig); ok {
+			return newPostgresConfigStore(ctx, postgresConfig, logger)
+		}
+		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
 	}
 	return nil, fmt.Errorf("unsupported config store type: %s", config.Type)
 }

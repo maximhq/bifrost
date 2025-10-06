@@ -1,8 +1,8 @@
-import { BifrostMessage } from "@/lib/types/logs";
+import { ChatMessage } from "@/lib/types/logs";
 import { CodeEditor } from "./codeEditor";
 
 interface LogMessageViewProps {
-	message: BifrostMessage;
+	message: ChatMessage;
 }
 
 const isJson = (text: string) => {

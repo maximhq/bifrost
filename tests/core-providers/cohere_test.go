@@ -17,10 +17,11 @@ func TestCohere(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.Cohere,
-		ChatModel: "command-a-03-2025",
-		TextModel: "", // Cohere focuses on chat
-		EmbeddingModel: "embed-english-v3.0",
+		Provider:       schemas.Cohere,
+		ChatModel:      "command-a-03-2025",
+		VisionModel:    "command-a-vision-07-2025", // Cohere's latest vision model
+		TextModel:      "",                         // Cohere focuses on chat
+		EmbeddingModel: "embed-v4.0",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,
@@ -29,16 +30,13 @@ func TestCohere(t *testing.T) {
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
-			AutomaticFunctionCall: false, // May not support automatic
-			ImageURL:              false, // Check if supported
-			ImageBase64:           false, // Check if supported
-			MultipleImages:        false, // Check if supported
-			CompleteEnd2End:       true,
-			ProviderSpecific:      true,
+			AutomaticFunctionCall: true,  // May not support automatic
+			ImageURL:              false, // Supported by c4ai-aya-vision-8b model
+			ImageBase64:           true,  // Supported by c4ai-aya-vision-8b model
+			MultipleImages:        true,  // Supported by c4ai-aya-vision-8b model
+			CompleteEnd2End:       false,
 			Embedding:             true,
-		},
-		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+			Reasoning:             true,
 		},
 	}
 

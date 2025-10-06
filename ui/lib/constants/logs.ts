@@ -1,19 +1,19 @@
 // Known provider names array - centralized definition
 export const KnownProvidersNames = [
-	"openai",
 	"anthropic",
 	"azure",
 	"bedrock",
+	"cerebras",
 	"cohere",
-	"vertex",
+	"gemini",
+	"groq",
 	"mistral",
 	"ollama",
-	"groq",
+	"openai",
+	"openrouter",
 	"parasail",
 	"sgl",
-	"cerebras",
-	"gemini",
-	"openrouter",
+	"vertex",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -33,6 +33,8 @@ export const RequestTypes = [
 	"chat.completion.chunk",
 	"audio.speech.chunk",
 	"audio.transcription.chunk",
+	"response",
+	"response.stream",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -72,6 +74,7 @@ export const StatusColors = {
 
 export const RequestTypeLabels = {
 	"chat.completion": "Chat",
+	response: "Responses",
 	"text.completion": "Text",
 	embedding: "Embedding",
 	list: "List",
@@ -84,6 +87,7 @@ export const RequestTypeLabels = {
 
 export const RequestTypeColors = {
 	"chat.completion": "bg-blue-100 text-blue-800",
+	response: "bg-teal-100 text-teal-800",
 	"text.completion": "bg-green-100 text-green-800",
 	embedding: "bg-red-100 text-red-800",
 	list: "bg-red-100 text-red-800",

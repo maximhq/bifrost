@@ -98,11 +98,11 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 
 	return (
 		<div className="flex items-center justify-between space-x-4">
-			<div className="flex flex-1 items-center gap-2">
-				<Search className="size-5" />
+			<div className="border-input flex flex-1 items-center gap-2 border rounded-sm">
+				<Search className="size-4 ml-2 mr-0.5" />
 				<Input
 					type="text"
-					className="border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
+					className="border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 rounded-tr-sm rounded-br-sm rounded-tl-none rounded-bl-none"
 					placeholder="Search logs"
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value)}

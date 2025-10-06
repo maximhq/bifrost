@@ -633,37 +633,77 @@ func (p *MockerPlugin) matchesConditionsFast(req *schemas.BifrostRequest, condit
 
 // extractMessageContentFast extracts message content with optimized performance
 func (p *MockerPlugin) extractMessageContentFast(req *schemas.BifrostRequest) string {
-	// Handle text completion input
-	if req.Input.TextCompletionInput != nil {
-		return *req.Input.TextCompletionInput
-	}
-
-	// Handle chat completion input - optimized for common cases
-	if req.Input.ChatCompletionInput != nil {
-		messages := *req.Input.ChatCompletionInput
-		if len(messages) == 0 {
-			return ""
-		}
-
-		// Fast path for single message
-		if len(messages) == 1 {
-			if messages[0].Content.ContentStr != nil {
-				return *messages[0].Content.ContentStr
+	switch req.RequestType {
+	case schemas.TextCompletionRequest:
+		// Handle text completion input
+		if req.TextCompletionRequest.Input.PromptStr != nil {
+			return *req.TextCompletionRequest.Input.PromptStr
+		} else {
+			var stringBuilder strings.Builder
+			for _, prompt := range req.TextCompletionRequest.Input.PromptArray {
+				stringBuilder.WriteString(prompt)
 			}
-			return ""
+			return stringBuilder.String()
 		}
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		// Handle chat completion input - optimized for common cases
+		if req.ChatRequest.Input != nil {
+			messages := req.ChatRequest.Input
+			if len(messages) == 0 {
+				return ""
+			}
 
-		// Multiple messages - use string builder for efficiency
-		var builder strings.Builder
-		for i, message := range messages {
-			if message.Content.ContentStr != nil {
+			// Fast path for single message
+			if len(messages) == 1 {
+				if messages[0].Content.ContentStr != nil {
+					return *messages[0].Content.ContentStr
+				}
+				return ""
+			}
+
+			// Multiple messages - use string builder for efficiency
+			var builder strings.Builder
+			for i, message := range messages {
+				if message.Content.ContentStr != nil {
+					if i > 0 {
+						builder.WriteByte(' ')
+					}
+					builder.WriteString(*message.Content.ContentStr)
+				}
+			}
+			return builder.String()
+		}
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		// Handle responses input - optimized for common cases
+		if req.ResponsesRequest.Input != nil {
+			messages := req.ResponsesRequest.Input
+			if len(messages) == 0 {
+				return ""
+			}
+
+			// Fast path for single message
+			if len(messages) == 1 {
+				if messages[0].Content != nil && messages[0].Content.ContentStr != nil {
+					return *messages[0].Content.ContentStr
+				}
+				return ""
+			}
+
+			// Multiple messages - use string builder for efficiency
+			var builder strings.Builder
+			for i, message := range messages {
+				if message.Content == nil || message.Content.ContentStr == nil {
+					continue
+				}
 				if i > 0 {
 					builder.WriteByte(' ')
 				}
 				builder.WriteString(*message.Content.ContentStr)
 			}
+			return builder.String()
 		}
-		return builder.String()
+	default:
+		return ""
 	}
 
 	return ""
@@ -675,13 +715,28 @@ func (p *MockerPlugin) calculateRequestSizeFast(req *schemas.BifrostRequest) int
 	size := len(req.Model) + len(string(req.Provider))
 
 	// Add input size
-	if req.Input.TextCompletionInput != nil {
-		size += len(*req.Input.TextCompletionInput)
+	if req.TextCompletionRequest != nil {
+		if req.TextCompletionRequest.Input.PromptStr != nil {
+			size += len(*req.TextCompletionRequest.Input.PromptStr)
+		} else {
+			for _, prompt := range req.TextCompletionRequest.Input.PromptArray {
+				size += len(prompt)
+			}
+		}
 	}
 
-	if req.Input.ChatCompletionInput != nil {
-		for _, message := range *req.Input.ChatCompletionInput {
+	if req.ChatRequest.Input != nil {
+		for _, message := range req.ChatRequest.Input {
 			if message.Content.ContentStr != nil {
+				size += len(*message.Content.ContentStr)
+			}
+			size += 50 // Approximate overhead for message structure
+		}
+	}
+
+	if req.ResponsesRequest.Input != nil {
+		for _, message := range req.ResponsesRequest.Input {
+			if message.Content != nil && message.Content.ContentStr != nil {
 				size += len(*message.Content.ContentStr)
 			}
 			size += 50 // Approximate overhead for message structure
@@ -736,13 +791,13 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	mockResponse := &schemas.BifrostResponse{
 		Model: req.Model,
 		Usage: &usage,
-		Choices: []schemas.BifrostResponseChoice{
+		Choices: []schemas.BifrostChatResponseChoice{
 			{
 				Index: 0,
 				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
+					Message: schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						Content: schemas.ChatMessageContent{
 							ContentStr: &message,
 						},
 					},
@@ -751,7 +806,9 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: req.Provider,
+			RequestType:    schemas.ChatCompletionRequest,
+			Provider:       req.Provider,
+			ModelRequested: req.Model,
 		},
 	}
 
@@ -793,7 +850,7 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 
 	// Create mock error
 	mockError := &schemas.BifrostError{
-		Error: schemas.ErrorField{
+		Error: &schemas.ErrorField{
 			Message: errorContent.Message,
 		},
 		AllowFallbacks: allowFallbacks,
@@ -884,7 +941,7 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 	case DefaultBehaviorError:
 		return req, &schemas.PluginShortCircuit{
 			Error: &schemas.BifrostError{
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: "Mock plugin default error",
 				},
 			},
@@ -899,13 +956,13 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 					CompletionTokens: 10,
 					TotalTokens:      15,
 				},
-				Choices: []schemas.BifrostResponseChoice{
+				Choices: []schemas.BifrostChatResponseChoice{
 					{
 						Index: 0,
 						BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-							Message: schemas.BifrostMessage{
-								Role: schemas.ModelChatMessageRoleAssistant,
-								Content: schemas.MessageContent{
+							Message: schemas.ChatMessage{
+								Role: schemas.ChatMessageRoleAssistant,
+								Content: schemas.ChatMessageContent{
 									ContentStr: bifrost.Ptr("Mock plugin default response"),
 								},
 							},
@@ -914,7 +971,9 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 					},
 				},
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					Provider: req.Provider,
+					RequestType:    schemas.ChatCompletionRequest,
+					Provider:       req.Provider,
+					ModelRequested: req.Model,
 				},
 			},
 		}, nil

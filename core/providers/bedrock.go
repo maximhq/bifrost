@@ -7,11 +7,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,179 +23,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/bedrock"
+	cohere "github.com/maximhq/bifrost/core/schemas/providers/cohere"
 )
-
-// BedrockAnthropicTextResponse represents the response structure from Bedrock's Anthropic text completion API.
-// It includes the completion text and stop reason information.
-type BedrockAnthropicTextResponse struct {
-	Completion string `json:"completion"`  // Generated completion text
-	StopReason string `json:"stop_reason"` // Reason for completion termination
-	Stop       string `json:"stop"`        // Stop sequence that caused completion to stop
-}
-
-// BedrockMistralTextResponse represents the response structure from Bedrock's Mistral text completion API.
-// It includes multiple output choices with their text and stop reasons.
-type BedrockMistralTextResponse struct {
-	Outputs []struct {
-		Text       string `json:"text"`        // Generated text
-		StopReason string `json:"stop_reason"` // Reason for completion termination
-	} `json:"outputs"` // Array of output choices
-}
-
-// BedrockChatResponse represents the response structure from Bedrock's chat completion API.
-// It includes message content, metrics, and token usage statistics.
-type BedrockChatResponse struct {
-	Metrics struct {
-		Latency int `json:"latencyMs"` // Response latency in milliseconds
-	} `json:"metrics"` // Performance metrics
-	Output struct {
-		Message struct {
-			Content []struct {
-				Text *string `json:"text"` // Message content
-				// Bedrock returns a union type where either Text or ToolUse is present (mutually exclusive)
-				BedrockAnthropicToolUseMessage
-			} `json:"content"` // Array of message content
-			Role string `json:"role"` // Role of the message sender
-		} `json:"message"` // Message structure
-	} `json:"output"` // Output structure
-	StopReason string `json:"stopReason"` // Reason for completion termination
-	Usage      struct {
-		InputTokens  int `json:"inputTokens"`  // Number of input tokens used
-		OutputTokens int `json:"outputTokens"` // Number of output tokens generated
-		TotalTokens  int `json:"totalTokens"`  // Total number of tokens used
-	} `json:"usage"` // Token usage statistics
-}
-
-// BedrockAnthropicSystemMessage represents a system message for Anthropic models.
-type BedrockAnthropicSystemMessage struct {
-	Text string `json:"text"` // System message text
-}
-
-// BedrockAnthropicTextMessage represents a text message for Anthropic models.
-type BedrockAnthropicTextMessage struct {
-	Type string `json:"type"` // Type of message
-	Text string `json:"text"` // Message text
-}
-
-// BedrockMistralContent represents content for Mistral models.
-type BedrockMistralContent struct {
-	Text string `json:"text"` // Content text
-}
-
-// BedrockMistralChatMessage represents a chat message for Mistral models.
-type BedrockMistralChatMessage struct {
-	Role       schemas.ModelChatMessageRole `json:"role"`                   // Role of the message sender
-	Content    []BedrockMistralContent      `json:"content"`                // Array of message content
-	ToolCalls  *[]BedrockAnthropicToolCall  `json:"tool_calls,omitempty"`   // Optional tool calls
-	ToolCallID *string                      `json:"tool_call_id,omitempty"` // Optional tool call ID
-}
-
-// BedrockAnthropicImageMessage represents an image message for Anthropic models.
-type BedrockAnthropicImageMessage struct {
-	Type  string                `json:"type"`  // Type of message
-	Image BedrockAnthropicImage `json:"image"` // Image data
-}
-
-// BedrockAnthropicImage represents image data for Anthropic models.
-type BedrockAnthropicImage struct {
-	Format string                      `json:"format,omitempty"` // Image format
-	Source BedrockAnthropicImageSource `json:"source,omitempty"` // Image source
-}
-
-// BedrockAnthropicImageSource represents the source of an image for Anthropic models.
-type BedrockAnthropicImageSource struct {
-	Bytes string `json:"bytes"` // Base64 encoded image data
-}
-
-// BedrockAnthropicToolUseMessage represents a tool use message for Anthropic models.
-type BedrockAnthropicToolUseMessage struct {
-	ToolUse *BedrockAnthropicToolUse `json:"toolUse"`
-}
-
-// BedrockToolChoice represents the tool choice configuration for Bedrock models.
-type BedrockToolChoice struct {
-	Auto map[string]interface{} `json:"auto,omitempty"`
-	Any  map[string]interface{} `json:"any,omitempty"`
-	Tool *BedrockSpecificTool   `json:"tool,omitempty"`
-}
-
-// BedrockSpecificTool represents a specific tool choice configuration.
-type BedrockSpecificTool struct {
-	Type string `json:"type"` // "tool" always
-	Name string `json:"name"`
-}
-
-type BedrockAnthropicToolUse struct {
-	ToolUseID string                 `json:"toolUseId"`
-	Name      string                 `json:"name"`
-	Input     map[string]interface{} `json:"input"`
-}
-
-// BedrockAnthropicToolCall represents a tool call for Anthropic models.
-type BedrockAnthropicToolCall struct {
-	ToolSpec BedrockAnthropicToolSpec `json:"toolSpec"` // Tool specification
-}
-
-// BedrockAnthropicToolSpec represents a tool specification for Anthropic models.
-type BedrockAnthropicToolSpec struct {
-	Name        string `json:"name"`        // Tool name
-	Description string `json:"description"` // Tool description
-	InputSchema struct {
-		Json interface{} `json:"json"` // Input schema in JSON format
-	} `json:"inputSchema"` // Input schema structure
-}
-
-// BedrockError represents the error response structure from Bedrock's API.
-type BedrockError struct {
-	Message string `json:"message"` // Error message
-}
-
-// BedrockStreamMessageStartEvent is emitted when the assistant message starts.
-type BedrockStreamMessageStartEvent struct {
-	MessageStart struct {
-		Role string `json:"role"` // e.g. "assistant"
-	} `json:"messageStart"`
-}
-
-// BedrockStreamContentBlockDeltaEvent is sent for each content delta chunk (text, reasoning, tool use).
-type BedrockStreamContentBlockDeltaEvent struct {
-	ContentBlockDelta struct {
-		Delta struct {
-			Text             string          `json:"text,omitempty"`
-			ReasoningContent json.RawMessage `json:"reasoningContent,omitempty"`
-			ToolUse          json.RawMessage `json:"toolUse,omitempty"`
-		} `json:"delta"`
-		ContentBlockIndex int `json:"contentBlockIndex"`
-	} `json:"contentBlockDelta"`
-}
-
-// BedrockStreamContentBlockStopEvent indicates the end of a content block.
-type BedrockStreamContentBlockStopEvent struct {
-	ContentBlockStop struct {
-		ContentBlockIndex int `json:"contentBlockIndex"`
-	} `json:"contentBlockStop"`
-}
-
-// BedrockStreamMessageStopEvent marks the end of the assistant message.
-type BedrockStreamMessageStopEvent struct {
-	MessageStop struct {
-		StopReason string `json:"stopReason"` // e.g. "stop", "max_tokens", "tool_use"
-	} `json:"messageStop"`
-}
-
-// BedrockStreamMetadataEvent contains metadata after streaming ends.
-type BedrockStreamMetadataEvent struct {
-	Metadata struct {
-		Usage struct {
-			InputTokens  int `json:"inputTokens"`
-			OutputTokens int `json:"outputTokens"`
-			TotalTokens  int `json:"totalTokens"`
-		} `json:"usage"`
-		Metrics struct {
-			LatencyMs float64 `json:"latencyMs"`
-		} `json:"metrics"`
-	} `json:"metadata"`
-}
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
@@ -211,19 +39,19 @@ type BedrockProvider struct {
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
 var bedrockChatResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &BedrockChatResponse{}
+		return &bedrock.BedrockConverseResponse{}
 	},
 }
 
 // acquireBedrockChatResponse gets a Bedrock response from the pool and resets it.
-func acquireBedrockChatResponse() *BedrockChatResponse {
-	resp := bedrockChatResponsePool.Get().(*BedrockChatResponse)
-	*resp = BedrockChatResponse{} // Reset the struct
+func acquireBedrockChatResponse() *bedrock.BedrockConverseResponse {
+	resp := bedrockChatResponsePool.Get().(*bedrock.BedrockConverseResponse)
+	*resp = bedrock.BedrockConverseResponse{} // Reset the struct
 	return resp
 }
 
 // releaseBedrockChatResponse returns a Bedrock response to the pool.
-func releaseBedrockChatResponse(resp *BedrockChatResponse) {
+func releaseBedrockChatResponse(resp *bedrock.BedrockConverseResponse) {
 	if resp != nil {
 		bedrockChatResponsePool.Put(resp)
 	}
@@ -239,7 +67,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		bedrockChatResponsePool.Put(&BedrockChatResponse{})
+		bedrockChatResponsePool.Put(&bedrock.BedrockConverseResponse{})
 	}
 
 	return &BedrockProvider{
@@ -259,7 +87,7 @@ func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 // CompleteRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody map[string]interface{}, path string, key schemas.Key) ([]byte, *schemas.BifrostError) {
+func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody interface{}, path string, key schemas.Key) ([]byte, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
 
 	region := "us-east-1"
@@ -272,8 +100,8 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
-				Error: schemas.ErrorField{
-					Type:    Ptr(schemas.RequestCancelled),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 					Error:   err,
 				},
@@ -281,7 +109,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		}
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderJSONMarshaling,
 				Error:   err,
 			},
@@ -293,7 +121,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "error creating request",
 				Error:   err,
 			},
@@ -318,7 +146,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderRequest,
 				Error:   err,
 			},
@@ -331,7 +159,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
@@ -339,13 +167,13 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errorResp BedrockError
+		var errorResp bedrock.BedrockError
 
 		if err := sonic.Unmarshal(body, &errorResp); err != nil {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				StatusCode:     &resp.StatusCode,
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderResponseUnmarshal,
 					Error:   err,
 				},
@@ -354,7 +182,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 
 		return nil, &schemas.BifrostError{
 			StatusCode: &resp.StatusCode,
-			Error: schemas.ErrorField{
+			Error: &schemas.ErrorField{
 				Message: errorResp.Message,
 			},
 		}
@@ -363,463 +191,11 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	return body, nil
 }
 
-// GetTextCompletionResult processes the text completion response from Bedrock.
-// It handles different model types (Anthropic and Mistral) and formats the response.
-// Returns a BifrostResponse containing the completion results or an error if processing fails.
-func (provider *BedrockProvider) getTextCompletionResult(result []byte, model string, providerName schemas.ModelProvider) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	switch {
-	case strings.Contains(model, "anthropic."):
-		var response BedrockAnthropicTextResponse
-		if err := sonic.Unmarshal(result, &response); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "error parsing response",
-					Error:   err,
-				},
-			}
-		}
-
-		return &schemas.BifrostResponse{
-			Choices: []schemas.BifrostResponseChoice{
-				{
-					Index: 0,
-					BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-						Message: schemas.BifrostMessage{
-							Role: schemas.ModelChatMessageRoleAssistant,
-							Content: schemas.MessageContent{
-								ContentStr: &response.Completion,
-							},
-						},
-						StopString: &response.Stop,
-					},
-					FinishReason: &response.StopReason,
-				},
-			},
-			Model: model,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider: providerName,
-			},
-		}, nil
-
-	case strings.Contains(model, "mistral."):
-		var response BedrockMistralTextResponse
-		if err := sonic.Unmarshal(result, &response); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: schemas.ErrorField{
-					Message: "error parsing response",
-					Error:   err,
-				},
-			}
-		}
-
-		var choices []schemas.BifrostResponseChoice
-		for i, output := range response.Outputs {
-			choices = append(choices, schemas.BifrostResponseChoice{
-				Index: i,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: schemas.BifrostMessage{
-						Role: schemas.ModelChatMessageRoleAssistant,
-						Content: schemas.MessageContent{
-							ContentStr: &output.Text,
-						},
-					},
-				},
-				FinishReason: &output.StopReason,
-			})
-		}
-
-		return &schemas.BifrostResponse{
-			Choices: choices,
-			Model:   model,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider: providerName,
-			},
-		}, nil
-	}
-
-	return nil, newConfigurationError(fmt.Sprintf("invalid model choice: %s", model), providerName)
-}
-
-// parseBedrockAnthropicMessageToolCallContent parses the content of a tool call message.
-// It handles both text and JSON content.
-// Returns a map containing the parsed content.
-func parseBedrockAnthropicMessageToolCallContent(content string) map[string]interface{} {
-	toolResultContentBlock := map[string]interface{}{}
-	var parsedJSON interface{}
-	err := sonic.Unmarshal([]byte(content), &parsedJSON)
-	if err == nil {
-		if arr, ok := parsedJSON.([]interface{}); ok {
-			toolResultContentBlock["json"] = map[string]interface{}{"content": arr}
-		} else {
-			toolResultContentBlock["json"] = map[string]interface{}{"output": parsedJSON}
-		}
-	} else {
-		toolResultContentBlock["text"] = content
-	}
-
-	return toolResultContentBlock
-}
-
-// PrepareChatCompletionMessages formats chat messages for Bedrock's API.
-// It handles different model types (Anthropic and Mistral) and formats messages accordingly.
-// Returns a map containing the formatted messages and any system messages, or an error if formatting fails.
-func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schemas.BifrostMessage, model string) (map[string]interface{}, *schemas.BifrostError) {
-	switch {
-	case strings.Contains(model, "anthropic."):
-		// Add system messages if present
-		var systemMessages []BedrockAnthropicSystemMessage
-		for _, msg := range messages {
-			if msg.Role == schemas.ModelChatMessageRoleSystem {
-				if msg.Content.ContentStr != nil {
-					systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
-						Text: *msg.Content.ContentStr,
-					})
-				} else if msg.Content.ContentBlocks != nil {
-					for _, block := range *msg.Content.ContentBlocks {
-						if block.Text != nil {
-							systemMessages = append(systemMessages, BedrockAnthropicSystemMessage{
-								Text: *block.Text,
-							})
-						}
-					}
-				}
-			}
-		}
-
-		// Format messages for Bedrock API
-		var bedrockMessages []map[string]interface{}
-		for _, msg := range messages {
-			var content []interface{}
-			if msg.Role != schemas.ModelChatMessageRoleSystem {
-				if msg.Role == schemas.ModelChatMessageRoleTool && msg.ToolCallID != nil {
-					toolCallResult := map[string]interface{}{
-						"toolUseId": *msg.ToolCallID,
-					}
-					var toolResultContentBlocks []map[string]interface{}
-					if msg.Content.ContentStr != nil {
-						toolResultContentBlocks = append(toolResultContentBlocks, parseBedrockAnthropicMessageToolCallContent(*msg.Content.ContentStr))
-					} else if msg.Content.ContentBlocks != nil {
-						for _, block := range *msg.Content.ContentBlocks {
-							if block.Text != nil {
-								toolResultContentBlocks = append(toolResultContentBlocks, parseBedrockAnthropicMessageToolCallContent(*block.Text))
-							}
-						}
-					}
-					toolCallResult["content"] = toolResultContentBlocks
-					content = append(content, map[string]interface{}{
-						"toolResult": toolCallResult,
-					})
-				} else {
-					// Bedrock wants only toolUse block on content, text blocks are not allowed when tools are called.
-					if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-						for _, toolCall := range *msg.AssistantMessage.ToolCalls {
-							var input map[string]interface{}
-							if toolCall.Function.Arguments != "" {
-								if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-									input = map[string]interface{}{"arguments": toolCall.Function.Arguments}
-								}
-							}
-
-							content = append(content, BedrockAnthropicToolUseMessage{
-								ToolUse: &BedrockAnthropicToolUse{
-									ToolUseID: *toolCall.ID,
-									Name:      *toolCall.Function.Name,
-									Input:     input,
-								},
-							})
-						}
-					} else {
-						if msg.Content.ContentStr != nil {
-							content = append(content, BedrockAnthropicTextMessage{
-								Type: "text",
-								Text: *msg.Content.ContentStr,
-							})
-						} else if msg.Content.ContentBlocks != nil {
-							for _, block := range *msg.Content.ContentBlocks {
-								if block.Text != nil {
-									content = append(content, BedrockAnthropicTextMessage{
-										Type: "text",
-										Text: *block.Text,
-									})
-								}
-								if block.ImageURL != nil {
-									sanitizedURL, _ := SanitizeImageURL(block.ImageURL.URL)
-									urlTypeInfo := ExtractURLTypeInfo(sanitizedURL)
-
-									formattedImgContent := AnthropicImageContent{
-										Type: urlTypeInfo.Type,
-									}
-
-									if urlTypeInfo.MediaType != nil {
-										formattedImgContent.MediaType = *urlTypeInfo.MediaType
-									}
-
-									if urlTypeInfo.DataURLWithoutPrefix != nil {
-										formattedImgContent.URL = *urlTypeInfo.DataURLWithoutPrefix
-									} else {
-										formattedImgContent.URL = sanitizedURL
-									}
-
-									content = append(content, BedrockAnthropicImageMessage{
-										Type: "image",
-										Image: BedrockAnthropicImage{
-											Format: func() string {
-												if formattedImgContent.MediaType != "" {
-													mediaType := formattedImgContent.MediaType
-													// Remove "image/" prefix if present, since normalizeMediaType ensures full format
-													mediaType = strings.TrimPrefix(mediaType, "image/")
-													return mediaType
-												}
-												return ""
-											}(),
-											Source: BedrockAnthropicImageSource{
-												Bytes: formattedImgContent.URL,
-											},
-										},
-									})
-								}
-							}
-						}
-					}
-
-				}
-
-				if len(content) > 0 {
-					bedrockMessages = append(bedrockMessages, map[string]interface{}{
-						"role":    msg.Role,
-						"content": content,
-					})
-				}
-			}
-		}
-
-		// Post-process bedrockMessages for tool call results
-		processedBedrockMessages := []map[string]interface{}{}
-		i := 0
-		for i < len(bedrockMessages) {
-			currentMsg := bedrockMessages[i]
-			currentRole, roleOk := getRoleFromMessage(currentMsg)
-
-			if !roleOk {
-				// If role is of an unexpected type or missing, treat as non-tool message
-				processedBedrockMessages = append(processedBedrockMessages, currentMsg)
-				i++
-				continue
-			}
-
-			if currentRole == schemas.ModelChatMessageRoleTool {
-				// Content of a tool message is the toolCallResult map
-				// Initialize accumulatedToolResults with the content of the current tool message.
-				var accumulatedToolResults []interface{}
-
-				// Safely extract content from current message
-				if content, ok := currentMsg["content"].([]interface{}); ok {
-					accumulatedToolResults = content
-				} else {
-					// If content is not the expected type, skip this message
-					processedBedrockMessages = append(processedBedrockMessages, currentMsg)
-					i++
-					continue
-				}
-
-				// Look ahead for more sequential tool messages
-				j := i + 1
-				for j < len(bedrockMessages) {
-					nextMsg := bedrockMessages[j]
-					nextRole, nextRoleOk := getRoleFromMessage(nextMsg)
-
-					if !nextRoleOk || nextRole != schemas.ModelChatMessageRoleTool {
-						break // Not a sequential tool message or role is invalid/missing
-					}
-
-					// Safely extract content from next message
-					if nextContent, ok := nextMsg["content"].([]interface{}); ok {
-						accumulatedToolResults = append(accumulatedToolResults, nextContent...)
-					}
-					j++
-				}
-
-				// Create a new message with role User and accumulated content
-				mergedMsg := map[string]interface{}{
-					"role":    schemas.ModelChatMessageRoleUser, // Final role is User
-					"content": accumulatedToolResults,
-				}
-				processedBedrockMessages = append(processedBedrockMessages, mergedMsg)
-				i = j // Advance main loop index past all merged messages
-			} else {
-				// Not a tool message, add it as is
-				processedBedrockMessages = append(processedBedrockMessages, currentMsg)
-				i++
-			}
-		}
-		bedrockMessages = processedBedrockMessages // Update with processed messages
-
-		body := map[string]interface{}{
-			"messages": bedrockMessages,
-		}
-
-		if len(systemMessages) > 0 {
-			body["system"] = systemMessages
-		}
-		return body, nil
-
-	case strings.Contains(model, "mistral."):
-		var bedrockMessages []BedrockMistralChatMessage
-		for _, msg := range messages {
-			// Check if this is a tool message before changing the role
-			isToolMessage := msg.Role == schemas.ModelChatMessageRoleTool
-
-			// Convert tool messages to user messages (Mistral doesn't support tool role)
-			role := msg.Role
-			switch role {
-			case schemas.ModelChatMessageRoleTool, schemas.ModelChatMessageRoleSystem:
-				role = schemas.ModelChatMessageRoleUser
-			}
-
-			// Only process user and assistant messages
-			if role != schemas.ModelChatMessageRoleUser && role != schemas.ModelChatMessageRoleAssistant {
-				continue
-			}
-
-			var filteredToolCalls []BedrockAnthropicToolCall
-			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
-					if toolCall.ID != nil && toolCall.Function.Name != nil {
-						// Parse the arguments to get parameters
-						var params interface{}
-						if toolCall.Function.Arguments != "" {
-							if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
-								// If parsing fails, use empty object
-								params = map[string]interface{}{}
-							}
-						}
-
-						filteredToolCalls = append(filteredToolCalls, BedrockAnthropicToolCall{
-							ToolSpec: BedrockAnthropicToolSpec{
-								Name:        *toolCall.Function.Name,
-								Description: "Tool function", // Default description since FunctionCall doesn't have one
-								InputSchema: struct {
-									Json interface{} `json:"json"`
-								}{
-									Json: params,
-								},
-							},
-						})
-					}
-				}
-			}
-
-			message := BedrockMistralChatMessage{
-				Role: role,
-			}
-
-			// Ensure message has valid content
-			var hasValidContent bool
-			switch {
-			case msg.Content.ContentStr != nil && *msg.Content.ContentStr != "":
-				message.Content = []BedrockMistralContent{{Text: *msg.Content.ContentStr}}
-				hasValidContent = true
-			case msg.Content.ContentBlocks != nil && len(*msg.Content.ContentBlocks) > 0:
-				for _, b := range *msg.Content.ContentBlocks {
-					if b.Text != nil && *b.Text != "" {
-						message.Content = append(message.Content, BedrockMistralContent{Text: *b.Text})
-						hasValidContent = true
-					}
-				}
-			}
-
-			// For tool messages that were converted to user messages, ensure they have content
-			if isToolMessage && !hasValidContent {
-				// If tool message has no content, create a default content
-				defaultText := "Tool result received"
-				if msg.ToolCallID != nil {
-					defaultText = fmt.Sprintf("Tool result for call ID: %s", *msg.ToolCallID)
-				}
-				message.Content = []BedrockMistralContent{{Text: defaultText}}
-				hasValidContent = true
-			}
-
-			// Final safety check: ensure message always has content
-			if !hasValidContent {
-				message.Content = []BedrockMistralContent{{Text: "Message content"}}
-				hasValidContent = true
-			}
-
-			// Only add messages that have valid content or tool calls
-			if hasValidContent || len(filteredToolCalls) > 0 {
-				if len(filteredToolCalls) > 0 {
-					message.ToolCalls = &filteredToolCalls
-				}
-				bedrockMessages = append(bedrockMessages, message)
-			}
-		}
-
-		body := map[string]interface{}{
-			"messages": bedrockMessages,
-		}
-
-		return body, nil
-	}
-
-	return nil, newConfigurationError(fmt.Sprintf("invalid model choice: %s", model), provider.GetProviderKey())
-}
-
-// GetChatCompletionTools prepares tool specifications for Bedrock's API.
-// It formats tool definitions for different model types (Anthropic and Mistral).
-// Returns tool specifications appropriate for the given model type.
-func (provider *BedrockProvider) getChatCompletionTools(params *schemas.ModelParameters, model string) (interface{}, *schemas.BifrostError) {
-	switch {
-	case strings.Contains(model, "anthropic."), strings.Contains(model, "mistral."):
-		// Both Anthropic and Mistral models on Bedrock use toolConfig.tools with toolSpec structure
-		var tools []BedrockAnthropicToolCall
-		for _, tool := range *params.Tools {
-			tools = append(tools, BedrockAnthropicToolCall{
-				ToolSpec: BedrockAnthropicToolSpec{
-					Name:        tool.Function.Name,
-					Description: tool.Function.Description,
-					InputSchema: struct {
-						Json interface{} `json:"json"`
-					}{
-						Json: tool.Function.Parameters,
-					},
-				},
-			})
-		}
-		return tools, nil
-
-	default:
-		return nil, newConfigurationError(fmt.Sprintf("unsupported model for tool calling: %s", model), provider.GetProviderKey())
-	}
-}
-
-// prepareTextCompletionParams prepares text completion parameters for Bedrock's API.
-// It handles parameter mapping and conversion for different model types.
-// Returns the modified parameters map with model-specific adjustments.
-func (provider *BedrockProvider) prepareTextCompletionParams(params map[string]interface{}, model string) map[string]interface{} {
-	switch {
-	case strings.Contains(model, "anthropic."):
-		maxTokens, maxTokensExists := params["max_tokens"]
-		if _, exists := params["max_tokens_to_sample"]; !exists {
-			// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
-			if maxTokensExists {
-				params["max_tokens_to_sample"] = maxTokens
-			} else {
-				params["max_tokens_to_sample"] = AnthropicDefaultMaxTokens
-			}
-		}
-
-		delete(params, "max_tokens")
-	}
-	return params
-}
-
 // TextCompletion performs a text completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *BedrockProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationTextCompletion); err != nil {
+func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -829,22 +205,42 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	preparedParams := provider.prepareTextCompletionParams(prepareParams(params), model)
+	requestBody := bedrock.ToBedrockTextCompletionRequest(request)
+	if requestBody == nil {
+		return nil, newBifrostOperationError("text completion input is not provided", nil, providerName)
+	}
 
-	requestBody := mergeConfig(map[string]interface{}{
-		"prompt": text,
-	}, preparedParams)
-
-	path := provider.getModelPath("invoke", model, key)
+	path := provider.getModelPath("invoke", request.Model, key)
 	body, err := provider.completeRequest(ctx, requestBody, path, key)
 	if err != nil {
 		return nil, err
 	}
 
-	bifrostResponse, err := provider.getTextCompletionResult(body, model, providerName)
-	if err != nil {
-		return nil, err
+	// Handle model-specific response conversion
+	var bifrostResponse *schemas.BifrostResponse
+	switch {
+	case strings.Contains(request.Model, "anthropic.") || strings.Contains(request.Model, "claude"):
+		var response bedrock.BedrockAnthropicTextResponse
+		if err := sonic.Unmarshal(body, &response); err != nil {
+			return nil, newBifrostOperationError("error parsing anthropic response", err, providerName)
+		}
+		bifrostResponse = response.ToBifrostResponse()
+
+	case strings.Contains(request.Model, "mistral."):
+		var response bedrock.BedrockMistralTextResponse
+		if err := sonic.Unmarshal(body, &response); err != nil {
+			return nil, newBifrostOperationError("error parsing mistral response", err, providerName)
+		}
+		bifrostResponse = response.ToBifrostResponse()
+
+	default:
+		return nil, newConfigurationError(fmt.Sprintf("unsupported model type for text completion: %s", request.Model), providerName)
 	}
+
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
 
 	// Parse raw response if enabled
 	if provider.sendBackRawResponse {
@@ -855,113 +251,14 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, model strin
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
-	}
-
 	return bifrostResponse, nil
-}
-
-// extractToolsFromHistory extracts minimal tool definitions from conversation history.
-// It analyzes the messages to find tool-related content and returns whether tool content
-// was found and a list of unique minimal tool definitions extracted from the conversation.
-// This is needed when Bedrock requires toolConfig but no tools are provided in the current request.
-func (provider *BedrockProvider) extractToolsFromHistory(messages []schemas.BifrostMessage) (bool, []BedrockAnthropicToolCall) {
-	hasToolContent := false
-	var toolsFromHistory []BedrockAnthropicToolCall
-	seenTools := make(map[string]BedrockAnthropicToolCall)
-
-	for _, msg := range messages {
-		// Check for tool result messages
-		if msg.Role == schemas.ModelChatMessageRoleTool {
-			hasToolContent = true
-		}
-		// Check for assistant messages with tool calls
-		if msg.Role == schemas.ModelChatMessageRoleAssistant && msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
-			hasToolContent = true
-			// Extract tool definitions from tool calls for toolConfig
-			for _, toolCall := range *msg.AssistantMessage.ToolCalls {
-				if toolCall.Function.Name != nil {
-					toolName := *toolCall.Function.Name
-					if _, exists := seenTools[toolName]; !exists {
-						// Create a basic tool definition from the tool call
-						// Note: We can't fully reconstruct the original tool definition,
-						// but we can provide a minimal one that satisfies Bedrock's requirement
-						tool := BedrockAnthropicToolCall{
-							ToolSpec: BedrockAnthropicToolSpec{
-								Name:        toolName,
-								Description: fmt.Sprintf("Tool: %s", toolName),
-								InputSchema: struct {
-									Json interface{} `json:"json"`
-								}{
-									Json: map[string]interface{}{
-										"type":       "object",
-										"properties": map[string]interface{}{},
-									},
-								},
-							},
-						}
-						seenTools[toolName] = tool
-						toolsFromHistory = append(toolsFromHistory, tool)
-					}
-				}
-			}
-		}
-	}
-
-	return hasToolContent, toolsFromHistory
-}
-
-// prepareToolChoice prepares tool choice configuration for different model types.
-// Both Anthropic and Mistral models on Bedrock support toolChoice in toolConfig.
-func (provider *BedrockProvider) prepareToolChoice(params *schemas.ModelParameters, model string) interface{} {
-	if params == nil || params.ToolChoice == nil {
-		return nil
-	}
-
-	switch {
-	case strings.Contains(model, "anthropic."), strings.Contains(model, "mistral."):
-		// Both Anthropic and Mistral models use toolChoice in toolConfig
-		// AWS Bedrock supports: "auto", "any", "tool" as union types
-		if params.ToolChoice.ToolChoiceStr != nil {
-			choice := *params.ToolChoice.ToolChoiceStr
-			switch choice {
-			case string(schemas.ToolChoiceTypeAuto), string(schemas.ToolChoiceTypeAny):
-				return nil
-			case string(schemas.ToolChoiceTypeFunction), "tool":
-				if params.ToolChoice.ToolChoiceStruct == nil {
-					return nil
-				}
-				return &BedrockToolChoice{
-					Tool: &BedrockSpecificTool{
-						Type: "tool",
-						Name: params.ToolChoice.ToolChoiceStruct.Function.Name,
-					},
-				}
-			}
-			// Note: "none" is not supported by AWS Bedrock for these models
-		} else if params.ToolChoice.ToolChoiceStruct != nil {
-			if (params.ToolChoice.ToolChoiceStruct.Type == schemas.ToolChoiceTypeFunction || params.ToolChoice.ToolChoiceStruct.Type == "tool") &&
-				params.ToolChoice.ToolChoiceStruct.Function.Name != "" {
-
-				return &BedrockToolChoice{
-					Tool: &BedrockSpecificTool{
-						Type: "tool",
-						Name: params.ToolChoice.ToolChoiceStruct.Function.Name,
-					},
-				}
-			}
-		}
-	}
-
-	return nil
 }
 
 // ChatCompletion performs a chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+func (provider *BedrockProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -971,157 +268,107 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
+	// pool the request
+	reqBody, err := bedrock.ToBedrockChatCompletionRequest(request)
 	if err != nil {
-		return nil, err
+		return nil, newBifrostOperationError("failed to convert request", err, providerName)
 	}
-
-	preparedParams := prepareParams(params)
-
-	if strings.Contains(model, "anthropic.") {
-		if _, exists := preparedParams["max_tokens"]; !exists {
-			preparedParams["max_tokens"] = AnthropicDefaultMaxTokens
-		}
-	}
-
-	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
-		tools, err := provider.getChatCompletionTools(params, model)
-		if err != nil {
-			return nil, err
-		}
-		toolConfig := map[string]interface{}{
-			"tools": tools,
-		}
-
-		// Add tool choice if specified
-		if toolChoice := provider.prepareToolChoice(params, model); toolChoice != nil {
-			toolConfig["toolChoice"] = toolChoice
-		}
-
-		preparedParams["toolConfig"] = toolConfig
-
-		delete(preparedParams, "tools")
-		delete(preparedParams, "tool_choice")
-	} else {
-		// Check if conversation history contains tool use/result blocks
-		// Bedrock requires toolConfig when such blocks are present
-		hasToolContent, toolsFromHistory := provider.extractToolsFromHistory(messages)
-
-		// If conversation contains tool content but no tools provided in current request,
-		// include the extracted tools to satisfy Bedrock's toolConfig requirement
-		if hasToolContent && len(toolsFromHistory) > 0 {
-			preparedParams["toolConfig"] = map[string]interface{}{
-				"tools": toolsFromHistory,
-			}
-		}
-	}
-
-	requestBody := mergeConfig(messageBody, preparedParams)
 
 	// Format the path with proper model identifier
-	path := provider.getModelPath("converse", model, key)
+	path := provider.getModelPath("converse", request.Model, key)
 
 	// Create the signed request
-	responseBody, err := provider.completeRequest(ctx, requestBody, path, key)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create response object from pool
-	response := acquireBedrockChatResponse()
-	defer releaseBedrockChatResponse(response)
-
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	responseBody, bifrostErr := provider.completeRequest(ctx, reqBody, path, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Collect all content and tool calls into a single message (similar to Anthropic aggregation)
-	var toolCalls []schemas.ToolCall
+	// pool the response
+	bedrockResponse := acquireBedrockChatResponse()
+	defer releaseBedrockChatResponse(bedrockResponse)
 
-	var contentBlocks []schemas.ContentBlock
-	// Process content and tool calls
-	for _, choice := range response.Output.Message.Content {
-		if choice.Text != nil && *choice.Text != "" {
-			contentBlocks = append(contentBlocks, schemas.ContentBlock{
-				Type: "text",
-				Text: choice.Text,
-			})
-		}
-
-		if choice.ToolUse != nil {
-			input := choice.ToolUse.Input
-			if input == nil {
-				input = map[string]any{}
-			}
-			arguments, err := sonic.Marshal(input)
-			if err != nil {
-				arguments = []byte("{}")
-			}
-
-			toolCalls = append(toolCalls, schemas.ToolCall{
-				Type: Ptr("function"),
-				ID:   &choice.ToolUse.ToolUseID,
-				Function: schemas.FunctionCall{
-					Name:      &choice.ToolUse.Name,
-					Arguments: string(arguments),
-				},
-			})
-		}
+	// Parse the response using the new Bedrock type
+	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
+		return nil, newBifrostOperationError("failed to parse bedrock response", err, providerName)
 	}
 
-	// Create the assistant message
-	var assistantMessage *schemas.AssistantMessage
-
-	// Create AssistantMessage if we have tool calls
-	if len(toolCalls) > 0 {
-		assistantMessage = &schemas.AssistantMessage{
-			ToolCalls: &toolCalls,
-		}
+	// Convert using the new response converter
+	bifrostResponse, err := bedrockResponse.ToBifrostResponse()
+	if err != nil {
+		return nil, newBifrostOperationError("failed to convert bedrock response", err, providerName)
 	}
 
-	// Create a single choice with the aggregated content
-	choices := []schemas.BifrostResponseChoice{
-		{
-			Index: 0,
-			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentBlocks: &contentBlocks,
-					},
-					AssistantMessage: assistantMessage,
-				},
-			},
-			FinishReason: &response.StopReason,
-		},
-	}
-
-	latency := float64(response.Metrics.Latency)
-
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		Choices: choices,
-		Usage: &schemas.LLMUsage{
-			PromptTokens:     response.Usage.InputTokens,
-			CompletionTokens: response.Usage.OutputTokens,
-			TotalTokens:      response.Usage.TotalTokens,
-		},
-		Model: model,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:  &latency,
-			Provider: providerName,
-		},
-	}
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
 
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
+			bifrostResponse.ExtraFields.RawResponse = rawResponse
+		}
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+	return bifrostResponse, nil
+}
+
+// Responses performs a chat completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if key.BedrockKeyConfig == nil {
+		return nil, newConfigurationError("bedrock key config is not provided", providerName)
+	}
+
+	// pool the request
+	reqBody, err := bedrock.ToBedrockResponsesRequest(request)
+	if err != nil {
+		return nil, newBifrostOperationError("failed to convert request", err, providerName)
+	}
+
+	// Format the path with proper model identifier
+	path := provider.getModelPath("converse", request.Model, key)
+
+	// Create the signed request
+	responseBody, bifrostErr := provider.completeRequest(ctx, reqBody, path, key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// pool the response
+	bedrockResponse := acquireBedrockChatResponse()
+	defer releaseBedrockChatResponse(bedrockResponse)
+
+	// Parse the response using the new Bedrock type
+	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
+		return nil, newBifrostOperationError("failed to parse bedrock response", err, providerName)
+	}
+
+	// Convert using the new response converter
+	bifrostResponse, err := bedrockResponse.ToResponsesBifrostResponse()
+	if err != nil {
+		return nil, newBifrostOperationError("failed to convert bedrock response", err, providerName)
+	}
+
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
+			bifrostResponse.ExtraFields.RawResponse = rawResponse
+		}
 	}
 
 	return bifrostResponse, nil
@@ -1203,147 +450,91 @@ func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey
 
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
 // Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *BedrockProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationEmbedding); err != nil {
+func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
-
 	if key.BedrockKeyConfig == nil {
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	switch {
-	case strings.Contains(model, "amazon.titan-embed-text"):
-		return provider.handleTitanEmbedding(ctx, model, key, input, params, providerName)
-	case strings.Contains(model, "cohere.embed"):
-		return provider.handleCohereEmbedding(ctx, model, key, input, params, providerName)
-	default:
-		return nil, newConfigurationError("embedding is not supported for this Bedrock model", providerName)
-	}
-}
-
-// handleTitanEmbedding handles embedding requests for Amazon Titan models.
-func (provider *BedrockProvider) handleTitanEmbedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters, providerName schemas.ModelProvider) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Titan Text Embeddings V1/V2 - only supports single text input
-	if input.Text == nil && len(input.Texts) == 0 {
-		return nil, newConfigurationError("no input text provided for embedding", providerName)
-	}
-
-	// Validate that only single text input is provided for Titan models
-	if input.Text == nil && len(input.Texts) > 1 {
-		return nil, newConfigurationError("Amazon Titan embedding models only support single text input, but multiple texts were provided", providerName)
-	}
-
-	requestBody := map[string]interface{}{}
-
-	if input.Text != nil {
-		requestBody["inputText"] = *input.Text
-	} else if len(input.Texts) == 1 {
-		requestBody["inputText"] = input.Texts[0]
-	}
-
-	if params != nil {
-		// Titan models do not support the dimensions parameter - they have fixed dimensions
-		if params.Dimensions != nil {
-			return nil, newConfigurationError("Amazon Titan embedding models do not support custom dimensions parameter", providerName)
-		}
-		if params.ExtraParams != nil {
-			for k, v := range params.ExtraParams {
-				requestBody[k] = v
-			}
-		}
-	}
-
-	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
-	path := provider.getModelPath("invoke", model, key)
-	rawResponse, err := provider.completeRequest(ctx, requestBody, path, key)
+	// Determine model type
+	modelType, err := bedrock.DetermineEmbeddingModelType(request.Model)
 	if err != nil {
-		return nil, err
+		return nil, newConfigurationError(err.Error(), providerName)
 	}
 
-	// Parse Titan response from raw message
-	var titanResp struct {
-		Embedding           []float32 `json:"embedding"`
-		InputTextTokenCount int       `json:"inputTextTokenCount"`
-	}
-	if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
-		return nil, newBifrostOperationError("error parsing Titan embedding response", err, providerName)
+	// Convert request and execute based on model type
+	var rawResponse []byte
+	var bifrostError *schemas.BifrostError
+
+	switch modelType {
+	case "titan":
+		titanReq, err := bedrock.ToBedrockTitanEmbeddingRequest(request)
+		if err != nil {
+			return nil, newBifrostOperationError("failed to convert Titan request", err, providerName)
+		}
+		path := provider.getModelPath("invoke", request.Model, key)
+		rawResponse, bifrostError = provider.completeRequest(ctx, titanReq, path, key)
+
+	case "cohere":
+		cohereReq, err := bedrock.ToBedrockCohereEmbeddingRequest(request)
+		if err != nil {
+			return nil, newBifrostOperationError("failed to convert Cohere request", err, providerName)
+		}
+		path := provider.getModelPath("invoke", request.Model, key)
+		rawResponse, bifrostError = provider.completeRequest(ctx, cohereReq, path, key)
+
+	default:
+		return nil, newConfigurationError("unsupported embedding model type", providerName)
 	}
 
-	bifrostResponse := &schemas.BifrostResponse{
-		Object: "list",
-		Data: []schemas.BifrostEmbedding{
-			{
-				Index:  0,
-				Object: "embedding",
-				Embedding: schemas.BifrostEmbeddingResponse{
-					Embedding2DArray: &[][]float32{titanResp.Embedding},
-				},
-			},
-		},
-		Model: model,
-		Usage: &schemas.LLMUsage{
-			PromptTokens: titanResp.InputTextTokenCount,
-			TotalTokens:  titanResp.InputTextTokenCount,
-		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: providerName,
-		},
+	if bifrostError != nil {
+		return nil, bifrostError
 	}
 
+	// Parse response based on model type
+	var bifrostResponse *schemas.BifrostResponse
+	switch modelType {
+	case "titan":
+		var titanResp bedrock.BedrockTitanEmbeddingResponse
+		if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
+			return nil, newBifrostOperationError("error parsing Titan embedding response", err, providerName)
+		}
+		bifrostResponse = titanResp.ToBifrostResponse(request.Model)
+
+	case "cohere":
+		var cohereResp cohere.CohereEmbeddingResponse
+		if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
+			return nil, newBifrostOperationError("error parsing Cohere embedding response", err, providerName)
+		}
+		bifrostResponse = cohereResp.ToBifrostResponse()
+		bifrostResponse.Model = request.Model
+	}
+
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
+
+	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		var rawResponseData interface{}
+		if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
+			bifrostResponse.ExtraFields.RawResponse = rawResponseData
+		}
 	}
 
 	return bifrostResponse, nil
 }
 
-// handleCohereEmbedding handles embedding requests for Cohere models on Bedrock.
-func (provider *BedrockProvider) handleCohereEmbedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters, providerName schemas.ModelProvider) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	if input.Text == nil && len(input.Texts) == 0 {
-		return nil, newConfigurationError("no input text provided for embedding", providerName)
-	}
-
-	requestBody := map[string]interface{}{
-		"input_type": "search_document",
-	}
-
-	if input.Text != nil {
-		requestBody["texts"] = []string{*input.Text}
-	} else {
-		requestBody["texts"] = input.Texts
-	}
-
-	if params != nil && params.ExtraParams != nil {
-		maps.Copy(requestBody, params.ExtraParams)
-	}
-
-	// Properly escape model name for URL path to ensure AWS SIGv4 signing works correctly
-	path := provider.getModelPath("invoke", model, key)
-	rawResponse, err := provider.completeRequest(ctx, requestBody, path, key)
-	if err != nil {
-		return nil, err
-	}
-
-	var cohereResp CohereEmbeddingResponse
-	if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
-		return nil, newBifrostOperationError("error parsing embedding response", err, providerName)
-	}
-
-	return handleCohereEmbeddingResponse(cohereResp, model, params, providerName, rawResponse, provider.sendBackRawResponse)
-}
-
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the streaming response.
 // Returns a channel for streaming BifrostResponse objects or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
@@ -1353,54 +544,13 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		return nil, newConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	messageBody, err := provider.prepareChatCompletionMessages(messages, model)
+	reqBody, err := bedrock.ToBedrockChatCompletionRequest(request)
 	if err != nil {
-		return nil, err
+		return nil, newBifrostOperationError("failed to convert request", err, providerName)
 	}
-
-	preparedParams := prepareParams(params)
-
-	if strings.Contains(model, "anthropic.") {
-		if _, exists := preparedParams["max_tokens"]; !exists {
-			preparedParams["max_tokens"] = AnthropicDefaultMaxTokens
-		}
-	}
-
-	// Transform tools if present
-	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
-		tools, err := provider.getChatCompletionTools(params, model)
-		if err != nil {
-			return nil, err
-		}
-
-		toolConfig := map[string]interface{}{
-			"tools": tools,
-		}
-
-		// Add tool choice if specified
-		if toolChoice := provider.prepareToolChoice(params, model); toolChoice != nil {
-			toolConfig["toolChoice"] = toolChoice
-		}
-
-		preparedParams["toolConfig"] = toolConfig
-	} else {
-		// Check if conversation history contains tool use/result blocks
-		// Bedrock requires toolConfig when such blocks are present
-		hasToolContent, toolsFromHistory := provider.extractToolsFromHistory(messages)
-
-		// If conversation contains tool content but no tools provided in current request,
-		// include the extracted tools to satisfy Bedrock's toolConfig requirement
-		if hasToolContent && len(toolsFromHistory) > 0 {
-			preparedParams["toolConfig"] = map[string]interface{}{
-				"tools": toolsFromHistory,
-			}
-		}
-	}
-
-	requestBody := mergeConfig(messageBody, preparedParams)
 
 	// Format the path with proper model identifier for streaming
-	path := provider.getModelPath("converse-stream", model, key)
+	path := provider.getModelPath("converse-stream", request.Model, key)
 
 	region := "us-east-1"
 	if key.BedrockKeyConfig.Region != nil {
@@ -1408,7 +558,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	}
 
 	// Create the streaming request
-	jsonBody, jsonErr := sonic.Marshal(requestBody)
+	jsonBody, jsonErr := sonic.Marshal(reqBody)
 	if jsonErr != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, jsonErr, providerName)
 	}
@@ -1470,12 +620,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 				if err == io.EOF {
 					// Process any remaining data in the accumulator
 					if len(accumulator) > 0 {
-						_ = provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, model, providerName, responseChan)
+						_ = provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, request.Model, providerName, responseChan)
 					}
 					break
 				}
 				provider.logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerName, err))
-				processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
+				processAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
 				return
 			}
 
@@ -1487,14 +637,14 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 			accumulator = append(accumulator, buffer[:n]...)
 
 			// Process the accumulated data and get the remaining unprocessed part
-			remaining := provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, model, providerName, responseChan)
+			remaining := provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, request.Model, providerName, responseChan)
 
 			// Reset accumulator with remaining data
 			accumulator = remaining
 		}
 
 		// Send final response
-		response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerName)
+		response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 		handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 	}()
 
@@ -1577,217 +727,195 @@ func (provider *BedrockProvider) processAWSEventStreamData(
 	return nil
 }
 
-// processEventBuffer processes AWS Event Stream JSON payloads and determines event type from content
+// processEventBuffer processes AWS Event Stream JSON payloads using typed Bedrock stream events
 func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHookRunner schemas.PostHookRunner, eventBuffer []byte, messageID *string, chunkIndex *int, usage **schemas.LLMUsage, finishReason **string, model string, providerName schemas.ModelProvider, responseChan chan *schemas.BifrostStream) {
-	// Parse the JSON event
-	var event map[string]interface{}
-	if err := sonic.Unmarshal(eventBuffer, &event); err != nil {
+	// Parse the JSON event into our typed structure
+	var streamEvent bedrock.BedrockStreamEvent
+	if err := sonic.Unmarshal(eventBuffer, &streamEvent); err != nil {
 		provider.logger.Debug(fmt.Sprintf("Failed to parse JSON from event buffer: %v, data: %s", err, string(eventBuffer)))
 		return
 	}
 
-	// Determine event type based on JSON content structure
-	switch {
-	case event["role"] != nil:
-		// This is a messageStart event
-		*chunkIndex++
-		if role, ok := event["role"].(string); ok {
-			*messageID = fmt.Sprintf("bedrock-%d", time.Now().UnixNano())
+	// Ensure we have a message ID for all events
+	if *messageID == "" {
+		*messageID = fmt.Sprintf("bedrock-%d", time.Now().UnixNano())
+	}
 
-			// Send empty response to signal start
+	// Process typed stream events based on flat structure
+	switch {
+	case streamEvent.Role != nil:
+		// Handle messageStart event
+		*chunkIndex++
+
+		// Send empty response to signal start
+		streamResponse := &schemas.BifrostResponse{
+			ID:     *messageID,
+			Object: "chat.completion.chunk",
+			Model:  model,
+			Choices: []schemas.BifrostChatResponseChoice{
+				{
+					Index: 0,
+					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+						Delta: schemas.BifrostStreamDelta{
+							Role: streamEvent.Role,
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionStreamRequest,
+				Provider:       providerName,
+				ModelRequested: model,
+				ChunkIndex:     *chunkIndex,
+			},
+		}
+
+		processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
+
+	case streamEvent.Start != nil && streamEvent.Start.ToolUse != nil:
+		// Handle tool use start event
+		*chunkIndex++
+		contentBlockIndex := 0
+		if streamEvent.ContentBlockIndex != nil {
+			contentBlockIndex = *streamEvent.ContentBlockIndex
+		}
+
+		toolUseStart := streamEvent.Start.ToolUse
+
+		// Create tool call structure for start event
+		var toolCall schemas.ChatAssistantMessageToolCall
+		toolCall.Type = schemas.Ptr("function")
+		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
+		toolCall.Function.Arguments = "{}" // Start with empty arguments
+
+		streamResponse := &schemas.BifrostResponse{
+			ID:     *messageID,
+			Object: "chat.completion.chunk",
+			Model:  model,
+			Choices: []schemas.BifrostChatResponseChoice{
+				{
+					Index: contentBlockIndex,
+					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+						Delta: schemas.BifrostStreamDelta{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionStreamRequest,
+				Provider:       providerName,
+				ModelRequested: model,
+				ChunkIndex:     *chunkIndex,
+			},
+		}
+
+		processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
+
+	case streamEvent.ContentBlockIndex != nil && streamEvent.Delta != nil:
+		// Handle contentBlockDelta event
+		*chunkIndex++
+		contentBlockIndex := *streamEvent.ContentBlockIndex
+
+		switch {
+		case streamEvent.Delta.Text != nil:
+			// Handle text delta
+			text := *streamEvent.Delta.Text
+			if text != "" {
+				streamResponse := &schemas.BifrostResponse{
+					ID:     *messageID,
+					Object: "chat.completion.chunk",
+					Model:  model,
+					Choices: []schemas.BifrostChatResponseChoice{
+						{
+							Index: contentBlockIndex,
+							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+								Delta: schemas.BifrostStreamDelta{
+									Content: &text,
+								},
+							},
+						},
+					},
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ChatCompletionStreamRequest,
+						Provider:       providerName,
+						ModelRequested: model,
+						ChunkIndex:     *chunkIndex,
+					},
+				}
+
+				processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
+			}
+
+		case streamEvent.Delta.ToolUse != nil:
+			// Handle tool use delta
+			toolUseDelta := streamEvent.Delta.ToolUse
+
+			// Create tool call structure
+			var toolCall schemas.ChatAssistantMessageToolCall
+			toolCall.Type = schemas.Ptr("function")
+
+			// For streaming, we need to accumulate tool use data
+			// This is a simplified approach - in practice, you'd need to track tool calls across chunks
+			toolCall.Function.Arguments = toolUseDelta.Input
+
 			streamResponse := &schemas.BifrostResponse{
 				ID:     *messageID,
 				Object: "chat.completion.chunk",
 				Model:  model,
-				Choices: []schemas.BifrostResponseChoice{
+				Choices: []schemas.BifrostChatResponseChoice{
 					{
-						Index: 0,
+						Index: contentBlockIndex,
 						BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
 							Delta: schemas.BifrostStreamDelta{
-								Role: &role,
+								ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},
 							},
 						},
 					},
 				},
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					Provider:   providerName,
-					ChunkIndex: *chunkIndex,
+					RequestType:    schemas.ChatCompletionStreamRequest,
+					Provider:       providerName,
+					ModelRequested: model,
+					ChunkIndex:     *chunkIndex,
 				},
 			}
 
-			// Use utility function to process and send response
 			processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 		}
 
-	case event["contentBlockIndex"] != nil && event["delta"] != nil:
-		// This is a contentBlockDelta event
-		*chunkIndex++
-		contentBlockIndex := 0
-		if idx, ok := event["contentBlockIndex"].(float64); ok {
-			contentBlockIndex = int(idx)
-		}
+	case streamEvent.StopReason != nil:
+		// Handle messageStop event
+		*finishReason = streamEvent.StopReason
 
-		if delta, ok := event["delta"].(map[string]interface{}); ok {
-			switch {
-			case delta["text"] != nil:
-				// Handle text delta
-				if text, ok := delta["text"].(string); ok && text != "" {
-					// Create streaming response for this delta
-					streamResponse := &schemas.BifrostResponse{
-						ID:     *messageID,
-						Object: "chat.completion.chunk",
-						Model:  model,
-						Choices: []schemas.BifrostResponseChoice{
-							{
-								Index: contentBlockIndex,
-								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-									Delta: schemas.BifrostStreamDelta{
-										Content: &text,
-									},
-								},
-							},
-						},
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider:   providerName,
-							ChunkIndex: *chunkIndex,
-						},
-					}
-
-					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
-				}
-
-			case delta["toolUse"] != nil:
-				// Handle tool use delta
-				if toolUse, ok := delta["toolUse"].(map[string]interface{}); ok {
-					// Parse the tool use structure properly
-					var toolCall schemas.ToolCall
-					toolCall.Type = func() *string { s := "function"; return &s }()
-
-					// Extract toolUseId
-					if toolUseID, hasID := toolUse["toolUseId"].(string); hasID {
-						toolCall.ID = &toolUseID
-					}
-
-					// Extract name
-					if name, hasName := toolUse["name"].(string); hasName {
-						toolCall.Function.Name = &name
-					}
-
-					// Extract and marshal input as arguments
-					if input, hasInput := toolUse["input"].(map[string]interface{}); hasInput {
-						inputBytes, err := sonic.Marshal(input)
-						if err != nil {
-							toolCall.Function.Arguments = "{}"
-						} else {
-							toolCall.Function.Arguments = string(inputBytes)
-						}
-					} else {
-						toolCall.Function.Arguments = "{}"
-					}
-
-					// Create streaming response for tool delta
-					streamResponse := &schemas.BifrostResponse{
-						ID:     *messageID,
-						Object: "chat.completion.chunk",
-						Model:  model,
-						Choices: []schemas.BifrostResponseChoice{
-							{
-								Index: contentBlockIndex,
-								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-									Delta: schemas.BifrostStreamDelta{
-										ToolCalls: []schemas.ToolCall{toolCall},
-									},
-								},
-							},
-						},
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider:   providerName,
-							ChunkIndex: *chunkIndex,
-						},
-					}
-
-					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
-				}
-			}
-		}
-
-	case event["stopReason"] != nil:
-		// This is a messageStop event
-		if stopReason, ok := event["stopReason"].(string); ok {
-			*finishReason = &stopReason
-		}
-
-	case event["usage"] != nil:
-		// This is a metadata event with usage information at top level
-		if usageData, ok := event["usage"].(map[string]interface{}); ok {
-			inputTokens := 0
-			outputTokens := 0
-			totalTokens := 0
-
-			if val, exists := usageData["inputTokens"].(float64); exists {
-				inputTokens = int(val)
-			}
-			if val, exists := usageData["outputTokens"].(float64); exists {
-				outputTokens = int(val)
-			}
-			if val, exists := usageData["totalTokens"].(float64); exists {
-				totalTokens = int(val)
-			}
-
-			*usage = &schemas.LLMUsage{
-				PromptTokens:     inputTokens,
-				CompletionTokens: outputTokens,
-				TotalTokens:      totalTokens,
-			}
-		}
-
-	case event["metadata"] != nil:
-		// This is a metadata event - check if it contains nested usage information
-		if metadata, ok := event["metadata"].(map[string]interface{}); ok {
-			if usageData, ok := metadata["usage"].(map[string]interface{}); ok {
-				inputTokens := 0
-				outputTokens := 0
-				totalTokens := 0
-
-				if val, exists := usageData["inputTokens"].(float64); exists {
-					inputTokens = int(val)
-				}
-				if val, exists := usageData["outputTokens"].(float64); exists {
-					outputTokens = int(val)
-				}
-				if val, exists := usageData["totalTokens"].(float64); exists {
-					totalTokens = int(val)
-				}
-
-				*usage = &schemas.LLMUsage{
-					PromptTokens:     inputTokens,
-					CompletionTokens: outputTokens,
-					TotalTokens:      totalTokens,
-				}
-			}
+	case streamEvent.Usage != nil:
+		// Handle usage information
+		bedrockUsage := streamEvent.Usage
+		*usage = &schemas.LLMUsage{
+			PromptTokens:     bedrockUsage.InputTokens,
+			CompletionTokens: bedrockUsage.OutputTokens,
+			TotalTokens:      bedrockUsage.TotalTokens,
 		}
 
 	default:
 		// Log unknown event types for debugging
-		provider.logger.Debug(fmt.Sprintf("Unknown event type received: %v", event))
+		provider.logger.Debug("Unknown or empty stream event received")
 	}
 }
 
-func (provider *BedrockProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "bedrock")
 }
 
-func (provider *BedrockProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "bedrock")
 }
 
-func (provider *BedrockProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *BedrockProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "bedrock")
 }
 
-func (provider *BedrockProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "bedrock")
 }
 
@@ -1796,13 +924,17 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	path := fmt.Sprintf("%s/%s", model, basePath)
 
 	if key.BedrockKeyConfig.Deployments != nil {
-		if inferenceProfileId, ok := key.BedrockKeyConfig.Deployments[model]; ok {
+		if inferenceProfileID, ok := key.BedrockKeyConfig.Deployments[model]; ok {
 			if key.BedrockKeyConfig.ARN != nil {
-				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileId))
+				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileID))
 				path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 			}
 		}
 	}
 
 	return path
+}
+
+func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "bedrock")
 }
