@@ -386,25 +386,85 @@ func (r *GenerateContentResponse) ToBifrostResponse() *schemas.BifrostResponse {
 					},
 				}
 			} else if hasText && textContent != "" {
-				// This is a transcription response
-				response.Object = "audio.transcription"
-				response.Transcribe = &schemas.BifrostTranscribe{
-					Text: textContent,
-					Usage: &schemas.TranscriptionUsage{
-						Type:         "tokens",
-						InputTokens:  &inputTokens,
-						OutputTokens: &outputTokens,
-						TotalTokens:  &totalTokens,
-					},
-					BifrostTranscribeNonStreamResponse: &schemas.BifrostTranscribeNonStreamResponse{
-						Task: schemas.Ptr("transcribe"),
-					},
+				// Check if this is actually a transcription response by looking for transcription context
+				// Only treat as transcription if we have explicit transcription metadata or context
+				isTranscription := r.isTranscriptionResponse()
+
+				if isTranscription {
+					// This is a transcription response
+					response.Object = "audio.transcription"
+					response.Transcribe = &schemas.BifrostTranscribe{
+						Text: textContent,
+						Usage: &schemas.TranscriptionUsage{
+							Type:         "tokens",
+							InputTokens:  &inputTokens,
+							OutputTokens: &outputTokens,
+							TotalTokens:  &totalTokens,
+						},
+						BifrostTranscribeNonStreamResponse: &schemas.BifrostTranscribeNonStreamResponse{
+							Task: schemas.Ptr("transcribe"),
+						},
+					}
+				} else {
+					// This is a regular chat completion response
+					response.Object = "chat.completion"
+
+					// Create choice from the candidate
+					choice := schemas.BifrostChatResponseChoice{
+						Index: 0,
+						BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+							Message: schemas.ChatMessage{
+								Role: schemas.ChatMessageRoleAssistant,
+								Content: schemas.ChatMessageContent{
+									ContentStr: &textContent,
+								},
+							},
+						},
+					}
+
+					// Set finish reason if available
+					if candidate.FinishReason != "" {
+						finishReason := string(candidate.FinishReason)
+						choice.FinishReason = &finishReason
+					}
+
+					response.Choices = []schemas.BifrostChatResponseChoice{choice}
+
+					// Set usage information
+					response.Usage = &schemas.LLMUsage{
+						PromptTokens:     inputTokens,
+						CompletionTokens: outputTokens,
+						TotalTokens:      totalTokens,
+					}
 				}
 			}
 		}
 	}
 
 	return response
+}
+
+// isTranscriptionResponse determines if this response is from a transcription request
+// by checking for transcription-specific context and metadata
+func (r *GenerateContentResponse) isTranscriptionResponse() bool {
+	// Check if any candidates contain audio input data in their parts
+	// This would indicate the original request included audio for transcription
+	for _, candidate := range r.Candidates {
+		if candidate.Content != nil {
+			for _, part := range candidate.Content.Parts {
+				if part.InlineData != nil && part.InlineData.MIMEType != "" {
+					// If we have audio data in the response parts, it's likely a transcription
+					if strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	// Default to false - assume it's a regular chat completion
+	// This is safer than incorrectly classifying chat responses as transcriptions
+	return false
 }
 
 // FromBifrostResponse converts a BifrostResponse back to Gemini's GenerateContentResponse

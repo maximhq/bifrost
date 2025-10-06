@@ -1,40 +1,68 @@
 "use client";
 
 import FullPageLoader from "@/components/fullPageLoader";
-import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
-import { useEffect } from "react";
+import {
+	getErrorMessage,
+	useLazyGetCustomersQuery,
+	useLazyGetTeamsQuery,
+	useLazyGetVirtualKeysQuery,
+	useLazyGetCoreConfigQuery,
+} from "@/lib/store";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import VirtualKeysTable from "./views/virtualKeysTable";
 
 export default function VirtualKeysPage() {
-	const { data: virtualKeysData, error: vkError, isLoading: vkLoading, refetch: refetchVirtualKeys } = useGetVirtualKeysQuery();
-	const { data: teamsData, error: teamsError, isLoading: teamsLoading, refetch: refetchTeams } = useGetTeamsQuery({});
-	const { data: customersData, error: customersError, isLoading: customersLoading, refetch: refetchCustomers } = useGetCustomersQuery();
+	const [governanceEnabled, setGovernanceEnabled] = useState<boolean | null>(null);
 
-	const isLoading = vkLoading || teamsLoading || customersLoading;
+	const [triggerGetVirtualKeys, { data: virtualKeysData, error: vkError, isLoading: vkLoading }] = useLazyGetVirtualKeysQuery();
+	const [triggerGetTeams, { data: teamsData, error: teamsError, isLoading: teamsLoading }] = useLazyGetTeamsQuery();
+	const [triggerGetCustomers, { data: customersData, error: customersError, isLoading: customersLoading }] = useLazyGetCustomersQuery();
 
-	useEffect(() => {
-		if (vkError) {
-			toast.error(`Failed to load virtual keys: ${getErrorMessage(vkError)}`);
-		}
-	}, [vkError]);
+	const isLoading = vkLoading || teamsLoading || customersLoading || governanceEnabled === null;
+
+	const [triggerGetConfig] = useLazyGetCoreConfigQuery();
 
 	useEffect(() => {
-		if (teamsError) {
-			toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
-		}
-	}, [teamsError]);
+		triggerGetConfig({ fromDB: true }).then((res) => {
+			if (res.data && res.data.client_config.enable_governance) {
+				setGovernanceEnabled(true);
+				// Trigger lazy queries only when governance is enabled
+				triggerGetVirtualKeys();
+				triggerGetTeams({});
+				triggerGetCustomers();
+			} else {
+				setGovernanceEnabled(false);
+				toast.error("Governance is not enabled. Please enable it in the config.");
+			}
+		});
+	}, [triggerGetConfig, triggerGetVirtualKeys, triggerGetTeams, triggerGetCustomers]);
 
+	// Handle query errors - show consolidated error if all APIs fail
 	useEffect(() => {
-		if (customersError) {
-			toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
+		if (vkError && teamsError && customersError) {
+			// If all three APIs fail, suggest resetting bifrost
+			toast.error("Failed to load governance data. Please reset Bifrost to enable governance properly.");
+		} else {
+			// Show individual errors if only some APIs fail
+			if (vkError) {
+				toast.error(`Failed to load virtual keys: ${getErrorMessage(vkError)}`);
+			}
+			if (teamsError) {
+				toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
+			}
+			if (customersError) {
+				toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
+			}
 		}
-	}, [customersError]);
+	}, [vkError, teamsError, customersError]);
 
 	const handleRefresh = () => {
-		refetchVirtualKeys();
-		refetchTeams();
-		refetchCustomers();
+		if (governanceEnabled) {
+			triggerGetVirtualKeys();
+			triggerGetTeams({});
+			triggerGetCustomers();
+		}
 	};
 
 	if (isLoading) {

@@ -69,6 +69,7 @@ type SearchStats struct {
 // This is the GORM model with appropriate tags
 type Log struct {
 	ID                  string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ParentRequestID     *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
 	Timestamp           time.Time `gorm:"index;not null" json:"timestamp"`
 	Object              string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider            string    `gorm:"type:varchar(255);index;not null" json:"provider"`

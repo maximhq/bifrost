@@ -34,7 +34,7 @@ import (
 const (
 	DefaultHost           = "localhost"
 	DefaultPort           = "8080"
-	DefaultAppDir         = "./bifrost-data"
+	DefaultAppDir         = "" // Empty string means use OS-specific config directory
 	DefaultLogLevel       = string(schemas.LogLevelInfo)
 	DefaultLogOutputStyle = string(schemas.LoggerOutputTypeJSON)
 )
@@ -447,6 +447,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
+
+	fmt.Println("configDir", configDir)
+
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)

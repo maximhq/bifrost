@@ -818,6 +818,7 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]TableVirtualKey,
 		Preload("Customer").
 		Preload("Budget").
 		Preload("RateLimit").
+		Preload("ProviderConfigs").
 		Preload("Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, key_id, models_json")
 		}).Find(&virtualKeys).Error; err != nil {
@@ -834,6 +835,7 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*TableVi
 		Preload("Customer").
 		Preload("Budget").
 		Preload("RateLimit").
+		Preload("ProviderConfigs").
 		Preload("Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, key_id, models_json")
 		}).First(&virtualKey, "id = ?", id).Error; err != nil {

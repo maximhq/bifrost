@@ -12,7 +12,7 @@ import (
 )
 
 // insertInitialLogEntry creates a new log entry in the database using GORM
-func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID string, timestamp time.Time, data *InitialLogData) error {
+func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID string, parentRequestID string, timestamp time.Time, data *InitialLogData) error {
 	entry := &logstore.Log{
 		ID:        requestID,
 		Timestamp: timestamp,
@@ -28,6 +28,10 @@ func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID stri
 		ToolsParsed:              data.Tools,
 		SpeechInputParsed:        data.SpeechInput,
 		TranscriptionInputParsed: data.TranscriptionInput,
+	}
+
+	if parentRequestID != "" {
+		entry.ParentRequestID = &parentRequestID
 	}
 
 	return p.store.Create(ctx, entry)

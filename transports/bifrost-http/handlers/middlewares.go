@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -137,7 +138,8 @@ func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) Bifr
 				next(ctx)
 				return
 			}
-			// Weighted random selection from allowed providers
+
+			// Weighted random selection from allowed providers for the main model
 			totalWeight := 0.0
 			for _, config := range allowedProviderConfigs {
 				totalWeight += config.Weight
@@ -154,8 +156,30 @@ func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) Bifr
 					break
 				}
 			}
+
 			// Update the model field in the request body
 			requestBody["model"] = string(selectedProvider) + "/" + modelStr
+
+			// Check if fallbacks field is already present
+			_, hasFallbacks := requestBody["fallbacks"]
+			if !hasFallbacks && len(allowedProviderConfigs) > 1 {
+				// Sort allowed provider configs by weight (descending)
+				sort.Slice(allowedProviderConfigs, func(i, j int) bool {
+					return allowedProviderConfigs[i].Weight > allowedProviderConfigs[j].Weight
+				})
+
+				// Filter out the selected provider and create fallbacks array
+				fallbacks := make([]string, 0, len(allowedProviderConfigs)-1)
+				for _, config := range allowedProviderConfigs {
+					if config.Provider != string(selectedProvider) {
+						fallbacks = append(fallbacks, string(schemas.ModelProvider(config.Provider))+"/"+modelStr)
+					}
+				}
+
+				// Add fallbacks to request body
+				requestBody["fallbacks"] = fallbacks
+			}
+
 			// Marshal the updated request body back to JSON
 			updatedBody, err := json.Marshal(requestBody)
 			if err != nil {

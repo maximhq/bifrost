@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -681,10 +682,11 @@ transferComplete:
 		providerKey,
 		providerConfig.ConcurrencyAndBufferSize.BufferSize)
 
+	waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
+	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
+
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
-		waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
-		waitGroup := waitGroupValue.(*sync.WaitGroup)
-		waitGroup.Add(1)
+		currentWaitGroup.Add(1)
 		go bifrost.requestWorker(provider, providerConfig, newQueue)
 	}
 
@@ -992,10 +994,11 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		return fmt.Errorf("failed to create provider for the given key: %v", err)
 	}
 
+	waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
+	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
+
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
-		waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
-		waitGroup := waitGroupValue.(*sync.WaitGroup)
-		waitGroup.Add(1)
+		currentWaitGroup.Add(1)
 		go bifrost.requestWorker(provider, providerConfig, queue)
 	}
 
@@ -1182,6 +1185,8 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 	// Try fallbacks in order
 	for _, fallback := range req.Fallbacks {
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
+
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
 			continue
@@ -1190,7 +1195,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryRequest(fallbackReq, ctx)
 		if fallbackErr == nil {
-			bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			return result, nil
 		}
 
@@ -1234,6 +1239,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 	// Try fallbacks in order
 	for _, fallback := range req.Fallbacks {
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
+
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
 			continue
@@ -1242,7 +1249,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryStreamRequest(fallbackReq, ctx)
 		if fallbackErr == nil {
-			bifrost.logger.Info(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			return result, nil
 		}
 
