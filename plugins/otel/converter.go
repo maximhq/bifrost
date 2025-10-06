@@ -71,145 +71,243 @@ func hexToBytes(hexStr string, length int) []byte {
 	return bytes
 }
 
+// getSpeechRequestParams handles the speech request
+func getSpeechRequestParams(req *schemas.BifrostSpeechRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Params != nil {
+		if req.Params.VoiceConfig.Voice != nil {
+			params = append(params, kvStr("gen_ai.request.voice", *req.Params.VoiceConfig.Voice))
+		}
+		if len(req.Params.VoiceConfig.MultiVoiceConfig) > 0 {
+			multiVoiceConfigParams := []*KeyValue{}
+			for _, voiceConfig := range req.Params.VoiceConfig.MultiVoiceConfig {
+				multiVoiceConfigParams = append(multiVoiceConfigParams, kvStr("gen_ai.request.voice", voiceConfig.Voice))
+			}
+			params = append(params, kvAny("gen_ai.request.multi_voice_config", arrValue(listValue(multiVoiceConfigParams...))))
+		}
+		params = append(params, kvStr("gen_ai.request.instructions", req.Params.Instructions))
+		params = append(params, kvStr("gen_ai.request.response_format", req.Params.ResponseFormat))
+		if req.Params.Speed != nil {
+			params = append(params, kvDbl("gen_ai.request.speed", *req.Params.Speed))
+		}
+	}
+	params = append(params, kvStr("gen_ai.input.speech", req.Input.Input))
+	return params
+}
+
+// getEmbeddingRequestParams handles the embedding request
+func getEmbeddingRequestParams(req *schemas.BifrostEmbeddingRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Params != nil {
+		if req.Params.Dimensions != nil {
+			params = append(params, kvInt("gen_ai.request.dimensions", int64(*req.Params.Dimensions)))
+		}
+		if req.Params.ExtraParams != nil {
+			for k, v := range req.Params.ExtraParams {
+				params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+			}
+		}
+		if req.Params.EncodingFormat != nil {
+			params = append(params, kvStr("gen_ai.request.encoding_format", *req.Params.EncodingFormat))
+		}
+	}
+	if req.Input.Text != nil {
+		params = append(params, kvStr("gen_ai.input.text", *req.Input.Text))
+	}
+	if req.Input.Texts != nil {
+		params = append(params, kvStr("gen_ai.input.text", strings.Join(req.Input.Texts, ",")))
+	}
+	if req.Input.Embedding != nil {
+		embedding := make([]string, len(req.Input.Embedding))
+		for i, v := range req.Input.Embedding {
+			embedding[i] = fmt.Sprintf("%d", v)
+		}
+		params = append(params, kvStr("gen_ai.input.embedding", strings.Join(embedding, ",")))
+	}
+	return params
+}
+
+// getTextCompletionRequestParams handles the text completion request
+func getTextCompletionRequestParams(req *schemas.BifrostTextCompletionRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Params != nil {
+		if req.Params.MaxTokens != nil {
+			params = append(params, kvInt("gen_ai.request.max_tokens", int64(*req.Params.MaxTokens)))
+		}
+		if req.Params.Temperature != nil {
+			params = append(params, kvDbl("gen_ai.request.temperature", *req.Params.Temperature))
+		}
+		if req.Params.TopP != nil {
+			params = append(params, kvDbl("gen_ai.request.top_p", *req.Params.TopP))
+		}
+		if req.Params.Stop != nil {
+			params = append(params, kvStr("gen_ai.request.stop_sequences", strings.Join(req.Params.Stop, ",")))
+		}
+		if req.Params.PresencePenalty != nil {
+			params = append(params, kvDbl("gen_ai.request.presence_penalty", *req.Params.PresencePenalty))
+		}
+		if req.Params.FrequencyPenalty != nil {
+			params = append(params, kvDbl("gen_ai.request.frequency_penalty", *req.Params.FrequencyPenalty))
+		}
+		if req.Params.BestOf != nil {
+			params = append(params, kvInt("gen_ai.request.best_of", int64(*req.Params.BestOf)))
+		}
+		if req.Params.Echo != nil {
+			params = append(params, kvBool("gen_ai.request.echo", *req.Params.Echo))
+		}
+		if req.Params.LogitBias != nil {
+			params = append(params, kvStr("gen_ai.request.logit_bias", fmt.Sprintf("%v", req.Params.LogitBias)))
+		}
+		if req.Params.LogProbs != nil {
+			params = append(params, kvInt("gen_ai.request.logprobs", int64(*req.Params.LogProbs)))
+		}
+		if req.Params.N != nil {
+			params = append(params, kvInt("gen_ai.request.n", int64(*req.Params.N)))
+		}
+		if req.Params.Seed != nil {
+			params = append(params, kvInt("gen_ai.request.seed", int64(*req.Params.Seed)))
+		}
+		if req.Params.Suffix != nil {
+			params = append(params, kvStr("gen_ai.request.suffix", *req.Params.Suffix))
+		}
+		if req.Params.User != nil {
+			params = append(params, kvStr("gen_ai.request.user", *req.Params.User))
+		}
+		if req.Params.ExtraParams != nil {
+			for k, v := range req.Params.ExtraParams {
+				params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+			}
+		}
+	}
+	if req.Input.PromptStr != nil {
+		params = append(params, kvStr("gen_ai.input.text", *req.Input.PromptStr))
+	}
+	if req.Input.PromptArray != nil {
+		params = append(params, kvStr("gen_ai.input.text", strings.Join(req.Input.PromptArray, ",")))
+	}
+	return params
+}
+
+// getChatRequestParams handles the chat completion request
+func getChatRequestParams(req *schemas.BifrostChatRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Params != nil {
+		if req.Params.MaxCompletionTokens != nil {
+			params = append(params, kvInt("gen_ai.request.max_tokens", int64(*req.Params.MaxCompletionTokens)))
+		}
+		if req.Params.Temperature != nil {
+			params = append(params, kvDbl("gen_ai.request.temperature", *req.Params.Temperature))
+		}
+		if req.Params.TopP != nil {
+			params = append(params, kvDbl("gen_ai.request.top_p", *req.Params.TopP))
+		}
+		if req.Params.Stop != nil {
+			params = append(params, kvStr("gen_ai.request.stop_sequences", strings.Join(req.Params.Stop, ",")))
+		}
+		if req.Params.PresencePenalty != nil {
+			params = append(params, kvDbl("gen_ai.request.presence_penalty", *req.Params.PresencePenalty))
+		}
+		if req.Params.FrequencyPenalty != nil {
+			params = append(params, kvDbl("gen_ai.request.frequency_penalty", *req.Params.FrequencyPenalty))
+		}
+		if req.Params.ParallelToolCalls != nil {
+			params = append(params, kvBool("gen_ai.request.parallel_tool_calls", *req.Params.ParallelToolCalls))
+		}
+		if req.Params.User != nil {
+			params = append(params, kvStr("gen_ai.request.user", *req.Params.User))
+		}
+		if req.Params.ExtraParams != nil {
+			for k, v := range req.Params.ExtraParams {
+				params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+			}
+		}
+	}
+	// Handling chat completion
+	if req.Input != nil {
+		messages := []*AnyValue{}
+		for _, message := range req.Input {
+			switch message.Role {
+			case schemas.ChatMessageRoleUser:
+				kvs := []*KeyValue{kvStr("role", "user")}
+				if message.Content.ContentStr != nil {
+					kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
+				}
+				messages = append(messages, listValue(kvs...))
+			case schemas.ChatMessageRoleAssistant:
+				kvs := []*KeyValue{kvStr("role", "assistant")}
+				if message.Content.ContentStr != nil {
+					kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
+				}
+				messages = append(messages, listValue(kvs...))
+			case schemas.ChatMessageRoleSystem:
+				kvs := []*KeyValue{kvStr("role", "system")}
+				if message.Content.ContentStr != nil {
+					kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
+				}
+				messages = append(messages, listValue(kvs...))
+			case schemas.ChatMessageRoleTool:
+				kvs := []*KeyValue{kvStr("role", "tool")}
+				if message.Content.ContentStr != nil {
+					kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
+				}
+				messages = append(messages, listValue(kvs...))
+			case schemas.ChatMessageRoleDeveloper:
+				kvs := []*KeyValue{kvStr("role", "developer")}
+				if message.Content.ContentStr != nil {
+					kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
+				}
+				messages = append(messages, listValue(kvs...))
+			}
+		}
+		params = append(params, kvAny("gen_ai.input.messages", arrValue(messages...)))
+	}
+	return params
+}
+
+// getTranscriptionRequestParams handles the transcription request
+func getTranscriptionRequestParams(req *schemas.BifrostTranscriptionRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Params != nil {
+		if req.Params.Language != nil {
+			params = append(params, kvStr("gen_ai.request.language", *req.Params.Language))
+		}
+		if req.Params.Prompt != nil {
+			params = append(params, kvStr("gen_ai.request.prompt", *req.Params.Prompt))
+		}
+		if req.Params.ResponseFormat != nil {
+			params = append(params, kvStr("gen_ai.request.response_format", *req.Params.ResponseFormat))
+		}
+		if req.Params.Format != nil {
+			params = append(params, kvStr("gen_ai.request.format", *req.Params.Format))
+		}
+	}
+	return params
+}
+
 // createResourceSpan creates a new resource span for a Bifrost request
 func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
 	// preparing parameters
 	params := []*KeyValue{}
 	spanName := "span"
+	params = append(params, kvStr("gen_ai.provider.name", string(req.Provider)))
+	params = append(params, kvStr("gen_ai.request.model", req.Model))
 	// Preparing parameters
 	switch req.RequestType {
 	case schemas.TextCompletionRequest:
-		if req.TextCompletionRequest.Params.MaxTokens != nil {
-			params = append(params, kvInt("gen_ai.request.max_tokens", int64(*req.TextCompletionRequest.Params.MaxTokens)))
-		}		
-		
+		spanName = "gen_ai.text"
+		params = append(params, getTextCompletionRequestParams(req.TextCompletionRequest)...)
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
-		if req.ChatRequest.Params.MaxCompletionTokens != nil {
-			params = append(params, kvInt("gen_ai.request.max_tokens", int64(*req.ChatRequest.Params.MaxCompletionTokens)))
-		}
-		if req.ChatRequest.Params.Temperature != nil {
-			params = append(params, kvDbl("gen_ai.request.temperature", *req.ChatRequest.Params.Temperature))
-		}
-		if req.ChatRequest.Params.TopP != nil {
-			params = append(params, kvDbl("gen_ai.request.top_p", *req.ChatRequest.Params.TopP))
-		}
-		if req.ChatRequest.Params.Stop != nil {
-			params = append(params, kvStr("gen_ai.request.stop_sequences", strings.Join(req.ChatRequest.Params.Stop, ",")))
-		}
-		if req.ChatRequest.Params.PresencePenalty != nil {
-			params = append(params, kvDbl("gen_ai.request.presence_penalty", *req.ChatRequest.Params.PresencePenalty))
-		}
-		if req.ChatRequest.Params.FrequencyPenalty != nil {
-			params = append(params, kvDbl("gen_ai.request.frequency_penalty", *req.ChatRequest.Params.FrequencyPenalty))
-		}
-		if req.ChatRequest.Params.ParallelToolCalls != nil {
-			params = append(params, kvBool("gen_ai.request.parallel_tool_calls", *req.ChatRequest.Params.ParallelToolCalls))
-		}
-		if req.ChatRequest.Params.User != nil {
-			params = append(params, kvStr("gen_ai.request.user", *req.ChatRequest.Params.User))
-		}
-		if req.ChatRequest.Params.ExtraParams != nil {
-			for k, v := range req.ChatRequest.Params.ExtraParams {
-				params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
-			}
-		}
+		spanName = "gen_ai.chat"
+		params = append(params, getChatRequestParams(req.ChatRequest)...)
 	case schemas.EmbeddingRequest:
-		if req.EmbeddingRequest.Params.Dimensions != nil {
-			params = append(params, kvDbl("gen_ai.request.dimensions", float64(*req.EmbeddingRequest.Params.Dimensions)))
-		}
-		if req.EmbeddingRequest.Params.EncodingFormat != nil {
-			params = append(params, kvStr("gen_ai.request.encoding_format", *req.EmbeddingRequest.Params.EncodingFormat))
-		}
-		
-	}
-
-	// Preparing request based parameters
-	if req != nil {
-		params = append(params, kvStr("gen_ai.provider.name", string(req.Provider)))
-		params = append(params, kvStr("gen_ai.request.model", req.Model))
-		// Handling chat completion
-		if req.Input.ChatCompletionInput != nil {
-			spanName = "gen_ai.chat"
-			messages := []*AnyValue{}
-			for _, message := range req.Input.ChatCompletionInput {
-				switch message.Role {
-				case schemas.ModelChatMessageRoleUser:
-					kvs := []*KeyValue{kvStr("role", "user")}
-					if message.Content.ContentStr != nil {
-						kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
-					}
-					messages = append(messages, listValue(kvs...))
-				case schemas.ModelChatMessageRoleAssistant:
-					kvs := []*KeyValue{kvStr("role", "assistant")}
-					if message.Content.ContentStr != nil {
-						kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
-					}
-					messages = append(messages, listValue(kvs...))
-				case schemas.ModelChatMessageRoleSystem:
-					if message.Content.ContentStr != nil {
-						params = append(params, kvStr("gen_ai.system_instructions", *message.Content.ContentStr))
-					}
-				}
-			}
-			params = append(params, kvAny("gen_ai.input.messages", arrValue(messages...)))
-		}
-		// Handling text completion
-		if req.Input.TextCompletionInput != nil {
-			spanName = "gen_ai.text"
-			params = append(params, kvStr("gen_ai.input.text", *req.Input.TextCompletionInput))
-		}
-		// Handling embedding
-		if req.Input.EmbeddingInput != nil {
-			spanName = "gen_ai.embedding"
-			if req.Input.EmbeddingInput.Text != nil {
-				params = append(params, kvStr("gen_ai.input.text", *req.Input.EmbeddingInput.Text))
-			}
-			if req.Input.EmbeddingInput.Texts != nil {
-				params = append(params, kvStr("gen_ai.input.text", strings.Join(req.Input.EmbeddingInput.Texts, ",")))
-			}
-			if req.Input.EmbeddingInput.Embedding != nil {
-				embedding := make([]string, len(req.Input.EmbeddingInput.Embedding))
-				for i, v := range req.Input.EmbeddingInput.Embedding {
-					embedding[i] = fmt.Sprintf("%d", v)
-				}
-				params = append(params, kvStr("gen_ai.input.embedding", strings.Join(embedding, ",")))
-			}
-			// We don't send across embeddings as they are too large to log and makes no sense to log them
-		}
-		// Handling speech
-		if req.Input.SpeechInput != nil {
-			spanName = "gen_ai.speech"
-			params = append(params, kvStr("gen_ai.input.speech", req.Input.SpeechInput.Input))
-			if req.Input.SpeechInput.VoiceConfig.Voice != nil {
-				params = append(params, kvStr("gen_ai.input.speech.voice", *req.Input.SpeechInput.VoiceConfig.Voice))
-			}
-			params = append(params, kvStr("gen_ai.input.speech.instructions", req.Input.SpeechInput.Instructions))
-			params = append(params, kvStr("gen_ai.input.speech.response_format", req.Input.SpeechInput.ResponseFormat))
-			if len(req.Input.SpeechInput.VoiceConfig.MultiVoiceConfig) > 0 {
-				multiVoiceConfigParams := []*KeyValue{}
-				for _, voiceConfig := range req.Input.SpeechInput.VoiceConfig.MultiVoiceConfig {
-					multiVoiceConfigParams = append(multiVoiceConfigParams, kvStr("gen_ai.input.speech.voice", voiceConfig.Voice))
-				}
-				params = append(params, kvAny("gen_ai.input.speech.multi_voice_config", arrValue(listValue(multiVoiceConfigParams...))))
-			}
-		}
-		// Handling transcription
-		if req.Input.TranscriptionInput != nil {
-			spanName = "gen_ai.transcription"
-			params = append(params, kvInt("gen_ai.transcription.fileSize", int64(len(req.Input.TranscriptionInput.File))))
-			if req.Input.TranscriptionInput.Language != nil {
-				params = append(params, kvStr("gen_ai.input.transcription.language", *req.Input.TranscriptionInput.Language))
-			}
-			if req.Input.TranscriptionInput.Prompt != nil {
-				params = append(params, kvStr("gen_ai.input.transcription.prompt", *req.Input.TranscriptionInput.Prompt))
-			}
-			if req.Input.TranscriptionInput.ResponseFormat != nil {
-				params = append(params, kvStr("gen_ai.input.transcription.response_format", *req.Input.TranscriptionInput.ResponseFormat))
-			}
-			if req.Input.TranscriptionInput.Format != nil {
-				params = append(params, kvStr("gen_ai.input.transcription.format", *req.Input.TranscriptionInput.Format))
-			}
-		}
+		spanName = "gen_ai.embedding"
+		params = append(params, getEmbeddingRequestParams(req.EmbeddingRequest)...)
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		spanName = "gen_ai.transcription"
+		params = append(params, getTranscriptionRequestParams(req.TranscriptionRequest)...)
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		spanName = "gen_ai.speech"
+		params = append(params, getSpeechRequestParams(req.SpeechRequest)...)
 	}
 	// Preparing final resource span
 	return &ResourceSpan{
@@ -241,26 +339,22 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 }
 
 // completeResourceSpan completes a resource span for a Bifrost response
-func completeResourceSpan(span *ResourceSpan, timestamp time.Time, provider schemas.ModelProvider, model string, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, pricingManager *pricing.PricingManager, requestType schemas.RequestType) *ResourceSpan {
-	params := []*commonpb.KeyValue{}
+func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, pricingManager *pricing.PricingManager) *ResourceSpan {
+	params := []*KeyValue{}
 	if resp != nil && resp.Usage != nil {
 		params = append(params, kvStr("gen_ai.response.id", resp.ID))
 		params = append(params, kvInt("gen_ai.usage.prompt_tokens", int64(resp.Usage.PromptTokens)))
 		params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(resp.Usage.CompletionTokens)))
-		params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.Usage.TotalTokens)))
-		if resp.Usage.TokenDetails != nil {
-			params = append(params, kvInt("gen_ai.usage.token_details.cached_tokens", int64(resp.Usage.TokenDetails.CachedTokens)))
-			params = append(params, kvInt("gen_ai.usage.token_details.audio_tokens", int64(resp.Usage.TokenDetails.AudioTokens)))
+		params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.Usage.TotalTokens)))		
+		if resp.Usage.ResponsesExtendedResponseUsage != nil && resp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails != nil {
+			params = append(params, kvInt("gen_ai.usage.input_token_details.cached_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails.CachedTokens)))
 		}
-		if resp.Usage.CompletionTokensDetails != nil {
-			params = append(params, kvInt("gen_ai.usage.completion_tokens_details.reasoning_tokens", int64(resp.Usage.CompletionTokensDetails.ReasoningTokens)))
-			params = append(params, kvInt("gen_ai.usage.completion_tokens_details.audio_tokens", int64(resp.Usage.CompletionTokensDetails.AudioTokens)))
-			params = append(params, kvInt("gen_ai.usage.completion_tokens_details.accepted_prediction_tokens", int64(resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens)))
-			params = append(params, kvInt("gen_ai.usage.completion_tokens_details.rejected_prediction_tokens", int64(resp.Usage.CompletionTokensDetails.RejectedPredictionTokens)))
+		if resp.Usage.ResponsesExtendedResponseUsage != nil && resp.Usage.ResponsesExtendedResponseUsage.OutputTokensDetails != nil {
+			params = append(params, kvInt("gen_ai.usage.output_tokens_details.reasoning_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.OutputTokensDetails.ReasoningTokens)))
 		}
 		// Computing cost
 		if pricingManager != nil {
-			cost := pricingManager.CalculateCostWithCacheDebug(resp, provider, model, requestType)
+			cost := pricingManager.CalculateCostWithCacheDebug(resp)
 			params = append(params, kvStr("gen_ai.usage.cost", fmt.Sprintf("%f", cost)))
 		}
 	}

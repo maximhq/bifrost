@@ -50,12 +50,14 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, respErr *schemas.BifrostError, isFinalChunk bool) (*AccumulatedData, error) {
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
-	accumulator.mu.Lock()	
-	defer accumulator.mu.Unlock()
-	if isFinalChunk {
-		// Before unlocking, we cleanup
-		defer a.cleanupStreamAccumulator(requestID)
-	}
+	accumulator.mu.Lock()
+	defer func() {
+		accumulator.mu.Unlock()
+		if isFinalChunk {
+			// Before unlocking, we cleanup
+			defer a.cleanupStreamAccumulator(requestID)
+		}
+	}()
 	// Initialize accumulated data
 	data := &AccumulatedData{
 		RequestID:      requestID,
@@ -111,11 +113,12 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
 		}
+		data.FinishReason = lastChunk.FinishReason
 	}
 	// Update object field from accumulator (stored once for the entire stream)
 	if accumulator.Object != "" {
 		data.Object = accumulator.Object
-	}
+	}	
 	return data, nil
 }
 

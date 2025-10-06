@@ -780,16 +780,12 @@ func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *Anthropic
 
 	// Handle nested error fields with nil checks
 	errorStruct := AnthropicMessageErrorStruct{
-		Type:    "",
+		Type:    errorType,
 		Message: bifrostErr.Error.Message,
 	}
 
-	if bifrostErr.Error.Type != nil {
-		errorStruct.Type = *bifrostErr.Error.Type
-	}
-
 	return &AnthropicMessageError{
-		Type:  errorType,
+		Type:  "error", // always "error" for Anthropic
 		Error: errorStruct,
 	}
 }

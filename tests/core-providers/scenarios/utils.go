@@ -238,7 +238,7 @@ func CreateImageChatMessage(text, imageURL string) schemas.ChatMessage {
 	return schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleUser,
 		Content: schemas.ChatMessageContent{
-			ContentBlocks: &[]schemas.ChatContentBlock{
+			ContentBlocks: []schemas.ChatContentBlock{
 				{Type: schemas.ChatContentBlockTypeText, Text: bifrost.Ptr(text)},
 				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
 			},
@@ -251,7 +251,7 @@ func CreateImageResponsesMessage(text, imageURL string) schemas.ResponsesMessage
 		Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
 		Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
 		Content: &schemas.ResponsesMessageContent{
-			ContentBlocks: &[]schemas.ResponsesMessageContentBlock{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
 				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: bifrost.Ptr(text)},
 				{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
@@ -309,7 +309,7 @@ func GetResultContent(result *schemas.BifrostResponse) string {
 					return *choice.Message.Content.ContentStr
 				} else if choice.Message.Content.ContentBlocks != nil {
 					var builder strings.Builder
-					for _, block := range *choice.Message.Content.ContentBlocks {
+					for _, block := range choice.Message.Content.ContentBlocks {
 						if block.Text != nil {
 							builder.WriteString(*block.Text)
 						}
@@ -330,7 +330,7 @@ func GetResultContent(result *schemas.BifrostResponse) string {
 					return *choice.Message.Content.ContentStr
 				} else if choice.Message.Content.ContentBlocks != nil {
 					var builder strings.Builder
-					for _, block := range *choice.Message.Content.ContentBlocks {
+					for _, block := range choice.Message.Content.ContentBlocks {
 						if block.Text != nil {
 							builder.WriteString(*block.Text)
 						}
@@ -346,7 +346,7 @@ func GetResultContent(result *schemas.BifrostResponse) string {
 					return *output.Content.ContentStr
 				} else if output.Content.ContentBlocks != nil {
 					var builder strings.Builder
-					for _, block := range *output.Content.ContentBlocks {
+					for _, block := range output.Content.ContentBlocks {
 						if block.Text != nil {
 							builder.WriteString(*block.Text)
 						}
@@ -384,7 +384,7 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 			if choice.Message.ChatAssistantMessage != nil &&
 				choice.Message.ChatAssistantMessage.ToolCalls != nil {
 
-				chatToolCalls := *choice.Message.ChatAssistantMessage.ToolCalls
+				chatToolCalls := choice.Message.ChatAssistantMessage.ToolCalls
 				for _, toolCall := range chatToolCalls {
 					info := ToolCallInfo{
 						Arguments: toolCall.Function.Arguments,
@@ -443,13 +443,13 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 // getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
 func getEmbeddingVector(embedding schemas.BifrostEmbeddingResponse) ([]float32, error) {
 	if embedding.EmbeddingArray != nil {
-		return *embedding.EmbeddingArray, nil
+		return embedding.EmbeddingArray, nil
 	}
 
 	if embedding.Embedding2DArray != nil {
 		// For 2D arrays, return the first vector
-		if len(*embedding.Embedding2DArray) > 0 {
-			return (*embedding.Embedding2DArray)[0], nil
+		if len(embedding.Embedding2DArray) > 0 {
+			return embedding.Embedding2DArray[0], nil
 		}
 		return nil, fmt.Errorf("2D embedding array is empty")
 	}

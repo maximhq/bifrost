@@ -44,7 +44,7 @@ func RunReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 					Summary: bifrost.Ptr("detailed"), // Detailed summary of reasoning process
 				},
 				// Include reasoning content in response
-				Include: &[]string{"reasoning.encrypted_content"},
+				Include: []string{"reasoning.encrypted_content"},
 			},
 		}
 
@@ -121,7 +121,7 @@ func validateResponsesAPIReasoning(t *testing.T, response *schemas.BifrostRespon
 
 		// Check for content blocks with ResponsesOutputMessageContentTypeReasoning
 		if message.Content != nil && message.Content.ContentBlocks != nil {
-			for _, block := range *message.Content.ContentBlocks {
+			for _, block := range message.Content.ContentBlocks {
 				if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning {
 					reasoningContentFound = true
 					t.Logf("🔍 Found ResponsesOutputMessageContentTypeReasoning content block")

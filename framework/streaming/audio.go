@@ -33,11 +33,13 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
-	defer accumulator.mu.Unlock()
-	if isFinalChunk {		
-		// Before unlocking, we cleanup
-		defer a.cleanupStreamAccumulator(requestID)
-	}
+	defer func() {
+		accumulator.mu.Unlock()
+		if isFinalChunk {
+			// Before unlocking, we cleanup
+			defer a.cleanupStreamAccumulator(requestID)
+		}
+	}()
 	data := &AccumulatedData{
 		RequestID:      requestID,
 		Status:         "success",
@@ -78,7 +80,7 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 				PromptTokens:     lastChunk.TokenUsage.InputTokens,
 				CompletionTokens: lastChunk.TokenUsage.OutputTokens,
 				TotalTokens:      lastChunk.TokenUsage.TotalTokens,
-			}			
+			}
 		}
 	}
 	// Update cost from final chunk if available

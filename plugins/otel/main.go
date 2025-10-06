@@ -188,7 +188,7 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 		logger.Warn("span not found in ongoing spans")
 		return resp, bifrostErr, nil
 	}
-	requestType, provider, model := bifrost.GetRequestFields(resp, bifrostErr)
+	requestType, _, _ := bifrost.GetRequestFields(resp, bifrostErr)
 	if span, ok := span.(*ResourceSpan); ok {
 		// We handle streaming responses differently, we will use the accumulator to process the response and then emit the final response
 		if bifrost.IsStreamRequestType(requestType) {
@@ -198,12 +198,12 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 			}
 			if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
 				defer p.ongoingSpans.Delete(traceID)
-				p.client.Emit(p.ctx, []*ResourceSpan{completeResourceSpan(span, time.Now(), provider, model, streamResponse.ToBifrostResponse(), bifrostErr, p.pricingManager, requestType)})
+				p.client.Emit(p.ctx, []*ResourceSpan{completeResourceSpan(span, time.Now(), streamResponse.ToBifrostResponse(), bifrostErr, p.pricingManager)})
 			}
 			return resp, bifrostErr, nil
 		}
 		defer p.ongoingSpans.Delete(traceID)
-		p.client.Emit(p.ctx, []*ResourceSpan{completeResourceSpan(span, time.Now(), provider, model, resp, bifrostErr, p.pricingManager, requestType)})
+		p.client.Emit(p.ctx, []*ResourceSpan{completeResourceSpan(span, time.Now(), resp, bifrostErr, p.pricingManager)})
 	}
 	return resp, bifrostErr, nil
 }

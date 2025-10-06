@@ -32,7 +32,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 				cohereReq.K = topK
 			}
-			if stop, ok := schemas.SafeExtractStringSlicePointer(bifrostReq.Params.ExtraParams["stop"]); ok {
+			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				cohereReq.StopSequences = stop
 			}
 			if frequencyPenalty, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["frequency_penalty"]); ok {
