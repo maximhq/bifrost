@@ -284,6 +284,82 @@ func getTranscriptionRequestParams(req *schemas.BifrostTranscriptionRequest) []*
 	return params
 }
 
+// getResponsesRequestParams handles the responses request
+func getResponsesRequestParams(req *schemas.BifrostResponsesRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Params != nil {
+		if req.Params.ParallelToolCalls != nil {
+			params = append(params, kvBool("gen_ai.request.parallel_tool_calls", *req.Params.ParallelToolCalls))
+		}
+		if req.Params.PromptCacheKey != nil {
+			params = append(params, kvStr("gen_ai.request.prompt_cache_key", *req.Params.PromptCacheKey))
+		}
+		if req.Params.Reasoning != nil {
+			if req.Params.Reasoning.Effort != nil {
+				params = append(params, kvStr("gen_ai.request.reasoning_effort", *req.Params.Reasoning.Effort))
+			}
+			if req.Params.Reasoning.Summary != nil {
+				params = append(params, kvStr("gen_ai.request.reasoning_summary", *req.Params.Reasoning.Summary))
+			}
+			if req.Params.Reasoning.GenerateSummary != nil {
+				params = append(params, kvStr("gen_ai.request.reasoning_generate_summary", *req.Params.Reasoning.GenerateSummary))
+			}
+		}
+		if req.Params.SafetyIdentifier != nil {
+			params = append(params, kvStr("gen_ai.request.safety_identifier", *req.Params.SafetyIdentifier))
+		}
+		if req.Params.ServiceTier != nil {
+			params = append(params, kvStr("gen_ai.request.service_tier", *req.Params.ServiceTier))
+		}
+		if req.Params.Store != nil {
+			params = append(params, kvBool("gen_ai.request.store", *req.Params.Store))
+		}
+		if req.Params.Temperature != nil {
+			params = append(params, kvDbl("gen_ai.request.temperature", *req.Params.Temperature))
+		}
+		if req.Params.Text != nil {
+			if req.Params.Text.Verbosity != nil {
+				params = append(params, kvStr("gen_ai.request.text", *req.Params.Text.Verbosity))
+			}
+			if req.Params.Text.Format != nil {
+				params = append(params, kvStr("gen_ai.request.text_format_type", req.Params.Text.Format.Type))
+			}
+
+		}
+		if req.Params.TopLogProbs != nil {
+			params = append(params, kvInt("gen_ai.request.top_logprobs", int64(*req.Params.TopLogProbs)))
+		}
+		if req.Params.TopP != nil {
+			params = append(params, kvDbl("gen_ai.request.top_p", *req.Params.TopP))
+		}
+		if req.Params.ToolChoice != nil {
+			if req.Params.ToolChoice.ResponsesToolChoiceStr != nil && *req.Params.ToolChoice.ResponsesToolChoiceStr != "" {
+				params = append(params, kvStr("gen_ai.request.tool_choice_type", *req.Params.ToolChoice.ResponsesToolChoiceStr))
+			}
+			if req.Params.ToolChoice.ResponsesToolChoiceStruct != nil && req.Params.ToolChoice.ResponsesToolChoiceStruct.Name != nil {
+				params = append(params, kvStr("gen_ai.request.tool_choice_name", *req.Params.ToolChoice.ResponsesToolChoiceStruct.Name))
+			}
+
+		}
+		if req.Params.Tools != nil {
+			tools := make([]string, len(req.Params.Tools))
+			for i, tool := range req.Params.Tools {
+				tools[i] = tool.Type
+			}
+			params = append(params, kvStr("gen_ai.request.tools", strings.Join(tools, ",")))
+		}
+		if req.Params.Truncation != nil {
+			params = append(params, kvStr("gen_ai.request.truncation", *req.Params.Truncation))
+		}
+		if req.Params.ExtraParams != nil {
+			for k, v := range req.Params.ExtraParams {
+				params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+			}
+		}
+	}
+	return params
+}
+
 // createResourceSpan creates a new resource span for a Bifrost request
 func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
 	// preparing parameters
@@ -308,6 +384,9 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		spanName = "gen_ai.speech"
 		params = append(params, getSpeechRequestParams(req.SpeechRequest)...)
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		spanName = "gen_ai.responses"
+		params = append(params, getResponsesRequestParams(req.ResponsesRequest)...)
 	}
 	// Preparing final resource span
 	return &ResourceSpan{
@@ -343,9 +422,15 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 	params := []*KeyValue{}
 	if resp != nil && resp.Usage != nil {
 		params = append(params, kvStr("gen_ai.response.id", resp.ID))
-		params = append(params, kvInt("gen_ai.usage.prompt_tokens", int64(resp.Usage.PromptTokens)))
-		params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(resp.Usage.CompletionTokens)))
-		params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.Usage.TotalTokens)))		
+		if resp.Usage.ResponsesExtendedResponseUsage == nil {
+			params = append(params, kvInt("gen_ai.usage.prompt_tokens", int64(resp.Usage.PromptTokens)))
+			params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(resp.Usage.CompletionTokens)))
+			params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.Usage.TotalTokens)))
+		}
+		if resp.Usage.ResponsesExtendedResponseUsage != nil {
+			params = append(params, kvInt("gen_ai.usage.input_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.InputTokens)))
+			params = append(params, kvInt("gen_ai.usage.output_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.OutputTokens)))
+		}
 		if resp.Usage.ResponsesExtendedResponseUsage != nil && resp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails != nil {
 			params = append(params, kvInt("gen_ai.usage.input_token_details.cached_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails.CachedTokens)))
 		}
@@ -355,7 +440,7 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 		// Computing cost
 		if pricingManager != nil {
 			cost := pricingManager.CalculateCostWithCacheDebug(resp)
-			params = append(params, kvStr("gen_ai.usage.cost", fmt.Sprintf("%f", cost)))
+			params = append(params, kvDbl("gen_ai.usage.cost", cost))
 		}
 	}
 	if resp != nil && resp.Speech != nil && resp.Speech.Usage != nil {
@@ -418,8 +503,109 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 			kvs := []*KeyValue{kvStr("text", resp.Transcribe.Text)}
 			outputMessages = append(outputMessages, listValue(kvs...))
 			params = append(params, kvAny("gen_ai.transcribe.output_messages", arrValue(outputMessages...)))
-		}
+		case "response":
+			outputMessages := []*AnyValue{}
+			for _, message := range resp.ResponsesResponse.Output {
+				if message.Role == nil {
+					continue
+				}
+				kvs := []*KeyValue{kvStr("role", string(*message.Role))}
+				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+					kvs = append(kvs, kvStr("content", *message.Content.ContentStr))
+				} else if message.Content.ContentBlocks != nil {
+					blockText := ""
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil {
+							blockText += *block.Text
+						}
+					}
+					kvs = append(kvs, kvStr("content", blockText))
+				}
+				if message.ResponsesReasoning != nil {
+					reasoningText := ""
+					for _, block := range message.ResponsesReasoning.Summary {
+						if block.Text != "" {
+							reasoningText += block.Text
+						}
+					}
+					kvs = append(kvs, kvStr("reasoning", reasoningText))
+				}
+				outputMessages = append(outputMessages, listValue(kvs...))
 
+			}
+			params = append(params, kvAny("gen_ai.responses.output_messages", arrValue(outputMessages...)))
+			if resp.Include != nil {
+				params = append(params, kvStr("gen_ai.responses.include", strings.Join(resp.Include, ",")))
+			}
+			if resp.MaxOutputTokens != nil {
+				params = append(params, kvInt("gen_ai.responses.max_output_tokens", int64(*resp.MaxOutputTokens)))
+			}
+			if resp.MaxToolCalls != nil {
+				params = append(params, kvInt("gen_ai.responses.max_tool_calls", int64(*resp.MaxToolCalls)))
+			}
+			if resp.Metadata != nil {
+				params = append(params, kvStr("gen_ai.responses.metadata", fmt.Sprintf("%v", resp.Metadata)))
+			}
+			if resp.PreviousResponseID != nil {
+				params = append(params, kvStr("gen_ai.responses.previous_response_id", *resp.PreviousResponseID))
+			}
+			if resp.PromptCacheKey != nil {
+				params = append(params, kvStr("gen_ai.responses.prompt_cache_key", *resp.PromptCacheKey))
+			}
+			if resp.Reasoning != nil {
+				if resp.Reasoning.Summary != nil {
+					params = append(params, kvStr("gen_ai.responses.reasoning", *resp.Reasoning.Summary))
+				}
+				if resp.Reasoning.Effort != nil {
+					params = append(params, kvStr("gen_ai.responses.reasoning_effort", *resp.Reasoning.Effort))
+				}
+				if resp.Reasoning.GenerateSummary != nil {
+					params = append(params, kvStr("gen_ai.responses.reasoning_generate_summary", *resp.Reasoning.GenerateSummary))
+				}
+			}
+			if resp.SafetyIdentifier != nil {
+				params = append(params, kvStr("gen_ai.responses.safety_identifier", *resp.SafetyIdentifier))
+			}
+			if resp.ServiceTier != nil {
+				params = append(params, kvStr("gen_ai.responses.service_tier", *resp.ServiceTier))
+			}
+			if resp.Store != nil {
+				params = append(params, kvBool("gen_ai.responses.store", *resp.Store))
+			}
+			if resp.Temperature != nil {
+				params = append(params, kvDbl("gen_ai.responses.temperature", *resp.Temperature))
+			}
+			if resp.Text != nil {
+				if resp.Text.Verbosity != nil {
+					params = append(params, kvStr("gen_ai.responses.text", *resp.Text.Verbosity))
+				}
+				if resp.Text.Format != nil {
+					params = append(params, kvStr("gen_ai.responses.text_format_type", resp.Text.Format.Type))
+				}
+			}
+			if resp.TopLogProbs != nil {
+				params = append(params, kvInt("gen_ai.responses.top_logprobs", int64(*resp.TopLogProbs)))
+			}
+			if resp.TopP != nil {
+				params = append(params, kvDbl("gen_ai.responses.top_p", *resp.TopP))
+			}
+			if resp.ToolChoice != nil {
+				params = append(params, kvStr("gen_ai.responses.tool_choice_type", *resp.ToolChoice.ResponsesToolChoiceStr))
+				if resp.ToolChoice.ResponsesToolChoiceStruct != nil && resp.ToolChoice.ResponsesToolChoiceStruct.Name != nil {
+					params = append(params, kvStr("gen_ai.responses.tool_choice_name", *resp.ToolChoice.ResponsesToolChoiceStruct.Name))
+				}
+			}
+			if resp.Truncation != nil {
+				params = append(params, kvStr("gen_ai.responses.truncation", *resp.Truncation))
+			}
+			if resp.Tools != nil {
+				tools := make([]string, len(resp.Tools))
+				for i, tool := range resp.Tools {
+					tools[i] = tool.Type
+				}
+				params = append(params, kvStr("gen_ai.responses.tools", strings.Join(tools, ",")))
+			}
+		}
 	}
 	// This is a fallback for worst case scenario where latency is not available
 	status := tracepb.Status_STATUS_CODE_OK
