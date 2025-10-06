@@ -53,9 +53,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"reflect"
 	"net/http"
-	"regexp"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -346,6 +345,9 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			// Switch to passthrough provider if NOT API key auth (i.e., OAuth)
 			if !isAPIKeyAuth(ctx) {
 				bifrostReq.Provider = schemas.AnthropicPassthrough
+				if bifrostReq.ChatRequest != nil {
+					bifrostReq.ChatRequest.Provider = schemas.AnthropicPassthrough
+				}
 			}
 		}
 

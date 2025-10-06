@@ -16,11 +16,7 @@ type AnthropicRouter struct {
 
 // CreateAnthropicRouteConfigs creates route configurations for Anthropic endpoints.
 func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
-	return []RouteConfig{
-		{
-			Path:   pathPrefix + "/v1/messages",
-func CreateAnthropicRouteConfigs(pathPrefix string) []integrations.RouteConfig {
-	createConfig := func(path string) integrations.RouteConfig {
+	createConfig := func(path string) RouteConfig {
 		return RouteConfig{
 			Path:   path,
 			Method: "POST",
@@ -29,14 +25,16 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []integrations.RouteConfig {
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					chatReq := anthropicReq.ToBifrostRequest()
 					return &schemas.BifrostRequest{
-						ChatRequest: anthropicReq.ToBifrostRequest(),
+						Provider:    chatReq.Provider,
+						Model:       chatReq.Model,
+						ChatRequest: chatReq,
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
 			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return anthropic.ToAnthropicChatCompletionResponse(resp), nil
 				if resp.ExtraFields.RawResponse != nil {
 					if rawBytes, ok := resp.ExtraFields.RawResponse.([]byte); ok {
 						return rawBytes, nil
@@ -58,7 +56,7 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []integrations.RouteConfig {
 		}
 	}
 
-	return []integrations.RouteConfig{
+	return []RouteConfig{
 		createConfig(pathPrefix + "/v1/messages"),
 		createConfig(pathPrefix + "/v1/messages/{path:*}"),
 	}

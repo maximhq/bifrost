@@ -15,6 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	anthropic "github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 	"github.com/valyala/fasthttp"
 )
 
@@ -168,7 +169,7 @@ func (provider *AnthropicPassthroughProvider) sendRequest(ctx context.Context, r
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 
-		var errorResp AnthropicError
+		var errorResp anthropic.AnthropicMessageError
 
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 		bifrostErr.Error.Type = &errorResp.Error.Type
@@ -197,16 +198,16 @@ func (provider *AnthropicPassthroughProvider) sendRequest(ctx context.Context, r
 }
 
 // TextCompletion is not supported by the Anthropic passthrough provider.
-func (provider *AnthropicPassthroughProvider) TextCompletion(context.Context, string, schemas.Key, string, *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) TextCompletion(context.Context, schemas.Key, *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion in passthrough mode", "anthropic")
 }
 
 // ChatCompletion performs a chat completion request to Anthropic's API in passthrough mode.
 // It forwards the original request from Claude Code without modification, preserving all headers.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicPassthroughProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 
-	if err := checkOperationAllowed(schemas.AnthropicPassthrough, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+	if err := checkOperationAllowed(schemas.AnthropicPassthrough, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
@@ -231,36 +232,30 @@ func (provider *AnthropicPassthroughProvider) ChatCompletion(ctx context.Context
 		return nil, bifrostErr
 	}
 
-	bifrostResponse := &schemas.BifrostResponse{}
-	bifrostResponse, parseErr := parseAnthropicResponse(response, bifrostResponse)
-	if parseErr != nil {
-		return nil, parseErr
-	}
+	bifrostResponse := response.ToBifrostResponse()
 
 	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider:    provider.GetProviderKey(),
-		RawResponse: rawBytes,
-		RawHeaders:  respHeaders,
-	}
-
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+		RequestType:    schemas.ChatCompletionRequest,
+		Provider:       provider.GetProviderKey(),
+		ModelRequested: request.Model,
+		RawResponse:    rawBytes,
+		RawHeaders:     respHeaders,
 	}
 
 	return bifrostResponse, nil
 }
 
 // Embedding is not supported by the Anthropic passthrough provider.
-func (provider *AnthropicPassthroughProvider) Embedding(context.Context, string, schemas.Key, *schemas.EmbeddingInput, *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) Embedding(context.Context, schemas.Key, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "anthropic")
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Anthropic API in passthrough mode.
 // It supports real-time streaming of responses using Server-Sent Events (SSE) while preserving original headers.
 // Returns a channel containing BifrostStream objects representing the stream or an error if the request fails.
-func (provider *AnthropicPassthroughProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 
-	if err := checkOperationAllowed(schemas.AnthropicPassthrough, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+	if err := checkOperationAllowed(schemas.AnthropicPassthrough, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
@@ -280,7 +275,7 @@ func (provider *AnthropicPassthroughProvider) ChatCompletionStream(ctx context.C
 	return provider.handleAnthropicStreamingPassthrough(
 		ctx,
 		postHookRunner,
-		params,
+		request,
 		url,
 		rawBody,
 		headers,
@@ -288,23 +283,33 @@ func (provider *AnthropicPassthroughProvider) ChatCompletionStream(ctx context.C
 }
 
 // Speech is not supported by the Anthropic passthrough provider.
-func (provider *AnthropicPassthroughProvider) Speech(context.Context, string, schemas.Key, *schemas.SpeechInput, *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) Speech(context.Context, schemas.Key, *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "anthropic_passthrough")
 }
 
 // SpeechStream is not supported by the Anthropic passthrough provider.
-func (provider *AnthropicPassthroughProvider) SpeechStream(context.Context, schemas.PostHookRunner, string, schemas.Key, *schemas.SpeechInput, *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) SpeechStream(context.Context, schemas.PostHookRunner, schemas.Key, *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "anthropic_passthrough")
 }
 
 // Transcription is not supported by the Anthropic passthrough provider.
-func (provider *AnthropicPassthroughProvider) Transcription(context.Context, string, schemas.Key, *schemas.TranscriptionInput, *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) Transcription(context.Context, schemas.Key, *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "anthropic_passthrough")
 }
 
 // TranscriptionStream is not supported by the Anthropic passthrough provider.
-func (provider *AnthropicPassthroughProvider) TranscriptionStream(context.Context, schemas.PostHookRunner, string, schemas.Key, *schemas.TranscriptionInput, *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicPassthroughProvider) TranscriptionStream(context.Context, schemas.PostHookRunner, schemas.Key, *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "anthropic_passthrough")
+}
+
+// Responses is not supported by the Anthropic passthrough provider.
+func (provider *AnthropicPassthroughProvider) Responses(context.Context, schemas.Key, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses", "anthropic_passthrough")
+}
+
+// ResponsesStream is not supported by the Anthropic passthrough provider.
+func (provider *AnthropicPassthroughProvider) ResponsesStream(context.Context, schemas.PostHookRunner, schemas.Key, *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("responses stream", "anthropic_passthrough")
 }
 
 // handleAnthropicStreamingPassthrough implements passthrough streaming.
@@ -314,7 +319,7 @@ func (provider *AnthropicPassthroughProvider) TranscriptionStream(context.Contex
 func (provider *AnthropicPassthroughProvider) handleAnthropicStreamingPassthrough(
 	ctx context.Context,
 	postHookRunner schemas.PostHookRunner,
-	params *schemas.ModelParameters,
+	request *schemas.BifrostChatRequest,
 	url string,
 	rawBody []byte,
 	headers map[string]string,
@@ -397,26 +402,22 @@ func (provider *AnthropicPassthroughProvider) handleAnthropicStreamingPassthroug
 
 					// Only parse if we have both event type and data
 					if eventType != "" && eventData != "" {
-						var event AnthropicStreamEvent
+						var event anthropic.AnthropicStreamMessage
 						if err := sonic.Unmarshal([]byte(eventData), &event); err == nil {
 							// Extract usage information
 							if event.Usage != nil {
-								usage = &schemas.LLMUsage{
-									PromptTokens:     event.Usage.InputTokens,
-									CompletionTokens: event.Usage.OutputTokens,
-									TotalTokens:      event.Usage.InputTokens + event.Usage.OutputTokens,
-								}
+								usage = event.Usage
 							}
 
 							// Extract finish reason
-							if event.Delta != nil && event.Delta.StopReason != nil {
-								mapped := MapAnthropicFinishReason(*event.Delta.StopReason)
+							if event.StopReason != nil {
+								mapped := anthropic.MapAnthropicFinishReasonToBifrost(*event.StopReason)
 								finishReason = &mapped
 							}
 
 							// Extract message ID from message_start event
-							if eventType == "message_start" && event.Message != nil {
-								messageID = event.Message.ID
+							if eventType == "message_start" && event.ID != "" {
+								messageID = event.ID
 							}
 						}
 
@@ -431,12 +432,12 @@ func (provider *AnthropicPassthroughProvider) handleAnthropicStreamingPassthroug
 			if err != nil {
 				if err == io.EOF {
 					// Send final chunk with usage for telemetry
-					response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, -1, params, provider.GetProviderKey())
+					response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, -1, schemas.ChatCompletionStreamRequest, provider.GetProviderKey(), request.Model)
 					handleStreamEndForPassthrough(ctx, response, postHookRunner, provider.logger)
 				} else {
 					// Stream error - log and send to client
 					provider.logger.Warn(fmt.Sprintf("Error reading Anthropic passthrough stream: %v", err))
-					processAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
+					processAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, provider.GetProviderKey(), request.Model, provider.logger)
 				}
 				return
 			}
