@@ -68,7 +68,11 @@ func NewAnthropicPassthroughProvider(config *schemas.ProviderConfig, logger sche
 	}
 
 	streamClient := &http.Client{
-		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: time.Second * time.Duration(
+				max(config.NetworkConfig.DefaultRequestTimeoutInSeconds, 60),
+			),
+		},
 	}
 
 	// Configure proxy if provided
