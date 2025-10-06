@@ -22,6 +22,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVirtualKeyProviderConfigTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOpenAIUseResponsesAPIColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -272,6 +275,28 @@ func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB)
 
 			if err := migrator.DropTable(&TableVirtualKeyProviderConfig{}); err != nil {
 				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddOpenAIUseResponsesAPIColumn(ctx context.Context, db *gorm.DB) error {
+	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+		ID: "add_open_ai_use_responses_api_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&TableKey{}, "open_ai_use_responses_api") {
+				if err := migrator.AddColumn(&TableKey{}, "open_ai_use_responses_api"); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

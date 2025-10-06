@@ -396,6 +396,22 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 					}
 				}
 			}
+			if result.ResponsesResponse != nil {
+				outputMessages := result.ResponsesResponse.Output
+				if len(outputMessages) > 0 {
+					chatMessages := schemas.ToChatMessages(outputMessages)
+					if len(chatMessages) > 0 {
+						lastMessage := chatMessages[len(chatMessages)-1]
+						updateData.OutputMessage = &lastMessage
+
+						// Extract tool calls if present
+						if lastMessage.ChatAssistantMessage != nil &&
+							lastMessage.ChatAssistantMessage.ToolCalls != nil {
+							updateData.ToolCalls = lastMessage.ChatAssistantMessage.ToolCalls
+						}
+					}
+				}
+			}
 			if result.Data != nil {
 				updateData.EmbeddingOutput = result.Data
 			}

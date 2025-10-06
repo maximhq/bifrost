@@ -809,6 +809,7 @@ func (br *BifrostResponse) ToResponsesOnly() {
 
 	// Clear Chat fields after conversion
 	br.Choices = nil
+	br.Object = "response"
 	br.ExtraFields.RequestType = ResponsesRequest
 }
 
