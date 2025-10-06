@@ -29,9 +29,11 @@ func (r *OpenAITextCompletionRequest) ToBifrostRequest() *schemas.BifrostTextCom
 		return nil
 	}
 
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+
 	return &schemas.BifrostTextCompletionRequest{
-		Provider: schemas.OpenAI,
-		Model:    r.Model,
+		Provider: provider,
+		Model:    model,
 		Input:    r.Prompt,
 		Params:   &r.TextCompletionParameters,
 	}
