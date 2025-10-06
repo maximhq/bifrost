@@ -22,7 +22,7 @@ func RunTextCompletionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 		request := &schemas.BifrostTextCompletionRequest{
 			Provider: testConfig.Provider,
 			Model:    testConfig.TextModel,
-			Input: schemas.TextCompletionInput{
+			Input: &schemas.TextCompletionInput{
 				PromptStr: &prompt,
 			},
 			Fallbacks: testConfig.Fallbacks,

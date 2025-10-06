@@ -65,11 +65,11 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				ttsRequest := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel,
-					Input: schemas.SpeechInput{
+					Input: &schemas.SpeechInput{
 						Input: tc.text,
 					},
 					Params: &schemas.SpeechParameters{
-						VoiceConfig: schemas.SpeechVoiceInput{
+						VoiceConfig: &schemas.SpeechVoiceInput{
 							Voice: &voice,
 						},
 						ResponseFormat: tc.format,
@@ -102,7 +102,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				streamRequest := &schemas.BifrostTranscriptionRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.TranscriptionModel,
-					Input: schemas.TranscriptionInput{
+					Input: &schemas.TranscriptionInput{
 						File: ttsResponse.Speech.Audio,
 					},
 					Params: &schemas.TranscriptionParameters{
@@ -310,7 +310,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			request := &schemas.BifrostTranscriptionRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.TranscriptionModel,
-				Input: schemas.TranscriptionInput{
+				Input: &schemas.TranscriptionInput{
 					File: audioData,
 				},
 				Params: &schemas.TranscriptionParameters{
@@ -409,7 +409,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.TranscriptionModel,
-						Input: schemas.TranscriptionInput{
+						Input: &schemas.TranscriptionInput{
 							File: audioData,
 						},
 						Params: &schemas.TranscriptionParameters{
@@ -491,7 +491,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			request := &schemas.BifrostTranscriptionRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.TranscriptionModel,
-				Input: schemas.TranscriptionInput{
+				Input: &schemas.TranscriptionInput{
 					File: audioData,
 				},
 				Params: &schemas.TranscriptionParameters{

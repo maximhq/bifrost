@@ -65,11 +65,11 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				request := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel,
-					Input: schemas.SpeechInput{
+					Input: &schemas.SpeechInput{
 						Input: tc.text,
 					},
 					Params: &schemas.SpeechParameters{
-						VoiceConfig: schemas.SpeechVoiceInput{
+						VoiceConfig: &schemas.SpeechVoiceInput{
 							Voice: &voice,
 						},
 						ResponseFormat: tc.format,
@@ -226,11 +226,11 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 			request := &schemas.BifrostSpeechRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.SpeechSynthesisModel,
-				Input: schemas.SpeechInput{
+				Input: &schemas.SpeechInput{
 					Input: finalText,
 				},
 				Params: &schemas.SpeechParameters{
-					VoiceConfig: schemas.SpeechVoiceInput{
+					VoiceConfig: &schemas.SpeechVoiceInput{
 						Voice: &voice,
 					},
 					ResponseFormat: "mp3",
@@ -329,11 +329,11 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					request := &schemas.BifrostSpeechRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.SpeechSynthesisModel,
-						Input: schemas.SpeechInput{
+						Input: &schemas.SpeechInput{
 							Input: testText,
 						},
 						Params: &schemas.SpeechParameters{
-							VoiceConfig: schemas.SpeechVoiceInput{
+							VoiceConfig: &schemas.SpeechVoiceInput{
 								Voice: &voiceCopy,
 							},
 							ResponseFormat: "mp3",

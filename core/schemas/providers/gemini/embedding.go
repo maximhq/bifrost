@@ -8,7 +8,7 @@ import (
 
 // ToGeminiEmbeddingRequest converts a BifrostRequest with embedding input to Gemini's embedding request format
 func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *GeminiEmbeddingRequest {
-	if bifrostReq == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
+	if bifrostReq == nil || bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
 	embeddingInput := bifrostReq.Input

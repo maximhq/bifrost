@@ -851,12 +851,6 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 			// Handle tool use delta
 			toolUseDelta := streamEvent.Delta.ToolUse
 
-			// Parse the incremental input JSON
-			var inputData interface{}
-			if err := sonic.Unmarshal([]byte(toolUseDelta.Input), &inputData); err != nil {
-				inputData = map[string]interface{}{}
-			}
-
 			// Create tool call structure
 			var toolCall schemas.ChatAssistantMessageToolCall
 			toolCall.Type = schemas.Ptr("function")

@@ -373,7 +373,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostS
 			},
 		}
 	}
-	if req.Input != nil || req.Input.Input == "" {
+	if req.Input == nil || req.Input.Input == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -402,7 +402,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.Bi
 			},
 		}
 	}
-	if req.Input != nil || req.Input.Input == "" {
+	if req.Input == nil || req.Input.Input == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -431,7 +431,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.B
 			},
 		}
 	}
-	if req.Input != nil || req.Input.File == nil {
+	if req.Input == nil || req.Input.File == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -460,7 +460,7 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *sch
 			},
 		}
 	}
-	if req.Input != nil || req.Input.File == nil {
+	if req.Input == nil || req.Input.File == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{

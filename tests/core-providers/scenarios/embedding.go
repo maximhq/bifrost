@@ -58,7 +58,7 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		request := &schemas.BifrostEmbeddingRequest{
 			Provider: testConfig.Provider,
 			Model:    testConfig.EmbeddingModel,
-			Input: schemas.EmbeddingInput{
+			Input: &schemas.EmbeddingInput{
 				Texts: testTexts,
 			},
 			Params: &schemas.EmbeddingParameters{

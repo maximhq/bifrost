@@ -120,7 +120,7 @@ func WithTestRetry(
 
 			// Return nil response + BifrostError so calling test fails
 			testFailureError := &schemas.BifrostError{
-				Error: schemas.ErrorField{
+				Error: &schemas.ErrorField{
 					Message: fmt.Sprintf("Test validation failed after %d attempts - %s", attempt, validationErrors),
 					Type:    bifrost.Ptr("validation_failure"),
 					Code:    bifrost.Ptr("TEST_VALIDATION_FAILED"),

@@ -63,11 +63,11 @@ func TestCustomProvider_DisallowedOperation(t *testing.T) {
 	request := &schemas.BifrostSpeechRequest{
 		Provider: config.ProviderOpenAICustom, // Use the custom provider
 		Model:    "llama-3.3-70b-versatile",   // Use a model that exists for this provider
-		Input: schemas.SpeechInput{
+		Input: &schemas.SpeechInput{
 			Input: prompt,
 		},
 		Params: &schemas.SpeechParameters{
-			VoiceConfig: schemas.SpeechVoiceInput{
+			VoiceConfig: &schemas.SpeechVoiceInput{
 				Voice: bifrost.Ptr("alloy"),
 			},
 			ResponseFormat: "mp3",

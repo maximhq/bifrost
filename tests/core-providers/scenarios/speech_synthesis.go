@@ -62,11 +62,11 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				request := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel, // Use configured model
-					Input: schemas.SpeechInput{
+					Input: &schemas.SpeechInput{
 						Input: tc.text,
 					},
 					Params: &schemas.SpeechParameters{
-						VoiceConfig: schemas.SpeechVoiceInput{
+						VoiceConfig: &schemas.SpeechVoiceInput{
 							Voice: &voice,
 						},
 						ResponseFormat: tc.format,
@@ -165,11 +165,11 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			request := &schemas.BifrostSpeechRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.SpeechSynthesisModel,
-				Input: schemas.SpeechInput{
+				Input: &schemas.SpeechInput{
 					Input: longText,
 				},
 				Params: &schemas.SpeechParameters{
-					VoiceConfig: schemas.SpeechVoiceInput{
+					VoiceConfig: &schemas.SpeechVoiceInput{
 						Voice: &voice,
 					},
 					ResponseFormat: "mp3",
@@ -230,11 +230,11 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 					request := &schemas.BifrostSpeechRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.SpeechSynthesisModel,
-						Input: schemas.SpeechInput{
+						Input: &schemas.SpeechInput{
 							Input: testText,
 						},
 						Params: &schemas.SpeechParameters{
-							VoiceConfig: schemas.SpeechVoiceInput{
+							VoiceConfig: &schemas.SpeechVoiceInput{
 								Voice: &voice,
 							},
 							ResponseFormat: "mp3",

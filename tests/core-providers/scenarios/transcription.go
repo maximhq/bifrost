@@ -61,11 +61,11 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				ttsRequest := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel,
-					Input: schemas.SpeechInput{
+					Input: &schemas.SpeechInput{
 						Input: tc.text,
 					},
 					Params: &schemas.SpeechParameters{
-						VoiceConfig: schemas.SpeechVoiceInput{
+						VoiceConfig: &schemas.SpeechVoiceInput{
 							Voice: &voice,
 						},
 						ResponseFormat: tc.format,
@@ -96,7 +96,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				transcriptionRequest := &schemas.BifrostTranscriptionRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.TranscriptionModel,
-					Input: schemas.TranscriptionInput{
+					Input: &schemas.TranscriptionInput{
 						File: ttsResponse.Speech.Audio,
 					},
 					Params: &schemas.TranscriptionParameters{
@@ -224,7 +224,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.TranscriptionModel,
-						Input: schemas.TranscriptionInput{
+						Input: &schemas.TranscriptionInput{
 							File: audioData,
 						},
 						Params: &schemas.TranscriptionParameters{
@@ -268,7 +268,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.TranscriptionModel,
-						Input: schemas.TranscriptionInput{
+						Input: &schemas.TranscriptionInput{
 							File: audioData,
 						},
 						Params: &schemas.TranscriptionParameters{
@@ -299,7 +299,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			request := &schemas.BifrostTranscriptionRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.TranscriptionModel,
-				Input: schemas.TranscriptionInput{
+				Input: &schemas.TranscriptionInput{
 					File: audioData,
 				},
 				Params: &schemas.TranscriptionParameters{
@@ -333,7 +333,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
 						Model:    testConfig.TranscriptionModel,
-						Input: schemas.TranscriptionInput{
+						Input: &schemas.TranscriptionInput{
 							File: audioData,
 						},
 						Params: &schemas.TranscriptionParameters{

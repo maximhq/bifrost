@@ -189,11 +189,11 @@ func GetLionBase64Image() (string, error) {
 // CreateSpeechInput creates a basic speech input for testing
 func CreateSpeechRequest(text, voice, format string) *schemas.BifrostSpeechRequest {
 	return &schemas.BifrostSpeechRequest{
-		Input: schemas.SpeechInput{
+		Input: &schemas.SpeechInput{
 			Input: text,
 		},
 		Params: &schemas.SpeechParameters{
-			VoiceConfig: schemas.SpeechVoiceInput{
+			VoiceConfig: &schemas.SpeechVoiceInput{
 				Voice: &voice,
 			},
 			ResponseFormat: format,
@@ -204,7 +204,7 @@ func CreateSpeechRequest(text, voice, format string) *schemas.BifrostSpeechReque
 // CreateTranscriptionInput creates a basic transcription input for testing
 func CreateTranscriptionInput(audioData []byte, language, responseFormat *string) *schemas.BifrostTranscriptionRequest {
 	return &schemas.BifrostTranscriptionRequest{
-		Input: schemas.TranscriptionInput{
+		Input: &schemas.TranscriptionInput{
 			File: audioData,
 		},
 		Params: &schemas.TranscriptionParameters{
@@ -481,9 +481,9 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 	req := &schemas.BifrostSpeechRequest{
 		Provider: provider,
 		Model:    ttsModel,
-		Input:    schemas.SpeechInput{Input: text},
+		Input:    &schemas.SpeechInput{Input: text},
 		Params: &schemas.SpeechParameters{
-			VoiceConfig: schemas.SpeechVoiceInput{
+			VoiceConfig: &schemas.SpeechVoiceInput{
 				Voice: &voice,
 			},
 			ResponseFormat: format,
