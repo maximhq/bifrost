@@ -116,7 +116,7 @@ export interface ChatMessage {
 	tool_call_id?: string;
 	refusal?: string;
 	annotations?: Annotation[];
-	tool_calls?: ToolCall[];
+	tool_calls?: ToolCall[]; // For backward compatibility, tool calls are now in the content
 	thought?: string;
 }
 
@@ -247,6 +247,7 @@ export interface LogEntry {
 	model: string;
 	input_history: ChatMessage[];
 	output_message?: ChatMessage;
+	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];
 	params?: ModelParameters;
 	speech_input?: SpeechInput;
@@ -299,6 +300,246 @@ export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;
 	stats: LogStats;
+}
+
+// Responses API types (for responses_output field)
+
+// Message roles for responses
+export type ResponsesMessageRoleType = "assistant" | "user" | "system" | "developer";
+
+// Message types for responses
+export type ResponsesMessageType =
+	| "message"
+	| "file_search_call"
+	| "computer_call"
+	| "computer_call_output"
+	| "web_search_call"
+	| "function_call"
+	| "function_call_output"
+	| "code_interpreter_call"
+	| "local_shell_call"
+	| "local_shell_call_output"
+	| "mcp_call"
+	| "custom_tool_call"
+	| "custom_tool_call_output"
+	| "image_generation_call"
+	| "mcp_list_tools"
+	| "mcp_approval_request"
+	| "mcp_approval_responses"
+	| "reasoning"
+	| "item_reference"
+	| "refusal";
+
+// Content block types for responses
+export type ResponsesMessageContentBlockType =
+	| "input_text"
+	| "input_image"
+	| "input_file"
+	| "input_audio"
+	| "output_text"
+	| "refusal"
+	| "reasoning_text";
+
+// Content blocks for responses messages
+export interface ResponsesMessageContentBlock {
+	type: ResponsesMessageContentBlockType;
+	file_id?: string;
+	text?: string;
+	image_url?: string;
+	detail?: string; // "low" | "high" | "auto"
+	file_data?: string; // Base64 encoded file data
+	file_url?: string;
+	filename?: string;
+	input_audio?: {
+		format: string; // "mp3" or "wav"
+		data: string; // base64 encoded audio data
+	};
+	annotations?: Array<{
+		type: string;
+		index?: number;
+		file_id?: string;
+		start_index?: number;
+		end_index?: number;
+		filename?: string;
+		title?: string;
+		url?: string;
+		container_id?: string;
+	}>;
+	logprobs?: Array<{
+		bytes: number[];
+		logprob: number;
+		token: string;
+		top_logprobs: Array<{
+			bytes: number[];
+			logprob: number;
+			token: string;
+		}>;
+	}>;
+	refusal?: string;
+}
+
+// Message content - can be string or array of blocks
+export type ResponsesMessageContent = string | ResponsesMessageContentBlock[];
+
+// Tool message structure
+export interface ResponsesToolMessage {
+	call_id?: string;
+	name?: string;
+	arguments?: string;
+	// Tool-specific fields would be added here based on tool type
+	[key: string]: any; // For tool-specific properties
+}
+
+// Reasoning content
+export interface ResponsesReasoningContent {
+	type: "summary_text";
+	text: string;
+}
+
+export interface ResponsesReasoning {
+	summary: ResponsesReasoningContent[];
+	encrypted_content?: string;
+}
+
+// Main response message structure
+export interface ResponsesMessage {
+	id?: string;
+	type?: ResponsesMessageType;
+	status?: string; // "in_progress" | "completed" | "incomplete" | "interpreting" | "failed"
+	role?: ResponsesMessageRoleType;
+	content?: ResponsesMessageContent;
+	// Tool message fields (merged when type indicates tool usage)
+	call_id?: string;
+	name?: string;
+	arguments?: string;
+	// Reasoning fields (merged when type is "reasoning")
+	summary?: ResponsesReasoningContent[];
+	encrypted_content?: string;
+	// Additional tool-specific fields
+	[key: string]: any;
+}
+
+// Stream options for responses
+export interface ResponsesStreamOptions {
+	include_obfuscation?: boolean;
+}
+
+// Text configuration
+export interface ResponsesTextConfig {
+	format?: {
+		type: "text" | "json_schema" | "json_object";
+		json_schema?: {
+			name: string;
+			schema: Record<string, any>;
+			type: string;
+			description?: string;
+			strict?: boolean;
+		};
+	};
+	verbosity?: "low" | "medium" | "high";
+}
+
+// Tool choice configuration
+export type ResponsesToolChoiceType =
+	| "none"
+	| "auto"
+	| "any"
+	| "required"
+	| "function"
+	| "allowed_tools"
+	| "file_search"
+	| "web_search_preview"
+	| "computer_use_preview"
+	| "code_interpreter"
+	| "image_generation"
+	| "mcp"
+	| "custom";
+
+export interface ResponsesToolChoiceStruct {
+	type: ResponsesToolChoiceType;
+	mode?: "none" | "auto" | "required";
+	name?: string;
+	server_label?: string;
+	tools?: Array<{
+		type: string;
+		name?: string;
+		server_label?: string;
+	}>;
+}
+
+export type ResponsesToolChoice = string | ResponsesToolChoiceStruct;
+
+// Tool configuration
+export interface ResponsesToolFunction {
+	parameters?: {
+		type: string;
+		description?: string;
+		required?: string[];
+		properties?: Record<string, unknown>;
+		enum?: string[];
+	};
+	strict?: boolean;
+}
+
+export interface ResponsesTool {
+	type: string;
+	name?: string;
+	description?: string;
+	// Tool-specific configurations
+	function?: ResponsesToolFunction;
+	// Other tool type configs would be added here
+	[key: string]: any;
+}
+
+// Reasoning parameters
+export interface ResponsesParametersReasoning {
+	effort?: "minimal" | "low" | "medium" | "high";
+	generate_summary?: string; // Deprecated
+	summary?: "auto" | "concise" | "detailed";
+}
+
+// Response conversation structure
+export type ResponsesResponseConversation = string | { id: string };
+
+// Response instructions structure
+export type ResponsesResponseInstructions = string | ResponsesMessage[];
+
+// Response prompt structure
+export interface ResponsesPrompt {
+	id: string;
+	variables: Record<string, any>;
+	version?: string;
+}
+
+// Response usage information
+export interface ResponsesResponseInputTokens {
+	cached_tokens: number;
+}
+
+export interface ResponsesResponseOutputTokens {
+	reasoning_tokens: number;
+}
+
+export interface ResponsesExtendedResponseUsage {
+	input_tokens: number;
+	input_tokens_details?: ResponsesResponseInputTokens;
+	output_tokens: number;
+	output_tokens_details?: ResponsesResponseOutputTokens;
+}
+
+export interface ResponsesResponseUsage extends ResponsesExtendedResponseUsage {
+	total_tokens: number;
+}
+
+// Response error structure
+export interface ResponsesResponseError {
+	code: string;
+	message: string;
+}
+
+// Response incomplete details
+export interface ResponsesResponseIncompleteDetails {
+	reason: string;
 }
 
 // WebSocket message types

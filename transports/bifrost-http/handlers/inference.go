@@ -668,6 +668,10 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 	}
 
 	provider, modelName := schemas.ParseModelString(modelValues[0], "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format", h.logger)
+		return
+	}
 
 	// Extract file (required)
 	fileHeaders := form.File["file"]
