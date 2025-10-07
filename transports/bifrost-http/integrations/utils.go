@@ -245,10 +245,11 @@ func isAnthropicRequest(ctx *fasthttp.RequestCtx) bool {
 
 // extractHeaders converts fasthttp headers to a map for passthrough mode.
 // This preserves all original headers for the anthropic_passthrough provider.
-func extractHeaders(ctx *fasthttp.RequestCtx) map[string]string {
-	headers := make(map[string]string)
+func extractHeaders(ctx *fasthttp.RequestCtx) map[string][]string {
+	headers := make(map[string][]string)
 	for key, value := range ctx.Request.Header.All() {
-		headers[string(key)] = string(value)
+		keyStr := string(key)
+		headers[keyStr] = append(headers[keyStr], string(value))
 	}
 	return headers
 }
@@ -270,7 +271,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		method := string(ctx.Method())
 
 		var body []byte
-		var originalHeaders map[string]string
+		var originalHeaders map[string][]string
 		var originalPath string
 
 		// Parse request body based on configuration

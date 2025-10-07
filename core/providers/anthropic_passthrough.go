@@ -33,8 +33,8 @@ var hopByHopHeaders = map[string]bool{
 }
 
 // filterHeaders filters out hop-by-hop headers and returns only the allowed headers.
-func filterHeaders(headers map[string]string) map[string]string {
-	filtered := make(map[string]string, len(headers))
+func filterHeaders(headers map[string][]string) map[string][]string {
+	filtered := make(map[string][]string, len(headers))
 	for k, v := range headers {
 		if !hopByHopHeaders[strings.ToLower(k)] {
 			filtered[k] = v
@@ -156,13 +156,19 @@ func (provider *AnthropicPassthroughProvider) sendRequest(ctx context.Context, r
 	req.Header.SetMethod("POST")
 	req.SetBody(rawBody)
 
-	if originalHeaders, ok := ctx.Value(schemas.BifrostContextKeyOriginalHeaders).(map[string]string); ok {
-		for k, v := range filterHeaders(originalHeaders) {
-			req.Header.Set(k, v)
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	if originalHeaders, ok := ctx.Value(schemas.BifrostContextKeyOriginalHeaders).(map[string][]string); ok {
+		for k, values := range filterHeaders(originalHeaders) {
+			for i, v := range values {
+				if i == 0 {
+					req.Header.Set(k, v)
+				} else {
+					req.Header.Add(k, v)
+				}
+			}
 		}
 	}
-
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Send the request
 	bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
@@ -269,7 +275,7 @@ func (provider *AnthropicPassthroughProvider) ChatCompletionStream(ctx context.C
 		return nil, err
 	}
 
-	headers, ok := ctx.Value(schemas.BifrostContextKeyOriginalHeaders).(map[string]string)
+	headers, ok := ctx.Value(schemas.BifrostContextKeyOriginalHeaders).(map[string][]string)
 	if !ok {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, fmt.Errorf("passthrough mode requires original headers in context"), provider.GetProviderKey())
 	}
@@ -327,7 +333,7 @@ func (provider *AnthropicPassthroughProvider) handleAnthropicStreamingPassthroug
 	request *schemas.BifrostChatRequest,
 	url string,
 	rawBody []byte,
-	headers map[string]string,
+	headers map[string][]string,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 
 	// Create HTTP request for streaming - use rawBody as-is (TRUE passthrough)
@@ -336,12 +342,17 @@ func (provider *AnthropicPassthroughProvider) handleAnthropicStreamingPassthroug
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, provider.GetProviderKey())
 	}
 
-	for k, v := range filterHeaders(headers) {
-		req.Header.Set(k, v)
-	}
-
-	// Set any extra headers from network config
 	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+
+	for k, values := range filterHeaders(headers) {
+		for i, v := range values {
+			if i == 0 {
+				req.Header.Set(k, v)
+			} else {
+				req.Header.Add(k, v)
+			}
+		}
+	}
 
 	// Make the request using streaming client
 	resp, err := provider.streamClient.Do(req)
