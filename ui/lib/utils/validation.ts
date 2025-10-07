@@ -464,3 +464,24 @@ function isValidIPv6(host: string): boolean {
 
 	return true;
 }
+
+export const isJson = (text: string) => {
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+export const cleanJson = (text: unknown) => {
+	try {
+		if (typeof text === "string") return JSON.parse(text); // parse JSON strings
+		if (Array.isArray(text)) return text; // keep arrays as-is
+		if (text !== null && typeof text === "object") return text; // keep objects as-is
+		if (typeof text === "number" || typeof text === "boolean") return text;
+		return "Invalid payload";
+	} catch {
+		return text;
+	}
+};

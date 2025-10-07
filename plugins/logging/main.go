@@ -5,9 +5,7 @@ package logging
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,7 +36,6 @@ const (
 // Context keys for logging optimization
 const (
 	DroppedCreateContextKey ContextKey = "logging-dropped"
-	CreatedTimestampKey     ContextKey = "logging-created-timestamp"
 )
 
 // UpdateLogData contains data for log entry updates
@@ -46,12 +43,12 @@ type UpdateLogData struct {
 	Status              string
 	TokenUsage          *schemas.LLMUsage
 	Cost                *float64 // Cost in dollars from pricing plugin
-	OutputMessage       *schemas.ChatMessage
+	ChatOutput          *schemas.ChatMessage
+	ResponsesOutput     []schemas.ResponsesMessage
 	EmbeddingOutput     []schemas.BifrostEmbedding
-	ToolCalls           []schemas.ChatAssistantMessageToolCall
 	ErrorDetails        *schemas.BifrostError
-	Model               string                     // May be different from request
-	Object              string                     // May be different from request
+	Model               string
+	Object              string
 	SpeechOutput        *schemas.BifrostSpeech     // For non-streaming speech responses
 	TranscriptionOutput *schemas.BifrostTranscribe // For non-streaming transcription responses
 	RawResponse         interface{}
@@ -63,6 +60,7 @@ type LogMessage struct {
 	RequestID          string                             // Unique ID for the request
 	ParentRequestID    string                             // Unique ID for the parent request
 	Timestamp          time.Time                          // Of the preHook/postHook call
+	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
 	SemanticCacheDebug *schemas.BifrostCacheDebug         // For semantic cache operations
 	UpdateData         *UpdateLogData                     // For update operations
@@ -99,39 +97,6 @@ type LoggerPlugin struct {
 	logMsgPool      sync.Pool              // Pool for reusing LogMessage structs
 	updateDataPool  sync.Pool              // Pool for reusing UpdateLogData structs
 	accumulator     *streaming.Accumulator // Accumulator for streaming chunks
-}
-
-// retryOnNotFound retries a function up to 3 times with 1-second delays if it returns logstore.ErrNotFound
-func retryOnNotFound(ctx context.Context, operation func() error) error {
-	const maxRetries = 3
-	const retryDelay = time.Second
-
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		err := operation()
-		if err == nil {
-			return nil
-		}
-
-		// Check if the error is logstore.ErrNotFound
-		if !errors.Is(err, logstore.ErrNotFound) {
-			return err
-		}
-
-		lastErr = err
-
-		// Don't wait after the last attempt
-		if attempt < maxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(retryDelay):
-				// Continue to next retry
-			}
-		}
-	}
-
-	return lastErr
 }
 
 // Init creates new logger plugin with given log store
@@ -237,14 +202,12 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	if bifrost.IsStreamRequestType(req.RequestType) {
 		p.accumulator.CreateStreamAccumulator(requestID, createdTimestamp)
 	}
-	// Prepare initial log data
-	objectType := p.determineObjectType(req.RequestType)
 	inputHistory := p.extractInputHistory(req)
 
 	initialData := &InitialLogData{
 		Provider:     string(req.Provider),
 		Model:        req.Model,
-		Object:       objectType,
+		Object:       string(req.RequestType),
 		InputHistory: inputHistory,
 	}
 
@@ -275,7 +238,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		initialData.Params = req.TranscriptionRequest.Params
 		initialData.TranscriptionInput = req.TranscriptionRequest.Input
 	}
-	*ctx = context.WithValue(*ctx, CreatedTimestampKey, createdTimestamp)
+
 	// Queue the log creation message (non-blocking) - Using sync.Pool
 	logMsg := p.getLogMessage()
 	logMsg.Operation = LogOperationCreate
@@ -325,7 +288,6 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 
 // PostHook is called after a response is received - FULLY ASYNC, NO DATABASE I/O
 func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	p.logger.Debug("running post-hook for plugin logging")
 	if ctx == nil {
 		// Log error but don't fail the request
 		p.logger.Error("context is nil in PostHook")
@@ -350,7 +312,13 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
 	logMsg.RequestID = requestID
-	logMsg.Timestamp = time.Now()
+
+	if result != nil {
+		logMsg.Latency = result.ExtraFields.Latency
+	} else {
+		logMsg.Latency = 0
+	}
+
 	// If response is nil, and there is an error, we update log with error
 	if result == nil && bifrostErr != nil {
 		// If request type is streaming, then we trigger cleanup as well
@@ -363,7 +331,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			ErrorDetails: bifrostErr,
 		}
 		processingErr := retryOnNotFound(p.ctx, func() error {
-			return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.UpdateData)
+			return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Latency, logMsg.SemanticCacheDebug, logMsg.UpdateData)
 		})
 		if processingErr != nil {
 			p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
@@ -395,7 +363,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			go func() {
 				defer p.putLogMessage(logMsg) // Return to pool when done
 				processingErr := retryOnNotFound(p.ctx, func() error {
-					return p.updateStreamingLogEntry(p.ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.StreamResponse, streamResponse.Type == streaming.StreamResponseTypeFinal)
+					return p.updateStreamingLogEntry(p.ctx, logMsg.RequestID, logMsg.SemanticCacheDebug, logMsg.StreamResponse, streamResponse.Type == streaming.StreamResponseTypeFinal)
 				})
 				if processingErr != nil {
 					p.logger.Error("failed to process stream update for request %s: %v", logMsg.RequestID, processingErr)
@@ -412,7 +380,6 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 			}()
 		}
-
 	} else {
 		// Handle regular response
 		logMsg.Operation = LogOperationUpdate
@@ -426,11 +393,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			// Success case
 			updateData.Status = "success"
 			if result.Model != "" {
-				updateData.Model = result.Model
-			}
-			// Update object type if available
-			if result.Object != "" {
-				updateData.Object = result.Object
+				updateData.Model = result.ExtraFields.ModelRequested
 			}
 			// Token usage
 			if result.Usage != nil && result.Usage.TotalTokens > 0 {
@@ -443,7 +406,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			if len(result.Choices) > 0 {
 				choice := result.Choices[0]
 				if choice.BifrostTextCompletionResponseChoice != nil {
-					updateData.OutputMessage = &schemas.ChatMessage{
+					updateData.ChatOutput = &schemas.ChatMessage{
 						Role: schemas.ChatMessageRoleAssistant,
 						Content: &schemas.ChatMessageContent{
 							ContentStr: choice.BifrostTextCompletionResponseChoice.Text,
@@ -452,29 +415,11 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 				// Check if this is a non-stream response choice
 				if choice.BifrostNonStreamResponseChoice != nil {
-					updateData.OutputMessage = choice.BifrostNonStreamResponseChoice.Message
-					// Extract tool calls if present
-					if choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
-						choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
-						updateData.ToolCalls = choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
-					}
+					updateData.ChatOutput = choice.BifrostNonStreamResponseChoice.Message
 				}
 			}
 			if result.ResponsesResponse != nil {
-				outputMessages := result.ResponsesResponse.Output
-				if len(outputMessages) > 0 {
-					chatMessages := schemas.ToChatMessages(outputMessages)
-					if len(chatMessages) > 0 {
-						lastMessage := chatMessages[len(chatMessages)-1]
-						updateData.OutputMessage = &lastMessage
-
-						// Extract tool calls if present
-						if lastMessage.ChatAssistantMessage != nil &&
-							lastMessage.ChatAssistantMessage.ToolCalls != nil {
-							updateData.ToolCalls = lastMessage.ChatAssistantMessage.ToolCalls
-						}
-					}
-				}
+				updateData.ResponsesOutput = result.ResponsesResponse.Output
 			}
 			if result.Data != nil {
 				updateData.EmbeddingOutput = result.Data
@@ -528,7 +473,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			}
 			// Here we pass plugin level context for background processing to avoid context cancellation
 			processingErr := retryOnNotFound(p.ctx, func() error {
-				return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.UpdateData)
+				return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Latency, logMsg.SemanticCacheDebug, logMsg.UpdateData)
 			})
 			if processingErr != nil {
 				p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
@@ -561,93 +506,4 @@ func (p *LoggerPlugin) Cleanup() error {
 	p.accumulator.Cleanup()
 	// GORM handles connection cleanup automatically
 	return nil
-}
-
-// Helper methods
-
-// determineObjectType determines the object type from request input
-func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) string {
-	switch requestType {
-	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		return "text.completion"
-	case schemas.ChatCompletionRequest:
-		return "chat.completion"
-	case schemas.ChatCompletionStreamRequest:
-		return "chat.completion.chunk"
-	case schemas.ResponsesRequest:
-		return "response"
-	case schemas.ResponsesStreamRequest:
-		return "response.completion.chunk"
-	case schemas.EmbeddingRequest:
-		return "list"
-	case schemas.SpeechRequest:
-		return "audio.speech"
-	case schemas.SpeechStreamRequest:
-		return "audio.speech.chunk"
-	case schemas.TranscriptionRequest:
-		return "audio.transcription"
-	case schemas.TranscriptionStreamRequest:
-		return "audio.transcription.chunk"
-	}
-	return "unknown"
-}
-
-// extractInputHistory extracts input history from request input
-// extractInputHistory extracts input history from request input
-func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) []schemas.ChatMessage {
-	if request.ChatRequest != nil {
-		return request.ChatRequest.Input
-	}
-	if request.ResponsesRequest != nil {
-		messages := schemas.ToChatMessages(request.ResponsesRequest.Input)
-		if len(messages) > 0 {
-			return messages
-		}
-	}
-	if request.TextCompletionRequest != nil {
-		var text string
-		if request.TextCompletionRequest.Input.PromptStr != nil {
-			text = *request.TextCompletionRequest.Input.PromptStr
-		} else {
-			var stringBuilder strings.Builder
-			for _, prompt := range request.TextCompletionRequest.Input.PromptArray {
-				stringBuilder.WriteString(prompt)
-			}
-			text = stringBuilder.String()
-		}
-		return []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &text,
-				},
-			},
-		}
-	}
-	if request.EmbeddingRequest != nil {
-		texts := request.EmbeddingRequest.Input.Texts
-
-		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {
-			texts = []string{*request.EmbeddingRequest.Input.Text}
-		}
-
-		contentBlocks := make([]schemas.ChatContentBlock, len(texts))
-		for i, text := range texts {
-			// Create a per-iteration copy to avoid reusing the same memory address
-			t := text
-			contentBlocks[i] = schemas.ChatContentBlock{
-				Type: schemas.ChatContentBlockTypeText,
-				Text: &t,
-			}
-		}
-		return []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentBlocks: contentBlocks,
-				},
-			},
-		}
-	}
-	return []schemas.ChatMessage{}
 }

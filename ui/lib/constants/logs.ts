@@ -24,19 +24,17 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [
-	"chat.completion",
-	"text.completion",
 	"text_completion",
-	"completion",
+	"text_completion_stream",
+	"chat_completion",
+	"chat_completion_stream",
+	"responses",
+	"responses_stream",
 	"embedding",
-	"list",
-	"audio.speech",
-	"audio.transcription",
-	"chat.completion.chunk",
-	"audio.speech.chunk",
-	"audio.transcription.chunk",
-	"response",
-	"response.stream",
+	"speech",
+	"speech_stream",
+	"transcription",
+	"transcription_stream",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -76,25 +74,36 @@ export const StatusColors = {
 
 export const RequestTypeLabels = {
 	"chat.completion": "Chat",
-	text_completion: "Text",
 	response: "Responses",
+	"response.completion.chunk": "Responses Stream",
 	completion: "Completion",
 	"text.completion": "Text",
-	embedding: "Embedding",
 	list: "List",
 	"audio.speech": "Speech",
 	"audio.transcription": "Transcription",
 	"chat.completion.chunk": "Chat Stream",
 	"audio.speech.chunk": "Speech Stream",
 	"audio.transcription.chunk": "Transcription Stream",
+
+	// Request Types
+	text_completion: "Text",
+	text_completion_stream: "Text Stream",
+	chat_completion: "Chat",
+	chat_completion_stream: "Chat Stream",
+	responses: "Responses",
+	responses_stream: "Responses Stream",
+	embedding: "Embedding",
+	speech: "Speech",
+	speech_stream: "Speech Stream",
+	transcription: "Transcription",
+	transcription_stream: "Transcription Stream",
 } as const;
 
 export const RequestTypeColors = {
 	"chat.completion": "bg-blue-100 text-blue-800",
 	response: "bg-teal-100 text-teal-800",
-	text_completion: "bg-green-100 text-green-800",
+	"response.completion.chunk": "bg-violet-100 text-violet-800",
 	"text.completion": "bg-green-100 text-green-800",
-	embedding: "bg-red-100 text-red-800",
 	list: "bg-red-100 text-red-800",
 	"audio.speech": "bg-purple-100 text-purple-800",
 	"audio.transcription": "bg-orange-100 text-orange-800",
@@ -102,6 +111,19 @@ export const RequestTypeColors = {
 	"audio.speech.chunk": "bg-pink-100 text-pink-800",
 	"audio.transcription.chunk": "bg-lime-100 text-lime-800",
 	completion: "bg-yellow-100 text-yellow-800",
+
+	// Request Types
+	text_completion: "bg-green-100 text-green-800",
+	text_completion_stream: "bg-amber-100 text-amber-800",
+	chat_completion: "bg-blue-100 text-blue-800",
+	chat_completion_stream: "bg-yellow-100 text-yellow-800",
+	responses: "bg-teal-100 text-teal-800",
+	responses_stream: "bg-violet-100 text-violet-800",
+	embedding: "bg-red-100 text-red-800",
+	speech: "bg-purple-100 text-purple-800",
+	speech_stream: "bg-pink-100 text-pink-800",
+	transcription: "bg-orange-100 text-orange-800",
+	transcription_stream: "bg-lime-100 text-lime-800",
 } as const;
 
 export type Status = (typeof Statuses)[number];

@@ -76,10 +76,11 @@ type Log struct {
 	Model               string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
 	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
+	ResponsesOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
 	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
 	Params              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
 	Tools               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
-	ToolCalls           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall
+	ToolCalls           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
 	SpeechInput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
 	TranscriptionInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
 	SpeechOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
@@ -104,10 +105,11 @@ type Log struct {
 	// Virtual fields for JSON output - these will be populated when needed
 	InputHistoryParsed        []schemas.ChatMessage                  `gorm:"-" json:"input_history,omitempty"`
 	OutputMessageParsed       *schemas.ChatMessage                   `gorm:"-" json:"output_message,omitempty"`
+	ResponsesOutputParsed     []schemas.ResponsesMessage             `gorm:"-" json:"responses_output,omitempty"`
 	EmbeddingOutputParsed     []schemas.BifrostEmbedding             `gorm:"-" json:"embedding_output,omitempty"`
 	ParamsParsed              interface{}                            `gorm:"-" json:"params,omitempty"`
 	ToolsParsed               []schemas.ChatTool                     `gorm:"-" json:"tools,omitempty"`
-	ToolCallsParsed           []schemas.ChatAssistantMessageToolCall `gorm:"-" json:"tool_calls,omitempty"`
+	ToolCallsParsed           []schemas.ChatAssistantMessageToolCall `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
 	TokenUsageParsed          *schemas.LLMUsage                      `gorm:"-" json:"token_usage,omitempty"`
 	ErrorDetailsParsed        *schemas.BifrostError                  `gorm:"-" json:"error_details,omitempty"`
 	SpeechInputParsed         *schemas.SpeechInput                   `gorm:"-" json:"speech_input,omitempty"`
@@ -155,6 +157,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.OutputMessage = string(data)
+		}
+	}
+
+	if l.ResponsesOutputParsed != nil {
+		if data, err := json.Marshal(l.ResponsesOutputParsed); err != nil {
+			return err
+		} else {
+			l.ResponsesOutput = string(data)
 		}
 	}
 
@@ -270,6 +280,13 @@ func (l *Log) DeserializeFields() error {
 		if err := json.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.OutputMessageParsed = nil
+		}
+	}
+
+	if l.ResponsesOutput != "" {
+		if err := json.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.ResponsesOutputParsed = []schemas.ResponsesMessage{}
 		}
 	}
 
@@ -393,6 +410,30 @@ func (l *Log) BuildContentSummary() string {
 					if block.Text != nil && *block.Text != "" {
 						parts = append(parts, *block.Text)
 					}
+				}
+			}
+		}
+	}
+
+	// Add responses output content
+	if l.ResponsesOutputParsed != nil {
+		for _, msg := range l.ResponsesOutputParsed {
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+					parts = append(parts, *msg.Content.ContentStr)
+				}
+				// If content blocks exist, extract text from them
+				if msg.Content.ContentBlocks != nil {
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							parts = append(parts, *block.Text)
+						}
+					}
+				}
+			}
+			if msg.ResponsesReasoning != nil {
+				for _, summary := range msg.ResponsesReasoning.Summary {
+					parts = append(parts, summary.Text)
 				}
 			}
 		}

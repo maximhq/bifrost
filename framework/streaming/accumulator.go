@@ -18,6 +18,7 @@ type Accumulator struct {
 	streamAccumulators sync.Map // Track accumulators by request ID (atomic)
 
 	chatStreamChunkPool          sync.Pool // Pool for reusing StreamChunk structs
+	responsesStreamChunkPool     sync.Pool // Pool for reusing ResponsesStreamChunk structs
 	audioStreamChunkPool         sync.Pool // Pool for reusing AudioStreamChunk structs
 	transcriptionStreamChunkPool sync.Pool // Pool for reusing TranscriptionStreamChunk structs
 
@@ -80,14 +81,32 @@ func (a *Accumulator) putTranscriptionStreamChunk(chunk *TranscriptionStreamChun
 	a.transcriptionStreamChunkPool.Put(chunk)
 }
 
+// getResponsesStreamChunk gets a responses stream chunk from the pool
+func (a *Accumulator) getResponsesStreamChunk() *ResponsesStreamChunk {
+	return a.responsesStreamChunkPool.Get().(*ResponsesStreamChunk)
+}
+
+// putResponsesStreamChunk returns a responses stream chunk to the pool
+func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
+	chunk.Timestamp = time.Time{}
+	chunk.StreamResponse = nil
+	chunk.Cost = nil
+	chunk.SemanticCacheDebug = nil
+	chunk.ErrorDetails = nil
+	chunk.FinishReason = nil
+	chunk.TokenUsage = nil
+	a.responsesStreamChunkPool.Put(chunk)
+}
+
 // CreateStreamAccumulator creates a new stream accumulator for a request
 func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulator {
 	sc := &StreamAccumulator{
-		RequestID:        requestID,
-		ChatStreamChunks: make([]*ChatStreamChunk, 0),
-		IsComplete:       false,
-		Timestamp:        time.Now(),
-		Object:           "",
+		RequestID:             requestID,
+		ChatStreamChunks:      make([]*ChatStreamChunk, 0),
+		ResponsesStreamChunks: make([]*ResponsesStreamChunk, 0),
+		IsComplete:            false,
+		Timestamp:             time.Now(),
+		Object:                "",
 	}
 	a.streamAccumulators.Store(requestID, sc)
 	return sc
@@ -174,6 +193,30 @@ func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamCh
 	return nil
 }
 
+// addResponsesStreamChunk adds a responses stream chunk to the stream accumulator
+func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *ResponsesStreamChunk, object string, isFinalChunk bool) error {
+	accumulator := a.getOrCreateStreamAccumulator(requestID)
+	// Lock the accumulator
+	accumulator.mu.Lock()
+	defer accumulator.mu.Unlock()
+	if accumulator.StartTimestamp.IsZero() {
+		accumulator.StartTimestamp = chunk.Timestamp
+	}
+	// Store object type once (from first chunk)
+	if accumulator.Object == "" && object != "" {
+		accumulator.Object = object
+	}
+	// Add chunk to the list (chunks arrive in order)
+	accumulator.ResponsesStreamChunks = append(accumulator.ResponsesStreamChunks, chunk)
+	// Check if this is the final chunk
+	// Set FinalTimestamp when either FinishReason is present or token usage exists
+	// This handles both normal completion chunks and usage-only last chunks
+	if isFinalChunk {
+		accumulator.FinalTimestamp = chunk.Timestamp
+	}
+	return nil
+}
+
 // cleanupStreamAccumulator removes the stream accumulator for a request
 func (a *Accumulator) cleanupStreamAccumulator(requestID string) {
 	if accumulator, exists := a.streamAccumulators.Load(requestID); exists {
@@ -181,6 +224,9 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string) {
 		acc := accumulator.(*StreamAccumulator)
 		for _, chunk := range acc.ChatStreamChunks {
 			a.putChatStreamChunk(chunk)
+		}
+		for _, chunk := range acc.ResponsesStreamChunks {
+			a.putResponsesStreamChunk(chunk)
 		}
 		for _, chunk := range acc.AudioStreamChunks {
 			a.putAudioStreamChunk(chunk)
@@ -263,7 +309,7 @@ func (a *Accumulator) appendContentToMessage(message *schemas.ChatMessage, newCo
 }
 
 // ProcessStreamingResponse processes a streaming response
-// It handles both audio and chat streaming responses
+// It handles chat, audio, and responses streaming responses
 func (a *Accumulator) ProcessStreamingResponse(ctx *context.Context, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*ProcessedStreamResponse, error) {
 	// Check if this is a streaming response
 	if result == nil {
@@ -272,6 +318,8 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *context.Context, result *sch
 	requestType := result.ExtraFields.RequestType
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
+	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest
+
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
 		return a.processChatStreamingResponse(ctx, result, bifrostErr)
@@ -283,6 +331,9 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *context.Context, result *sch
 		if requestType == schemas.SpeechStreamRequest {
 			return a.processAudioStreamingResponse(ctx, result, bifrostErr)
 		}
+	} else if isResponsesStreaming {
+		// Handle responses streaming with responses accumulation
+		return a.processResponsesStreamingResponse(ctx, result, bifrostErr)
 	}
 	return nil, fmt.Errorf("request type missing/invalid for accumulator")
 }
@@ -294,6 +345,9 @@ func (a *Accumulator) Cleanup() {
 		accumulator := value.(*StreamAccumulator)
 		for _, chunk := range accumulator.ChatStreamChunks {
 			a.chatStreamChunkPool.Put(chunk)
+		}
+		for _, chunk := range accumulator.ResponsesStreamChunks {
+			a.responsesStreamChunkPool.Put(chunk)
 		}
 		for _, chunk := range accumulator.TranscriptionStreamChunks {
 			a.transcriptionStreamChunkPool.Put(chunk)
@@ -360,6 +414,11 @@ func NewAccumulator(pricingManager *pricing.PricingManager, logger schemas.Logge
 				return &ChatStreamChunk{}
 			},
 		},
+		responsesStreamChunkPool: sync.Pool{
+			New: func() any {
+				return &ResponsesStreamChunk{}
+			},
+		},
 		audioStreamChunkPool: sync.Pool{
 			New: func() any {
 				return &AudioStreamChunk{}
@@ -381,6 +440,7 @@ func NewAccumulator(pricingManager *pricing.PricingManager, logger schemas.Logge
 	// Prewarm the pools for better performance at startup
 	for range 1000 {
 		a.chatStreamChunkPool.Put(&ChatStreamChunk{})
+		a.responsesStreamChunkPool.Put(&ResponsesStreamChunk{})
 		a.audioStreamChunkPool.Put(&AudioStreamChunk{})
 		a.transcriptionStreamChunkPool.Put(&TranscriptionStreamChunk{})
 	}

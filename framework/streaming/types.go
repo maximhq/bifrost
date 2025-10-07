@@ -14,6 +14,7 @@ const (
 	StreamTypeChat          StreamType = "chat.completion"
 	StreamTypeAudio         StreamType = "audio.speech"
 	StreamTypeTranscription StreamType = "audio.transcription"
+	StreamTypeResponses     StreamType = "responses"
 )
 
 type StreamResponseType string
@@ -33,6 +34,7 @@ type AccumulatedData struct {
 	StartTimestamp      time.Time
 	EndTimestamp        time.Time
 	OutputMessage       *schemas.ChatMessage
+	OutputMessages      []schemas.ResponsesMessage // For responses API
 	ToolCalls           []schemas.ChatAssistantMessageToolCall
 	ErrorDetails        *schemas.BifrostError
 	TokenUsage          *schemas.LLMUsage
@@ -78,11 +80,23 @@ type ChatStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError       // Error if any
 }
 
+// ResponsesStreamChunk represents a single responses streaming chunk
+type ResponsesStreamChunk struct {
+	Timestamp          time.Time                        // When chunk was received
+	StreamResponse     *schemas.ResponsesStreamResponse // The actual stream response
+	FinishReason       *string                          // If this is the final chunk
+	TokenUsage         *schemas.LLMUsage                // Token usage if available
+	SemanticCacheDebug *schemas.BifrostCacheDebug       // Semantic cache debug if available
+	Cost               *float64                         // Cost in dollars from pricing plugin
+	ErrorDetails       *schemas.BifrostError            // Error if any
+}
+
 // StreamAccumulator manages accumulation of streaming chunks
 type StreamAccumulator struct {
 	RequestID                 string
 	StartTimestamp            time.Time
 	ChatStreamChunks          []*ChatStreamChunk
+	ResponsesStreamChunks     []*ResponsesStreamChunk
 	TranscriptionStreamChunks []*TranscriptionStreamChunk
 	AudioStreamChunks         []*AudioStreamChunk
 	IsComplete                bool
@@ -137,6 +151,13 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.Choices = []schemas.BifrostChatResponseChoice{
 			choice,
+		}
+	}
+	// Handle responses output
+	if p.Data.OutputMessages != nil {
+		resp.ResponsesResponse = &schemas.ResponsesResponse{
+			CreatedAt: int(p.Data.StartTimestamp.Unix()),
+			Output:    p.Data.OutputMessages,
 		}
 	}
 	resp.Model = p.Model

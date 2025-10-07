@@ -39,15 +39,10 @@ func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID stri
 }
 
 // updateLogEntry updates an existing log entry using GORM
-func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, timestamp time.Time, cacheDebug *schemas.BifrostCacheDebug, data *UpdateLogData) error {
+func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, latency int64, cacheDebug *schemas.BifrostCacheDebug, data *UpdateLogData) error {
 	updates := make(map[string]interface{})
-	if !timestamp.IsZero() {
-		// Try to get original timestamp from context first for latency calculation
-		latency, err := p.calculateLatency(ctx, requestID, timestamp)
-		if err != nil {
-			return err
-		}
-		updates["latency"] = latency
+	if latency != 0 {
+		updates["latency"] = float64(latency)
 	}
 	updates["status"] = data.Status
 	if data.Model != "" {
@@ -58,13 +53,22 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, tim
 	}
 	// Handle JSON fields by setting them on a temporary entry and serializing
 	tempEntry := &logstore.Log{}
-	if data.OutputMessage != nil {
-		tempEntry.OutputMessageParsed = data.OutputMessage
+	if data.ChatOutput != nil {
+		tempEntry.OutputMessageParsed = data.ChatOutput
 		if err := tempEntry.SerializeFields(); err != nil {
 			p.logger.Error("failed to serialize output message: %v", err)
 		} else {
 			updates["output_message"] = tempEntry.OutputMessage
 			updates["content_summary"] = tempEntry.ContentSummary // Update content summary
+		}
+	}
+
+	if data.ResponsesOutput != nil {
+		tempEntry.ResponsesOutputParsed = data.ResponsesOutput
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize responses output: %v", err)
+		} else {
+			updates["responses_output"] = tempEntry.ResponsesOutput
 		}
 	}
 
@@ -74,15 +78,6 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, tim
 			p.logger.Error("failed to serialize embedding output: %v", err)
 		} else {
 			updates["embedding_output"] = tempEntry.EmbeddingOutput
-		}
-	}
-
-	if data.ToolCalls != nil {
-		tempEntry.ToolCallsParsed = data.ToolCalls
-		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize tool calls: %v", err)
-		} else {
-			updates["tool_calls"] = tempEntry.ToolCalls
 		}
 	}
 
@@ -153,26 +148,11 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, tim
 }
 
 // updateStreamingLogEntry handles streaming updates using GORM
-func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID string, timestamp time.Time, cacheDebug *schemas.BifrostCacheDebug, streamResponse *streaming.ProcessedStreamResponse, isFinalChunk bool) error {
+func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID string, cacheDebug *schemas.BifrostCacheDebug, streamResponse *streaming.ProcessedStreamResponse, isFinalChunk bool) error {
 	p.logger.Debug("[logging] updating streaming log entry %s", requestID)
 	updates := make(map[string]interface{})
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
-		latency, err := p.calculateLatency(ctx, requestID, timestamp)
-		if err != nil {
-			// If we can't get created_at, just update status and error
-			tempEntry := &logstore.Log{}
-			tempEntry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
-			if err := tempEntry.SerializeFields(); err == nil {
-				return p.store.Update(ctx, requestID, map[string]interface{}{
-					"status":        "error",
-					"error_details": tempEntry.ErrorDetails,
-					"timestamp":     timestamp,
-				})
-			}
-			return err
-		}
-
 		tempEntry := &logstore.Log{}
 		tempEntry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
 		if err := tempEntry.SerializeFields(); err != nil {
@@ -180,20 +160,18 @@ func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID st
 		}
 		return p.store.Update(ctx, requestID, map[string]interface{}{
 			"status":        "error",
-			"latency":       latency,
-			"timestamp":     timestamp,
+			"latency":       float64(streamResponse.Data.Latency),
 			"error_details": tempEntry.ErrorDetails,
 		})
 	}
 
 	// Always mark as streaming and update timestamp
 	updates["stream"] = true
-	updates["timestamp"] = timestamp
 
 	// Calculate latency when stream finishes
 	tempEntry := &logstore.Log{}
 
-	updates["latency"] = streamResponse.Data.Latency
+	updates["latency"] = float64(streamResponse.Data.Latency)
 
 	// Update model if provided
 	if streamResponse.Data.Model != "" {
@@ -252,14 +230,6 @@ func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID st
 			updates["cache_debug"] = tempEntry.CacheDebug
 		}
 	}
-	if streamResponse.Data.ToolCalls != nil {
-		tempEntry.ToolCallsParsed = streamResponse.Data.ToolCalls
-		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize tool calls: %v", err)
-		} else {
-			updates["tool_calls"] = tempEntry.ToolCalls
-		}
-	}
 	// Create content summary
 	if streamResponse.Data.OutputMessage != nil {
 		tempEntry.OutputMessageParsed = streamResponse.Data.OutputMessage
@@ -270,29 +240,20 @@ func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID st
 			updates["content_summary"] = tempEntry.ContentSummary
 		}
 	}
+	// Handle responses output from stream updates
+	if streamResponse.Data.OutputMessages != nil {
+		tempEntry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize responses output: %v", err)
+		} else {
+			updates["responses_output"] = tempEntry.ResponsesOutput
+		}
+	}
 	// Only perform update if there's something to update
 	if len(updates) > 0 {
 		return p.store.Update(ctx, requestID, updates)
 	}
 	return nil
-}
-
-// calculateLatency computes latency in milliseconds from creation time
-func (p *LoggerPlugin) calculateLatency(ctx context.Context, requestID string, currentTime time.Time) (float64, error) {
-	// Try to get original timestamp from context first
-	if ctxTimestamp, ok := ctx.Value(CreatedTimestampKey).(time.Time); ok {
-		return float64(currentTime.Sub(ctxTimestamp).Nanoseconds()) / 1e6, nil
-	}
-	var originalEntry *logstore.Log
-	err := retryOnNotFound(ctx, func() error {
-		var opErr error
-		originalEntry, opErr = p.store.FindFirst(ctx, map[string]interface{}{"id": requestID}, "created_at")
-		return opErr
-	})
-	if err != nil {
-		return 0, err
-	}
-	return float64(currentTime.Sub(originalEntry.CreatedAt).Nanoseconds()) / 1e6, nil
 }
 
 // getLogEntry retrieves a log entry by ID using GORM

@@ -166,6 +166,11 @@ func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse) float64
 		if result.Transcribe.Usage.InputTokenDetails != nil {
 			audioTokenDetails = result.Transcribe.Usage.InputTokenDetails
 		}
+	} else if result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil {
+		usage = &schemas.LLMUsage{
+			ResponsesExtendedResponseUsage: result.ResponsesStreamResponse.Response.Usage.ResponsesExtendedResponseUsage,
+			TotalTokens:                    result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+		}
 	}
 
 	cost := 0.0

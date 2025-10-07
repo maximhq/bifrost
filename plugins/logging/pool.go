@@ -17,9 +17,10 @@ func (p *LoggerPlugin) putLogMessage(msg *LogMessage) {
 	msg.Timestamp = time.Time{}
 	msg.InitialData = nil
 
-	// Don't reset UpdateData and StreamUpdateData here since they're returned
+	// Don't reset UpdateData and StreamResponse here since they're returned
 	// to their own pools in the defer function - just clear the pointers
-	msg.UpdateData = nil	
+	msg.UpdateData = nil
+	msg.StreamResponse = nil
 
 	p.logMsgPool.Put(msg)
 }
@@ -34,14 +35,14 @@ func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
 	// Reset all fields to avoid memory leaks
 	data.Status = ""
 	data.TokenUsage = nil
-	data.OutputMessage = nil
-	data.ToolCalls = nil
+	data.ChatOutput = nil
+	data.ResponsesOutput = nil
 	data.ErrorDetails = nil
 	data.Model = ""
 	data.Object = ""
 	data.SpeechOutput = nil
 	data.TranscriptionOutput = nil
-	data.EmbeddingOutput = nil	
-	data.Cost = nil	
+	data.EmbeddingOutput = nil
+	data.Cost = nil
 	p.updateDataPool.Put(data)
 }

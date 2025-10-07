@@ -341,12 +341,26 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 					Text: schemas.Ptr(""), // Empty text initially
 				}
 			case AnthropicContentBlockTypeToolUse:
-				// This is a function call starting
-				contentType = schemas.ResponsesInputMessageContentBlockTypeText // Will be updated to function call
-				part = &schemas.ResponsesMessageContentBlock{
-					Type: contentType,
-					Text: schemas.Ptr(""), // Will contain function call info
+				// This is a function call starting - create function call message
+
+				item := &schemas.ResponsesMessage{
+					ID:   chunk.ContentBlock.ToolUseID,
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    chunk.ContentBlock.ToolUseID,
+						Name:      chunk.ContentBlock.Name,
+						Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
+					},
 				}
+
+				return &schemas.BifrostResponse{
+					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
+						Item:           item,
+					},
+				}, nil, false
 			}
 
 			if part != nil {
@@ -389,7 +403,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 							SequenceNumber: sequenceNumber,
 							OutputIndex:    schemas.Ptr(0),
 							ContentIndex:   chunk.Index,
-							Arguments:      chunk.Delta.PartialJSON,
+							Delta:          chunk.Delta.PartialJSON,
 						},
 					}, nil, false
 				}

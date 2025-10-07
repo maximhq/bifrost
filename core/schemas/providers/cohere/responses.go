@@ -448,6 +448,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
 				Item:           item,
 			},
 		}, nil, false
@@ -478,6 +479,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
 						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
 						ContentIndex:   chunk.Index,
 						Part:           part,
 					},
@@ -492,6 +494,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
 						ContentIndex:   chunk.Index,
 						Delta:          chunk.Delta.Message.Content.Text,
 					},
@@ -506,6 +509,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
 					ContentIndex:   chunk.Index,
 				},
 			}, nil, false
@@ -517,6 +521,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
 					ContentIndex:   schemas.Ptr(0), // Tool plan is typically at index 0
 					Delta:          chunk.Delta.Message.ToolPlan,
 				},
@@ -544,6 +549,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
 						Item:           item,
 					},
 				}, nil, false
@@ -557,10 +563,11 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 			if toolCall.Function != nil {
 				return &schemas.BifrostResponse{
 					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsAdded,
+						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
 						SequenceNumber: sequenceNumber,
 						ContentIndex:   chunk.Index,
-						Arguments:      schemas.Ptr(toolCall.Function.Arguments),
+						OutputIndex:    schemas.Ptr(0),
+						Delta: schemas.Ptr(toolCall.Function.Arguments),
 					},
 				}, nil, false
 			}
@@ -573,6 +580,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
 					ContentIndex:   chunk.Index,
 				},
 			}, nil, false
@@ -618,6 +626,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 					Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
 					SequenceNumber:  sequenceNumber,
+					OutputIndex:     schemas.Ptr(0),
 					ContentIndex:    schemas.Ptr(citation.ContentIndex),
 					Annotation:      annotation,
 					AnnotationIndex: chunk.Index,
@@ -632,6 +641,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 					Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
 					SequenceNumber:  sequenceNumber,
+					OutputIndex:     schemas.Ptr(0),
 					ContentIndex:    chunk.Index,
 					AnnotationIndex: chunk.Index,
 				},
@@ -643,6 +653,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeCompleted,
 				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
 				Response:       &schemas.ResponsesStreamResponseStruct{}, // Initialize Response field
 			},
 		}

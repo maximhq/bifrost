@@ -10,9 +10,10 @@ import { DollarSign, FileText, Timer } from "lucide-react";
 import moment from "moment";
 import { CodeEditor } from "./codeEditor";
 import LogEntryDetailsView from "./logEntryDetailsView";
-import LogMessageView from "./logMessageView";
+import LogChatMessageView from "./logChatMessageView";
 import SpeechView from "./speechView";
 import TranscriptionView from "./transcriptionView";
+import LogResponsesOutputView from "./logResponsesOutputView";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -244,7 +245,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 					<>
 						<div className="mt-4 w-full text-left text-sm font-medium">Conversation History</div>
 						{log.input_history.slice(0, -1).map((message, index) => (
-							<LogMessageView key={index} message={message} />
+							<LogChatMessageView key={index} message={message} />
 						))}
 					</>
 				)}
@@ -253,7 +254,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 				{log.input_history && log.input_history.length > 0 && (
 					<>
 						<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-						<LogMessageView message={log.input_history[log.input_history.length - 1]} />
+						<LogChatMessageView message={log.input_history[log.input_history.length - 1]} />
 					</>
 				)}
 
@@ -264,13 +265,19 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 								<div className="mt-4 flex w-full items-center gap-2">
 									<div className="text-sm font-medium">Response</div>
 								</div>
-								<LogMessageView message={log.output_message} />
+								<LogChatMessageView message={log.output_message} />
+							</>
+						)}
+						{log.responses_output && log.responses_output.length > 0 && !log.error_details?.error.message && (
+							<>
+								<div className="mt-4 w-full text-left text-sm font-medium">Response</div>
+								<LogResponsesOutputView messages={log.responses_output} />
 							</>
 						)}
 						{log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Embedding</div>
-								<LogMessageView
+								<LogChatMessageView
 									message={{
 										role: "assistant",
 										content: JSON.stringify(

@@ -910,6 +910,7 @@ func (br *BifrostResponse) ToResponsesStream() {
 	delta := choice.BifrostStreamResponseChoice.Delta
 	streamResp := &ResponsesStreamResponse{
 		SequenceNumber: br.ExtraFields.ChunkIndex,
+		ContentIndex:   Ptr(0),
 		OutputIndex:    &choice.Index,
 	}
 
