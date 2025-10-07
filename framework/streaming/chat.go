@@ -118,7 +118,7 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 	// Update object field from accumulator (stored once for the entire stream)
 	if accumulator.Object != "" {
 		data.Object = accumulator.Object
-	}	
+	}
 	return data, nil
 }
 
@@ -131,7 +131,13 @@ func (a *Accumulator) processChatStreamingResponse(ctx *context.Context, result 
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("request-id not found in context or is empty")
 	}
-	_, provider, model := bifrost.GetRequestFields(result, bifrostErr)
+	requestType, provider, model := bifrost.GetRequestFields(result, bifrostErr)
+
+	streamType := StreamTypeChat
+	if requestType == schemas.TextCompletionStreamRequest {
+		streamType = StreamTypeText
+	}
+
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	chunk := a.getChatStreamChunk()
 	chunk.Timestamp = time.Now()
@@ -146,6 +152,13 @@ func (a *Accumulator) processChatStreamingResponse(ctx *context.Context, result 
 				// Create a deep copy of the Delta to avoid pointing to stack memory
 				deltaCopy := choice.BifrostStreamResponseChoice.Delta
 				chunk.Delta = &deltaCopy
+				chunk.FinishReason = choice.FinishReason
+			}
+			if choice.BifrostTextCompletionResponseChoice != nil {
+				deltaCopy := choice.BifrostTextCompletionResponseChoice.Text
+				chunk.Delta = &schemas.BifrostStreamDelta{
+					Content: deltaCopy,
+				}
 				chunk.FinishReason = choice.FinishReason
 			}
 		}
@@ -191,7 +204,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *context.Context, result 
 			return &ProcessedStreamResponse{
 				Type:       StreamResponseTypeFinal,
 				RequestID:  requestID,
-				StreamType: StreamTypeChat,
+				StreamType: streamType,
 				Provider:   provider,
 				Model:      model,
 				Data:       data,
@@ -209,7 +222,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *context.Context, result 
 	return &ProcessedStreamResponse{
 		Type:       StreamResponseTypeDelta,
 		RequestID:  requestID,
-		StreamType: StreamTypeChat,
+		StreamType: streamType,
 		Provider:   provider,
 		Model:      model,
 		Data:       data,

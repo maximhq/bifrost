@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -216,6 +217,13 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 	return bifrostResponse, nil
 }
 
+// TextCompletionStream performs a streaming text completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *AnthropicProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("text completion stream", "anthropic")
+}
+
 // ChatCompletion performs a chat completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -371,6 +379,19 @@ func handleAnthropicStreaming(
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerType)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerType)
 	}
 
@@ -385,6 +406,19 @@ func handleAnthropicStreaming(
 	// Make the request
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerType)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerType)
 	}
 

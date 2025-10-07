@@ -83,6 +83,23 @@ func (provider *SGLProvider) TextCompletion(ctx context.Context, key schemas.Key
 	)
 }
 
+// TextCompletionStream performs a streaming text completion request to SGL's API.
+// It formats the request, sends it to SGL, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return handleOpenAITextCompletionStreaming(
+		ctx,
+		provider.streamClient,
+		provider.networkConfig.BaseURL+"/v1/completions",
+		request,
+		map[string]string{"Authorization": "Bearer " + key.Value},
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		postHookRunner,
+		provider.logger,
+	)
+}
+
 // ChatCompletion performs a chat completion request to the SGL API.
 func (provider *SGLProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return handleOpenAIChatCompletionRequest(

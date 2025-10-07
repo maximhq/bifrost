@@ -5,7 +5,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
+	"regexp"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -69,6 +69,7 @@ func SendSSEError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError, lo
 
 // IsOriginAllowed checks if the given origin is allowed based on localhost rules and configured allowed origins.
 // Localhost origins are always allowed. Additional origins can be configured in allowedOrigins.
+// Supports wildcard patterns like *.example.com to match any subdomain.
 func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 	// Always allow localhost origins
 	if isLocalhostOrigin(origin) {
@@ -76,7 +77,21 @@ func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 	}
 
 	// Check configured allowed origins
-	return slices.Contains(allowedOrigins, origin)
+	for _, allowedOrigin := range allowedOrigins {
+		// Check for exact match first
+		if allowedOrigin == origin {
+			return true
+		}
+
+		// Check for wildcard pattern
+		if strings.Contains(allowedOrigin, "*") {
+			if matchesWildcardPattern(origin, allowedOrigin) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // isLocalhostOrigin checks if the given origin is a localhost origin
@@ -86,6 +101,27 @@ func isLocalhostOrigin(origin string) bool {
 		strings.HasPrefix(origin, "http://127.0.0.1:") ||
 		strings.HasPrefix(origin, "http://0.0.0.0:") ||
 		strings.HasPrefix(origin, "https://127.0.0.1:")
+}
+
+// matchesWildcardPattern checks if an origin matches a wildcard pattern.
+// Supports patterns like *.example.com, https://*.example.com, or http://*.example.com
+func matchesWildcardPattern(origin string, pattern string) bool {
+	// Convert wildcard pattern to regex pattern
+	// Escape special regex characters except *
+	regexPattern := regexp.QuoteMeta(pattern)
+	// Replace escaped \* with regex pattern for subdomain matching
+	// \* should match one or more characters that are not dots (to match a subdomain)
+	regexPattern = strings.ReplaceAll(regexPattern, `\*`, `[^/.]+`)
+	// Anchor the pattern to match the entire origin
+	regexPattern = "^" + regexPattern + "$"
+
+	// Compile and test the regex
+	re, err := regexp.Compile(regexPattern)
+	if err != nil {
+		return false
+	}
+
+	return re.MatchString(origin)
 }
 
 // ParseModel parses a model string in the format "provider/model" or "provider/nested/model"

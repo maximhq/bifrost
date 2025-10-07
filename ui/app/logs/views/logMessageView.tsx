@@ -30,10 +30,10 @@ export default function LogMessageView({ message }: LogMessageViewProps) {
 	return (
 		<div className="w-full rounded-sm border">
 			<div className="border-b px-6 py-2 text-sm font-medium capitalize">{message.role}</div>
-			{typeof message.content === "string" && message.content.length > 0 && !isJson(message.content) ? (
+			{message.content && typeof message.content === "string" && message.content.length > 0 && !isJson(message.content) ? (
 				<div className="px-6 py-2 font-mono text-xs">{message.content}</div>
 			) : (
-				message.content.length > 0 && (
+				message.content?.length > 0 && (
 					<CodeEditor
 						className="z-0 w-full"
 						shouldAdjustInitialHeight={true}

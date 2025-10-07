@@ -1205,7 +1205,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var budgets []TableBudget
 	var rateLimits []TableRateLimit
 
-	if err := s.db.WithContext(ctx).Find(&virtualKeys).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("ProviderConfigs").Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
 	if err := s.db.WithContext(ctx).Find(&teams).Error; err != nil {

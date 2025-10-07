@@ -91,6 +91,7 @@ type RequestType string
 
 const (
 	TextCompletionRequest       RequestType = "text_completion"
+	TextCompletionStreamRequest RequestType = "text_completion_stream"
 	ChatCompletionRequest       RequestType = "chat_completion"
 	ChatCompletionStreamRequest RequestType = "chat_completion_stream"
 	ResponsesRequest            RequestType = "responses"

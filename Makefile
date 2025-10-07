@@ -6,7 +6,7 @@ PORT ?= 8080
 APP_DIR ?= 
 PROMETHEUS_LABELS ?=
 LOG_STYLE ?= json
-LOG_LEVEL ?= info
+LOG_LEVEL ?= debug
 
 # Colors for output
 RED=\033[0;31m

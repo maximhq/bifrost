@@ -96,7 +96,7 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 	}
 
 	switch req.RequestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		hashInput.Params = req.TextCompletionRequest.Params
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		hashInput.Params = req.ChatRequest.Params
@@ -141,7 +141,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 
 	// Extract parameters based on request type
 	switch req.RequestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
 			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
 		}
@@ -438,7 +438,7 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 // It applies text normalization (lowercase + trim) and optionally removes system messages.
 func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{} {
 	switch req.RequestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		// Create a shallow copy of the input to avoid mutating the original request
 		copiedInput := req.TextCompletionRequest.Input
 

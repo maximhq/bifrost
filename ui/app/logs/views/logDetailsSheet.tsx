@@ -205,21 +205,6 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 						</>
 					)}
 				</div>
-				{toolChoice && (
-					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Tool Choice</div>
-						<CodeEditor
-							className="z-0 w-full"
-							shouldAdjustInitialHeight={true}
-							maxHeight={450}
-							wrap={true}
-							code={toolChoice}
-							lang="json"
-							readonly={true}
-							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-						/>
-					</div>
-				)}
 				{toolsParameter && (
 					<div className="w-full rounded-sm border">
 						<div className="border-b px-6 py-2 text-sm font-medium">Tools</div>

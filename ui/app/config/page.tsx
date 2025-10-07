@@ -391,7 +391,7 @@ export default function ConfigPage() {
 								</label>
 								<p className="text-muted-foreground text-sm">
 									Comma-separated list of allowed origins for CORS and WebSocket connections. Localhost origins are always allowed. Each
-									origin must be a complete URL with protocol (e.g., https://app.example.com).
+									origin must be a complete URL with protocol (e.g., https://app.example.com, http://10.0.0.100:3000, https://*.example.com).
 								</p>
 							</div>
 							<Textarea

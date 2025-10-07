@@ -47,6 +47,8 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 			switch r := req.(type) {
 			case *openai.OpenAIChatRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
+			case *openai.OpenAIResponsesRequest:
+				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *openai.OpenAISpeechRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *openai.OpenAITranscriptionRequest:
@@ -117,6 +119,53 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return err
+			},
+			StreamConfig: &StreamConfig{
+				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+					return resp, nil
+				},
+				ErrorConverter: func(err *schemas.BifrostError) interface{} {
+					return err
+				},
+			},
+			PreCallback: AzureEndpointPreHook(handlerStore),
+		})
+	}
+
+	// Responses endpoint
+	for _, path := range []string{
+		"/v1/responses",
+		"/responses",
+		"/openai/deployments/{deployment-id}/responses",
+	} {
+		routes = append(routes, RouteConfig{
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &openai.OpenAIResponsesRequest{}
+			},
+			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
+					return &schemas.BifrostRequest{
+						ResponsesRequest: openaiReq.ToBifrostRequest(),
+					}, nil
+
+				}
+				return nil, errors.New("invalid request type")
+			},
+			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				return err
+			},
+			StreamConfig: &StreamConfig{
+				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+					return resp, nil
+				},
+				ErrorConverter: func(err *schemas.BifrostError) interface{} {
+					return err
+				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
 		})

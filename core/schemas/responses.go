@@ -568,7 +568,7 @@ const (
 	ResponsesInputMessageRoleDeveloper ResponsesMessageRoleType = "developer"
 )
 
-// ResponsesInputMessageContent is a union type that can be either a string or array of content blocks
+// ResponsesMessageContent is a union type that can be either a string or array of content blocks
 type ResponsesMessageContent struct {
 	ContentStr    *string                        // Simple text content
 	ContentBlocks []ResponsesMessageContentBlock // Rich content with multiple media types
@@ -881,21 +881,20 @@ type ResponsesFileSearchToolCallResult struct {
 	Text       *string         `json:"text,omitempty"`
 }
 
-// -----------------------------------------------------------------------------
-// Computer Tool
-// -----------------------------------------------------------------------------
+// ResponsesComputerToolCall represents a computer tool call
 type ResponsesComputerToolCall struct {
 	Action              ResponsesComputerToolCallAction               `json:"action"`
 	PendingSafetyChecks []ResponsesComputerToolCallPendingSafetyCheck `json:"pending_safety_checks"`
 }
 
+// ResponsesComputerToolCallPendingSafetyCheck represents a pending safety check
 type ResponsesComputerToolCallPendingSafetyCheck struct {
 	ID      string `json:"id"`
 	Context string `json:"context"`
 	Message string `json:"message"`
 }
 
-// ComputerAction represents the different types of computer actions
+// ResponsesComputerToolCallAction represents the different types of computer actions
 type ResponsesComputerToolCallAction struct {
 	Type    string                                `json:"type"`             // "click" | "double_click" | "drag" | "keypress" | "move" | "screenshot" | "scroll" | "type" | "wait"
 	X       *int                                  `json:"x,omitempty"`      // Common X coordinate field (Click, DoubleClick, Move, Scroll)
@@ -913,20 +912,20 @@ type ResponsesComputerToolCallActionPath struct {
 	Y int `json:"y"`
 }
 
-// Computer Tool Call Output - contains the results from executing a computer tool call
+// ResponsesComputerToolCallOutput represents a computer tool call output
 type ResponsesComputerToolCallOutput struct {
 	Output                   ResponsesComputerToolCallOutputData                `json:"output"`
 	AcknowledgedSafetyChecks []ResponsesComputerToolCallAcknowledgedSafetyCheck `json:"acknowledged_safety_checks,omitempty"`
 }
 
-// ComputerToolCallOutputData - A computer screenshot image used with the computer use tool
+// ResponsesComputerToolCallOutputData represents a computer screenshot image used with the computer use tool
 type ResponsesComputerToolCallOutputData struct {
 	Type     string  `json:"type"` // always "computer_screenshot"
 	FileID   *string `json:"file_id,omitempty"`
 	ImageURL *string `json:"image_url,omitempty"`
 }
 
-// AcknowledgedSafetyCheck - The safety checks reported by the API that have been acknowledged by the developer
+// ResponsesComputerToolCallAcknowledgedSafetyCheck represents a safety check that has been acknowledged by the developer
 type ResponsesComputerToolCallAcknowledgedSafetyCheck struct {
 	ID      string  `json:"id"`
 	Code    *string `json:"code,omitempty"`
@@ -936,11 +935,13 @@ type ResponsesComputerToolCallAcknowledgedSafetyCheck struct {
 // -----------------------------------------------------------------------------
 // Web Search Tool
 // -----------------------------------------------------------------------------
+
+// ResponsesWebSearchToolCall represents a web search tool call
 type ResponsesWebSearchToolCall struct {
 	Action ResponsesWebSearchAction `json:"action"`
 }
 
-// WebSearchAction represents the different types of web search actions
+// ResponsesWebSearchAction represents the different types of web search actions
 type ResponsesWebSearchAction struct {
 	Type    string                                 `json:"type"`          // "search" | "open_page" | "find"
 	URL     *string                                `json:"url,omitempty"` // Common URL field (OpenPage, Find)
@@ -949,7 +950,7 @@ type ResponsesWebSearchAction struct {
 	Pattern *string                                `json:"pattern,omitempty"`
 }
 
-// WebSearchSource - The sources used in the search
+// ResponsesWebSearchActionSearchSource represents a web search action search source
 type ResponsesWebSearchActionSearchSource struct {
 	Type string `json:"type"` // always "url"
 	URL  string `json:"url"`
@@ -959,7 +960,7 @@ type ResponsesWebSearchActionSearchSource struct {
 // Function Tool
 // -----------------------------------------------------------------------------
 
-// Function Tool Call Output - contains the results from executing a function tool call
+// ResponsesFunctionToolCallOutput represents a function tool call output
 type ResponsesFunctionToolCallOutput struct {
 	ResponsesFunctionToolCallOutputStr    *string //A JSON string of the output of the function tool call.
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
@@ -1028,17 +1029,21 @@ func (rf *ResponsesFunctionToolCallOutput) UnmarshalJSON(data []byte) error {
 // Reasoning
 // -----------------------------------------------------------------------------
 
+// ResponsesReasoning represents a reasoning output
 type ResponsesReasoning struct {
 	Summary          []ResponsesReasoningContent `json:"summary"`
 	EncryptedContent *string                     `json:"encrypted_content,omitempty"`
 }
 
+// ResponsesReasoningContentBlockType represents the type of reasoning content
 type ResponsesReasoningContentBlockType string
 
+// ResponsesReasoningContentBlockType values
 const (
 	ResponsesReasoningContentBlockTypeSummaryText ResponsesReasoningContentBlockType = "summary_text"
 )
 
+// ResponsesReasoningContent represents a reasoning content block
 type ResponsesReasoningContent struct {
 	Type ResponsesReasoningContentBlockType `json:"type"`
 	Text string                             `json:"text"`
@@ -1047,6 +1052,8 @@ type ResponsesReasoningContent struct {
 // -----------------------------------------------------------------------------
 // Image Generation Tool
 // -----------------------------------------------------------------------------
+
+// ResponsesImageGenerationCall represents an image generation tool call
 type ResponsesImageGenerationCall struct {
 	Result string `json:"result"`
 }
@@ -1054,13 +1061,15 @@ type ResponsesImageGenerationCall struct {
 // -----------------------------------------------------------------------------
 // Code Interpreter Tool
 // -----------------------------------------------------------------------------
+
+// ResponsesCodeInterpreterToolCall represents a code interpreter tool call
 type ResponsesCodeInterpreterToolCall struct {
 	Code        *string                          `json:"code"`         // The code to run, or null if not available
 	ContainerID string                           `json:"container_id"` // The ID of the container used to run the code
 	Outputs     []ResponsesCodeInterpreterOutput `json:"outputs"`      // The outputs generated by the code interpreter, can be null
 }
 
-// CodeInterpreterOutput represents the different types of code interpreter outputs
+// ResponsesCodeInterpreterOutput represents a code interpreter output
 type ResponsesCodeInterpreterOutput struct {
 	*ResponsesCodeInterpreterOutputLogs
 	*ResponsesCodeInterpreterOutputImage
@@ -1125,13 +1134,13 @@ func (o *ResponsesCodeInterpreterOutput) UnmarshalJSON(data []byte) error {
 	}
 }
 
-// CodeInterpreterOutputLogs - The logs output from the code interpreter
+// ResponsesCodeInterpreterOutputLogs represents the logs output from the code interpreter
 type ResponsesCodeInterpreterOutputLogs struct {
 	Logs string `json:"logs"`
 	Type string `json:"type"` // always "logs"
 }
 
-// CodeInterpreterOutputImage - The image output from the code interpreter
+// ResponsesCodeInterpreterOutputImage represents the image output from the code interpreter
 type ResponsesCodeInterpreterOutputImage struct {
 	Type string `json:"type"` // always "image"
 	URL  string `json:"url"`
@@ -1140,10 +1149,13 @@ type ResponsesCodeInterpreterOutputImage struct {
 // -----------------------------------------------------------------------------
 // Local Shell Tool
 // -----------------------------------------------------------------------------
+
+// ResponsesLocalShellCall represents a local shell tool call
 type ResponsesLocalShellCall struct {
 	Action ResponsesLocalShellCallAction `json:"action"`
 }
 
+// ResponsesLocalShellCallAction represents the different types of local shell actions
 type ResponsesLocalShellCallAction struct {
 	Command          []string `json:"command"`
 	Env              []string `json:"env"`
@@ -1153,6 +1165,7 @@ type ResponsesLocalShellCallAction struct {
 	WorkingDirectory *string  `json:"working_directory,omitempty"`
 }
 
+// ResponsesLocalShellCallOutput represents a local shell tool call output
 type ResponsesLocalShellCallOutput struct {
 	Output string `json:"output"`
 }
@@ -1160,12 +1173,16 @@ type ResponsesLocalShellCallOutput struct {
 // -----------------------------------------------------------------------------
 // MCP (Model Context Protocol) Tools
 // -----------------------------------------------------------------------------
+
+
+// ResponsesMCPListTools represents a list of MCP tools
 type ResponsesMCPListTools struct {
 	ServerLabel string             `json:"server_label"`
 	Tools       []ResponsesMCPTool `json:"tools"`
 	Error       *string            `json:"error,omitempty"`
 }
 
+// ResponsesMCPTool represents an MCP tool
 type ResponsesMCPTool struct {
 	Name        string          `json:"name"`
 	InputSchema map[string]any  `json:"input_schema"`
@@ -1173,11 +1190,12 @@ type ResponsesMCPTool struct {
 	Annotations *map[string]any `json:"annotations,omitempty"`
 }
 
-// MCP Approval Request - requests approval for a specific action within MCP
+// ResponsesMCPApprovalRequest represents a MCP approval request
 type ResponsesMCPApprovalRequest struct {
 	Action ResponsesMCPApprovalRequestAction `json:"action"`
 }
 
+// ResponsesMCPApprovalRequestAction represents the different types of MCP approval request actions
 type ResponsesMCPApprovalRequestAction struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"` // always "mcp_approval_request"
@@ -1186,14 +1204,14 @@ type ResponsesMCPApprovalRequestAction struct {
 	Arguments   string `json:"arguments"`
 }
 
-// MCP Approval Response - contains the response to an approval request within MCP
+// ResponsesMCPApprovalResponse represents a MCP approval response
 type ResponsesMCPApprovalResponse struct {
 	ApprovalResponseID string  `json:"approval_response_id"`
 	Approve            bool    `json:"approve"`
 	Reason             *string `json:"reason,omitempty"`
 }
 
-// MCP Tool Call - an invocation of a tool on an MCP server
+// ResponsesMCPToolCall represents a MCP tool call
 type ResponsesMCPToolCall struct {
 	ServerLabel string  `json:"server_label"`     // The label of the MCP server running the tool
 	Error       *string `json:"error,omitempty"`  // The error from the tool call, if any
@@ -1203,11 +1221,13 @@ type ResponsesMCPToolCall struct {
 // -----------------------------------------------------------------------------
 // Custom Tools
 // -----------------------------------------------------------------------------
+
+// ResponsesCustomToolCallOutput represents a custom tool call output
 type ResponsesCustomToolCallOutput struct {
 	Output string `json:"output"` // The output from the custom tool call generated by your code
 }
 
-// Custom Tool Call - a call to a custom tool created by the model
+// ResponsesCustomToolCall represents a custom tool call
 type ResponsesCustomToolCall struct {
 	Input string `json:"input"` // The input for the custom tool call generated by the model
 }
@@ -1217,9 +1237,12 @@ type ResponsesCustomToolCall struct {
 // =============================================================================
 
 // Combined tool choices for all providers, make sure to check the provider's
-// documentation to see which tool choices are supported.
+// documentation to see which tool choices are supported
+
+// ResponsesToolChoiceType represents the type of tool choice
 type ResponsesToolChoiceType string
 
+// ResponsesToolChoiceType values
 const (
 	// ResponsesToolChoiceTypeNone means no tool should be called
 	ResponsesToolChoiceTypeNone ResponsesToolChoiceType = "none"
@@ -1249,7 +1272,7 @@ const (
 	ResponsesToolChoiceTypeCustom ResponsesToolChoiceType = "custom"
 )
 
-// ResponsesToolChoice represents how the model should select tools - can be string or object
+// ResponsesToolChoiceStruct represents a tool choice struct
 type ResponsesToolChoiceStruct struct {
 	Type        ResponsesToolChoiceType             `json:"type"`                   // Type of tool choice
 	Mode        *string                             `json:"mode,omitempty"`         //"none" | "auto" | "required"
@@ -1258,6 +1281,7 @@ type ResponsesToolChoiceStruct struct {
 	Tools       []ResponsesToolChoiceAllowedToolDef `json:"tools,omitempty"`
 }
 
+// ResponsesToolChoice represents a tool choice
 type ResponsesToolChoice struct {
 	ResponsesToolChoiceStr    *string
 	ResponsesToolChoiceStruct *ResponsesToolChoiceStruct
@@ -1302,7 +1326,7 @@ func (bc *ResponsesToolChoice) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("tool_choice field is neither a string nor a ResponsesToolChoiceStruct object")
 }
 
-// ToolChoiceAllowedToolDef - Definition of an allowed tool
+// ResponsesToolChoiceAllowedToolDef represents a tool choice allowed tool definition
 type ResponsesToolChoiceAllowedToolDef struct {
 	Type        string  `json:"type"`                   // "function" | "mcp" | "image_generation"
 	Name        *string `json:"name,omitempty"`         // for function tools
@@ -1313,7 +1337,7 @@ type ResponsesToolChoiceAllowedToolDef struct {
 // 7. TOOL CONFIGURATION STRUCTURES
 // =============================================================================
 
-// Tool represents different types of tools the model can use
+// ResponsesTool represents a tool
 type ResponsesTool struct {
 	Type        string  `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11"
 	Name        *string `json:"name,omitempty"`        // Common name field (Function, Custom tools)
@@ -1331,12 +1355,13 @@ type ResponsesTool struct {
 	*ResponsesToolWebSearchPreview
 }
 
+// ResponsesToolFunction represents a tool function
 type ResponsesToolFunction struct {
 	Parameters *ToolFunctionParameters `json:"parameters,omitempty"` // A JSON schema object describing the parameters
 	Strict     *bool                   `json:"strict,omitempty"`     // Whether to enforce strict parameter validation
 }
 
-// ToolFileSearch - A tool that searches for relevant content from uploaded files
+// ResponsesToolFileSearch represents a tool file search
 type ResponsesToolFileSearch struct {
 	VectorStoreIDs []string                               `json:"vector_store_ids"`          // The IDs of the vector stores to search
 	Filters        *ResponsesToolFileSearchFilter         `json:"filters,omitempty"`         // A filter to apply
@@ -1344,7 +1369,7 @@ type ResponsesToolFileSearch struct {
 	RankingOptions *ResponsesToolFileSearchRankingOptions `json:"ranking_options,omitempty"` // Ranking options for search
 }
 
-// FileSearchFilter - A filter to apply to file search
+// ResponsesToolFileSearchFilter represents a file search filter
 type ResponsesToolFileSearchFilter struct {
 	Type string `json:"type"` // "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "and" | "or"
 
@@ -1455,39 +1480,39 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// FileSearchComparisonFilter - Compare a specified attribute key to a value
+// ResponsesToolFileSearchComparisonFilter represents a file search comparison filter
 type ResponsesToolFileSearchComparisonFilter struct {
 	Key   string      `json:"key"`   // The key to compare against the value
 	Type  string      `json:"type"`  //
 	Value interface{} `json:"value"` // The value to compare (string, number, or boolean)
 }
 
-// FileSearchCompoundFilter - Combine multiple filters using and or or
+// ResponsesToolFileSearchCompoundFilter represents a file search compound filter
 type ResponsesToolFileSearchCompoundFilter struct {
 	Filters []ResponsesToolFileSearchFilter `json:"filters"` // Array of filters to combine
 }
 
-// FileSearchRankingOptions - Ranking options for search
+// ResponsesToolFileSearchRankingOptions represents a file search ranking options
 type ResponsesToolFileSearchRankingOptions struct {
 	Ranker         *string  `json:"ranker,omitempty"`          // The ranker to use
 	ScoreThreshold *float64 `json:"score_threshold,omitempty"` // Score threshold (0-1)
 }
 
-// ToolComputerUsePreview - A tool that controls a virtual computer
+// ResponsesToolComputerUsePreview represents a tool computer use preview
 type ResponsesToolComputerUsePreview struct {
 	DisplayHeight int    `json:"display_height"` // The height of the computer display
 	DisplayWidth  int    `json:"display_width"`  // The width of the computer display
 	Environment   string `json:"environment"`    // The type of computer environment to control
 }
 
-// ToolWebSearch - Search the Internet for sources related to the prompt
+// ResponsesToolWebSearch represents a tool web search
 type ResponsesToolWebSearch struct {
 	Filters           *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`             // Filters for the search
 	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
 }
 
-// ResponsesToolWebSearchFilters - Filters for web search
+// ResponsesToolWebSearchFilters represents filters for web search
 type ResponsesToolWebSearchFilters struct {
 	AllowedDomains []string `json:"allowed_domains"` // Allowed domains for the search
 }
@@ -1540,12 +1565,12 @@ type ResponsesToolMCPAllowedToolsApprovalFilter struct {
 	ToolNames []string `json:"tool_names,omitempty"` // List of tool names
 }
 
-// ToolCodeInterpreter - A tool that runs Python code
+// ResponsesToolCodeInterpreter represents a tool code interpreter
 type ResponsesToolCodeInterpreter struct {
 	Container interface{} `json:"container"` // Container ID or object with file IDs
 }
 
-// ToolImageGeneration - A tool that generates images
+// ResponsesToolImageGeneration represents a tool image generation
 type ResponsesToolImageGeneration struct {
 	Background        *string                                     `json:"background,omitempty"`         // "transparent" | "opaque" | "auto"
 	InputFidelity     *string                                     `json:"input_fidelity,omitempty"`     // "high" | "low"
@@ -1559,23 +1584,23 @@ type ResponsesToolImageGeneration struct {
 	Size              *string                                     `json:"size,omitempty"`               // Image size
 }
 
-// ImageGenerationInputMask - Optional mask for inpainting
+// ResponsesToolImageGenerationInputImageMask represents a image generation input image mask
 type ResponsesToolImageGenerationInputImageMask struct {
 	FileID   *string `json:"file_id,omitempty"`   // File ID for the mask image
 	ImageURL *string `json:"image_url,omitempty"` // Base64-encoded mask image
 }
 
-// ToolLocalShell - A tool that allows executing shell commands locally
+// ResponsesToolLocalShell represents a tool local shell
 type ResponsesToolLocalShell struct {
 	// No unique fields needed since Type is now in the top-level struct
 }
 
-// ToolCustom - A custom tool that processes input using a specified format
+// ResponsesToolCustom represents a custom tool
 type ResponsesToolCustom struct {
 	Format *ResponsesToolCustomFormat `json:"format,omitempty"` // The input format
 }
 
-// CustomToolFormat - The input format for the custom tool
+// ResponsesToolCustomFormat represents the input format for the custom tool
 type ResponsesToolCustomFormat struct {
 	Type string `json:"type"` // always "text"
 
@@ -1584,7 +1609,7 @@ type ResponsesToolCustomFormat struct {
 	Syntax     *string `json:"syntax,omitempty"`     // "lark" | "regex"
 }
 
-// ToolWebSearchPreview - Web search tool preview variant
+// ResponsesToolWebSearchPreview represents a web search preview
 type ResponsesToolWebSearchPreview struct {
 	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The user's location

@@ -403,6 +403,8 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq.SpeechRequest)
 	} else if bifrostReq.TranscriptionRequest != nil {
 		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
+	} else if bifrostReq.ResponsesRequest != nil {
+		result, bifrostErr = g.client.ResponsesRequest(*bifrostCtx, bifrostReq.ResponsesRequest)
 	}
 
 	// Handle errors
@@ -463,12 +465,16 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
-	if bifrostReq.ChatRequest != nil {
+	if bifrostReq.TextCompletionRequest != nil {
+		stream, bifrostErr = g.client.TextCompletionStreamRequest(*bifrostCtx, bifrostReq.TextCompletionRequest)
+	} else if bifrostReq.ChatRequest != nil {
 		stream, bifrostErr = g.client.ChatCompletionStreamRequest(*bifrostCtx, bifrostReq.ChatRequest)
 	} else if bifrostReq.SpeechRequest != nil {
 		stream, bifrostErr = g.client.SpeechStreamRequest(*bifrostCtx, bifrostReq.SpeechRequest)
 	} else if bifrostReq.TranscriptionRequest != nil {
 		stream, bifrostErr = g.client.TranscriptionStreamRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
+	} else if bifrostReq.ResponsesRequest != nil {
+		stream, bifrostErr = g.client.ResponsesStreamRequest(*bifrostCtx, bifrostReq.ResponsesRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -804,7 +810,7 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 
 	// Also add fallbacks to the specific request type if it exists
 	switch bifrostReq.RequestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if bifrostReq.TextCompletionRequest != nil {
 			bifrostReq.TextCompletionRequest.Fallbacks = parsedFallbacks
 		}

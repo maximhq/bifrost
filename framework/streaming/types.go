@@ -11,6 +11,7 @@ import (
 type StreamType string
 
 const (
+	StreamTypeText          StreamType = "text.completion"
 	StreamTypeChat          StreamType = "chat.completion"
 	StreamTypeAudio         StreamType = "audio.speech"
 	StreamTypeTranscription StreamType = "audio.transcription"
@@ -129,11 +130,11 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			if choice.BifrostNonStreamResponseChoice == nil {
 				choice.BifrostNonStreamResponseChoice = &schemas.BifrostNonStreamResponseChoice{
 					Message: schemas.ChatMessage{
-						Role: schemas.ChatMessageRoleAssistant,
+						Role:                 schemas.ChatMessageRoleAssistant,
 						ChatAssistantMessage: p.Data.OutputMessage.ChatAssistantMessage,
-					},					
+					},
 				}
-			}			
+			}
 		}
 		resp.Choices = []schemas.BifrostChatResponseChoice{
 			choice,

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -98,6 +99,13 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 // Returns an error indicating that text completion is not supported.
 func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "cohere")
+}
+
+// TextCompletionStream performs a streaming text completion request to Cohere's API.
+// It formats the request, sends it to Cohere, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *CohereProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("text completion stream", "cohere")
 }
 
 // ChatCompletion performs a chat completion request to the Cohere API using v2 converter.
@@ -355,6 +363,19 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v2/chat", bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
@@ -370,6 +391,19 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Make the request
 	resp, err := provider.streamClient.Do(req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{

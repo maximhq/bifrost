@@ -563,8 +563,8 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 	}
 
 	// Cache everything in a unified VectorEntry asynchronously to avoid blocking the response
+	plugin.waitGroup.Add(1)
 	go func() {
-		plugin.waitGroup.Add(1)
 		defer plugin.waitGroup.Done()
 		// Create a background context with timeout for the cache operation
 		cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)

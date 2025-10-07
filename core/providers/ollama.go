@@ -82,6 +82,23 @@ func (provider *OllamaProvider) TextCompletion(ctx context.Context, key schemas.
 	)
 }
 
+// TextCompletionStream performs a streaming text completion request to Ollama's API.
+// It formats the request, sends it to Ollama, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *OllamaProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return handleOpenAITextCompletionStreaming(
+		ctx,
+		provider.streamClient,
+		provider.networkConfig.BaseURL+"/v1/completions",
+		request,
+		map[string]string{"Authorization": "Bearer " + key.Value},
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		postHookRunner,
+		provider.logger,
+	)
+}
+
 // ChatCompletion performs a chat completion request to the Ollama API.
 func (provider *OllamaProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return handleOpenAIChatCompletionRequest(

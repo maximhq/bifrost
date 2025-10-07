@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -48,10 +47,12 @@ func CorsMiddleware(config *lib.Config) BifrostHTTPMiddleware {
 	}
 }
 
+// VKProviderRoutingMiddleware routes requests to the appropriate provider based on the virtual key
 func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) BifrostHTTPMiddleware {
+	isGovernanceEnabled := config.LoadedPlugins[governance.PluginName]
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			if !config.LoadedPlugins[governance.PluginName] {
+			if !isGovernanceEnabled {
 				next(ctx)
 				return
 			}
@@ -86,6 +87,7 @@ func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) Bifr
 				next(ctx)
 				return
 			}
+
 			// Check if the request has a model field
 			modelValue, hasModel := requestBody["model"]
 			if !hasModel {
@@ -99,29 +101,32 @@ func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) Bifr
 			}
 			// Check if model already has provider prefix (contains "/")
 			if strings.Contains(modelStr, "/") {
-				next(ctx)
-				return
+				provider, _ := schemas.ParseModelString(modelStr, "")
+				// Checking valid provider
+				if _, ok := config.Providers[provider]; ok {
+					next(ctx)
+					return
+				}
 			}
-			opCtx := context.Background()
-			virtualKey, err := config.ConfigStore.GetVirtualKeyByValue(opCtx, virtualKeyValue)
-			if err != nil {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get virtual key: %v", err), logger)
-				return
+			var virtualKey *configstore.TableVirtualKey
+			var err error
+			for _, vk := range config.GovernanceConfig.VirtualKeys {
+				if vk.Value == virtualKeyValue {
+					virtualKey = &vk
+					break
+				}
 			}
 			if virtualKey == nil {
 				SendError(ctx, fasthttp.StatusBadRequest, "Invalid virtual key", logger)
 				return
 			}
 			if !virtualKey.IsActive {
+				SendError(ctx, fasthttp.StatusBadRequest, "Virtual key is not active", logger)
 				next(ctx)
 				return
 			}
-			// Get provider configs for this virtual key
-			providerConfigs, err := config.ConfigStore.GetVirtualKeyProviderConfigs(opCtx, virtualKey.ID)
-			if err != nil {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get virtual key provider configs: %v", err), logger)
-				return
-			}
+			// Get provider configs for this virtual key			
+			providerConfigs := virtualKey.ProviderConfigs
 			if len(providerConfigs) == 0 {
 				// No provider configs, continue without modification
 				next(ctx)
@@ -138,7 +143,6 @@ func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) Bifr
 				next(ctx)
 				return
 			}
-
 			// Weighted random selection from allowed providers for the main model
 			totalWeight := 0.0
 			for _, config := range allowedProviderConfigs {
@@ -156,10 +160,8 @@ func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) Bifr
 					break
 				}
 			}
-
 			// Update the model field in the request body
 			requestBody["model"] = string(selectedProvider) + "/" + modelStr
-
 			// Check if fallbacks field is already present
 			_, hasFallbacks := requestBody["fallbacks"]
 			if !hasFallbacks && len(allowedProviderConfigs) > 1 {

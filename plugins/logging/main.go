@@ -243,7 +243,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	}
 
 	switch req.RequestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		initialData.Params = req.TextCompletionRequest.Params
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		initialData.Params = req.ChatRequest.Params
@@ -319,7 +319,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 
 // PostHook is called after a response is received - FULLY ASYNC, NO DATABASE I/O
 func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	p.logger.Debug("[logging] PostHook called")
+	p.logger.Debug("running post-hook for plugin logging")
 	if ctx == nil {
 		// Log error but don't fail the request
 		p.logger.Error("context is nil in PostHook")
@@ -345,6 +345,36 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	logMsg := p.getLogMessage()
 	logMsg.RequestID = requestID
 	logMsg.Timestamp = time.Now()
+	// If response is nil, and there is an error, we update log with error
+	if result == nil && bifrostErr != nil {
+		// If request type is streaming, then we trigger cleanup as well
+		if bifrost.IsStreamRequestType(requestType) {
+			p.accumulator.CleanupStreamAccumulator(requestID)
+		}
+		logMsg.Operation = LogOperationUpdate
+		logMsg.UpdateData = &UpdateLogData{
+			Status:       "error",
+			ErrorDetails: bifrostErr,
+		}
+		processingErr := retryOnNotFound(p.ctx, func() error {
+			return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Timestamp, logMsg.SemanticCacheDebug, logMsg.UpdateData)
+		})
+		if processingErr != nil {
+			p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
+		} else {
+			// Call callback immediately for both streaming and regular updates
+			// UI will handle debouncing if needed
+			p.mu.Lock()
+			if p.logCallback != nil {
+				if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
+					p.logCallback(updatedEntry)
+				}
+			}
+			p.mu.Unlock()
+		}
+
+		return result, bifrostErr, nil
+	}
 	if bifrost.IsStreamRequestType(requestType) {
 		p.logger.Debug("[logging] processing streaming response")
 		streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
@@ -376,6 +406,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 			}()
 		}
+
 	} else {
 		// Handle regular response
 		logMsg.Operation = LogOperationUpdate
@@ -402,6 +433,14 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			// Output message and tool calls
 			if len(result.Choices) > 0 {
 				choice := result.Choices[0]
+				if choice.BifrostTextCompletionResponseChoice != nil {
+					updateData.OutputMessage = &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						Content: schemas.ChatMessageContent{
+							ContentStr: choice.BifrostTextCompletionResponseChoice.Text,
+						},
+					}
+				}
 				// Check if this is a non-stream response choice
 				if choice.BifrostNonStreamResponseChoice != nil {
 					updateData.OutputMessage = &choice.BifrostNonStreamResponseChoice.Message
@@ -520,7 +559,7 @@ func (p *LoggerPlugin) Cleanup() error {
 // determineObjectType determines the object type from request input
 func (p *LoggerPlugin) determineObjectType(requestType schemas.RequestType) string {
 	switch requestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		return "text.completion"
 	case schemas.ChatCompletionRequest:
 		return "chat.completion"

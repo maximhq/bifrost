@@ -19,6 +19,8 @@ const (
 
 // Pre-defined errors for provider operations
 const (
+	ErrProviderRequestTimedOut   = "request timed out (default is 30 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
+	ErrRequestCancelled          = "request cancelled by caller"
 	ErrProviderRequest           = "failed to make HTTP request to provider API"
 	ErrProviderResponseUnmarshal = "failed to unmarshal response from provider API"
 	ErrProviderJSONMarshaling    = "failed to marshal request body to JSON"
@@ -86,6 +88,7 @@ type ProxyConfig struct {
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
 	TextCompletion       bool `json:"text_completion"`
+	TextCompletionStream bool `json:"text_completion_stream"`
 	ChatCompletion       bool `json:"chat_completion"`
 	ChatCompletionStream bool `json:"chat_completion_stream"`
 	Embedding            bool `json:"embedding"`
@@ -104,6 +107,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	switch operation {
 	case TextCompletionRequest:
 		return ar.TextCompletion
+	case TextCompletionStreamRequest:
+		return ar.TextCompletionStream
 	case ChatCompletionRequest:
 		return ar.ChatCompletion
 	case ChatCompletionStreamRequest:
@@ -191,6 +196,8 @@ type Provider interface {
 	GetProviderKey() ModelProvider
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx context.Context, key Key, request *BifrostTextCompletionRequest) (*BifrostResponse, *BifrostError)
+	// TextCompletionStream performs a text completion stream request
+	TextCompletionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostTextCompletionRequest) (chan *BifrostStream, *BifrostError)
 	// ChatCompletion performs a chat completion request
 	ChatCompletion(ctx context.Context, key Key, request *BifrostChatRequest) (*BifrostResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request

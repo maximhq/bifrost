@@ -29,9 +29,6 @@ func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvide
 			return ModelProvider(extractedProvider), extractedModel
 		}
 	}
-
-	//TODO add model wise check for provider
-
 	// No provider prefix found, return empty provider and the original model
 	return defaultProvider, model
 }
@@ -257,7 +254,7 @@ func isLikelyBase64(s string) bool {
 	return base64Regex.MatchString(cleanData)
 }
 
-// Helper function to convert interface{} to JSON string
+// JsonifyInput converts an interface{} to a JSON string
 func JsonifyInput(input interface{}) string {
 	if input == nil {
 		return "{}"

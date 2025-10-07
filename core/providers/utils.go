@@ -4,6 +4,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -46,8 +47,22 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			},
 		}
 	case err := <-errChan:
+
 		// The fasthttp.Do call completed.
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Type:    schemas.Ptr(schemas.RequestCancelled),
+						Message: schemas.ErrRequestCancelled,
+						Error:   err,
+					},
+				}
+			}
+			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+				return newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
 			return &schemas.BifrostError{
 				IsBifrostError: false,
@@ -562,6 +577,35 @@ func processAndSendError(
 	case responseChan <- errorResponse:
 	case <-ctx.Done():
 	}
+}
+
+func createBifrostCompletionChunkResponse(
+	id string,
+	usage *schemas.LLMUsage,
+	finishReason *string,
+	currentChunkIndex int,
+	requestType schemas.RequestType,
+	providerName schemas.ModelProvider,
+	model string,
+) *schemas.BifrostResponse {
+	response := &schemas.BifrostResponse{
+		ID:     id,
+		Object: "text_completion",
+		Usage:  usage,
+		Choices: []schemas.BifrostChatResponseChoice{
+			{
+				FinishReason:                        finishReason,
+				BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType:    requestType,
+			Provider:       providerName,
+			ModelRequested: model,
+			ChunkIndex:     currentChunkIndex + 1,
+		},
+	}
+	return response
 }
 
 func createBifrostChatCompletionChunkResponse(

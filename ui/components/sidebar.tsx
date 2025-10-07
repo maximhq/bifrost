@@ -1,21 +1,7 @@
 "use client";
 
-import {
-	Binoculars,
-	BoxIcon,
-	BugIcon,
-	Building2,
-	KeyRound,
-	Layers,
-	Puzzle,
-	Settings2Icon,
-	Shield,
-	Shuffle,
-	Telescope,
-	Users
-} from "lucide-react";
+import { Binoculars, BoxIcon, BugIcon, Building2, KeyRound, Layers, Settings2Icon, Shield, Shuffle, Telescope, Users } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import {
 	Sidebar,
 	SidebarContent,
@@ -29,7 +15,6 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useGetCoreConfigQuery, useGetVersionQuery } from "@/lib/store";
-import { cn } from "@/lib/utils";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useTheme } from "next-themes";
 import Image from "next/image";
@@ -103,13 +88,6 @@ const items = [
 		icon: Settings2Icon,
 		description: "Bifrost settings",
 	},
-	{
-		title: "Plugins",
-		url: "/plugins",
-		icon: Puzzle,
-		description: "Extend Bifrost functionality",
-		badge: "Beta",
-	},
 ];
 
 const enterpriseItems = [
@@ -169,7 +147,12 @@ const promoCards = [
 				<br />
 				<br />
 				Book a demo with our team{" "}
-				<Link href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr" target="_blank" className="text-primary" rel="noopener noreferrer">
+				<Link
+					href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr"
+					target="_blank"
+					className="text-primary"
+					rel="noopener noreferrer"
+				>
 					here
 				</Link>
 				.
@@ -213,14 +196,6 @@ const SidebarItem = ({
 								</div>
 								{item.url === "/logs" && isWebSocketConnected && (
 									<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
-								)}
-								{item.badge && (
-									<Badge
-										variant={item.badge === "Live" ? "default" : "outline"}
-										className={cn("h-5 px-2 py-0.5 text-xs", item.badge === "Live" && "animate-pulse duration-200")}
-									>
-										{item.badge}
-									</Badge>
 								)}
 							</Link>
 						</SidebarMenuButton>
@@ -283,7 +258,7 @@ export default function AppSidebar() {
 									/>
 								);
 							})}
-							<div className="text-accent-foreground flex flex-row items-center gap-2 px-3 my-3 text-xs font-medium">
+							<div className="text-accent-foreground my-3 flex flex-row items-center gap-2 px-3 text-xs font-medium">
 								<Building2 className="h-4 w-4" />
 								ENTERPRISE
 							</div>

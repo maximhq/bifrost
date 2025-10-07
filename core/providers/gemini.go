@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -72,6 +73,13 @@ func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 // TextCompletion is not supported by the Gemini provider.
 func (provider *GeminiProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", string(provider.GetProviderKey()))
+}
+
+// TextCompletionStream performs a streaming text completion request to Gemini's API.
+// It formats the request, sends it to Gemini, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *GeminiProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("text completion stream", "gemini")
 }
 
 // ChatCompletion performs a chat completion request to the Gemini API.
@@ -289,6 +297,19 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
@@ -304,6 +325,19 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Make the request
 	resp, err := provider.streamClient.Do(req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
@@ -507,7 +541,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 
 	if request.Input == nil || request.Input.File == nil {
 		return nil, newBifrostOperationError("transcription input is not provided", fmt.Errorf("empty file input"), providerName)
-	}	
+	}
 
 	// Check file size limit (Gemini has a 20MB limit for inline data)
 	if request.Input.File != nil {
@@ -531,6 +565,19 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
@@ -546,6 +593,19 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Make the request
 	resp, err := provider.streamClient.Do(req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 

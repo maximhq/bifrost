@@ -26,6 +26,8 @@ export const Statuses = ["success", "error", "processing", "cancelled"] as const
 export const RequestTypes = [
 	"chat.completion",
 	"text.completion",
+	"text_completion",
+	"completion",
 	"embedding",
 	"list",
 	"audio.speech",
@@ -74,7 +76,9 @@ export const StatusColors = {
 
 export const RequestTypeLabels = {
 	"chat.completion": "Chat",
+	text_completion: "Text",
 	response: "Responses",
+	completion: "Completion",
 	"text.completion": "Text",
 	embedding: "Embedding",
 	list: "List",
@@ -88,6 +92,7 @@ export const RequestTypeLabels = {
 export const RequestTypeColors = {
 	"chat.completion": "bg-blue-100 text-blue-800",
 	response: "bg-teal-100 text-teal-800",
+	text_completion: "bg-green-100 text-green-800",
 	"text.completion": "bg-green-100 text-green-800",
 	embedding: "bg-red-100 text-red-800",
 	list: "bg-red-100 text-red-800",
@@ -96,6 +101,7 @@ export const RequestTypeColors = {
 	"chat.completion.chunk": "bg-yellow-100 text-yellow-800",
 	"audio.speech.chunk": "bg-pink-100 text-pink-800",
 	"audio.transcription.chunk": "bg-lime-100 text-lime-800",
+	completion: "bg-yellow-100 text-yellow-800",
 } as const;
 
 export type Status = (typeof Statuses)[number];

@@ -292,7 +292,7 @@ type ChatInputImage struct {
 	Detail *string `json:"detail,omitempty"`
 }
 
-// InputAudioStruct represents audio data in a message.
+// ChatInputAudio represents audio data in a message.
 // Data carries the audio payload as a string (e.g., data URL or provider-accepted encoded content).
 // Format is optional (e.g., "wav", "mp3"); when nil, providers may attempt auto-detection.
 type ChatInputAudio struct {

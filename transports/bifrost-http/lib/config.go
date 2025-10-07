@@ -291,6 +291,17 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				}
 				config.Providers = processedProviders
 			}
+			// Loading governance config
+			var governanceConfig *configstore.GovernanceConfig
+			if config.ConfigStore != nil {
+				governanceConfig, err = config.ConfigStore.GetGovernanceConfig(ctx)
+				if err != nil {
+					logger.Warn("failed to get governance config from store: %v", err)
+				}
+			}
+			if governanceConfig != nil {
+				config.GovernanceConfig = governanceConfig
+			}
 			// Checking if MCP config already exists
 			mcpConfig, err := config.ConfigStore.GetMCPConfig(ctx)
 			if err != nil {
@@ -335,6 +346,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					config.Plugins[i] = pluginConfig
 				}
 			}
+			// Loading governance config
+
 			// Load environment variable tracking
 			var dbEnvKeys map[string][]configstore.EnvKeyInfo
 			if dbEnvKeys, err = config.ConfigStore.GetEnvKeys(ctx); err != nil {

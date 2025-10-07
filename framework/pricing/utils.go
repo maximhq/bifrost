@@ -50,7 +50,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 	baseType := "unknown"
 
 	switch reqType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		baseType = "completion"
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		baseType = "chat"

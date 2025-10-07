@@ -57,8 +57,9 @@ type TextCompletionParameters struct {
 	N                *int                `json:"n,omitempty"`
 	PresencePenalty  *float64            `json:"presence_penalty,omitempty"`
 	Seed             *int                `json:"seed,omitempty"`
-	Stop            []string           `json:"stop,omitempty"`
+	Stop             []string            `json:"stop,omitempty"`
 	Suffix           *string             `json:"suffix,omitempty"`
+	StreamOptions    *ChatStreamOptions  `json:"stream_options,omitempty"`
 	Temperature      *float64            `json:"temperature,omitempty"`
 	TopP             *float64            `json:"top_p,omitempty"`
 	User             *string             `json:"user,omitempty"`

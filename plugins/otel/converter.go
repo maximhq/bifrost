@@ -369,7 +369,7 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 	params = append(params, kvStr("gen_ai.request.model", req.Model))
 	// Preparing parameters
 	switch req.RequestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		spanName = "gen_ai.text"
 		params = append(params, getTextCompletionRequestParams(req.TextCompletionRequest)...)
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:

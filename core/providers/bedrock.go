@@ -25,6 +25,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/bedrock"
 	cohere "github.com/maximhq/bifrost/core/schemas/providers/cohere"
+	"github.com/valyala/fasthttp"
 )
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
@@ -97,7 +98,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
@@ -144,6 +145,19 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	// Execute the request
 	resp, err := provider.client.Do(req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+		}
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -252,6 +266,13 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas
 	}
 
 	return bifrostResponse, nil
+}
+
+// TextCompletionStream performs a streaming text completion request to Bedrock's API.
+// It formats the request, sends it to Bedrock, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *BedrockProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("text completion stream", "bedrock")
 }
 
 // ChatCompletion performs a chat completion request to Bedrock's API.
@@ -585,6 +606,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	// Make the request
 	resp, respErr := provider.client.Do(req)
 	if respErr != nil {
+		if errors.Is(respErr, fasthttp.ErrTimeout) || errors.Is(respErr, context.Canceled) || errors.Is(respErr, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, respErr, provider.GetProviderKey())
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, respErr, providerName)
 	}
 

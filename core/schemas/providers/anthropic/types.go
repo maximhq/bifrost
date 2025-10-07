@@ -16,13 +16,19 @@ const (
 
 // AnthropicTextRequest represents an Anthropic text completion request
 type AnthropicTextRequest struct {
-	Model             string    `json:"model"`
-	Prompt            string    `json:"prompt"`
-	MaxTokensToSample int       `json:"max_tokens_to_sample"`
-	Temperature       *float64  `json:"temperature,omitempty"`
-	TopP              *float64  `json:"top_p,omitempty"`
-	TopK              *int      `json:"top_k,omitempty"`
+	Model             string   `json:"model"`
+	Prompt            string   `json:"prompt"`
+	MaxTokensToSample int      `json:"max_tokens_to_sample"`
+	Temperature       *float64 `json:"temperature,omitempty"`
+	TopP              *float64 `json:"top_p,omitempty"`
+	TopK              *int     `json:"top_k,omitempty"`
+	Stream            *bool    `json:"stream,omitempty"`
 	StopSequences     []string `json:"stop_sequences,omitempty"`
+}
+
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *AnthropicTextRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -34,9 +40,9 @@ type AnthropicMessageRequest struct {
 	Temperature   *float64             `json:"temperature,omitempty"`
 	TopP          *float64             `json:"top_p,omitempty"`
 	TopK          *int                 `json:"top_k,omitempty"`
-	StopSequences []string            `json:"stop_sequences,omitempty"`
+	StopSequences []string             `json:"stop_sequences,omitempty"`
 	Stream        *bool                `json:"stream,omitempty"`
-	Tools         []AnthropicTool     `json:"tools,omitempty"`
+	Tools         []AnthropicTool      `json:"tools,omitempty"`
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
@@ -120,7 +126,7 @@ type AnthropicContentBlock struct {
 	ToolUseID *string                   `json:"tool_use_id,omitempty"` // For tool_result content
 	ID        *string                   `json:"id,omitempty"`          // For tool_use content
 	Name      *string                   `json:"name,omitempty"`        // For tool_use content
-	Input     any               `json:"input,omitempty"`       // For tool_use content
+	Input     any                       `json:"input,omitempty"`       // For tool_use content
 	Content   *AnthropicContent         `json:"content,omitempty"`     // For tool_result content
 	Source    *AnthropicImageSource     `json:"source,omitempty"`      // For image content
 }

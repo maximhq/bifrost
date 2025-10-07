@@ -218,6 +218,35 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 	return bifrost.handleRequest(ctx, bifrostReq)
 }
 
+// TextCompletionStreamRequest sends a streaming text completion request to the specified provider.
+func (bifrost *Bifrost) TextCompletionStreamRequest(ctx context.Context, req *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "text completion stream request is nil",
+			},
+		}
+	}
+	if req.Input == nil || (req.Input.PromptStr == nil && req.Input.PromptArray == nil) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "text not provided for text completion stream request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.Provider = req.Provider
+	bifrostReq.Model = req.Model
+	bifrostReq.Fallbacks = req.Fallbacks
+	bifrostReq.RequestType = schemas.TextCompletionStreamRequest
+	bifrostReq.TextCompletionRequest = req
+
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
+}
+
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -1652,6 +1681,8 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
 func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	switch req.RequestType {
+	case schemas.TextCompletionStreamRequest:
+		return provider.TextCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.TextCompletionRequest)
 	case schemas.ChatCompletionStreamRequest:
 		return provider.ChatCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
@@ -1717,7 +1748,7 @@ func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.Bifros
 	}
 	// Final logic: if both are set, error takes precedence, unless error is nil
 	if bifrostErr != nil {
-		if resp != nil && bifrostErr.StatusCode == nil && bifrostErr.Error.Type == nil &&
+		if resp != nil && bifrostErr.StatusCode == nil && bifrostErr.Error != nil && bifrostErr.Error.Type == nil &&
 			bifrostErr.Error.Message == "" && bifrostErr.Error.Error == nil {
 			// Defensive: treat as recovery if error is empty
 			return resp, nil

@@ -32,13 +32,21 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			network_config: provider.network_config,
+			network_config: {
+				base_url: provider.network_config?.base_url || undefined,
+				extra_headers: provider.network_config?.extra_headers,
+				default_request_timeout_in_seconds:
+					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
+				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
+				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
+				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
+			},
 		},
 	});
 
 	useEffect(() => {
 		dispatch(setProviderFormDirtyState(form.formState.isDirty));
-	}, [form.formState.isDirty]);
+	}, [form.formState.isDirty, dispatch]);
 
 	const onSubmit = (data: NetworkOnlyFormSchema) => {
 		const requiresBaseUrl = isCustomProvider || provider.name === "ollama" || provider.name === "sgl";
@@ -72,7 +80,7 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 		// Reset form with new provider's network_config when provider.name changes
 		form.reset({
 			network_config: {
-				base_url: provider.network_config?.base_url || "",
+				base_url: provider.network_config?.base_url || undefined,
 				extra_headers: provider.network_config?.extra_headers,
 				default_request_timeout_in_seconds:
 					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,

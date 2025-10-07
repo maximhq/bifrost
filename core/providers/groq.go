@@ -71,6 +71,13 @@ func (provider *GroqProvider) TextCompletion(ctx context.Context, key schemas.Ke
 	return nil, newUnsupportedOperationError("text completion", "groq")
 }
 
+// TextCompletionStream performs a streaming text completion request to Groq's API.
+// It formats the request, sends it to Groq, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *GroqProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("text completion stream", "groq")
+}
+
 // ChatCompletion performs a chat completion request to the Groq API.
 func (provider *GroqProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return handleOpenAIChatCompletionRequest(

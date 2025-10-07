@@ -7,10 +7,22 @@ func (r *OpenAIResponsesRequest) ToBifrostRequest() *schemas.BifrostResponsesReq
 		return nil
 	}
 
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+
+	input := r.Input.OpenAIResponsesRequestInputArray
+	if len(input) == 0 {
+		input = []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: r.Input.OpenAIResponsesRequestInputStr},
+			},
+		}
+	}
+
 	return &schemas.BifrostResponsesRequest{
-		Provider: schemas.OpenAI,
-		Model:    r.Model,
-		Input:    r.Input,
+		Provider: provider,
+		Model:    model,
+		Input:    input,
 		Params:   &r.ResponsesParameters,
 	}
 }
@@ -19,13 +31,16 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
-
+	// Preparing final input
+	input := OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: bifrostReq.Input,
+	}
+	// Updating params
 	params := bifrostReq.Params
-
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model: bifrostReq.Model,
-		Input: bifrostReq.Input,
+		Input: input,
 	}
 
 	if params != nil {

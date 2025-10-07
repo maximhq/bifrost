@@ -176,6 +176,61 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, key schemas.K
 	return response, nil
 }
 
+// TextCompletionStream performs a streaming text completion request to Azure's API.
+// It formats the request, sends it to Azure, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if key.AzureKeyConfig == nil {
+		return nil, newConfigurationError("azure key config not set", schemas.Azure)
+	}
+
+	// Construct Azure-specific URL with deployment
+	if key.AzureKeyConfig.Endpoint == "" {
+		return nil, newConfigurationError("endpoint not set", schemas.Azure)
+	}
+
+	baseURL := key.AzureKeyConfig.Endpoint
+	var fullURL string
+
+	if key.AzureKeyConfig.Deployments != nil {
+		deployment := key.AzureKeyConfig.Deployments[request.Model]
+		if deployment == "" {
+			return nil, newConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), schemas.Azure)
+		}
+
+		apiVersion := key.AzureKeyConfig.APIVersion
+		if apiVersion == nil {
+			apiVersion = schemas.Ptr("2024-02-01")
+		}
+
+		fullURL = fmt.Sprintf("%s/openai/deployments/%s/completions?api-version=%s", baseURL, deployment, *apiVersion)
+	} else {
+		return nil, newConfigurationError("deployments not set", schemas.Azure)
+	}
+
+	// Prepare Azure-specific headers
+	authHeader := make(map[string]string)
+
+	// Set Azure authentication - either Bearer token or api-key
+	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
+		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
+	} else {
+		authHeader["api-key"] = key.Value
+	}
+
+	return handleOpenAITextCompletionStreaming(
+		ctx,
+		provider.streamClient,
+		fullURL,
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		postHookRunner,
+		provider.logger,
+	)
+}
+
 // ChatCompletion performs a chat completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.

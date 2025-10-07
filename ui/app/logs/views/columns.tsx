@@ -7,6 +7,7 @@ import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusColor
 import { LogEntry } from "@/lib/types/logs";
 import { ColumnDef } from "@tanstack/react-table";
 import { ArrowUpDown } from "lucide-react";
+import moment from "moment";
 
 export const createColumns = (): ColumnDef<LogEntry>[] => [
 	{
@@ -19,7 +20,7 @@ export const createColumns = (): ColumnDef<LogEntry>[] => [
 		),
 		cell: ({ row }) => {
 			const timestamp = row.original.timestamp;
-			return <div className="font-mono text-sm">{new Date(timestamp).toISOString()}</div>;
+			return <div className="font-mono text-sm">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
 		},
 	},
 	{

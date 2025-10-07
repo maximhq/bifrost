@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas/providers/vertex"
+	"github.com/valyala/fasthttp"
 )
 
 type VertexError struct {
@@ -137,6 +138,13 @@ func (provider *VertexProvider) TextCompletion(ctx context.Context, key schemas.
 	return nil, newUnsupportedOperationError("text completion", "vertex")
 }
 
+// TextCompletionStream performs a streaming text completion request to Vertex's API.
+// It formats the request, sends it to Vertex, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *VertexProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("text completion stream", "vertex")
+}
+
 // ChatCompletion performs a chat completion request to the Vertex API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -204,6 +212,19 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
+		}
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -228,15 +249,18 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	// Make request
 	resp, err := client.Do(req)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
+					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
 			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		// Remove client from pool for non-context errors (could be auth/network issues)
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
@@ -380,6 +404,19 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
 	}
 
@@ -398,15 +435,18 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 	// Make request
 	resp, err := client.Do(req)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
+					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
 			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		// Remove client from pool for non-context errors (could be auth/network issues)
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials)

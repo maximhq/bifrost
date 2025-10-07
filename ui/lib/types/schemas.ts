@@ -332,12 +332,12 @@ export const networkAndProxyFormSchema = z.object({
 
 // Proxy-only form schema for the ProxyFormFragment
 export const proxyOnlyFormSchema = z.object({
-	proxy_config: proxyFormConfigSchema,
+	proxy_config: proxyFormConfigSchema.optional(),
 });
 
 // Network-only form schema for the NetworkFormFragment
 export const networkOnlyFormSchema = z.object({
-	network_config: networkFormConfigSchema,
+	network_config: networkFormConfigSchema.optional(),
 });
 
 // Performance form schema for the PerformanceFormFragment
