@@ -33,7 +33,9 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 		}
 		anthropicReq.Temperature = bifrostReq.Params.Temperature
 		anthropicReq.TopP = bifrostReq.Params.TopP
-		anthropicReq.StopSequences = bifrostReq.Params.Stop
+		if bifrostReq.Params.Stop != nil {
+			anthropicReq.StopSequences = bifrostReq.Params.Stop
+		}
 
 		if bifrostReq.Params.ExtraParams != nil {
 			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {

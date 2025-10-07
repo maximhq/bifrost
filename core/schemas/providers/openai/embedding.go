@@ -24,16 +24,13 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Open
 		return nil
 	}
 
-	params := bifrostReq.Params
-
-	openaiReq := &OpenAIEmbeddingRequest{
-		Model: bifrostReq.Model,
-		Input: bifrostReq.Input,
-	}
+	openaiReq := AcquireEmbeddingRequest()
+	openaiReq.Model = bifrostReq.Model
+	openaiReq.Input = bifrostReq.Input // schemas.EmbeddingInput - not pooled per user instruction
 
 	// Map parameters
-	if params != nil {
-		openaiReq.EmbeddingParameters = *params
+	if bifrostReq.Params != nil {
+		openaiReq.EmbeddingParameters = *bifrostReq.Params
 	}
 
 	return openaiReq

@@ -353,7 +353,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			tools := make([]AnthropicTool, 0, len(bifrostReq.Params.Tools))
+			tools := acquireTools()
 			for _, tool := range bifrostReq.Params.Tools {
 				if tool.Function == nil {
 					continue
@@ -381,7 +381,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 
 		// Convert tool choice
 		if bifrostReq.Params.ToolChoice != nil {
-			toolChoice := &AnthropicToolChoice{}
+			toolChoice := acquireAnthropicToolChoice()
 			if bifrostReq.Params.ToolChoice.ChatToolChoiceStr != nil {
 				switch schemas.ChatToolChoiceType(*bifrostReq.Params.ToolChoice.ChatToolChoiceStr) {
 				case schemas.ChatToolChoiceTypeAny:
@@ -411,7 +411,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 	}
 
 	// Convert messages
-	var anthropicMessages []AnthropicMessage
+	anthropicMessages := acquireMessages()
 	var systemContent *AnthropicContent
 
 	for _, msg := range messages {
@@ -419,9 +419,10 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 		case schemas.ChatMessageRoleSystem:
 			// Handle system message separately
 			if msg.Content.ContentStr != nil {
-				systemContent = &AnthropicContent{ContentStr: msg.Content.ContentStr}
+				systemContent = acquireAnthropicContent()
+				systemContent.ContentStr = msg.Content.ContentStr
 			} else if msg.Content.ContentBlocks != nil {
-				blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+				blocks := acquireContentBlocks()
 				for _, block := range msg.Content.ContentBlocks {
 					if block.Text != nil {
 						blocks = append(blocks, AnthropicContentBlock{
@@ -431,14 +432,17 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 					}
 				}
 				if len(blocks) > 0 {
-					systemContent = &AnthropicContent{ContentBlocks: blocks}
+					systemContent = acquireAnthropicContent()
+					systemContent.ContentBlocks = blocks
+				} else {
+					releaseContentBlocks(blocks)
 				}
 			}
 
 		case schemas.ChatMessageRoleTool:
 			// Convert tool message to user message with tool_result content
 			if msg.ChatToolMessage != nil && msg.ChatToolMessage.ToolCallID != nil {
-				content := make([]AnthropicContentBlock, 0, 1)
+				content := acquireContentBlocks()
 
 				toolResult := AnthropicContentBlock{
 					Type:      "tool_result",
@@ -447,9 +451,10 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 
 				// Convert tool result content
 				if msg.Content.ContentStr != nil {
-					toolResult.Content = &AnthropicContent{ContentStr: msg.Content.ContentStr}
+					toolResult.Content = acquireAnthropicContent()
+					toolResult.Content.ContentStr = msg.Content.ContentStr
 				} else if msg.Content.ContentBlocks != nil {
-					blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+					blocks := acquireContentBlocks()
 					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
 							blocks = append(blocks, AnthropicContentBlock{
@@ -461,7 +466,10 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 						}
 					}
 					if len(blocks) > 0 {
-						toolResult.Content = &AnthropicContent{ContentBlocks: blocks}
+						toolResult.Content = acquireAnthropicContent()
+						toolResult.Content.ContentBlocks = blocks
+					} else {
+						releaseContentBlocks(blocks)
 					}
 				}
 
@@ -478,7 +486,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 				Role: AnthropicMessageRole(msg.Role),
 			}
 
-			var content []AnthropicContentBlock
+			content := acquireContentBlocks()
 
 			// Convert text content
 			if msg.Content.ContentStr != nil {
@@ -561,7 +569,7 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 	}
 
 	// Convert choices to content
-	var content []AnthropicContentBlock
+	content := acquireContentBlocks()
 	if len(bifrostResp.Choices) > 0 {
 		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
 

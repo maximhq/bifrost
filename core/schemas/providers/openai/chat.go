@@ -22,10 +22,9 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		return nil
 	}
 
-	openaiReq := &OpenAIChatRequest{
-		Model:    bifrostReq.Model,
-		Messages: bifrostReq.Input,
-	}
+	openaiReq := AcquireChatRequest()
+	openaiReq.Model = bifrostReq.Model
+	openaiReq.Messages = bifrostReq.Input // schemas.ChatMessage slice - not pooled per user instruction
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params

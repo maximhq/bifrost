@@ -41,7 +41,7 @@ func (mr *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostR
 	bifrostReq.Params = params
 
 	// Convert messages directly to ChatMessage format
-	var bifrostMessages []schemas.ResponsesMessage
+	bifrostMessages := make([]schemas.ResponsesMessage, 0, len(mr.Messages)+1) // +1 for potential system message
 
 	// Handle system message - convert Anthropic system field to first message with role "system"
 	if mr.System != nil {
@@ -137,7 +137,7 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools := []AnthropicTool{}
+			anthropicTools := acquireTools()
 			for _, tool := range bifrostReq.Params.Tools {
 				anthropicTool := convertBifrostToolToAnthropic(&tool)
 				if anthropicTool != nil {
@@ -146,6 +146,8 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 			}
 			if len(anthropicTools) > 0 {
 				anthropicReq.Tools = anthropicTools
+			} else {
+				releaseTools(anthropicTools)
 			}
 		}
 
@@ -428,9 +430,9 @@ func convertAnthropicToolChoiceToBifrost(toolChoice *AnthropicToolChoice) *schem
 
 // Helper function to convert ResponsesInputItems back to AnthropicMessages
 func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMessage) ([]AnthropicMessage, *AnthropicContent) {
-	var anthropicMessages []AnthropicMessage
+	anthropicMessages := acquireMessages()
 	var systemContent *AnthropicContent
-	var pendingToolCalls []AnthropicContentBlock
+	pendingToolCalls := acquireContentBlocks()
 	var currentAssistantMessage *AnthropicMessage
 
 	for _, msg := range messages {
@@ -459,20 +461,20 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 			if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
 				if msg.Content != nil {
 					if msg.Content.ContentStr != nil {
-						systemContent = &AnthropicContent{
-							ContentStr: msg.Content.ContentStr,
-						}
+						systemContent = acquireAnthropicContent()
+						systemContent.ContentStr = msg.Content.ContentStr
 					} else if msg.Content.ContentBlocks != nil {
-						contentBlocks := []AnthropicContentBlock{}
+						contentBlocks := acquireContentBlocks()
 						for _, block := range msg.Content.ContentBlocks {
 							if anthropicBlock := convertContentBlockToAnthropic(block); anthropicBlock != nil {
 								contentBlocks = append(contentBlocks, *anthropicBlock)
 							}
 						}
 						if len(contentBlocks) > 0 {
-							systemContent = &AnthropicContent{
-								ContentBlocks: contentBlocks,
-							}
+							systemContent = acquireAnthropicContent()
+							systemContent.ContentBlocks = contentBlocks
+						} else {
+							releaseContentBlocks(contentBlocks)
 						}
 					}
 				}
@@ -503,7 +505,7 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 						ContentStr: msg.Content.ContentStr,
 					}
 				} else if msg.Content.ContentBlocks != nil {
-					contentBlocks := []AnthropicContentBlock{}
+					contentBlocks := acquireContentBlocks()
 					for _, block := range msg.Content.ContentBlocks {
 						if anthropicBlock := convertContentBlockToAnthropic(block); anthropicBlock != nil {
 							contentBlocks = append(contentBlocks, *anthropicBlock)
@@ -513,6 +515,8 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 						anthropicMsg.Content = AnthropicContent{
 							ContentBlocks: contentBlocks,
 						}
+					} else {
+						releaseContentBlocks(contentBlocks)
 					}
 				}
 			}
@@ -536,9 +540,9 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 				}
 
 				// Add thinking blocks
-				var contentBlocks []AnthropicContentBlock
+				contentBlocks := acquireContentBlocks()
 				if targetMsg.Content.ContentBlocks != nil {
-					contentBlocks = targetMsg.Content.ContentBlocks
+					contentBlocks = append(contentBlocks, targetMsg.Content.ContentBlocks...)
 				}
 
 				for _, reasoningContent := range msg.ResponsesReasoning.Summary {
@@ -614,20 +618,20 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 				if msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput != nil {
 					output := msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput
 					if output.ResponsesFunctionToolCallOutputStr != nil {
-						toolResultBlock.Content = &AnthropicContent{
-							ContentStr: output.ResponsesFunctionToolCallOutputStr,
-						}
+						toolResultBlock.Content = acquireAnthropicContent()
+						toolResultBlock.Content.ContentStr = output.ResponsesFunctionToolCallOutputStr
 					} else if output.ResponsesFunctionToolCallOutputBlocks != nil {
-						var resultContentBlocks []AnthropicContentBlock
+						resultContentBlocks := acquireContentBlocks()
 						for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
 							if convertedBlock := convertContentBlockToAnthropic(block); convertedBlock != nil {
 								resultContentBlocks = append(resultContentBlocks, *convertedBlock)
 							}
 						}
 						if len(resultContentBlocks) > 0 {
-							toolResultBlock.Content = &AnthropicContent{
-								ContentBlocks: resultContentBlocks,
-							}
+							toolResultBlock.Content = acquireAnthropicContent()
+							toolResultBlock.Content.ContentBlocks = resultContentBlocks
+						} else {
+							releaseContentBlocks(resultContentBlocks)
 						}
 					}
 				}
@@ -727,8 +731,10 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 	// Flush any remaining pending tool calls
 	if len(pendingToolCalls) > 0 && currentAssistantMessage != nil {
 		// Copy the slice to avoid aliasing issues
-		copied := make([]AnthropicContentBlock, len(pendingToolCalls))
-		copy(copied, pendingToolCalls)
+		copied := acquireContentBlocks()
+		for i := 0; i < len(pendingToolCalls); i++ {
+			copied = append(copied, pendingToolCalls[i])
+		}
 		currentAssistantMessage.Content = AnthropicContent{
 			ContentBlocks: copied,
 		}
@@ -789,11 +795,17 @@ func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoi
 	if toolChoice.ResponsesToolChoiceStruct == nil && toolChoice.ResponsesToolChoiceStr != nil {
 		switch schemas.ResponsesToolChoiceType(*toolChoice.ResponsesToolChoiceStr) {
 		case schemas.ResponsesToolChoiceTypeAuto:
-			return &AnthropicToolChoice{Type: "auto"}
+			choice := acquireAnthropicToolChoice()
+			choice.Type = "auto"
+			return choice
 		case schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
-			return &AnthropicToolChoice{Type: "any"}
+			choice := acquireAnthropicToolChoice()
+			choice.Type = "any"
+			return choice
 		case schemas.ResponsesToolChoiceTypeNone:
-			return &AnthropicToolChoice{Type: "none"}
+			choice := acquireAnthropicToolChoice()
+			choice.Type = "none"
+			return choice
 		default:
 			return nil
 		}
@@ -803,7 +815,7 @@ func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoi
 		return nil
 	}
 
-	anthropicChoice := &AnthropicToolChoice{}
+	anthropicChoice := acquireAnthropicToolChoice()
 
 	var toolChoiceType *string
 	if toolChoice.ResponsesToolChoiceStruct != nil {
@@ -932,7 +944,7 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 
 // Helper function to convert ChatMessage output to Anthropic content blocks
 func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessage) []AnthropicContentBlock {
-	var contentBlocks []AnthropicContentBlock
+	contentBlocks := acquireContentBlocks()
 
 	for _, msg := range messages {
 		// Handle different message types based on Responses structure
@@ -985,17 +997,15 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 
 					// Try to get content from the tool message structure
 					if msg.Content != nil && msg.Content.ContentStr != nil {
-						resultBlock.Content = &AnthropicContent{
-							ContentStr: msg.Content.ContentStr,
-						}
+						resultBlock.Content = acquireAnthropicContent()
+						resultBlock.Content.ContentStr = msg.Content.ContentStr
 					} else if msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput != nil {
 						// Guard access to ResponsesFunctionToolCallOutput
 						if msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputStr != nil {
-							resultBlock.Content = &AnthropicContent{
-								ContentStr: msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputStr,
-							}
+							resultBlock.Content = acquireAnthropicContent()
+							resultBlock.Content.ContentStr = msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputStr
 						} else if msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputBlocks != nil {
-							var resultBlocks []AnthropicContentBlock
+							resultBlocks := acquireContentBlocks()
 							for _, block := range msg.ResponsesToolMessage.ResponsesFunctionToolCallOutput.ResponsesFunctionToolCallOutputBlocks {
 								if block.Type == schemas.ResponsesInputMessageContentBlockTypeText {
 									resultBlocks = append(resultBlocks, AnthropicContentBlock{
@@ -1004,27 +1014,29 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 									})
 								} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
 									if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+										imageSource := acquireAnthropicImageSource()
+										imageSource.Type = "url"
+										imageSource.URL = block.ResponsesInputMessageContentBlockImage.ImageURL
 										resultBlocks = append(resultBlocks, AnthropicContentBlock{
-											Type: AnthropicContentBlockTypeImage,
-											Source: &AnthropicImageSource{
-												Type: "url",
-												URL:  block.ResponsesInputMessageContentBlockImage.ImageURL,
-											},
+											Type:   AnthropicContentBlockTypeImage,
+											Source: imageSource,
 										})
 									}
 								}
 							}
-							resultBlock.Content = &AnthropicContent{
-								ContentBlocks: resultBlocks,
+							if len(resultBlocks) > 0 {
+								resultBlock.Content = acquireAnthropicContent()
+								resultBlock.Content.ContentBlocks = resultBlocks
+							} else {
+								releaseContentBlocks(resultBlocks)
 							}
 						}
 					}
 				} else if msg.Content != nil {
 					// Fallback to msg.Content when ResponsesToolMessage is nil
 					if msg.Content.ContentStr != nil {
-						resultBlock.Content = &AnthropicContent{
-							ContentStr: msg.Content.ContentStr,
-						}
+						resultBlock.Content = acquireAnthropicContent()
+						resultBlock.Content.ContentStr = msg.Content.ContentStr
 					}
 				}
 

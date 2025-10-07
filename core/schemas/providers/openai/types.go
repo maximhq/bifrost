@@ -101,6 +101,11 @@ type OpenAISpeechRequest struct {
 	StreamFormat *string `json:"stream_format,omitempty"`
 }
 
+// IsStreamingRequested implements the StreamingRequest interface for speech
+func (r *OpenAISpeechRequest) IsStreamingRequested() bool {
+	return r.StreamFormat != nil && *r.StreamFormat == "sse"
+}
+
 // OpenAITranscriptionRequest represents an OpenAI transcription request
 // Note: This is used for JSON body parsing, actual form parsing is handled in the router
 type OpenAITranscriptionRequest struct {
@@ -109,11 +114,6 @@ type OpenAITranscriptionRequest struct {
 
 	schemas.TranscriptionParameters
 	Stream *bool `json:"stream,omitempty"`
-}
-
-// IsStreamingRequested implements the StreamingRequest interface for speech
-func (r *OpenAISpeechRequest) IsStreamingRequested() bool {
-	return r.StreamFormat != nil && *r.StreamFormat == "sse"
 }
 
 // IsStreamingRequested implements the StreamingRequest interface for transcription

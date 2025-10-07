@@ -43,6 +43,13 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 	}
 
+	// Pre-warm OpenAI pools since Azure uses OpenAI schema objects
+	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
+		openai.ReleaseTextRequest(&openai.OpenAITextCompletionRequest{})
+		openai.ReleaseChatRequest(&openai.OpenAIChatRequest{})
+		openai.ReleaseEmbeddingRequest(&openai.OpenAIEmbeddingRequest{})
+	}
+
 	// Configure proxy if provided
 	client = configureProxy(client, config.ProxyConfig, logger)
 
@@ -151,6 +158,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, key schemas.K
 	if reqBody == nil {
 		return nil, newBifrostOperationError("text completion input is not provided", nil, schemas.Azure)
 	}
+	defer openai.ReleaseTextRequest(reqBody)
 
 	responseBody, err := provider.completeRequest(ctx, reqBody, "completions", key, request.Model)
 	if err != nil {
@@ -240,6 +248,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, key schemas.K
 	if reqBody == nil {
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, schemas.Azure)
 	}
+	defer openai.ReleaseChatRequest(reqBody)
 
 	responseBody, err := provider.completeRequest(ctx, reqBody, "chat/completions", key, request.Model)
 	if err != nil {
@@ -296,6 +305,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, key schemas.Key, r
 	if reqBody == nil {
 		return nil, newBifrostOperationError("embedding input is not provided", nil, schemas.Azure)
 	}
+	defer openai.ReleaseEmbeddingRequest(reqBody)
 
 	responseBody, err := provider.completeRequest(ctx, reqBody, "embeddings", key, request.Model)
 	if err != nil {

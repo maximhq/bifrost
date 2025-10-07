@@ -21,10 +21,11 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 			Path:   pathPrefix + "/v1/messages",
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &anthropic.AnthropicMessageRequest{}
+				return anthropic.AcquireChatRequest()
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					defer anthropic.ReleaseChatRequest(anthropicReq)
 					return &schemas.BifrostRequest{
 						ChatRequest: anthropicReq.ToBifrostRequest(),
 					}, nil

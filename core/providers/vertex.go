@@ -70,9 +70,8 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
-		// openAIResponsePool.Put(&schemas.BifrostResponse{})
-		anthropicChatResponsePool.Put(&anthropic.AnthropicMessageResponse{})
-
+		vertex.ReleaseEmbeddingRequest(&vertex.VertexEmbeddingRequest{})
+		vertex.ReleaseEmbeddingResponse(&vertex.VertexEmbeddingResponse{})
 	}
 
 	return &VertexProvider{
@@ -222,7 +221,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		return nil, &schemas.BifrostError{
@@ -259,7 +258,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		// Remove client from pool for non-context errors (could be auth/network issues)
@@ -300,8 +299,8 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 
 	if strings.Contains(request.Model, "claude") {
 		// Create response object from pool
-		response := acquireAnthropicChatResponse()
-		defer releaseAnthropicChatResponse(response)
+		response := anthropic.AcquireChatResponse()
+		defer anthropic.ReleaseChatResponse(response)
 
 		rawResponse, bifrostErr := handleProviderResponse(body, response, provider.sendBackRawResponse)
 		if bifrostErr != nil {
@@ -383,6 +382,7 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 	if reqBody == nil {
 		return nil, newConfigurationError("embedding input texts are empty", schemas.Vertex)
 	}
+	defer vertex.ReleaseEmbeddingRequest(reqBody)
 
 	// All Vertex AI embedding models use the same native Vertex embedding API
 	return provider.handleVertexEmbedding(ctx, request.Model, key, reqBody, request.Params)
@@ -414,7 +414,7 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
@@ -445,7 +445,7 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		// Remove client from pool for non-context errors (could be auth/network issues)

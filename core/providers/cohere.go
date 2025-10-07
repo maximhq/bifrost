@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	"net/http"
@@ -21,26 +20,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// cohereResponsePool provides a pool for Cohere v2 response objects.
-var cohereResponsePool = sync.Pool{
-	New: func() interface{} {
-		return &cohere.CohereChatResponse{}
-	},
-}
-
-// acquireCohereResponse gets a Cohere v2 response from the pool and resets it.
-func acquireCohereResponse() *cohere.CohereChatResponse {
-	resp := cohereResponsePool.Get().(*cohere.CohereChatResponse)
-	*resp = cohere.CohereChatResponse{} // Reset the struct
-	return resp
-}
-
-// releaseCohereResponse returns a Cohere v2 response to the pool.
-func releaseCohereResponse(resp *cohere.CohereChatResponse) {
-	if resp != nil {
-		cohereResponsePool.Put(resp)
-	}
-}
+// Removed deprecated cohereResponsePool - now using schema-level pools
 
 // CohereProvider implements the Provider interface for Cohere.
 type CohereProvider struct {
@@ -71,7 +51,8 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
-		cohereResponsePool.Put(&cohere.CohereChatResponse{})
+		cohere.ReleaseChatRequest(&cohere.CohereChatRequest{})
+		cohere.ReleaseEmbeddingRequest(&cohere.CohereEmbeddingRequest{})
 	}
 
 	// Set default BaseURL if not provided
@@ -124,6 +105,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 	if reqBody == nil {
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
 	}
+	defer cohere.ReleaseChatRequest(reqBody)
 
 	cohereResponse, rawResponse, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
 	if err != nil {
@@ -235,6 +217,7 @@ func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, 
 	if reqBody == nil {
 		return nil, newBifrostOperationError("responses input is not provided", nil, providerName)
 	}
+	defer cohere.ReleaseChatRequest(reqBody) // ToCohereResponsesRequest returns *CohereChatRequest
 
 	cohereResponse, rawResponse, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
 	if err != nil {
@@ -271,6 +254,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 	if reqBody == nil {
 		return nil, newBifrostOperationError("embedding input is not provided", nil, providerName)
 	}
+	defer cohere.ReleaseEmbeddingRequest(reqBody)
 
 	// Marshal request body
 	jsonBody, err := sonic.Marshal(reqBody)
@@ -353,6 +337,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	if reqBody == nil {
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
 	}
+	defer cohere.ReleaseChatRequest(reqBody)
 	reqBody.Stream = schemas.Ptr(true)
 
 	jsonBody, err := sonic.Marshal(reqBody)

@@ -48,7 +48,7 @@ func MapBifrostFinishReasonToAnthropic(bifrostReason string) string {
 func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
 	imageBlock := AnthropicContentBlock{
 		Type:   "image",
-		Source: &AnthropicImageSource{},
+		Source: acquireAnthropicImageSource(),
 	}
 
 	if block.ImageURLStruct == nil {

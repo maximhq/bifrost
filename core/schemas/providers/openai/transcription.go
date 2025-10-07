@@ -24,16 +24,12 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 		return nil
 	}
 
-	transcriptionInput := bifrostReq.Input
-	params := bifrostReq.Params
+	openaiReq := AcquireTranscriptionRequest()
+	openaiReq.Model = bifrostReq.Model
+	openaiReq.File = bifrostReq.Input.File // []byte - not pooled, directly assigned
 
-	openaiReq := &OpenAITranscriptionRequest{
-		Model: bifrostReq.Model,
-		File:  transcriptionInput.File,
-	}
-
-	if params != nil {
-		openaiReq.TranscriptionParameters = *params
+	if bifrostReq.Params != nil {
+		openaiReq.TranscriptionParameters = *bifrostReq.Params
 	}
 
 	return openaiReq
