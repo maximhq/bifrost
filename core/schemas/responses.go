@@ -1289,17 +1289,17 @@ type ResponsesToolChoice struct {
 
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.
 // It marshals either ContentStr or ContentBlocks directly without wrapping.
-func (bc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
+func (rtc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
 	// Validation: ensure only one field is set at a time
-	if bc.ResponsesToolChoiceStr != nil && bc.ResponsesToolChoiceStruct != nil {
+	if rtc.ResponsesToolChoiceStr != nil && rtc.ResponsesToolChoiceStruct != nil {
 		return nil, fmt.Errorf("both ResponsesToolChoiceStr, ResponsesToolChoiceStruct are set; only one should be non-nil")
 	}
 
-	if bc.ResponsesToolChoiceStr != nil {
-		return sonic.Marshal(bc.ResponsesToolChoiceStr)
+	if rtc.ResponsesToolChoiceStr != nil {
+		return sonic.Marshal(rtc.ResponsesToolChoiceStr)
 	}
-	if bc.ResponsesToolChoiceStruct != nil {
-		return sonic.Marshal(bc.ResponsesToolChoiceStruct)
+	if rtc.ResponsesToolChoiceStruct != nil {
+		return sonic.Marshal(rtc.ResponsesToolChoiceStruct)
 	}
 	// If both are nil, return null
 	return sonic.Marshal(nil)
@@ -1308,18 +1308,18 @@ func (bc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
 // It determines whether "content" is a string or array and assigns to the appropriate field.
 // It also handles direct string/array content without a wrapper object.
-func (bc *ResponsesToolChoice) UnmarshalJSON(data []byte) error {
+func (rtc *ResponsesToolChoice) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var toolChoiceStr string
 	if err := sonic.Unmarshal(data, &toolChoiceStr); err == nil {
-		bc.ResponsesToolChoiceStr = &toolChoiceStr
+		rtc.ResponsesToolChoiceStr = &toolChoiceStr
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var responsesToolChoiceStruct ResponsesToolChoiceStruct
 	if err := sonic.Unmarshal(data, &responsesToolChoiceStruct); err == nil {
-		bc.ResponsesToolChoiceStruct = &responsesToolChoiceStruct
+		rtc.ResponsesToolChoiceStruct = &responsesToolChoiceStruct
 		return nil
 	}
 
