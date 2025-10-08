@@ -104,10 +104,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &openai.OpenAITextCompletionRequest{}
+				return openai.AcquireTextRequest()
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAITextCompletionRequest); ok {
+					defer openai.ReleaseTextRequest(openaiReq)
 					return &schemas.BifrostRequest{
 						TextCompletionRequest: openaiReq.ToBifrostRequest(),
 					}, nil
@@ -181,10 +182,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &openai.OpenAIChatRequest{}
+				return openai.AcquireChatRequest()
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
+					defer openai.ReleaseChatRequest(openaiReq)
 					return &schemas.BifrostRequest{
 						ChatRequest: openaiReq.ToBifrostRequest(),
 					}, nil
@@ -219,10 +221,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &openai.OpenAIEmbeddingRequest{}
+				return openai.AcquireEmbeddingRequest()
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if embeddingReq, ok := req.(*openai.OpenAIEmbeddingRequest); ok {
+					defer openai.ReleaseEmbeddingRequest(embeddingReq)
 					return &schemas.BifrostRequest{
 						EmbeddingRequest: embeddingReq.ToBifrostRequest(),
 					}, nil
@@ -249,10 +252,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &openai.OpenAISpeechRequest{}
+				return openai.AcquireSpeechRequest()
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if speechReq, ok := req.(*openai.OpenAISpeechRequest); ok {
+					defer openai.ReleaseSpeechRequest(speechReq)
 					return &schemas.BifrostRequest{
 						SpeechRequest: speechReq.ToBifrostRequest(),
 					}, nil
@@ -288,11 +292,12 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
-				return &openai.OpenAITranscriptionRequest{}
+				return openai.AcquireTranscriptionRequest()
 			},
 			RequestParser: parseTranscriptionMultipartRequest, // Handle multipart form parsing
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if transcriptionReq, ok := req.(*openai.OpenAITranscriptionRequest); ok {
+					defer openai.ReleaseTranscriptionRequest(transcriptionReq)
 					return &schemas.BifrostRequest{
 						TranscriptionRequest: transcriptionReq.ToBifrostRequest(),
 					}, nil

@@ -11,12 +11,11 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 	}
 
 	messages := bifrostReq.Input
-	cohereReq := &CohereChatRequest{
-		Model: bifrostReq.Model,
-	}
+	cohereReq := AcquireChatRequest()
+	cohereReq.Model = bifrostReq.Model
 
 	// Convert messages to Cohere v2 format
-	var cohereMessages []CohereMessage
+	cohereMessages := acquireCohereMessages()
 	for _, msg := range messages {
 		cohereMsg := CohereMessage{
 			Role: string(msg.Role),
@@ -24,9 +23,10 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 
 		// Convert content
 		if msg.Content.ContentStr != nil {
-			cohereMsg.Content = NewStringContent(*msg.Content.ContentStr)
+			cohereMsg.Content = acquireCohereMessageContent()
+			cohereMsg.Content.StringContent = msg.Content.ContentStr
 		} else if msg.Content.ContentBlocks != nil {
-			var contentBlocks []CohereContentBlock
+			contentBlocks := acquireCohereContentBlocks()
 			for _, block := range msg.Content.ContentBlocks {
 				if block.Text != nil {
 					contentBlocks = append(contentBlocks, CohereContentBlock{
@@ -34,22 +34,25 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 						Text: block.Text,
 					})
 				} else if block.ImageURLStruct != nil {
+					imageURL := acquireCohereImageURL()
+					imageURL.URL = block.ImageURLStruct.URL
 					contentBlocks = append(contentBlocks, CohereContentBlock{
-						Type: CohereContentBlockTypeImage,
-						ImageURL: &CohereImageURL{
-							URL: block.ImageURLStruct.URL,
-						},
+						Type:     CohereContentBlockTypeImage,
+						ImageURL: imageURL,
 					})
 				}
 			}
 			if len(contentBlocks) > 0 {
-				cohereMsg.Content = NewBlocksContent(contentBlocks)
+				cohereMsg.Content = acquireCohereMessageContent()
+				cohereMsg.Content.BlocksContent = contentBlocks
+			} else {
+				releaseCohereContentBlocks(contentBlocks)
 			}
 		}
 
 		// Convert tool calls for assistant messages
 		if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
-			var toolCalls []CohereToolCall
+			toolCalls := acquireCohereToolCalls()
 			for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 				// Safely extract function name and arguments
 				var functionName *string
@@ -65,13 +68,14 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 				// Arguments is a string, not a pointer, so it's safe to access directly
 				functionArguments = toolCall.Function.Arguments
 
+				function := acquireCohereFunction()
+				function.Name = functionName
+				function.Arguments = functionArguments
+
 				cohereToolCall := CohereToolCall{
-					ID:   toolCall.ID,
-					Type: "function",
-					Function: &CohereFunction{
-						Name:      functionName,
-						Arguments: functionArguments,
-					},
+					ID:       toolCall.ID,
+					Type:     "function",
+					Function: function,
 				}
 				toolCalls = append(toolCalls, cohereToolCall)
 			}
@@ -132,19 +136,20 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 
 		// Convert tools to Cohere-specific format (without "strict" field)
 		if bifrostReq.Params.Tools != nil {
-			cohereTools := make([]CohereChatRequestTool, len(bifrostReq.Params.Tools))
-			for i, tool := range bifrostReq.Params.Tools {
-				cohereTools[i] = CohereChatRequestTool{
+			cohereTools := acquireCohereTools()
+			for _, tool := range bifrostReq.Params.Tools {
+				cohereTool := CohereChatRequestTool{
 					Type: string(tool.Type),
 				}
 				if tool.Function != nil {
-					cohereTools[i].Function = CohereChatRequestFunction{
+					cohereTool.Function = CohereChatRequestFunction{
 						Name:        tool.Function.Name,
 						Description: tool.Function.Description,
 						Parameters:  tool.Function.Parameters, // Convert to map
 						// Note: No "strict" field - Cohere doesn't support it
 					}
 				}
+				cohereTools = append(cohereTools, cohereTool)
 			}
 			cohereReq.Tools = cohereTools
 		}
@@ -169,7 +174,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 					cohereReq.ToolChoice = &toolChoice
 				default:
 					toolChoice := ToolChoiceAuto
-					cohereReq.ToolChoice = &toolChoice					
+					cohereReq.ToolChoice = &toolChoice
 				}
 			}
 		}
@@ -206,13 +211,13 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 	// Convert message content
 	if cohereResp.Message != nil {
 		if cohereResp.Message.Content != nil {
-			if cohereResp.Message.Content.IsString() {
-				content := cohereResp.Message.Content.GetString()
+			if cohereResp.Message.Content.StringContent != nil {
+				content := cohereResp.Message.Content.StringContent
 				bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{
 					ContentStr: content,
 				}
-			} else if cohereResp.Message.Content.IsBlocks() {
-				blocks := cohereResp.Message.Content.GetBlocks()
+			} else if cohereResp.Message.Content.BlocksContent != nil {
+				blocks := cohereResp.Message.Content.BlocksContent
 				if blocks != nil {
 					var contentBlocks []schemas.ChatContentBlock
 					for _, block := range blocks {

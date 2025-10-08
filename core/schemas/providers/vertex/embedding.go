@@ -18,7 +18,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 	}
 
 	// Create instances for each text
-	instances := make([]VertexEmbeddingInstance, 0, len(texts))
+	instances := acquireVertexInstances()
 	for _, text := range texts {
 		instance := VertexEmbeddingInstance{
 			Content: text,
@@ -38,13 +38,12 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 	}
 
 	// Create the request
-	vertexReq := &VertexEmbeddingRequest{
-		Instances: instances,
-	}
+	vertexReq := AcquireEmbeddingRequest()
+	vertexReq.Instances = instances
 
 	// Add parameters if present
 	if bifrostReq.Params != nil {
-		parameters := &VertexEmbeddingParameters{}
+		parameters := acquireVertexParameters()
 
 		// Set autoTruncate (defaults to true)
 		autoTruncate := true
@@ -82,7 +81,7 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 		}
 
 		// Convert float64 values to float32 for Bifrost format
-		embeddingFloat32 := make([]float32, 0, len(prediction.Embeddings.Values))
+		embeddingFloat32 := acquireVertexFloat32Slice()
 		for _, v := range prediction.Embeddings.Values {
 			embeddingFloat32 = append(embeddingFloat32, float32(v))
 		}
@@ -91,7 +90,7 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 		embedding := schemas.BifrostEmbedding{
 			Object: "embedding",
 			Embedding: schemas.BifrostEmbeddingResponse{
-				EmbeddingArray: embeddingFloat32,
+				EmbeddingArray: embeddingFloat32, // Transfer ownership to schemas object
 			},
 			Index: i,
 		}

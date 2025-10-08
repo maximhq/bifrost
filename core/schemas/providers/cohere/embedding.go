@@ -9,11 +9,10 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 	}
 
 	embeddingInput := bifrostReq.Input
-	cohereReq := &CohereEmbeddingRequest{
-		Model: bifrostReq.Model,
-	}
+	cohereReq := AcquireEmbeddingRequest()
+	cohereReq.Model = bifrostReq.Model
 
-	texts := []string{}
+	texts := acquireCohereStringSlice()
 	if embeddingInput.Text != nil {
 		texts = append(texts, *embeddingInput.Text)
 	} else {

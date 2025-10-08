@@ -10,15 +10,12 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequ
 		return nil
 	}
 
-	params := bifrostReq.Params
+	openaiReq := AcquireTextRequest()
+	openaiReq.Model = bifrostReq.Model
+	openaiReq.Prompt = bifrostReq.Input // schemas.TextCompletionInput - not pooled per user instruction
 
-	openaiReq := &OpenAITextCompletionRequest{
-		Model:  bifrostReq.Model,
-		Prompt: bifrostReq.Input,
-	}
-
-	if params != nil {
-		openaiReq.TextCompletionParameters = *params
+	if bifrostReq.Params != nil {
+		openaiReq.TextCompletionParameters = *bifrostReq.Params
 	}
 
 	return openaiReq

@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -29,48 +28,6 @@ type AnthropicProvider struct {
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
-}
-
-// anthropicChatResponsePool provides a pool for Anthropic chat response objects.
-var anthropicChatResponsePool = sync.Pool{
-	New: func() interface{} {
-		return &anthropic.AnthropicMessageResponse{}
-	},
-}
-
-// anthropicTextResponsePool provides a pool for Anthropic text response objects.
-var anthropicTextResponsePool = sync.Pool{
-	New: func() interface{} {
-		return &anthropic.AnthropicTextResponse{}
-	},
-}
-
-// acquireAnthropicChatResponse gets an Anthropic chat response from the pool and resets it.
-func acquireAnthropicChatResponse() *anthropic.AnthropicMessageResponse {
-	resp := anthropicChatResponsePool.Get().(*anthropic.AnthropicMessageResponse)
-	*resp = anthropic.AnthropicMessageResponse{} // Reset the struct
-	return resp
-}
-
-// releaseAnthropicChatResponse returns an Anthropic chat response to the pool.
-func releaseAnthropicChatResponse(resp *anthropic.AnthropicMessageResponse) {
-	if resp != nil {
-		anthropicChatResponsePool.Put(resp)
-	}
-}
-
-// acquireAnthropicTextResponse gets an Anthropic text response from the pool and resets it.
-func acquireAnthropicTextResponse() *anthropic.AnthropicTextResponse {
-	resp := anthropicTextResponsePool.Get().(*anthropic.AnthropicTextResponse)
-	*resp = anthropic.AnthropicTextResponse{} // Reset the struct
-	return resp
-}
-
-// releaseAnthropicTextResponse returns an Anthropic text response to the pool.
-func releaseAnthropicTextResponse(resp *anthropic.AnthropicTextResponse) {
-	if resp != nil {
-		anthropicTextResponsePool.Put(resp)
-	}
 }
 
 // NewAnthropicProvider creates a new Anthropic provider instance.
@@ -92,8 +49,8 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
-		anthropicTextResponsePool.Put(&anthropic.AnthropicTextResponse{})
-		anthropicChatResponsePool.Put(&anthropic.AnthropicMessageResponse{})
+		anthropic.ReleaseTextResponse(&anthropic.AnthropicTextResponse{})
+		anthropic.ReleaseChatResponse(&anthropic.AnthropicMessageResponse{})
 	}
 
 	// Configure proxy if provided
@@ -186,6 +143,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 	if reqBody == nil {
 		return nil, newBifrostOperationError("text completion input is not provided", nil, provider.GetProviderKey())
 	}
+	defer anthropic.ReleaseTextRequest(reqBody)
 
 	// Use struct directly for JSON marshaling
 	responseBody, err := provider.completeRequest(ctx, reqBody, provider.networkConfig.BaseURL+"/v1/complete", key.Value)
@@ -194,8 +152,8 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 	}
 
 	// Create response object from pool
-	response := acquireAnthropicTextResponse()
-	defer releaseAnthropicTextResponse(response)
+	response := anthropic.AcquireTextResponse()
+	defer anthropic.ReleaseTextResponse(response)
 
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
@@ -237,6 +195,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 	if reqBody == nil {
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, provider.GetProviderKey())
 	}
+	defer anthropic.ReleaseChatRequest(reqBody)
 
 	// Use struct directly for JSON marshaling
 	responseBody, err := provider.completeRequest(ctx, reqBody, provider.networkConfig.BaseURL+"/v1/messages", key.Value)
@@ -245,8 +204,8 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 	}
 
 	// Create response object from pool
-	response := acquireAnthropicChatResponse()
-	defer releaseAnthropicChatResponse(response)
+	response := anthropic.AcquireChatResponse()
+	defer anthropic.ReleaseChatResponse(response)
 
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
@@ -282,6 +241,7 @@ func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Ke
 	if reqBody == nil {
 		return nil, newBifrostOperationError("responses input is not provided", nil, provider.GetProviderKey())
 	}
+	defer anthropic.ReleaseChatRequest(reqBody) // ToAnthropicResponsesRequest returns *AnthropicMessageRequest
 
 	// Use struct directly for JSON marshaling
 	responseBody, err := provider.completeRequest(ctx, reqBody, provider.networkConfig.BaseURL+"/v1/messages", key.Value)
@@ -290,8 +250,8 @@ func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Ke
 	}
 
 	// Create response object from pool
-	response := acquireAnthropicChatResponse()
-	defer releaseAnthropicChatResponse(response)
+	response := anthropic.AcquireChatResponse()
+	defer anthropic.ReleaseChatResponse(response)
 
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
@@ -332,6 +292,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 	if reqBody == nil {
 		return nil, newBifrostOperationError("failed to convert request", fmt.Errorf("conversion returned nil"), provider.GetProviderKey())
 	}
+	defer anthropic.ReleaseChatRequest(reqBody)
 	reqBody.Stream = schemas.Ptr(true)
 
 	// Prepare Anthropic headers

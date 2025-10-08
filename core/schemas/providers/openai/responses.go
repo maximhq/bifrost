@@ -31,21 +31,19 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
+
 	// Preparing final input
 	input := OpenAIResponsesRequestInput{
 		OpenAIResponsesRequestInputArray: bifrostReq.Input,
 	}
-	// Updating params
-	params := bifrostReq.Params
-	// Create the responses request with properly mapped parameters
-	req := &OpenAIResponsesRequest{
-		Model: bifrostReq.Model,
-		Input: input,
+
+	openaiReq := AcquireResponsesRequest()
+	openaiReq.Model = bifrostReq.Model
+	openaiReq.Input = input
+
+	if bifrostReq.Params != nil {
+		openaiReq.ResponsesParameters = *bifrostReq.Params
 	}
 
-	if params != nil {
-		req.ResponsesParameters = *params
-	}
-
-	return req
+	return openaiReq
 }

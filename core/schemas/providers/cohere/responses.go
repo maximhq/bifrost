@@ -13,9 +13,8 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 		return nil
 	}
 
-	cohereReq := &CohereChatRequest{
-		Model: bifrostReq.Model,
-	}
+	cohereReq := AcquireChatRequest()
+	cohereReq.Model = bifrostReq.Model
 
 	// Map basic parameters
 	if bifrostReq.Params != nil {
@@ -46,7 +45,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 
 	// Convert tools
 	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
-		var cohereTools []CohereChatRequestTool
+		cohereTools := acquireCohereTools()
 		for _, tool := range bifrostReq.Params.Tools {
 			if tool.ResponsesToolFunction != nil && tool.Name != nil {
 				cohereTool := CohereChatRequestTool{
@@ -146,8 +145,8 @@ func convertBifrostToolChoiceToCohereToolChoice(toolChoice schemas.ResponsesTool
 
 // convertResponsesMessagesToCohereMessages converts Responses items to Cohere messages
 func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessage) []CohereMessage {
-	var cohereMessages []CohereMessage
-	var systemContent []string
+	cohereMessages := acquireCohereMessages()
+	systemContent := acquireCohereStringSlice()
 
 	for _, msg := range messages {
 		// Handle nil Type with default
@@ -185,10 +184,11 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 				// Convert content - only if Content is not nil
 				if msg.Content != nil {
 					if msg.Content.ContentStr != nil {
-						cohereMsg.Content = NewStringContent(*msg.Content.ContentStr)
+						cohereMsg.Content = acquireCohereMessageContent()
+						cohereMsg.Content.StringContent = msg.Content.ContentStr
 					} else if msg.Content.ContentBlocks != nil {
-						contentBlocks := convertResponsesMessageContentBlocksToCohere(msg.Content.ContentBlocks)
-						cohereMsg.Content = NewBlocksContent(contentBlocks)
+						cohereMsg.Content = acquireCohereMessageContent()
+						cohereMsg.Content.BlocksContent = convertResponsesMessageContentBlocksToCohere(msg.Content.ContentBlocks)
 					}
 				}
 
@@ -252,10 +252,13 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 				// Convert content - only if Content is not nil
 				if content != nil {
 					if content.ContentStr != nil {
-						toolMsg.Content = NewStringContent(*content.ContentStr)
+						toolMsg.Content = &CohereMessageContent{
+							StringContent: content.ContentStr,
+						}
 					} else if content.ContentBlocks != nil {
-						contentBlocks := convertResponsesMessageContentBlocksToCohere(content.ContentBlocks)
-						toolMsg.Content = NewBlocksContent(contentBlocks)
+						toolMsg.Content = &CohereMessageContent{
+							BlocksContent: convertResponsesMessageContentBlocksToCohere(content.ContentBlocks),
+						}
 					}
 				}
 
@@ -269,8 +272,10 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 	// Prepend system messages if any
 	if len(systemContent) > 0 {
 		systemMsg := CohereMessage{
-			Role:    "system",
-			Content: NewStringContent(strings.Join(systemContent, "\n")),
+			Role: "system",
+			Content: &CohereMessageContent{
+				StringContent: schemas.Ptr(strings.Join(systemContent, "\n")),
+			},
 		}
 		cohereMessages = append([]CohereMessage{systemMsg}, cohereMessages...)
 	}
@@ -280,7 +285,7 @@ func convertResponsesMessagesToCohereMessages(messages []schemas.ResponsesMessag
 
 // convertBifrostContentBlocksToCohere converts Bifrost content blocks to Cohere format
 func convertResponsesMessageContentBlocksToCohere(blocks []schemas.ResponsesMessageContentBlock) []CohereContentBlock {
-	var cohereBlocks []CohereContentBlock
+	cohereBlocks := acquireCohereContentBlocks()
 
 	for _, block := range blocks {
 		switch block.Type {
@@ -293,11 +298,11 @@ func convertResponsesMessageContentBlocksToCohere(blocks []schemas.ResponsesMess
 			}
 		case schemas.ResponsesInputMessageContentBlockTypeImage:
 			if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil && *block.ResponsesInputMessageContentBlockImage.ImageURL != "" {
+				imageURL := acquireCohereImageURL()
+				imageURL.URL = *block.ResponsesInputMessageContentBlockImage.ImageURL
 				cohereBlocks = append(cohereBlocks, CohereContentBlock{
-					Type: CohereContentBlockTypeImage,
-					ImageURL: &CohereImageURL{
-						URL: *block.ResponsesInputMessageContentBlockImage.ImageURL,
-					},
+					Type:     CohereContentBlockTypeImage,
+					ImageURL: imageURL,
 				})
 			}
 		case schemas.ResponsesOutputMessageContentTypeReasoning:

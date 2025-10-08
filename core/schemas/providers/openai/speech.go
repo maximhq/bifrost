@@ -31,16 +31,12 @@ func ToOpenAISpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *OpenAISpee
 		return nil
 	}
 
-	speechInput := bifrostReq.Input
-	params := bifrostReq.Params
+	openaiReq := AcquireSpeechRequest()
+	openaiReq.Model = bifrostReq.Model
+	openaiReq.Input = bifrostReq.Input.Input
 
-	openaiReq := &OpenAISpeechRequest{
-		Model: bifrostReq.Model,
-		Input: speechInput.Input,
-	}
-
-	if params != nil {
-		openaiReq.SpeechParameters = *params
+	if bifrostReq.Params != nil {
+		openaiReq.SpeechParameters = *bifrostReq.Params
 	}
 
 	return openaiReq

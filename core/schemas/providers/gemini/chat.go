@@ -635,7 +635,7 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostResponse) *GeminiEmbe
 		// Extract embedding values from BifrostEmbeddingResponse
 		if embedding.Embedding.EmbeddingArray != nil {
 			values = embedding.Embedding.EmbeddingArray
-		} else if embedding.Embedding.Embedding2DArray != nil && len(embedding.Embedding.Embedding2DArray) > 0 {
+		} else if len(embedding.Embedding.Embedding2DArray) > 0 {
 			// If it's a 2D array, take the first array
 			values = embedding.Embedding.Embedding2DArray[0]
 		}

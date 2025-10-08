@@ -111,6 +111,7 @@ func handleOpenAITextCompletionRequest(
 	if reqBody == nil {
 		return nil, newBifrostOperationError("text completion input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseTextRequest(reqBody)
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -206,6 +207,7 @@ func handleOpenAITextCompletionStreaming(
 	if reqBody == nil {
 		return nil, newBifrostOperationError("text completion input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseTextRequest(reqBody)
 	reqBody.Stream = schemas.Ptr(true)
 	reqBody.StreamOptions = &schemas.ChatStreamOptions{
 		IncludeUsage: schemas.Ptr(true),
@@ -436,6 +438,7 @@ func handleOpenAIChatCompletionRequest(
 	if reqBody == nil {
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseChatRequest(reqBody)
 
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
@@ -530,6 +533,7 @@ func handleOpenAIResponsesRequest(
 	if reqBody == nil {
 		return nil, newBifrostOperationError("responses input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseResponsesRequest(reqBody)
 
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
@@ -630,6 +634,7 @@ func handleOpenAIEmbeddingRequest(
 	if reqBody == nil {
 		return nil, newBifrostOperationError("embedding input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseEmbeddingRequest(reqBody)
 
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
@@ -726,6 +731,7 @@ func handleOpenAIStreaming(
 	if reqBody == nil {
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseChatRequest(reqBody)
 	reqBody.Stream = schemas.Ptr(true)
 	reqBody.StreamOptions = &schemas.ChatStreamOptions{
 		IncludeUsage: schemas.Ptr(true),
@@ -946,6 +952,7 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 	if reqBody == nil {
 		return nil, newBifrostOperationError("speech input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseSpeechRequest(reqBody)
 
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
@@ -1017,6 +1024,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	if reqBody == nil {
 		return nil, newBifrostOperationError("speech input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseSpeechRequest(reqBody)
 	reqBody.StreamFormat = schemas.Ptr("sse")
 
 	jsonBody, err := sonic.Marshal(reqBody)
@@ -1197,6 +1205,7 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 	if reqBody == nil {
 		return nil, newBifrostOperationError("transcription input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseTranscriptionRequest(reqBody)
 
 	// Create multipart form
 	var body bytes.Buffer
@@ -1283,6 +1292,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	if reqBody == nil {
 		return nil, newBifrostOperationError("transcription input is not provided", nil, providerName)
 	}
+	defer openai.ReleaseTranscriptionRequest(reqBody)
 	reqBody.Stream = schemas.Ptr(true)
 
 	// Create multipart form
