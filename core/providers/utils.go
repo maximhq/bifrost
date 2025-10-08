@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
+	"golang.org/x/net/proxy"
 )
 
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
@@ -127,6 +129,136 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	return client
+}
+
+// configureHTTPClientProxy configures proxy settings for a standard http.Client.
+// It returns a proxy function that can be assigned to http.Transport.Proxy.
+// Returns nil if no proxy should be used or if the configuration is invalid.
+// Note: For SOCKS5 proxies, use configureHTTPClientTransport instead as SOCKS5
+// requires DialContext configuration, not just the Proxy field.
+func configureHTTPClientProxy(proxyConfig *schemas.ProxyConfig, logger schemas.Logger) func(*http.Request) (*url.URL, error) {
+	if proxyConfig == nil {
+		return nil
+	}
+
+	switch proxyConfig.Type {
+	case schemas.NoProxy:
+		// No proxy - return nil to use direct connection
+		return nil
+
+	case schemas.HTTPProxy:
+		if proxyConfig.URL == "" {
+			logger.Warn(fmt.Sprintf("Warning: %s proxy URL is required for setting up proxy", proxyConfig.Type))
+			return nil
+		}
+
+		// Parse the proxy URL
+		parsedURL, err := url.Parse(proxyConfig.URL)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("Invalid proxy configuration: invalid %s proxy URL: %v", proxyConfig.Type, err))
+			return nil
+		}
+
+		// Add authentication if provided
+		if proxyConfig.Username != "" && proxyConfig.Password != "" {
+			parsedURL.User = url.UserPassword(proxyConfig.Username, proxyConfig.Password)
+		}
+
+		// Return a proxy function that always returns this proxy URL
+		return http.ProxyURL(parsedURL)
+
+	case schemas.Socks5Proxy:
+		// SOCKS5 requires DialContext configuration, not Proxy field
+		// Return nil and log a warning
+		logger.Warn("SOCKS5 proxy requires transport-level configuration; use configureHTTPClientTransport instead")
+		return nil
+
+	case schemas.EnvProxy:
+		// Use environment variables for proxy configuration (http_proxy, https_proxy, no_proxy)
+		return http.ProxyFromEnvironment
+
+	default:
+		logger.Warn(fmt.Sprintf("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type))
+		return nil
+	}
+}
+
+// configureHTTPClientTransport configures an http.Transport with proxy settings.
+// This function handles all proxy types including SOCKS5 which requires DialContext.
+// It modifies the transport in place and returns it for convenience.
+func configureHTTPClientTransport(transport *http.Transport, proxyConfig *schemas.ProxyConfig, logger schemas.Logger) *http.Transport {
+	if proxyConfig == nil || transport == nil {
+		return transport
+	}
+
+	switch proxyConfig.Type {
+	case schemas.NoProxy:
+		// No proxy - leave transport as is
+		return transport
+
+	case schemas.HTTPProxy:
+		if proxyConfig.URL == "" {
+			logger.Warn("Warning: HTTP proxy URL is required for setting up proxy")
+			return transport
+		}
+
+		// Parse the proxy URL
+		parsedURL, err := url.Parse(proxyConfig.URL)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("Invalid proxy configuration: invalid HTTP proxy URL: %v", err))
+			return transport
+		}
+
+		// Add authentication if provided
+		if proxyConfig.Username != "" && proxyConfig.Password != "" {
+			parsedURL.User = url.UserPassword(proxyConfig.Username, proxyConfig.Password)
+		}
+
+		// Set the proxy function
+		transport.Proxy = http.ProxyURL(parsedURL)
+
+	case schemas.Socks5Proxy:
+		if proxyConfig.URL == "" {
+			logger.Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
+			return transport
+		}
+
+		// Parse the proxy URL to extract host and port
+		parsedURL, err := url.Parse(proxyConfig.URL)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("Invalid proxy configuration: invalid SOCKS5 proxy URL: %v", err))
+			return transport
+		}
+
+		// Create SOCKS5 dialer
+		var auth *proxy.Auth
+		if proxyConfig.Username != "" && proxyConfig.Password != "" {
+			auth = &proxy.Auth{
+				User:     proxyConfig.Username,
+				Password: proxyConfig.Password,
+			}
+		}
+
+		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, proxy.Direct)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("Failed to create SOCKS5 dialer: %v", err))
+			return transport
+		}
+
+		// Set custom DialContext that uses the SOCKS5 proxy
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		}
+
+	case schemas.EnvProxy:
+		// Use environment variables for proxy configuration (http_proxy, https_proxy, no_proxy)
+		transport.Proxy = http.ProxyFromEnvironment
+
+	default:
+		logger.Warn(fmt.Sprintf("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type))
+	}
+
+	return transport
 }
 
 // setExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
@@ -516,6 +648,24 @@ func handleStreamEndWithSuccess(
 ) {
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 	processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
+}
+
+// handleStreamEndForPassthrough sets the stream end indicator and runs post-hooks
+// WITHOUT sending the response to the channel. This is specifically for passthrough modes
+// where raw SSE events are forwarded as-is, and we only need to trigger telemetry/logging
+// without sending a duplicate event to the client.
+func handleStreamEndForPassthrough(
+	ctx context.Context,
+	response *schemas.BifrostResponse,
+	postHookRunner schemas.PostHookRunner,
+	logger schemas.Logger,
+) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	_, bifrostErr := postHookRunner(&ctx, response, nil)
+	if bifrostErr != nil && handleStreamControlSkip(logger, bifrostErr) {
+		return
+	}
 }
 
 func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostError) bool {

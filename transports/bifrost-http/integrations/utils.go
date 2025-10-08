@@ -48,15 +48,15 @@
 package integrations
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
-
-	"bufio"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -215,6 +215,45 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router) {
 	}
 }
 
+// isAPIKeyAuth checks if the request uses standard API key authentication.
+// Returns true for API key auth (x-api-key header), false for OAuth (Bearer sk-ant-oat*).
+// This is required for Claude Code specifically, which may use OAuth authentication.
+// Default behavior is to assume API mode when neither x-api-key nor OAuth token is present.
+func isAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
+	// If x-api-key header is present - this is definitely API mode
+	if apiKey := string(ctx.Request.Header.Peek("x-api-key")); apiKey != "" {
+		return true
+	}
+
+	// Check for OAuth token in Authorization header
+	if authHeader := string(ctx.Request.Header.Peek("Authorization")); authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat") {
+			return false // OAuth mode, NOT API
+		}
+	}
+
+	// Default to API mode
+	return true
+}
+
+// isAnthropicRequest checks if the request is targeting an Anthropic endpoint.
+// This is used to determine if we need to preserve the raw request for potential passthrough.
+func isAnthropicRequest(ctx *fasthttp.RequestCtx) bool {
+	path := string(ctx.Path())
+	return strings.Contains(path, "/anthropic/") || strings.Contains(path, "/v1/messages")
+}
+
+// extractHeaders converts fasthttp headers to a map for passthrough mode.
+// This preserves all original headers for the anthropic_passthrough provider.
+func extractHeaders(ctx *fasthttp.RequestCtx) map[string][]string {
+	headers := make(map[string][]string)
+	for key, value := range ctx.Request.Header.All() {
+		keyStr := string(key)
+		headers[keyStr] = append(headers[keyStr], string(value))
+	}
+	return headers
+}
+
 // createHandler creates a fasthttp handler for the given route configuration.
 // The handler follows this flow:
 // 1. Parse JSON request body into the configured request type (for methods that expect bodies)
@@ -231,8 +270,33 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		method := string(ctx.Method())
 
+		var body []byte
+		var originalHeaders map[string][]string
+		var originalPath string
+
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodDelete {
+
+			body = ctx.Request.Body()
+
+			// If this is an Anthropic request with OAuth, preserve headers and path for passthrough
+			if isAnthropicRequest(ctx) && !isAPIKeyAuth(ctx) {
+				originalHeaders = extractHeaders(ctx)
+				// Extract the original path, removing the /anthropic prefix
+				fullPath := string(ctx.Path())
+
+				if strings.HasPrefix(fullPath, "/anthropic") {
+					originalPath = strings.TrimPrefix(fullPath, "/anthropic")
+				} else {
+					originalPath = fullPath
+				}
+
+				// Preserve query string if present
+				if queryString := string(ctx.URI().QueryString()); queryString != "" {
+					originalPath += "?" + queryString
+				}
+			}
+
 			if config.RequestParser != nil {
 				// Use custom parser (e.g., for multipart/form-data)
 				if err := config.RequestParser(ctx, req); err != nil {
@@ -241,7 +305,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				}
 			} else {
 				// Use default JSON parsing
-				body := ctx.Request.Body()
 				if len(body) > 0 {
 					if err := json.Unmarshal(body, req); err != nil {
 						g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
@@ -277,6 +340,17 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
+		// Auto-detect auth mode for Anthropic: API keys use standard provider,
+		// OAuth tokens (sk-ant-oat-*) use passthrough to preserve request structure
+		if bifrostReq.Provider == schemas.Anthropic {
+			// Switch to passthrough provider if NOT API key auth (i.e., OAuth)
+			if !isAPIKeyAuth(ctx) {
+				bifrostReq.Provider = schemas.AnthropicPassthrough
+				if bifrostReq.ChatRequest != nil {
+					bifrostReq.ChatRequest.Provider = schemas.AnthropicPassthrough
+				}
+			}
+		}
 
 		// Check if streaming is requested
 		isStreaming := false
@@ -291,6 +365,17 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			key, ok := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)).(schemas.Key)
 			if ok {
 				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+			}
+		}
+
+		if bifrostReq.Provider == schemas.AnthropicPassthrough && len(body) > 0 {
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyOriginalRequest, json.RawMessage(body))
+			if originalHeaders != nil {
+				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyOriginalHeaders, originalHeaders)
+			}
+
+			if originalPath != "" {
+				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyOriginalPath, originalPath)
 			}
 		}
 
@@ -342,6 +427,11 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		return
 	}
 
+	var headers http.Header
+	if h, ok := result.ExtraFields.RawHeaders.(http.Header); ok {
+		headers = h
+	}
+
 	// Convert Bifrost response to integration-specific format and send
 	response, err := config.ResponseConverter(result)
 	if err != nil {
@@ -360,7 +450,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 	}
 
-	g.sendSuccess(ctx, config.ErrorConverter, response)
+	g.sendSuccess(ctx, config.ErrorConverter, response, headers)
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
@@ -464,6 +554,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 			case <-ctx.Done():
 				return
 			default:
+			}
+
+			if response.RawSSEEvent != nil {
+				if _, err := w.Write(response.RawSSEEvent); err != nil {
+					return
+				}
+				if err := w.Flush(); err != nil {
+					return
+				}
+				continue
 			}
 
 			// Handle errors
@@ -625,8 +725,21 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, errorConverter Error
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
-func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter ErrorConverter, response interface{}) {
+func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter ErrorConverter, response interface{}, headers http.Header) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
+
+	if headers != nil {
+		if rawBytes, okBody := response.([]byte); okBody {
+			for k, vv := range headers {
+				for _, v := range vv {
+					ctx.Response.Header.Add(k, v)
+				}
+			}
+			ctx.SetBody(rawBytes)
+			return
+		}
+	}
+
 	ctx.SetContentType("application/json")
 
 	responseBody, err := json.Marshal(response)

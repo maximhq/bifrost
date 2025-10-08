@@ -979,6 +979,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return providers.NewOpenAIProvider(config, bifrost.logger), nil
 	case schemas.Anthropic:
 		return providers.NewAnthropicProvider(config, bifrost.logger), nil
+	case schemas.AnthropicPassthrough:
+		return providers.NewAnthropicPassthroughProvider(config, bifrost.logger), nil
 	case schemas.Bedrock:
 		return providers.NewBedrockProvider(config, bifrost.logger)
 	case schemas.Cohere:
@@ -1440,6 +1442,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 					outputStream <- &schemas.BifrostStream{
 						BifrostResponse: processedResp,
 						BifrostError:    processedErr,
+						RawSSEEvent:     streamMsg.RawSSEEvent,
 					}
 				}
 			}()
