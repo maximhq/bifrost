@@ -1,32 +1,61 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import type { LogEntry, WebSocketLogMessage } from "../lib/types/logs";
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import { getWebSocketUrl } from "@/lib/utils/port";
+
+type MessageHandler = (data: any) => void;
 
 interface WebSocketContextType {
 	isConnected: boolean;
 	ws: React.RefObject<WebSocket | null>;
-	setMessageHandler: (handler: (log: LogEntry, operation: "create" | "update") => void) => void;
+	subscribe: (channel: string, handler: MessageHandler) => () => void;
+	send: (data: any) => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
 interface WebSocketProviderProps {
 	children: ReactNode;
+	path?: string;
 }
 
 // Global reference to maintain state across component remounts
 let globalWsRef: WebSocket | null = null;
-let globalMessageHandler: ((log: LogEntry, operation: "create" | "update") => void) | null = null;
+const messageHandlers = new Map<string, Set<MessageHandler>>();
 
-export function WebSocketProvider({ children }: WebSocketProviderProps) {
+export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderProps) {
 	const wsRef = useRef<WebSocket | null>(globalWsRef);
 	const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+	const retryCountRef = useRef(0);
 	const [isConnected, setIsConnected] = useState(false);
 
-	const setMessageHandler = (handler: (log: LogEntry, operation: "create" | "update") => void) => {
-		globalMessageHandler = handler;
+	const subscribe = useCallback<(channel: string, handler: MessageHandler) => () => void>((channel, handler) => {
+		if (!messageHandlers.has(channel)) {
+			messageHandlers.set(channel, new Set());
+		}
+		messageHandlers.get(channel)!.add(handler);
+
+		// Return unsubscribe function
+		return () => {
+			const handlers = messageHandlers.get(channel);
+			if (handlers) {
+				handlers.delete(handler);
+				if (handlers.size === 0) {
+					messageHandlers.delete(channel);
+				}
+			}
+		};
+	}, []);
+
+	const send = (data: any) => {
+		if (wsRef.current?.readyState === WebSocket.OPEN) {
+			try {
+				wsRef.current.send(typeof data === "string" ? data : JSON.stringify(data));
+			} catch (error) {
+				console.error("Failed to send WebSocket message:", error);
+			}
+		}
 	};
 
 	useEffect(() => {
@@ -35,7 +64,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 				return;
 			}
 
-			const wsUrl = getWebSocketUrl("/ws/logs");
+			const wsUrl = getWebSocketUrl(path);
 
 			const ws = new WebSocket(wsUrl);
 			wsRef.current = ws;
@@ -44,18 +73,44 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 			ws.onopen = () => {
 				console.log("WebSocket connected");
 				setIsConnected(true);
+				retryCountRef.current = 0; // Reset retry count on successful connection
+
 				// Clear any pending reconnection attempts
 				if (reconnectTimeoutRef.current) {
 					clearTimeout(reconnectTimeoutRef.current);
 					reconnectTimeoutRef.current = null;
 				}
+
+				// Start heartbeat/ping to keep connection alive
+				if (pingTimerRef.current) {
+					clearInterval(pingTimerRef.current);
+				}
+				pingTimerRef.current = setInterval(() => {
+					if (ws.readyState === WebSocket.OPEN) {
+						try {
+							ws.send("ping");
+						} catch (error) {
+							console.error("Ping failed:", error);
+						}
+					}
+				}, 25000); // Ping every 25 seconds
 			};
 
 			ws.onmessage = (event) => {
 				try {
-					const data: WebSocketLogMessage = JSON.parse(event.data);
-					if (data.type === "log" && globalMessageHandler) {
-						globalMessageHandler(data.payload, data.operation);
+					const data = JSON.parse(event.data);
+					const messageType = data.type || "default";
+
+					// Notify all subscribers for this message type
+					const handlers = messageHandlers.get(messageType);
+					if (handlers) {
+						handlers.forEach((handler) => handler(data));
+					}
+
+					// Also notify wildcard subscribers
+					const wildcardHandlers = messageHandlers.get("*");
+					if (wildcardHandlers) {
+						wildcardHandlers.forEach((handler) => handler(data));
 					}
 				} catch (error) {
 					console.error("Failed to parse WebSocket message:", error);
@@ -65,11 +120,23 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 			ws.onclose = () => {
 				console.log("WebSocket disconnected, attempting to reconnect...");
 				setIsConnected(false);
-				// Attempt to reconnect after 5 seconds
-				reconnectTimeoutRef.current = setTimeout(connect, 5000);
+
+				// Clear ping timer
+				if (pingTimerRef.current) {
+					clearInterval(pingTimerRef.current);
+					pingTimerRef.current = null;
+				}
+
+				// Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 32s (max)
+				retryCountRef.current = Math.min(retryCountRef.current + 1, 6);
+				const delay = Math.pow(2, retryCountRef.current) * 500;
+				console.log(`Reconnecting in ${delay}ms...`);
+
+				reconnectTimeoutRef.current = setTimeout(connect, delay);
 			};
 
 			ws.onerror = (error) => {
+				console.error("WebSocket error:", error);
 				setIsConnected(false);
 				ws.close();
 			};
@@ -84,10 +151,14 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 				clearTimeout(reconnectTimeoutRef.current);
 				reconnectTimeoutRef.current = null;
 			}
+			if (pingTimerRef.current) {
+				clearInterval(pingTimerRef.current);
+				pingTimerRef.current = null;
+			}
 		};
-	}, []);
+	}, [path]);
 
-	return <WebSocketContext.Provider value={{ isConnected, ws: wsRef, setMessageHandler }}>{children}</WebSocketContext.Provider>;
+	return <WebSocketContext.Provider value={{ isConnected, ws: wsRef, subscribe, send }}>{children}</WebSocketContext.Provider>;
 }
 
 export function useWebSocket() {
