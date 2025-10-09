@@ -216,4 +216,7 @@ type Provider interface {
 	Transcription(ctx context.Context, key Key, request *BifrostTranscriptionRequest) (*BifrostResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
 	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStream, *BifrostError)
+	// Management APIs
+	// Models returns the list of models supported by the provider
+	Models(ctx context.Context) ([]Model, *BifrostError)
 }

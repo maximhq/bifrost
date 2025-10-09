@@ -11,7 +11,15 @@ const (
 	DefaultInitialPoolSize = 5000
 )
 
+// BifrostRequest is the request struct for all bifrost requests
 // only ONE of the following fields should be set:
+// - TextCompletionRequest
+// - ChatRequest
+// - ResponsesRequest
+// - EmbeddingRequest
+// - SpeechRequest
+// - TranscriptionRequest
+// if none of the above fields are set, the request will be treated as a text completion request
 type BifrostRequest struct {
 	Provider    ModelProvider
 	Model       string
