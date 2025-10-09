@@ -110,6 +110,11 @@ func (p *OtelPlugin) GetName() string {
 	return PluginName
 }
 
+// TransportInterceptor is not used for this plugin
+func (p *OtelPlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	return headers, body, nil
+}
+
 // ValidateConfig function for the OTEL plugin
 func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
 	var otelConfig Config

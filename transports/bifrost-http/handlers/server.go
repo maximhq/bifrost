@@ -238,14 +238,14 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
 	var err error
 	plugins := []schemas.Plugin{}
-	config.LoadedPlugins = make(map[string]bool)
+	config.LoadedPluginsMap = make(map[string]bool)
 	// Initialize telemetry plugin
 	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, config)
 	if err != nil {
 		logger.Error("failed to initialize telemetry plugin: %v", err)
 	} else {
 		plugins = append(plugins, promPlugin)
-		config.LoadedPlugins[telemetry.PluginName] = true
+		config.LoadedPluginsMap[telemetry.PluginName] = true
 	}
 	// Initializing logger plugin
 	var loggingPlugin *logging.LoggerPlugin
@@ -256,7 +256,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 			logger.Error("failed to initialize logging plugin: %v", err)
 		} else {
 			plugins = append(plugins, loggingPlugin)
-			config.LoadedPlugins[logging.PluginName] = true
+			config.LoadedPluginsMap[logging.PluginName] = true
 		}
 	}
 	// Initializing governance plugin
@@ -270,12 +270,12 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 			logger.Error("failed to initialize governance plugin: %s", err.Error())
 		} else {
 			plugins = append(plugins, governancePlugin)
-			config.LoadedPlugins[governance.PluginName] = true
+			config.LoadedPluginsMap[governance.PluginName] = true
 		}
 	}
 	// Currently we support first party plugins only
 	// Eventually same flow will be used for third party plugins
-	for _, plugin := range config.Plugins {
+	for _, plugin := range config.PluginConfigs {
 		if !plugin.Enabled {
 			continue
 		}
@@ -284,9 +284,12 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 			logger.Error("failed to load plugin %s: %v", plugin.Name, err)
 		} else {
 			plugins = append(plugins, pluginInstance)
-			config.LoadedPlugins[plugin.Name] = true
+			config.LoadedPluginsMap[plugin.Name] = true
 		}
 	}
+
+	config.LoadedPlugins = plugins[:]
+
 	return plugins, nil
 }
 
@@ -350,8 +353,8 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, plugi
 	}
 	s.Plugins = append(s.Plugins, newPlugin)
 updated:
-	if s.Config != nil && s.Config.LoadedPlugins != nil {
-		s.Config.LoadedPlugins[name] = true
+	if s.Config != nil && s.Config.LoadedPluginsMap != nil {
+		s.Config.LoadedPluginsMap[name] = true
 	}
 	return nil
 }
@@ -367,8 +370,8 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 			break
 		}
 	}
-	if s.Config != nil && s.Config.LoadedPlugins != nil {
-		delete(s.Config.LoadedPlugins, name)
+	if s.Config != nil && s.Config.LoadedPluginsMap != nil {
+		delete(s.Config.LoadedPluginsMap, name)
 	}
 	return nil
 }
@@ -521,7 +524,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            CorsMiddleware(s.Config)(VKProviderRoutingMiddleware(s.Config, logger)(s.Router.Handler)),
+		Handler:            CorsMiddleware(s.Config)(TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 	}
 	return nil

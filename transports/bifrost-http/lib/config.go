@@ -134,8 +134,9 @@ type Config struct {
 	EnvKeys map[string][]configstore.EnvKeyInfo
 
 	// Plugin configs
-	Plugins       []*schemas.PluginConfig
-	LoadedPlugins map[string]bool
+	PluginConfigs    []*schemas.PluginConfig
+	LoadedPluginsMap map[string]bool
+	LoadedPlugins    []schemas.Plugin
 
 	// Pricing manager
 	PricingManager *pricing.PricingManager
@@ -330,9 +331,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				return nil, fmt.Errorf("failed to get plugins: %w", err)
 			}
 			if plugins == nil {
-				config.Plugins = []*schemas.PluginConfig{}
+				config.PluginConfigs = []*schemas.PluginConfig{}
 			} else {
-				config.Plugins = make([]*schemas.PluginConfig, len(plugins))
+				config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 				for i, plugin := range plugins {
 					pluginConfig := &schemas.PluginConfig{
 						Name:    plugin.Name,
@@ -344,7 +345,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 							logger.Warn("failed to add provider keys to semantic cache config: %v", err)
 						}
 					}
-					config.Plugins[i] = pluginConfig
+					config.PluginConfigs[i] = pluginConfig
 				}
 			}
 			// Loading governance config
@@ -687,7 +688,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			logger.Warn("failed to get plugins from store: %v", err)
 		}
 		if plugins != nil {
-			config.Plugins = make([]*schemas.PluginConfig, len(plugins))
+			config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 			for i, plugin := range plugins {
 				pluginConfig := &schemas.PluginConfig{
 					Name:    plugin.Name,
@@ -699,28 +700,28 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						logger.Warn("failed to add provider keys to semantic cache config: %v", err)
 					}
 				}
-				config.Plugins[i] = pluginConfig
+				config.PluginConfigs[i] = pluginConfig
 			}
 		}
 	}
 
 	// If plugins are not present in the store, we will use the config file
-	if len(config.Plugins) == 0 && len(configData.Plugins) > 0 {
+	if len(config.PluginConfigs) == 0 && len(configData.Plugins) > 0 {
 		logger.Debug("no plugins found in store, processing from config file")
-		config.Plugins = configData.Plugins
+		config.PluginConfigs = configData.Plugins
 
-		for i, plugin := range config.Plugins {
+		for i, plugin := range config.PluginConfigs {
 			if plugin.Name == semanticcache.PluginName {
 				if err := config.AddProviderKeysToSemanticCacheConfig(plugin); err != nil {
 					logger.Warn("failed to add provider keys to semantic cache config: %v", err)
 				}
-				config.Plugins[i] = plugin
+				config.PluginConfigs[i] = plugin
 			}
 		}
 
 		if config.ConfigStore != nil {
 			logger.Debug("updating plugins in store")
-			for _, plugin := range config.Plugins {
+			for _, plugin := range config.PluginConfigs {
 				pluginConfigCopy, err := DeepCopy(plugin.Config)
 				if err != nil {
 					logger.Warn("failed to deep copy plugin config, skipping database update: %v", err)

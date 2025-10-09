@@ -4,6 +4,10 @@ package governance
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"slices"
+	"sort"
+	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -93,6 +97,103 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store conf
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// TransportInterceptor intercepts requests before they are processed (governance decision point)
+func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	var virtualKeyValue string
+
+	for header, value := range headers {
+		if strings.ToLower(string(header)) == "x-bf-vk" {
+			virtualKeyValue = string(value)
+			break
+		}
+	}
+	if virtualKeyValue == "" {
+		return headers, body, nil
+	}
+
+	// Check if the request has a model field
+	modelValue, hasModel := body["model"]
+	if !hasModel {
+		return headers, body, nil
+	}
+	modelStr, ok := modelValue.(string)
+	if !ok || modelStr == "" {
+		return headers, body, nil
+	}
+
+	// // Check if model already has provider prefix (contains "/")
+	// if strings.Contains(modelStr, "/") {
+	// 	provider, _ := schemas.ParseModelString(modelStr, "")
+	// 	// Checking valid provider
+	// 	if _, ok := p.configStore.Providers[provider]; ok {
+	// 		return headers, body, nil
+	// 	}
+	// }
+
+	virtualKey, ok := p.store.GetVirtualKey(virtualKeyValue)
+	if !ok || virtualKey == nil || !virtualKey.IsActive {
+		return headers, body, nil
+	}
+
+	// Get provider configs for this virtual key
+	providerConfigs := virtualKey.ProviderConfigs
+	if len(providerConfigs) == 0 {
+		// No provider configs, continue without modification
+		return headers, body, nil
+	}
+	allowedProviderConfigs := make([]configstore.TableVirtualKeyProviderConfig, 0)
+	for _, config := range providerConfigs {
+		if len(config.AllowedModels) == 0 || slices.Contains(config.AllowedModels, modelStr) {
+			allowedProviderConfigs = append(allowedProviderConfigs, config)
+		}
+	}
+	if len(allowedProviderConfigs) == 0 {
+		// No allowed provider configs, continue without modification
+		return headers, body, nil
+	}
+	// Weighted random selection from allowed providers for the main model
+	totalWeight := 0.0
+	for _, config := range allowedProviderConfigs {
+		totalWeight += config.Weight
+	}
+	// Generate random number between 0 and totalWeight
+	randomValue := rand.Float64() * totalWeight
+	// Select provider based on weighted random selection
+	var selectedProvider schemas.ModelProvider
+	currentWeight := 0.0
+	for _, config := range allowedProviderConfigs {
+		currentWeight += config.Weight
+		if randomValue <= currentWeight {
+			selectedProvider = schemas.ModelProvider(config.Provider)
+			break
+		}
+	}
+	// Update the model field in the request body
+	body["model"] = string(selectedProvider) + "/" + modelStr
+
+	// Check if fallbacks field is already present
+	_, hasFallbacks := body["fallbacks"]
+	if !hasFallbacks && len(allowedProviderConfigs) > 1 {
+		// Sort allowed provider configs by weight (descending)
+		sort.Slice(allowedProviderConfigs, func(i, j int) bool {
+			return allowedProviderConfigs[i].Weight > allowedProviderConfigs[j].Weight
+		})
+
+		// Filter out the selected provider and create fallbacks array
+		fallbacks := make([]string, 0, len(allowedProviderConfigs)-1)
+		for _, config := range allowedProviderConfigs {
+			if config.Provider != string(selectedProvider) {
+				fallbacks = append(fallbacks, string(schemas.ModelProvider(config.Provider))+"/"+modelStr)
+			}
+		}
+
+		// Add fallbacks to request body
+		body["fallbacks"] = fallbacks
+	}
+
+	return headers, body, nil
 }
 
 // PreHook intercepts requests before they are processed (governance decision point)

@@ -478,6 +478,11 @@ func (p *MockerPlugin) GetName() string {
 	return PluginName
 }
 
+// TransportInterceptor is not used for this plugin
+func (p *MockerPlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	return headers, body, nil
+}
+
 // PreHook intercepts requests and applies mocking rules based on configuration
 // This is called before the actual provider request and can short-circuit the flow
 func (p *MockerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {

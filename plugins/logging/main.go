@@ -211,6 +211,11 @@ func (p *LoggerPlugin) GetName() string {
 	return PluginName
 }
 
+// TransportInterceptor is not used for this plugin
+func (p *LoggerPlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	return headers, body, nil
+}
+
 // PreHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
 func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	if ctx == nil {
