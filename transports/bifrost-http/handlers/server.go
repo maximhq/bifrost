@@ -58,8 +58,9 @@ type BifrostHTTPServer struct {
 	Client  *bifrost.Bifrost
 	Config  *lib.Config
 
-	Server *fasthttp.Server
-	Router *router.Router
+	Server           *fasthttp.Server
+	Router           *router.Router
+	WebSocketHandler *WebSocketHandler
 }
 
 // NewBifrostHTTPServer creates a new instance of BifrostHTTPServer.
@@ -315,7 +316,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore() error {
 		return fmt.Errorf("failed to get client config: %v", err)
 	}
 	s.Config.ClientConfig = *config
-	
+
 	// Reloading config in bifrost client
 	if s.Client != nil {
 		account := lib.NewBaseAccount(s.Config)
@@ -395,14 +396,15 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...B
 		cacheHandler = NewCacheHandler(semanticCachePlugin, logger)
 	}
 	// Websocket handler needs to go below UI handler
-	var wsHandler *WebSocketHandler
+	logger.Debug("initializing websocket server")
 	if loggerPlugin != nil {
-		logger.Debug("initializing websocket server")
-		wsHandler = NewWebSocketHandler(ctx, loggerPlugin.GetPluginLogManager(), logger, s.Config.ClientConfig.AllowedOrigins)
-		loggerPlugin.SetLogCallback(wsHandler.BroadcastLogUpdate)
-		// Start WebSocket heartbeat
-		wsHandler.StartHeartbeat()
+		s.WebSocketHandler = NewWebSocketHandler(ctx, loggerPlugin.GetPluginLogManager(), logger, s.Config.ClientConfig.AllowedOrigins)
+		loggerPlugin.SetLogCallback(s.WebSocketHandler.BroadcastLogUpdate)
+	} else {
+		s.WebSocketHandler = NewWebSocketHandler(ctx, nil, logger, s.Config.ClientConfig.AllowedOrigins)
 	}
+	// Start WebSocket heartbeat
+	s.WebSocketHandler.StartHeartbeat()
 	// Chaining all middlewares
 	// ChainMiddlewares chains multiple middlewares together
 	// Initialize handlers
@@ -428,8 +430,8 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...B
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
-	if wsHandler != nil {
-		wsHandler.RegisterRoutes(s.Router, middlewares...)
+	if s.WebSocketHandler != nil {
+		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	//
 	// Add Prometheus /metrics endpoint

@@ -187,12 +187,17 @@ export default function LogsPage() {
 		});
 	}, []);
 
-	const { isConnected: isSocketConnected, setMessageHandler } = useWebSocket();
+	const { isConnected: isSocketConnected, subscribe } = useWebSocket();
 
-	// Set up the message handler when the component mounts
+	// Subscribe to log messages
 	useEffect(() => {
-		setMessageHandler(handleLogMessage);
-	}, [handleLogMessage, setMessageHandler]);
+		const unsubscribe = subscribe("log", (data) => {
+			const { payload, operation } = data;
+			handleLogMessage(payload, operation);
+		});
+
+		return unsubscribe;
+	}, [handleLogMessage, subscribe]);
 
 	// Cleanup timeouts on unmount
 	useEffect(() => {
