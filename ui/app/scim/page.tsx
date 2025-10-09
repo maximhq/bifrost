@@ -1,4 +1,4 @@
-import SCIMView from "@enterprise/scim/governanceView";
+import SCIMView from "@enterprise/components/scim/scimView";
 
 
 export default function SCIMPage() {

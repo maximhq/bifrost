@@ -9,8 +9,9 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery } from "@/lib/store";
 import { Geist, Geist_Mono } from "next/font/google";
+import { usePathname } from "next/navigation";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { toast, Toaster } from "sonner";
 import "./globals.css";
 
@@ -25,13 +26,21 @@ const geistMono = Geist_Mono({
 });
 
 function AppContent({ children }: { children: React.ReactNode }) {
+	const pathname = usePathname();
 	const { data: bifrostConfig, error } = useGetCoreConfigQuery({});
+	const isLoginPage = useMemo(() => {
+		return pathname === "/login";
+	}, [pathname]);
 
 	useEffect(() => {
 		if (error) {
 			toast.error(getErrorMessage(error));
 		}
 	}, [error]);
+
+	if (isLoginPage) {
+		return children;
+	}
 
 	return (
 		<WebSocketProvider>

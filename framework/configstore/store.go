@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/migrator"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
@@ -106,6 +107,12 @@ type ConfigStore interface {
 	// Generic transaction manager
 	ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error
 
+	// DB returns the underlying database connection.
+	DB() *gorm.DB
+
+	// Migration manager
+	RunMigration(ctx context.Context, migration *migrator.Migration) error
+
 	// Cleanup
 	Close(ctx context.Context) error
 }
@@ -115,7 +122,6 @@ func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) 
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
-
 	if !config.Enabled {
 		return nil, nil
 	}

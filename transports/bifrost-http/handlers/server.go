@@ -556,7 +556,9 @@ func (s *BifrostHTTPServer) Start() error {
 			logger.Info("server gracefully shutdown")
 		}
 		// Cancelling main context
-		s.cancel()
+		if s.cancel != nil {
+			s.cancel()
+		}
 		// Wait for shutdown to complete or timeout
 		done := make(chan struct{})
 		go func() {

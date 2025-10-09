@@ -8,8 +8,8 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { getErrorMessage, useLazyGetLogsQuery } from "@/lib/store";
-import type { ChatMessage, ContentBlock, LogEntry, LogFilters, LogStats, ChatMessageContent, Pagination } from "@/lib/types/logs";
+import { getErrorMessage, useAppSelector, useLazyGetLogsQuery } from "@/lib/store";
+import type { ChatMessage, ChatMessageContent, ContentBlock, LogEntry, LogFilters, LogStats, Pagination } from "@/lib/types/logs";
 import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -21,6 +21,9 @@ export default function LogsPage() {
 	const [fetchingLogs, setFetchingLogs] = useState(false); // on pagination/filters change
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
+	const user = useAppSelector((state) => state.user?.currentUser);
+
+	console.log("user", user);
 
 	// RTK Query lazy hook for manual triggering
 	const [triggerGetLogs] = useLazyGetLogsQuery();

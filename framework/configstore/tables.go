@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 )
@@ -618,6 +619,76 @@ type TableCustomer struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
 
+// TableUser represents a user entity with profile and config association
+type TableUser struct {
+	ID string `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Name string `gorm:"type:varchar(255);not null" json:"name"`
+
+	Profile *string `gorm:"ty	pe:text" json:"-"`
+	ParsedProfile map[string]interface{} `gorm:"-" json:"profile"`
+
+	Config *string `gorm:"type:text" json:"-"`
+	ParsedConfig map[string]interface{} `gorm:"-" json:"config"`
+
+	Claims *string `gorm:"type:text" json:"-"`
+	ParsedClaims map[string]interface{} `gorm:"-" json:"claims"`
+
+	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
+}
+
+// TableName for TableUser
+func (TableUser) TableName() string { return "governance_users" }
+
+// GORM Hooks for validation and constraints
+
+// BeforeSave hook for TableUser to serialize JSON fields
+func (u *TableUser) BeforeSave(tx *gorm.DB) error {
+	if u.ParsedProfile != nil {
+		data, err := json.Marshal(u.ParsedProfile)
+		if err != nil {
+			return err
+		}
+		u.Profile = bifrost.Ptr(string(data))
+	}
+	if u.ParsedConfig != nil {
+		data, err := json.Marshal(u.ParsedConfig)
+		if err != nil {
+			return err
+		}
+		u.Config = bifrost.Ptr(string(data))
+	}
+	if u.ParsedClaims != nil {
+		data, err := json.Marshal(u.ParsedClaims)
+		if err != nil {
+			return err
+		}
+		u.Claims = bifrost.Ptr(string(data))
+	}
+	return nil
+}
+
+// AfterFind hook for TableUser to deserialize JSON fields
+func (u *TableUser) AfterFind(tx *gorm.DB) error {
+	if u.Profile != nil {
+		if err := json.Unmarshal([]byte(*u.Profile), &u.ParsedProfile); err != nil {
+			return err
+		}
+	}
+	if u.Config != nil {
+		if err := json.Unmarshal([]byte(*u.Config), &u.ParsedConfig); err != nil {
+			return err
+		}
+	}
+	if u.Claims != nil {
+		if err := json.Unmarshal([]byte(*u.Claims), &u.ParsedClaims); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+
 // TableTeam represents a team entity with budget and customer association
 type TableTeam struct {
 	ID         string  `gorm:"primaryKey;type:varchar(255)" json:"id"`
@@ -630,9 +701,66 @@ type TableTeam struct {
 	Budget      *TableBudget      `gorm:"foreignKey:BudgetID" json:"budget,omitempty"`
 	VirtualKeys []TableVirtualKey `gorm:"foreignKey:TeamID" json:"virtual_keys"`
 
+	Profile *string `gorm:"type:text" json:"-"`
+	ParsedProfile map[string]interface{} `gorm:"-" json:"profile"`
+	
+	Config *string `gorm:"type:text" json:"-"`
+	ParsedConfig map[string]interface{} `gorm:"-" json:"config"`
+
+	Claims *string `gorm:"type:text" json:"-"`
+	ParsedClaims map[string]interface{} `gorm:"-" json:"claims"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
+
+// GORM Hooks for validation and constraints
+// BeforeSave hook for TableTeam to serialize JSON fields
+func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
+	if t.ParsedProfile != nil {
+		data, err := json.Marshal(t.ParsedProfile)
+		if err != nil {
+			return err
+		}
+		t.Profile = bifrost.Ptr(string(data))
+	}
+	if t.ParsedConfig != nil {
+		data, err := json.Marshal(t.ParsedConfig)
+		if err != nil {
+			return err
+		}
+		t.Config = bifrost.Ptr(string(data))
+	}
+	if t.ParsedClaims != nil {
+		data, err := json.Marshal(t.ParsedClaims)
+		if err != nil {
+			return err
+		}
+		t.Claims = bifrost.Ptr(string(data))
+	}
+	return nil
+}
+
+// AfterFind hook for TableTeam to deserialize JSON fields
+func (t *TableTeam) AfterFind(tx *gorm.DB) error {
+	if t.Profile != nil {
+		if err := json.Unmarshal([]byte(*t.Profile), &t.ParsedProfile); err != nil {
+			return err
+		}
+	}
+	if t.Config != nil {
+		if err := json.Unmarshal([]byte(*t.Config), &t.ParsedConfig); err != nil {
+			return err
+		}
+	}
+	if t.Claims != nil {
+		if err := json.Unmarshal([]byte(*t.Claims), &t.ParsedClaims); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type TableVirtualKey struct {
