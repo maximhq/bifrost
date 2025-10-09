@@ -16,7 +16,7 @@ func Ptr[T any](v T) *T {
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
 // Some providers like Ollama and SGL are keyless and don't require API keys.
 func providerRequiresKey(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Ollama && providerKey != schemas.SGL
+	return providerKey != schemas.Ollama && providerKey != schemas.SGL && providerKey != schemas.AnthropicPassthrough
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.

@@ -46,20 +46,21 @@ type BifrostConfig struct {
 type ModelProvider string
 
 const (
-	OpenAI     ModelProvider = "openai"
-	Azure      ModelProvider = "azure"
-	Anthropic  ModelProvider = "anthropic"
-	Bedrock    ModelProvider = "bedrock"
-	Cohere     ModelProvider = "cohere"
-	Vertex     ModelProvider = "vertex"
-	Mistral    ModelProvider = "mistral"
-	Ollama     ModelProvider = "ollama"
-	Groq       ModelProvider = "groq"
-	SGL        ModelProvider = "sgl"
-	Parasail   ModelProvider = "parasail"
-	Cerebras   ModelProvider = "cerebras"
-	Gemini     ModelProvider = "gemini"
-	OpenRouter ModelProvider = "openrouter"
+	OpenAI               ModelProvider = "openai"
+	Azure                ModelProvider = "azure"
+	Anthropic            ModelProvider = "anthropic"
+	AnthropicPassthrough ModelProvider = "anthropic_passthrough"
+	Bedrock              ModelProvider = "bedrock"
+	Cohere               ModelProvider = "cohere"
+	Vertex               ModelProvider = "vertex"
+	Mistral              ModelProvider = "mistral"
+	Ollama               ModelProvider = "ollama"
+	Groq                 ModelProvider = "groq"
+	SGL                  ModelProvider = "sgl"
+	Parasail             ModelProvider = "parasail"
+	Cerebras             ModelProvider = "cerebras"
+	Gemini               ModelProvider = "gemini"
+	OpenRouter           ModelProvider = "openrouter"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -117,6 +118,9 @@ const (
 	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
 	BifrostContextKeySelectedKey        BifrostContextKey = "bifrost-key-selected" // To store the selected key ID (set by bifrost)
 	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
+	BifrostContextKeyOriginalRequest    BifrostContextKey = "bifrost-original-request"
+	BifrostContextKeyOriginalHeaders    BifrostContextKey = "bifrost-original-headers"
+	BifrostContextKeyOriginalPath       BifrostContextKey = "bifrost-original-path"
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
@@ -496,6 +500,7 @@ type BifrostResponseExtraFields struct {
 	BilledUsage    *BilledLLMUsage    `json:"billed_usage,omitempty"`
 	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse    interface{}        `json:"raw_response,omitempty"`
+	RawHeaders  interface{}           `json:"raw_headers,omitempty"`
 	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`
 }
 
@@ -525,6 +530,7 @@ const (
 type BifrostStream struct {
 	*BifrostResponse
 	*BifrostError
+	RawSSEEvent []byte
 }
 
 // BifrostError represents an error from the Bifrost system.
