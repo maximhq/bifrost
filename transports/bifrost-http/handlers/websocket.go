@@ -51,7 +51,7 @@ func NewWebSocketHandler(ctx context.Context, logManager logging.LogManager, log
 
 // RegisterRoutes registers all WebSocket-related routes
 func (h *WebSocketHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
-	r.GET("/ws/logs", lib.ChainMiddlewares(h.connectLogStream, middlewares...))
+	r.GET("/ws", lib.ChainMiddlewares(h.connectStream, middlewares...))
 }
 
 // getUpgrader returns a WebSocket upgrader configured with the current allowed origins
@@ -86,8 +86,8 @@ func isLocalhost(host string) bool {
 		host == ""
 }
 
-// connectLogStream handles WebSocket connections for real-time log streaming
-func (h *WebSocketHandler) connectLogStream(ctx *fasthttp.RequestCtx) {
+// connectStream handles WebSocket connections for real-time streaming
+func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 	upgrader := h.getUpgrader()
 	err := upgrader.Upgrade(ctx, func(ws *websocket.Conn) {
 		// Read safety & liveness
@@ -161,6 +161,7 @@ func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageTyp
 			client.conn.Close()
 		}()
 	}
+
 	return err
 }
 
@@ -195,6 +196,11 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 		return
 	}
 
+	h.BroadcastMarshaledMessage(data)
+}
+
+// BroadcastMarshaledMessage sends an adaptive routing update to all connected WebSocket clients
+func (h *WebSocketHandler) BroadcastMarshaledMessage(data []byte) {
 	// Get a snapshot of clients to avoid holding the lock during writes
 	h.mu.RLock()
 	clients := make([]*WebSocketClient, 0, len(h.clients))
