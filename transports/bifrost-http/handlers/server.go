@@ -16,6 +16,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
@@ -155,6 +156,17 @@ func MarshalPluginConfig[T any](source any) (*T, error) {
 	return nil, fmt.Errorf("invalid config type")
 }
 
+type GovernanceInMemoryStore struct {
+	config *lib.Config
+}
+
+func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
+	// Use read lock for thread-safe access - no need to copy on hot path
+	s.config.Mu.RLock()
+	defer s.config.Mu.RUnlock()
+	return s.config.Providers
+}
+
 // LoadPlugin loads a plugin by name and returns it as type T.
 func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
 	var zero T
@@ -182,7 +194,10 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 		if err != nil {
 			return zero, fmt.Errorf("failed to marshal governance plugin config: %v", err)
 		}
-		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager)
+		inMemoryStore := &GovernanceInMemoryStore{
+			config: bifrostConfig,
+		}
+		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager, inMemoryStore)
 		if err != nil {
 			return zero, err
 		}
@@ -238,14 +253,13 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
 	var err error
 	plugins := []schemas.Plugin{}
-	config.LoadedPlugins = make(map[string]bool)
+
 	// Initialize telemetry plugin
 	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, config)
 	if err != nil {
 		logger.Error("failed to initialize telemetry plugin: %v", err)
 	} else {
 		plugins = append(plugins, promPlugin)
-		config.LoadedPlugins[telemetry.PluginName] = true
 	}
 	// Initializing logger plugin
 	var loggingPlugin *logging.LoggerPlugin
@@ -256,7 +270,6 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 			logger.Error("failed to initialize logging plugin: %v", err)
 		} else {
 			plugins = append(plugins, loggingPlugin)
-			config.LoadedPlugins[logging.PluginName] = true
 		}
 	}
 	// Initializing governance plugin
@@ -270,12 +283,11 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 			logger.Error("failed to initialize governance plugin: %s", err.Error())
 		} else {
 			plugins = append(plugins, governancePlugin)
-			config.LoadedPlugins[governance.PluginName] = true
 		}
 	}
 	// Currently we support first party plugins only
 	// Eventually same flow will be used for third party plugins
-	for _, plugin := range config.Plugins {
+	for _, plugin := range config.PluginConfigs {
 		if !plugin.Enabled {
 			continue
 		}
@@ -284,9 +296,12 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 			logger.Error("failed to load plugin %s: %v", plugin.Name, err)
 		} else {
 			plugins = append(plugins, pluginInstance)
-			config.LoadedPlugins[plugin.Name] = true
 		}
 	}
+
+	// Atomically publish the plugin state
+	config.Plugins.Store(&plugins)
+
 	return plugins, nil
 }
 
@@ -324,7 +339,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore() error {
 			Account:            account,
 			InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 			DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
-			Plugins:            s.Plugins,
+			Plugins:            s.Config.GetLoadedPlugins(),
 			MCPConfig:          s.Config.MCPConfig,
 			Logger:             logger,
 		})
@@ -332,7 +347,8 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore() error {
 	return nil
 }
 
-// ReloadPlugin reloads a plugin with new instance and updates Bifrost core
+// ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
+// Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, pluginConfig any) error {
 	logger.Debug("reloading plugin %s", name)
 	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, pluginConfig, s.Config)
@@ -342,35 +358,70 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, plugi
 	if err := s.Client.ReloadPlugin(newPlugin); err != nil {
 		return err
 	}
-	for i, existing := range s.Plugins {
-		if existing.GetName() == name {
-			s.Plugins[i] = newPlugin
-			goto updated
+
+	// CAS retry loop (matching bifrost.go pattern)
+	for {
+		oldPlugins := s.Config.Plugins.Load()
+		oldPluginsSlice := []schemas.Plugin{}
+		if oldPlugins != nil {
+			oldPluginsSlice = *oldPlugins
 		}
+
+		// Create new slice with replaced/appended plugin
+		newPlugins := make([]schemas.Plugin, len(oldPluginsSlice))
+		copy(newPlugins, oldPluginsSlice)
+
+		found := false
+		for i, existing := range newPlugins {
+			if existing.GetName() == name {
+				newPlugins[i] = newPlugin
+				found = true
+				break
+			}
+		}
+		if !found {
+			newPlugins = append(newPlugins, newPlugin)
+		}
+
+		// Atomic compare-and-swap
+		if s.Config.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			s.Plugins = newPlugins // Keep BifrostHTTPServer.Plugins in sync
+			return nil
+		}
+		// Retry on contention (extremely rare for plugin updates)
 	}
-	s.Plugins = append(s.Plugins, newPlugin)
-updated:
-	if s.Config != nil && s.Config.LoadedPlugins != nil {
-		s.Config.LoadedPlugins[name] = true
-	}
-	return nil
 }
 
 // RemovePlugin removes a plugin from the server.
+// Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
 func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error {
 	if err := s.Client.RemovePlugin(name); err != nil {
 		return err
 	}
-	for i, existing := range s.Plugins {
-		if existing.GetName() == name {
-			s.Plugins = append(s.Plugins[:i], s.Plugins[i+1:]...)
-			break
+
+	// CAS retry loop (matching bifrost.go pattern)
+	for {
+		oldPlugins := s.Config.Plugins.Load()
+		oldPluginsSlice := []schemas.Plugin{}
+		if oldPlugins != nil {
+			oldPluginsSlice = *oldPlugins
 		}
+
+		// Create new slice without the removed plugin
+		newPlugins := make([]schemas.Plugin, 0, len(oldPluginsSlice))
+		for _, existing := range oldPluginsSlice {
+			if existing.GetName() != name {
+				newPlugins = append(newPlugins, existing)
+			}
+		}
+
+		// Atomic compare-and-swap
+		if s.Config.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			s.Plugins = newPlugins // Keep BifrostHTTPServer.Plugins in sync
+			return nil
+		}
+		// Retry on contention (extremely rare for plugin updates)
 	}
-	if s.Config != nil && s.Config.LoadedPlugins != nil {
-		delete(s.Config.LoadedPlugins, name)
-	}
-	return nil
 }
 
 // RegisterRoutes initializes the routes for the Bifrost HTTP server.
@@ -522,7 +573,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            CorsMiddleware(s.Config)(VKProviderRoutingMiddleware(s.Config, logger)(s.Router.Handler)),
+		Handler:            CorsMiddleware(s.Config)(TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 	}
 	return nil

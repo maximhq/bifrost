@@ -5,13 +5,23 @@ import { Badge } from "@/components/ui/badge";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useQueryState } from "nuqs";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import DatadogView from "./plugins/datadogView";
 import MaximView from "./plugins/maximView";
 import NewrelicView from "./plugins/newRelicView";
 import OtelView from "./plugins/otelView";
+import Image from "next/image";
+import { useTheme } from "next-themes";
 
-const supportedPlatforms = [
+type SupportedPlatform = {
+	id: string;
+	name: string;
+	icon: React.ReactNode;
+	tag?: string;
+	disabled?: boolean;
+};
+
+const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 	{
 		id: "otel",
 		name: "Open Telemetry",
@@ -32,12 +42,12 @@ const supportedPlatforms = [
 	{
 		id: "maxim",
 		name: "Maxim",
-		icon: <img src="/maxim-logo.png" width={19} height={19} />,
+		icon: <Image alt="Maxim" src={`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.png`} width={19} height={19} />,
 	},
 	{
 		id: "datadog",
 		name: "Datadog",
-		icon: <img src="/images/datadog-logo.png" width={32} height={32} />,
+		icon: <Image alt="Datadog" src="/images/datadog-logo.png" width={32} height={32} />,
 		disabled: true,
 	},
 	{
@@ -59,6 +69,10 @@ export default function ObservabilityView() {
 	const { data: plugins, isLoading } = useGetPluginsQuery();
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
+
+	const { resolvedTheme } = useTheme();
+
+	const supportedPlatforms = useMemo(() => supportedPlatformsList(resolvedTheme || "light"), [resolvedTheme]);
 
 	useEffect(() => {
 		if (!plugins || plugins.length === 0) return;

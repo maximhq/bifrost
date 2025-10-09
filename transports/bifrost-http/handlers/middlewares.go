@@ -3,13 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
-	"slices"
-	"sort"
-	"strings"
 
-	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -43,153 +37,89 @@ func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	}
 }
 
-// VKProviderRoutingMiddleware routes requests to the appropriate provider based on the virtual key
-func VKProviderRoutingMiddleware(config *lib.Config, logger schemas.Logger) lib.BifrostHTTPMiddleware {
-	isGovernanceEnabled := config.LoadedPlugins[governance.PluginName]
+func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			if !isGovernanceEnabled {
-				next(ctx)
-				return
-			}
-			var virtualKeyValue string
-			// Extract x-bf-vk header
-			ctx.Request.Header.All()(func(key, value []byte) bool {
-				if strings.ToLower(string(key)) == "x-bf-vk" {
-					virtualKeyValue = string(value)
-				}
-				return true
-			})
-			// If no virtual key, continue to next handler
-			if virtualKeyValue == "" {
-				next(ctx)
-				return
-			}
-			// Only process POST requests with a body
-			if string(ctx.Method()) != "POST" {
-				next(ctx)
-				return
-			}
-			// Get the request body
-			body := ctx.Request.Body()
-			if len(body) == 0 {
-				next(ctx)
-				return
-			}
-			// Parse the request body to extract the model field
-			var requestBody map[string]interface{}
-			if err := json.Unmarshal(body, &requestBody); err != nil {
-				// If we can't parse as JSON, continue without modification
+			// Get plugins from config - lock-free read
+			plugins := config.GetLoadedPlugins()
+			if len(plugins) == 0 {
 				next(ctx)
 				return
 			}
 
-			// Check if the request has a model field
-			modelValue, hasModel := requestBody["model"]
-			if !hasModel {
+			// If governance plugin is not loaded, skip interception
+			hasGovernance := false
+			for _, p := range plugins {
+				if p.GetName() == governance.PluginName {
+					hasGovernance = true
+					break
+				}
+			}
+			if !hasGovernance {
 				next(ctx)
 				return
 			}
-			modelStr, ok := modelValue.(string)
-			if !ok || modelStr == "" {
-				next(ctx)
-				return
-			}
-			// Check if model already has provider prefix (contains "/")
-			if strings.Contains(modelStr, "/") {
-				provider, _ := schemas.ParseModelString(modelStr, "")
-				// Checking valid provider
-				if _, ok := config.Providers[provider]; ok {
+
+			// Parse headers
+			headers := make(map[string]string)
+			originalHeaderNames := make([]string, 0, 16)
+			ctx.Request.Header.All()(func(key, value []byte) bool {
+				name := string(key)
+				headers[name] = string(value)
+				originalHeaderNames = append(originalHeaderNames, name)
+
+				return true
+			})
+
+			// Unmarshal request body
+			requestBody := make(map[string]any)
+			bodyBytes := ctx.Request.Body()
+			if len(bodyBytes) > 0 {
+				if err := json.Unmarshal(bodyBytes, &requestBody); err != nil {
+					// If body is not valid JSON, log warning and continue without interception
+					logger.Warn(fmt.Sprintf("TransportInterceptor: Failed to unmarshal request body: %v", err))
 					next(ctx)
 					return
 				}
 			}
-			var virtualKey *configstore.TableVirtualKey
-			var err error
-			for _, vk := range config.GovernanceConfig.VirtualKeys {
-				if vk.Value == virtualKeyValue {
-					virtualKey = &vk
-					break
-				}
-			}
-			if virtualKey == nil {
-				SendError(ctx, fasthttp.StatusBadRequest, "Invalid virtual key", logger)
-				return
-			}
-			if !virtualKey.IsActive {
-				SendError(ctx, fasthttp.StatusBadRequest, "Virtual key is not active", logger)
-				next(ctx)
-				return
-			}
-			// Get provider configs for this virtual key
-			providerConfigs := virtualKey.ProviderConfigs
-			if len(providerConfigs) == 0 {
-				// No provider configs, continue without modification
-				next(ctx)
-				return
-			}
-			allowedProviderConfigs := make([]configstore.TableVirtualKeyProviderConfig, 0)
-			for _, config := range providerConfigs {
-				if len(config.AllowedModels) == 0 || slices.Contains(config.AllowedModels, modelStr) {
-					allowedProviderConfigs = append(allowedProviderConfigs, config)
-				}
-			}
-			if len(allowedProviderConfigs) == 0 {
-				// No allowed provider configs, continue without modification
-				next(ctx)
-				return
-			}
-			// Weighted random selection from allowed providers for the main model
-			totalWeight := 0.0
-			for _, config := range allowedProviderConfigs {
-				totalWeight += config.Weight
-			}
-			// Generate random number between 0 and totalWeight
-			randomValue := rand.Float64() * totalWeight
-			// Select provider based on weighted random selection
-			var selectedProvider schemas.ModelProvider
-			currentWeight := 0.0
-			for _, config := range allowedProviderConfigs {
-				currentWeight += config.Weight
-				if randomValue <= currentWeight {
-					selectedProvider = schemas.ModelProvider(config.Provider)
-					break
-				}
-			}
-			// Fallback: if no provider was selected (shouldn't happen but guard against FP issues)
-			if selectedProvider == "" && len(allowedProviderConfigs) > 0 {
-				selectedProvider = schemas.ModelProvider(allowedProviderConfigs[0].Provider)
-			}
-			// Update the model field in the request body
-			requestBody["model"] = string(selectedProvider) + "/" + modelStr
-			// Check if fallbacks field is already present
-			_, hasFallbacks := requestBody["fallbacks"]
-			if !hasFallbacks && len(allowedProviderConfigs) > 1 {
-				// Sort allowed provider configs by weight (descending)
-				sort.Slice(allowedProviderConfigs, func(i, j int) bool {
-					return allowedProviderConfigs[i].Weight > allowedProviderConfigs[j].Weight
-				})
 
-				// Filter out the selected provider and create fallbacks array
-				fallbacks := make([]string, 0, len(allowedProviderConfigs)-1)
-				for _, config := range allowedProviderConfigs {
-					if config.Provider != string(selectedProvider) {
-						fallbacks = append(fallbacks, string(schemas.ModelProvider(config.Provider))+"/"+modelStr)
-					}
+			// Call TransportInterceptor on all plugins
+			for _, plugin := range plugins {
+				modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(string(ctx.Request.URI().RequestURI()), headers, requestBody)
+				if err != nil {
+					logger.Warn(fmt.Sprintf("TransportInterceptor: Plugin '%s' returned error: %v", plugin.GetName(), err))
+					// Continue with unmodified headers/body
+					continue
 				}
-
-				// Add fallbacks to request body
-				requestBody["fallbacks"] = fallbacks
+				// Update headers and body with modifications
+				if modifiedHeaders != nil {
+					headers = modifiedHeaders
+				}
+				if modifiedBody != nil {
+					requestBody = modifiedBody
+				}
 			}
 
-			// Marshal the updated request body back to JSON
+			// Marshal the body back to JSON
 			updatedBody, err := json.Marshal(requestBody)
 			if err != nil {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to marshal updated request body: %v", err), logger)
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("TransportInterceptor: Failed to marshal request body: %v", err), logger)
 				return
 			}
-			// Replace the request body with the updated one
 			ctx.Request.SetBody(updatedBody)
+
+			// Remove headers that were present originally but removed by plugins
+			for _, name := range originalHeaderNames {
+				if _, exists := headers[name]; !exists {
+					ctx.Request.Header.Del(name)
+				}
+			}
+
+			// Set modified headers back on the request
+			for key, value := range headers {
+				ctx.Request.Header.Set(key, value)
+			}
+
 			next(ctx)
 		}
 	}

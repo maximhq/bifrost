@@ -117,6 +117,11 @@ func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
+// TransportInterceptor is not used for this plugin
+func (plugin *Plugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	return headers, body, nil
+}
+
 // getEffectiveLogRepoID determines which single log repo ID to use based on priority:
 // 1. Header log repo ID (if provided)
 // 2. Default log repo ID from config (if configured)

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -112,8 +113,9 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 //   - Real-time configuration updates via HTTP API
 //   - Automatic database persistence for all changes
 //   - Support for provider-specific key configurations (Azure, Vertex, Bedrock)
+//   - Lock-free plugin reads via atomic.Pointer for minimal hot-path latency
 type Config struct {
-	mu     sync.RWMutex
+	Mu     sync.RWMutex // Exported for direct access from handlers (governance plugin)
 	muMCP  sync.RWMutex
 	client *bifrost.Bifrost
 
@@ -133,9 +135,11 @@ type Config struct {
 	// Track which keys come from environment variables
 	EnvKeys map[string][]configstore.EnvKeyInfo
 
-	// Plugin configs
-	Plugins       []*schemas.PluginConfig
-	LoadedPlugins map[string]bool
+	// Plugin configs - atomic for lock-free reads with CAS updates
+	Plugins atomic.Pointer[[]schemas.Plugin]
+
+	// Plugin configs from config file/database
+	PluginConfigs []*schemas.PluginConfig
 
 	// Pricing manager
 	PricingManager *pricing.PricingManager
@@ -179,6 +183,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		EnvKeys:    make(map[string][]configstore.EnvKeyInfo),
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 	}
+
+	// Initialize atomic.Pointer with empty slice to make Load/Store operations safe
+	emptyPlugins := make([]schemas.Plugin, 0)
+	config.Plugins.Store(&emptyPlugins)
 
 	absConfigFilePath, err := filepath.Abs(configFilePath)
 	if err != nil {
@@ -330,9 +338,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 				return nil, fmt.Errorf("failed to get plugins: %w", err)
 			}
 			if plugins == nil {
-				config.Plugins = []*schemas.PluginConfig{}
+				config.PluginConfigs = []*schemas.PluginConfig{}
 			} else {
-				config.Plugins = make([]*schemas.PluginConfig, len(plugins))
+				config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 				for i, plugin := range plugins {
 					pluginConfig := &schemas.PluginConfig{
 						Name:    plugin.Name,
@@ -344,7 +352,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 							logger.Warn("failed to add provider keys to semantic cache config: %v", err)
 						}
 					}
-					config.Plugins[i] = pluginConfig
+					config.PluginConfigs[i] = pluginConfig
 				}
 			}
 			// Loading governance config
@@ -687,7 +695,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			logger.Warn("failed to get plugins from store: %v", err)
 		}
 		if plugins != nil {
-			config.Plugins = make([]*schemas.PluginConfig, len(plugins))
+			config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 			for i, plugin := range plugins {
 				pluginConfig := &schemas.PluginConfig{
 					Name:    plugin.Name,
@@ -699,28 +707,28 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						logger.Warn("failed to add provider keys to semantic cache config: %v", err)
 					}
 				}
-				config.Plugins[i] = pluginConfig
+				config.PluginConfigs[i] = pluginConfig
 			}
 		}
 	}
 
 	// If plugins are not present in the store, we will use the config file
-	if len(config.Plugins) == 0 && len(configData.Plugins) > 0 {
+	if len(config.PluginConfigs) == 0 && len(configData.Plugins) > 0 {
 		logger.Debug("no plugins found in store, processing from config file")
-		config.Plugins = configData.Plugins
+		config.PluginConfigs = configData.Plugins
 
-		for i, plugin := range config.Plugins {
+		for i, plugin := range config.PluginConfigs {
 			if plugin.Name == semanticcache.PluginName {
 				if err := config.AddProviderKeysToSemanticCacheConfig(plugin); err != nil {
 					logger.Warn("failed to add provider keys to semantic cache config: %v", err)
 				}
-				config.Plugins[i] = plugin
+				config.PluginConfigs[i] = plugin
 			}
 		}
 
 		if config.ConfigStore != nil {
 			logger.Debug("updating plugins in store")
-			for _, plugin := range config.Plugins {
+			for _, plugin := range config.PluginConfigs {
 				pluginConfigCopy, err := DeepCopy(plugin.Config)
 				if err != nil {
 					logger.Warn("failed to deep copy plugin config, skipping database update: %v", err)
@@ -849,8 +857,8 @@ func (s *Config) getRestoredMCPConfig(envVarsByPath map[string]string) *schemas.
 //
 // Returns a copy of the configuration to prevent external modifications.
 func (s *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configstore.ProviderConfig, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
 
 	config, exists := s.Providers[provider]
 	if !exists {
@@ -872,6 +880,34 @@ func (s *Config) ShouldAllowDirectKeys() bool {
 	return s.ClientConfig.AllowDirectKeys
 }
 
+// GetLoadedPlugins returns the current snapshot of loaded plugins.
+// This method is lock-free and safe for concurrent access from hot paths.
+// It returns the plugin slice from the atomic pointer, which is safe to iterate
+// even if plugins are being updated concurrently.
+func (c *Config) GetLoadedPlugins() []schemas.Plugin {
+	if plugins := c.Plugins.Load(); plugins != nil {
+		return *plugins
+	}
+	return nil
+}
+
+// IsPluginLoaded checks if a plugin with the given name is currently loaded.
+// This method is lock-free and safe for concurrent access from hot paths.
+// It iterates through the plugin slice (typically 5-10 plugins, ~50ns overhead).
+// For small plugin counts, this is faster than maintaining a separate map.
+func (c *Config) IsPluginLoaded(name string) bool {
+	plugins := c.Plugins.Load()
+	if plugins == nil {
+		return false
+	}
+	for _, p := range *plugins {
+		if p.GetName() == name {
+			return true
+		}
+	}
+	return false
+}
+
 // GetProviderConfigRedacted retrieves a provider configuration with sensitive values redacted.
 // This method is intended for external API responses and logging.
 //
@@ -881,8 +917,8 @@ func (s *Config) ShouldAllowDirectKeys() bool {
 //
 // Returns a new copy with redacted values that is safe to expose externally.
 func (s *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*configstore.ProviderConfig, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
 
 	config, exists := s.Providers[provider]
 	if !exists {
@@ -1040,8 +1076,8 @@ func (s *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 
 // GetAllProviders returns all configured provider names.
 func (s *Config) GetAllProviders() ([]schemas.ModelProvider, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
 
 	providers := make([]schemas.ModelProvider, 0, len(s.Providers))
 	for provider := range s.Providers {
@@ -1060,8 +1096,8 @@ func (s *Config) GetAllProviders() ([]schemas.ModelProvider, error) {
 //   - Stores the processed configuration in memory
 //   - Updates metadata and timestamps
 func (s *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 
 	// Check if provider already exists
 	if _, exists := s.Providers[provider]; exists {
@@ -1163,8 +1199,8 @@ func (s *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 //   - provider: The provider to update
 //   - config: The new configuration
 func (s *Config) UpdateProviderConfig(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 
 	// Get existing configuration for validation
 	existingConfig, exists := s.Providers[provider]
@@ -1247,8 +1283,8 @@ func (s *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 
 // RemoveProvider removes a provider configuration from memory.
 func (s *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 
 	if _, exists := s.Providers[provider]; !exists {
 		return ErrNotFound
@@ -1272,8 +1308,8 @@ func (s *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 
 // GetAllKeys returns the redacted keys
 func (s *Config) GetAllKeys() ([]configstore.TableKey, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
 
 	keys := make([]configstore.TableKey, 0)
 	for providerKey, provider := range s.Providers {

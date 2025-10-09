@@ -1096,22 +1096,26 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
 	// If no primary error, we succeeded
 	if primaryErr == nil {
+		bifrost.logger.Debug("No primary error, we should not try fallbacks")
 		return false
 	}
 
 	// Handle request cancellation
 	if primaryErr.Error != nil && primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
+		bifrost.logger.Debug("Request cancelled, we should not try fallbacks")
 		return false
 	}
 
 	// Check if this is a short-circuit error that doesn't allow fallbacks
 	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
 	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
+		bifrost.logger.Debug("AllowFallbacks is false, we should not try fallbacks")
 		return false
 	}
 
 	// If no fallbacks configured, return primary error
 	if len(req.Fallbacks) == 0 {
+		bifrost.logger.Debug("No fallbacks configured, we should not try fallbacks")
 		return false
 	}
 
@@ -1201,6 +1205,8 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all non-streaming public API methods.
 func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	defer bifrost.releaseBifrostRequest(req)
+
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
 			Provider:       req.Provider,
@@ -1215,8 +1221,17 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 		ctx = bifrost.ctx
 	}
 
+	bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s and %d fallbacks", req.Provider, req.Model, len(req.Fallbacks)))
+
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryRequest(req, ctx)
+
+	if primaryErr != nil {
+		bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %v", req.Provider, req.Model, primaryErr))
+		if len(req.Fallbacks) > 0 {
+			bifrost.logger.Debug(fmt.Sprintf("Check if we should try %d fallbacks", len(req.Fallbacks)))
+		}
+	}
 
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
@@ -1226,10 +1241,12 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 	// Try fallbacks in order
 	for _, fallback := range req.Fallbacks {
+		bifrost.logger.Debug(fmt.Sprintf("Trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
+			bifrost.logger.Debug(fmt.Sprintf("Fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
 			continue
 		}
 
@@ -1255,6 +1272,8 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all streaming public API methods.
 func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	defer bifrost.releaseBifrostRequest(req)
+
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
 			Provider:       req.Provider,
@@ -1867,8 +1886,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 		bifrost.responseStreamPool.Put(msg.ResponseStream)
 	}
 
-	// Reset and return BifrostRequest to pool
-	bifrost.releaseBifrostRequest(&msg.BifrostRequest)
+	// Release of Bifrost Request is handled in handle methods as they are required for fallbacks
 
 	// Clear references and return to pool
 	msg.Response = nil
