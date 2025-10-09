@@ -62,6 +62,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
 //go:embed all:ui
@@ -124,6 +125,7 @@ func init() {
 	logger.SetOutputType(schemas.LoggerOutputType(server.LogOutputStyle))
 	logger.SetLevel(schemas.LogLevel(server.LogLevel))
 	// Setting up logger
+	lib.SetLogger(logger)
 	handlers.SetLogger(logger)
 
 }

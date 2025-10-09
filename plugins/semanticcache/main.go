@@ -335,6 +335,11 @@ func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
+// TransportInterceptor is not used for this plugin
+func (plugin *Plugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	return headers, body, nil
+}
+
 // PreHook is called before a request is processed by Bifrost.
 // It performs a two-stage cache lookup: first direct hash matching, then semantic similarity search.
 // Uses UUID-based keys for entries stored in the VectorStore.

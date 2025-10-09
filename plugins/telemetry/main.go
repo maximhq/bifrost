@@ -68,6 +68,11 @@ func (p *PrometheusPlugin) GetName() string {
 	return PluginName
 }
 
+// TransportInterceptor is not used for this plugin
+func (p *PrometheusPlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	return headers, body, nil
+}
+
 // PreHook records the start time of the request in the context.
 // This time is used later in PostHook to calculate request duration.
 func (p *PrometheusPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {

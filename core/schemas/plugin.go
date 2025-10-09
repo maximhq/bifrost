@@ -18,11 +18,13 @@ type PluginShortCircuit struct {
 // PreHooks are executed in the order they are registered.
 // PostHooks are executed in the reverse order of PreHooks.
 //
-// PreHooks and PostHooks can be used to implement custom logic, such as:
-// - Rate limiting
-// - Caching
-// - Logging
-// - Monitoring
+// Execution order:
+// 1. TransportInterceptor (HTTP transport only, modifies raw headers/body before entering Bifrost core)
+// 2. PreHook (executed in registration order)
+// 3. Provider call
+// 4. PostHook (executed in reverse order of PreHooks)
+//
+// Common use cases: rate limiting, caching, logging, monitoring, request transformation, governance.
 //
 // Plugin error handling:
 // - No Plugin errors are returned to the caller; they are logged as warnings by the Bifrost instance.
@@ -43,6 +45,12 @@ type PluginShortCircuit struct {
 type Plugin interface {
 	// GetName returns the name of the plugin.
 	GetName() string
+
+	// TransportInterceptor is called at the HTTP transport layer before requests enter Bifrost core.
+	// It allows plugins to modify raw HTTP headers and body before transformation into BifrostRequest.
+	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
+	// Returns modified headers, modified body, and any error that occurred during interception.
+	TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.

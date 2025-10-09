@@ -1,8 +1,12 @@
 package lib
 
 import (
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+var logger schemas.Logger
+
+// SetLogger sets the logger for the application.
+func SetLogger(l schemas.Logger) {
+	logger = l
+}
