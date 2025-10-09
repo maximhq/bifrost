@@ -217,8 +217,7 @@ github.com/maximhq/bifrost/plugins/semanticcache v1.3.4 h1:Vhh03gTJ9MgQPCm/O9BfK
 github.com/maximhq/bifrost/plugins/semanticcache v1.3.4/go.mod h1:s3H3LfMUdeHwLHiSI9bHGpHx0PKn7wVyRaI+E8UPuXQ=
 github.com/maximhq/bifrost/plugins/telemetry v1.3.4 h1:LoZSi6yNgV2qDFVZSrCih6F19CsOdOZSPzJl7/GyVhE=
 github.com/maximhq/bifrost/plugins/telemetry v1.3.4/go.mod h1:9zj+Z1U+pfb2ScnWlj9mB29QTLi1lVDFXQYUXZrUXiQ=
-github.com/maximhq/maxim-go v0.1.11 h1:oEgisU4DKjCR1p3BKYzrvr6kFAfr+FptbOC8bHChIv4=
-github.com/maximhq/maxim-go v0.1.11/go.mod h1:0+UTWM7UZwNNE5VnljLtr/vpRGtYP8r/2q9WDwlLWFw=
+github.com/maximhq/maxim-go v0.1.13 h1:ZrI3Xy2M5Th0xLgoQtb2QB941YCmfSugt3qL7rqIeuY=
 github.com/mitchellh/mapstructure v1.3.3/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/mitchellh/mapstructure v1.4.1/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/mitchellh/mapstructure v1.4.3/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=

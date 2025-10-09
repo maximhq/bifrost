@@ -64,13 +64,14 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: ""
     ports:
       - "4000:3000"
     volumes:
       - grafana-data:/var/lib/grafana
     configs:
       - source: grafana-datasources
-        target: /etc/grafana/provisioning/datasources/datasources.yml
+        target: /etc/grafana/provisioning/datasources/datasources.yaml
     restart: unless-stopped
 
 configs:
@@ -183,45 +184,24 @@ configs:
         - job_name: "tempo"
           static_configs:
             - targets: ["tempo:3200"]
+        - job_name: "bifrost"
+          static_configs:
+            - targets: ["host.docker.internal:8080"]
+          metrics_path: "/metrics"
 
   grafana-datasources:
     content: |
       apiVersion: 1
       datasources:
-        - name: Prometheus
-          uid: prometheus
-          type: prometheus
-          access: proxy
-          orgId: 1
-          url: http://prometheus:9090
-          isDefault: true
-          editable: true
-        - name: Tempo
-          type: tempo
-          access: proxy
-          orgId: 1
-          url: http://tempo:3200
-          editable: true
-          jsonData:
-            tracesToMetrics:
-              datasourceUid: prometheus
-              spanStartTimeShift: '-1h'
-              spanEndTimeShift: '1h'
-              tags: 
-                - { key: 'service.name', value: 'service' }
-                - { key: 'http.method', value: 'method' }
-                - { key: 'http.status_code', value: 'status_code' }
-            nodeGraph:
-              enabled: true
-            search:
-              hide: false
-            traceQuery:
-              timeShiftEnabled: true
-              spanStartTimeShift: '-1h'
-              spanEndTimeShift: '1h'
-            spanBar:
-              type: 'Tag'
-              tag: 'http.path'
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
 
 volumes:
   prometheus-data:

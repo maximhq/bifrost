@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -47,15 +48,20 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 				return
 			}
 
-			// If governance plugin is not loaded, skip interception
+			// If both governance and maxim plugins are not loaded, skip interception
 			hasGovernance := false
+			hasMaxim := false
 			for _, p := range plugins {
 				if p.GetName() == governance.PluginName {
 					hasGovernance = true
 					break
 				}
+				if p.GetName() == maxim.PluginName {
+					hasMaxim = true
+					break
+				}
 			}
-			if !hasGovernance {
+			if !hasGovernance && !hasMaxim {
 				next(ctx)
 				return
 			}

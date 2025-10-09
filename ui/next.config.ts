@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
 	output: "export",
 	trailingSlash: true,
 	skipTrailingSlashRedirect: true,
+	productionBrowserSourceMaps: true,
+
 	distDir: "out",
 	images: {
 		unoptimized: true,
@@ -23,7 +25,10 @@ const nextConfig: NextConfig = {
 	eslint: {
 		ignoreDuringBuilds: false,
 	},
-	webpack: (config) => {
+	webpack: (config, { isServer }) => {
+		if (!isServer) {
+			config.optimization.minimize = false;
+		}
 		config.resolve = config.resolve || {};
 		config.resolve.alias = config.resolve.alias || {};
 		config.resolve.alias["@enterprise"] = haveEnterprise
@@ -31,15 +36,12 @@ const nextConfig: NextConfig = {
 			: path.join(__dirname, "app", "_fallbacks", "enterprise");
 		config.resolve.alias["@schemas"] = haveEnterprise
 			? path.join(__dirname, "app", "enterprise", "lib", "schemas")
-			: path.join(__dirname, "app", "_fallbacks", "enterprise", "lib");		
+			: path.join(__dirname, "app", "_fallbacks", "enterprise", "lib");
 		// Ensure modules are resolved from the main project's node_modules
 		// This is important when enterprise is a symlink to an external folder
-		config.resolve.modules = [
-			path.join(__dirname, "node_modules"),
-			"node_modules",
-		];		
+		config.resolve.modules = [path.join(__dirname, "node_modules"), "node_modules"];
 		// Ensure symlinks are resolved correctly
-		config.resolve.symlinks = true;		
+		config.resolve.symlinks = true;
 		return config;
 	},
 };

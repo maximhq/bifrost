@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/maxim-go"
+	"github.com/maximhq/maxim-go/apis"
 	"github.com/maximhq/maxim-go/logging"
 )
 
@@ -35,7 +36,7 @@ type Config struct {
 // Returns:
 //   - schemas.Plugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func Init(config *Config) (schemas.Plugin, error) {
+func Init(config *Config, logger schemas.Logger) (schemas.Plugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -51,6 +52,7 @@ func Init(config *Config) (schemas.Plugin, error) {
 		defaultLogRepoID: config.LogRepoID,
 		loggers:          make(map[string]*logging.Logger),
 		loggerMutex:      &sync.RWMutex{},
+		logger:           logger,
 	}
 
 	// Initialize default logger if LogRepoId is provided
@@ -110,6 +112,7 @@ type Plugin struct {
 	defaultLogRepoID string
 	loggers          map[string]*logging.Logger
 	loggerMutex      *sync.RWMutex
+	logger           schemas.Logger
 }
 
 // GetName returns the name of the plugin.
@@ -117,8 +120,99 @@ func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
+// TransportInterceptor is used request body population for maxim chat completion requests using maxim prompt id and version id headers
 func (plugin *Plugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	// Check if the url is for chat completion
+	if !strings.Contains(url, "/chat/completions") {
+		return headers, body, nil
+	}
+
+	// Check if headers have `x-maxim-prompt-id` and `x-maxim-prompt-version-id`
+	var promptID string
+	var promptVersionID string
+
+	for header, value := range headers {
+		if strings.ToLower(string(header)) == "x-bf-maxim-prompt-id" {
+			promptID = string(value)
+		}
+		if strings.ToLower(string(header)) == "x-bf-maxim-prompt-version-id" {
+			promptVersionID = string(value)
+		}
+
+		if promptID != "" && promptVersionID != "" {
+			break
+		}
+	}
+
+	if promptVersionID == "" || promptID == "" {
+		return headers, body, nil
+	}
+
+	promptVersion, err := plugin.mx.GetPromptVersion(promptVersionID, promptID)
+	if err != nil {
+		return headers, body, err
+	}
+
+	// Set model in "provider/model" format
+	body["model"] = promptVersion.Config.Provider + "/" + promptVersion.Config.Model
+
+	// Map messages
+	messages := make([]apis.ChoiceMessage, 0, len(promptVersion.Config.Messages))
+
+	lastResultPayloadIndex := -1
+	for i := len(promptVersion.Config.Messages) - 1; i >= 0; i-- {
+		if promptVersion.Config.Messages[i].Payload.ResultPayload != nil {
+			lastResultPayloadIndex = i
+			break
+		}
+	}
+
+	if lastResultPayloadIndex != -1 {
+		lastResultPayload := promptVersion.Config.Messages[lastResultPayloadIndex].Payload.ResultPayload
+		// Append all the input messages from the last result payload
+		messages = append(messages, lastResultPayload.Trace.Input.Messages...)
+
+		// Append all the choices from the last result payload
+		choices := lastResultPayload.Trace.Output.Choices
+		for _, choice := range choices {
+			messages = append(messages, choice.Message)
+		}
+
+		// Append all messages after the last result payload
+		for i := lastResultPayloadIndex + 1; i < len(promptVersion.Config.Messages); i++ {
+			msg := promptVersion.Config.Messages[i]
+			if msg.Payload.RequestPayload != nil {
+				messages = append(messages, *msg.Payload.RequestPayload)
+			}
+		}
+	}
+
+	body["messages"] = messages
+
+	// Map model parameters
+	params := promptVersion.Config.ModelParameters
+	if params.Temperature != 0 {
+		body["temperature"] = params.Temperature
+	}
+	if params.MaxTokens != 0 {
+		body["max_tokens"] = params.MaxTokens
+	}
+	if params.TopP != 0 {
+		body["top_p"] = params.TopP
+	}
+	if params.PresencePenalty != 0 {
+		body["presence_penalty"] = params.PresencePenalty
+	}
+	if params.FrequencyPenalty != 0 {
+		body["frequency_penalty"] = params.FrequencyPenalty
+	}
+	if params.Logprobs {
+		body["logprobs"] = params.Logprobs
+	}
+	if params.N != 0 {
+		body["n"] = params.N
+	}
+
 	return headers, body, nil
 }
 
@@ -205,6 +299,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 
 	// If no log repo ID available, skip logging
 	if effectiveLogRepoID == "" {
+		plugin.logger.Debug("no log repo ID available, skipping pre-hook for plugin %s", plugin.GetName())
 		return req, nil, nil
 	}
 
@@ -290,20 +385,25 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		}
 		if len(req.ChatRequest.Input) > 0 {
 			lastMsg := req.ChatRequest.Input[len(req.ChatRequest.Input)-1]
-			if lastMsg.Content.ContentStr != nil {
-				latestMessage = *lastMsg.Content.ContentStr
-			} else if lastMsg.Content.ContentBlocks != nil {
-				// Find the last text content block
-				for i := len(lastMsg.Content.ContentBlocks) - 1; i >= 0; i-- {
-					block := (lastMsg.Content.ContentBlocks)[i]
-					if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
-						latestMessage = *block.Text
-						break
+			if lastMsg.Content == nil {
+				latestMessage = "-"
+			} else {
+
+				if lastMsg.Content.ContentStr != nil {
+					latestMessage = *lastMsg.Content.ContentStr
+				} else if lastMsg.Content.ContentBlocks != nil {
+					// Find the last text content block
+					for i := len(lastMsg.Content.ContentBlocks) - 1; i >= 0; i-- {
+						block := (lastMsg.Content.ContentBlocks)[i]
+						if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
+							latestMessage = *block.Text
+							break
+						}
 					}
-				}
-				// If no text block found, use placeholder
-				if latestMessage == "" {
-					latestMessage = "-"
+					// If no text block found, use placeholder
+					if latestMessage == "" {
+						latestMessage = "-"
+					}
 				}
 			}
 		}
