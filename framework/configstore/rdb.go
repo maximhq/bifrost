@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/migrator"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
@@ -39,6 +40,11 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		}
 		return tx.Create(&dbConfig).Error
 	})
+}
+
+// DB returns the underlying database connection.
+func (s *RDBConfigStore) DB() *gorm.DB {
+	return s.db
 }
 
 // GetClientConfig retrieves the client configuration from the database.
@@ -183,7 +189,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		dbProvider.ProxyConfig = configCopy.ProxyConfig
 		dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 		dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
-		
+
 		// Save the updated provider
 		if err := tx.WithContext(ctx).Save(&dbProvider).Error; err != nil {
 			return err
@@ -1281,6 +1287,12 @@ func (s *RDBConfigStore) removeDuplicateKeysAndNullKeys(ctx context.Context) err
 	}
 	s.logger.Debug("migration complete")
 	return nil
+}
+
+// RunMigration runs a migration.
+func (s *RDBConfigStore) RunMigration(ctx context.Context, migration *migrator.Migration) error {
+	m := migrator.New(s.db, migrator.DefaultOptions, []*migrator.Migration{migration})
+	return m.Migrate()
 }
 
 // Close closes the SQLite config store.

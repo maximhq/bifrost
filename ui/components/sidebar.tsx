@@ -1,6 +1,19 @@
 "use client";
 
-import { Binoculars, BoxIcon, BugIcon, Building2, KeyRound, Layers, Settings2Icon, Shield, Shuffle, Telescope, Users } from "lucide-react";
+import {
+	Binoculars,
+	BoxIcon,
+	BugIcon,
+	Building2,
+	KeyRound,
+	Layers,
+	LogOut,
+	Settings2Icon,
+	Shield,
+	Shuffle,
+	Telescope,
+	Users,
+} from "lucide-react";
 
 import {
 	Sidebar,
@@ -14,6 +27,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useTheme } from "next-themes";
@@ -98,13 +112,13 @@ const enterpriseItems = [
 		description: "User management and provisioning",
 	},
 	{
-		title: "Cluster config",
+		title: "Cluster Config",
 		url: "/cluster",
 		icon: Layers,
 		description: "Manage Bifrost cluster",
 	},
 	{
-		title: "Adaptive routing",
+		title: "Adaptive Routing",
 		url: "/adaptive-routing",
 		icon: Shuffle,
 		description: "Manage adaptive load balancer",
@@ -283,7 +297,10 @@ export default function AppSidebar() {
 
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {
-		const cards = [productionSetupHelpCard];
+		const cards = [];
+		if (!IS_ENTERPRISE) {
+			cards.push(productionSetupHelpCard);
+		}
 		if (showNewReleaseBanner && latestRelease) {
 			cards.push({
 				id: "new-release",
@@ -377,6 +394,18 @@ export default function AppSidebar() {
 								</a>
 							))}
 							<ThemeToggle />
+							{IS_ENTERPRISE && (
+								<button
+									type="button"
+									className="flex items-center space-x-3"
+									onClick={() => {
+										window.location.href = "/api/logout";
+									}}
+									aria-label="Logout"
+								>
+									<LogOut className="hover:text-primary text-muted-foreground h-4.5 w-4.5" size={20} strokeWidth={1.5} />
+								</button>
+							)}
 						</div>
 					</div>
 					<div className="mx-auto font-mono text-xs">{version ?? ""}</div>

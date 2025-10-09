@@ -13,7 +13,7 @@ import {
 	useAppDispatch,
 	useAppSelector,
 	useGetProvidersQuery,
-	useLazyGetProviderQuery,
+	useLazyGetProviderQuery
 } from "@/lib/store";
 import { KnownProvider, ModelProviderName } from "@/lib/types/config";
 import { cn } from "@/lib/utils";

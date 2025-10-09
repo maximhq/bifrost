@@ -1,7 +1,7 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
 
 // Define the shape of our app state
-export interface AppState {
+export interface AppState {	
 	// UI State
 	sidebarCollapsed: boolean;
 	theme: "light" | "dark" | "system";
@@ -117,15 +117,6 @@ const appSlice = createSlice({
 			state.isOnline = action.payload;
 		},
 
-		// User Actions
-		setCurrentUser: (state, action: PayloadAction<AppState["currentUser"]>) => {
-			state.currentUser = action.payload;
-		},
-
-		clearCurrentUser: (state) => {
-			state.currentUser = null;
-		},
-
 		// Notification Actions
 		addNotification: (state, action: PayloadAction<Omit<AppState["notifications"][0], "id" | "timestamp" | "read">>) => {
 			const notification = {
@@ -196,10 +187,6 @@ export const {
 	// App State Actions
 	setInitializing,
 	setOnlineStatus,
-
-	// User Actions
-	setCurrentUser,
-	clearCurrentUser,
 
 	// Notification Actions
 	addNotification,

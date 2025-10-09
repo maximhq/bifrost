@@ -4,6 +4,7 @@
 	"private": true,
 	"scripts": {
 		"dev": "next dev",
+		"build-enterprise": "next build && npm run fix-paths",
 		"build": "next build && npm run fix-paths && npm run copy-build",
 		"fix-paths": "node scripts/fix-paths.js",
 		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",

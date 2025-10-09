@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/maximhq/bifrost/framework/configstore/internal/migration"
+	"github.com/maximhq/bifrost/framework/configstore/migrator"
 	"gorm.io/gorm"
 )
 
@@ -34,12 +34,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEnableLiteLLMFallbacksColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddUserAndTeamTables(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
 // migrationInit is the first migration
 func migrationInit(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "init",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -203,7 +206,7 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 
 // createMany2ManyJoinTable creates a many-to-many join table for the given tables.
 func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "many2manyjoin",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -243,7 +246,7 @@ func migrationMany2ManyJoinTable(ctx context.Context, db *gorm.DB) error {
 
 // migrationAddCustomProviderConfigJSONColumn adds the custom_provider_config_json column to the provider table
 func migrationAddCustomProviderConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "addcustomproviderconfigjsoncolumn",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -266,7 +269,7 @@ func migrationAddCustomProviderConfigJSONColumn(ctx context.Context, db *gorm.DB
 
 // migrationAddVirtualKeyProviderConfigTable adds the virtual_key_provider_config table
 func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "addvirtualkeyproviderconfig",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -299,7 +302,7 @@ func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB)
 
 // migrationAddOpenAIUseResponsesAPIColumn adds the open_ai_use_responses_api column to the key table
 func migrationAddOpenAIUseResponsesAPIColumn(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_open_ai_use_responses_api_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -322,7 +325,7 @@ func migrationAddOpenAIUseResponsesAPIColumn(ctx context.Context, db *gorm.DB) e
 
 // migrationAddAllowedOriginsJSONColumn adds the allowed_origins_json column to the client config table
 func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_allowed_origins_json_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -345,7 +348,7 @@ func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) erro
 
 // migrationAddAllowDirectKeysColumn adds the allow_direct_keys column to the client config table
 func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_allow_direct_keys_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -368,7 +371,7 @@ func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 
 // migrationAddEnableLiteLLMFallbacksColumn adds the enable_litellm_fallbacks column to the client config table
 func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) error {
-	m := migration.New(db, migration.DefaultOptions, []*migration.Migration{{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_enable_litellm_fallbacks_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -386,6 +389,43 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 
 			if err := migrator.DropColumn(&TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
 				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUserAndTeamTables adds the user and team tables
+func migrationAddUserAndTeamTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_user_and_team_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&TableUser{}) {
+				if err := migrator.CreateTable(&TableUser{}); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&TableTeam{}, "profile") {
+				if err := migrator.AddColumn(&TableTeam{}, "profile"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&TableTeam{}, "config") {
+				if err := migrator.AddColumn(&TableTeam{}, "config"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&TableTeam{}, "claims") {
+				if err := migrator.AddColumn(&TableTeam{}, "claims"); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

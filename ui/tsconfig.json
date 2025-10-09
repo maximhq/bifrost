@@ -29,6 +29,9 @@
 			"@enterprise/*": [
 				"./app/enterprise/*",
 				"./app/_fallbacks/enterprise/*",
+			],
+			"@schemas/*": [
+				"./app/enterprise/lib/schemas/*"
 			]
 		}
 	},
