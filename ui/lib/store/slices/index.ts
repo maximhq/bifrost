@@ -10,3 +10,5 @@ export { default as providerReducer } from "./providerSlice";
 export * from "./pluginSlice";
 export { default as pluginReducer } from "./pluginSlice";
 
+// Enterprise slice exports
+export * from "@enterprise/lib/store/slices"

@@ -5,6 +5,7 @@ import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 // Define the base query with error handling
 const baseQuery = fetchBaseQuery({
 	baseUrl: getApiBaseUrl(),
+	credentials: 'include',
 	prepareHeaders: (headers) => {
 		headers.set("Content-Type", "application/json");
 		return headers;
@@ -14,7 +15,6 @@ const baseQuery = fetchBaseQuery({
 // Enhanced base query with error handling
 const baseQueryWithErrorHandling = async (args: any, api: any, extraOptions: any) => {
 	const result = await baseQuery(args, api, extraOptions);
-
 	if (result.error) {
 		// Handle specific error types
 		if (result.error.status === "FETCH_ERROR") {
@@ -77,6 +77,8 @@ export const baseApi = createApi({
 		"HealthCheck",
 		"DBKeys",
 		"Plugins",
+		"SCIMProviders",
+		"User",
 	],
 	endpoints: () => ({}),
 });
