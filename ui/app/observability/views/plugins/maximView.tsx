@@ -40,7 +40,7 @@ export default function MaximView() {
 			<div className="border-secondary flex w-full flex-col gap-2 rounded-sm border p-4">
 				<div className="text-muted-foreground text-xs font-medium">Configuration</div>
 				<div className="text-muted-foreground mb-2 text-xs font-normal">
-					You can send in header <code>x-bf-log-repo-id</code> with a repository ID to log to a specific repository.
+					You can send in header <code>x-bf-maxim-log-repo-id</code> with a repository ID to log to a specific repository.
 				</div>
 				<MaximFormFragment onSave={handleMaximConfigSave} initialConfig={currentConfig} />
 			</div>

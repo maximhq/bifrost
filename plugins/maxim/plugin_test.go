@@ -32,7 +32,7 @@ func getPlugin() (schemas.Plugin, error) {
 	plugin, err := Init(&Config{
 		APIKey:    os.Getenv("MAXIM_API_KEY"),
 		LogRepoID: os.Getenv("MAXIM_LOG_REPO_ID"),
-	})
+	}, bifrost.NewDefaultLogger(schemas.LogLevelDebug))
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func TestPluginInitialization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Skip actual Maxim SDK initialization in tests
 			if tt.expectError {
-				_, err := Init(&tt.config)
+				_, err := Init(&tt.config, bifrost.NewDefaultLogger(schemas.LogLevelDebug))
 				if err == nil {
 					t.Error("Expected error but got none")
 				}
