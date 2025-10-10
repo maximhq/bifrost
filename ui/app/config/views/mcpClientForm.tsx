@@ -113,7 +113,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ client, open, onClose, onSaved 
 					Validator.required(form.connection_string?.trim(), "Connection URL is required"),
 					Validator.pattern(
 						form.connection_string || "",
-						/^(?:http:?\/\/.+|env\.[A-Z_]+)$/,
+						/^(?:https?:\/\/.+|env\.[A-Z_]+)$/,
 						"Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
 					),
 				]
