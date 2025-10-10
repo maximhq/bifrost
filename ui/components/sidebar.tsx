@@ -2,17 +2,19 @@
 
 import {
 	Binoculars,
+	BookUser,
 	BoxIcon,
 	BugIcon,
 	Building2,
+	Construction,
 	KeyRound,
 	Layers,
 	LogOut,
+	ScrollText,
 	Settings2Icon,
-	Shield,
 	Shuffle,
 	Telescope,
-	Users,
+	Users
 } from "lucide-react";
 
 import {
@@ -84,14 +86,14 @@ const items = [
 		description: "Manage virtual keys & access",
 	},
 	{
-		title: "Teams & Customers",
-		url: "/teams-customers",
+		title: "Users & Groups",
+		url: "/user-groups",
 		icon: Users,
-		description: "Manage teams & customers",
+		description: "Manage users & groups",
 	},
 
 	{
-		title: "MCP clients",
+		title: "MCP Clients",
 		url: "/mcp-clients",
 		icon: MCPIcon,
 		description: "MCP configuration",
@@ -106,10 +108,10 @@ const items = [
 
 const enterpriseItems = [
 	{
-		title: "SCIM",
-		url: "/scim",
-		icon: Shield,
-		description: "User management and provisioning",
+		title: "Guardrails",
+		url: "/guardrails",
+		icon: Construction,
+		description: "Guardrails configuration",
 	},
 	{
 		title: "Cluster Config",
@@ -123,6 +125,18 @@ const enterpriseItems = [
 		icon: Shuffle,
 		description: "Manage adaptive load balancer",
 	},
+	{
+		title: "User Provisioning",
+		url: "/scim",
+		icon: BookUser,
+		description: "User management and provisioning",
+	},
+	{
+		title: "Audit Logs",
+		url: "/audit-logs",
+		icon: ScrollText,
+		description: "Audit logs and compliance",
+	},	
 ];
 
 // External links
@@ -266,7 +280,7 @@ export default function AppSidebar() {
 	const [mounted, setMounted] = useState(false);
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
 		skip: !mounted, // Only fetch after component is mounted
-	});	
+	});
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 	const showNewReleaseBanner = useMemo(() => {
@@ -289,8 +303,6 @@ export default function AppSidebar() {
 		if (url !== "/" && pathname.startsWith(url)) return true;
 		return false;
 	};
-
-	
 
 	// Always render the light theme version for SSR to avoid hydration mismatch
 	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.png" : "/bifrost-logo.png";

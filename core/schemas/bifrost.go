@@ -14,7 +14,14 @@ const (
 
 type KeySelector func(ctx *context.Context, keys []Key, providerKey ModelProvider, model string) (Key, error)
 
+// BifrostRequest is the request struct for all bifrost requests.
 // only ONE of the following fields should be set:
+// - TextCompletionRequest
+// - ChatRequest
+// - ResponsesRequest
+// - EmbeddingRequest
+// - SpeechRequest
+// - TranscriptionRequest
 type BifrostRequest struct {
 	Provider    ModelProvider
 	Model       string

@@ -1,4 +1,4 @@
-import ClusterView from "@/app/enterprise/components/cluster/clusterView";
+import ClusterView from "@enterprise/components/cluster/clusterView";
 
 export default async function ClusterPage() {
 	return <ClusterView />;

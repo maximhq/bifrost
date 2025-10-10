@@ -1,28 +1,19 @@
 import { configureStore } from "@reduxjs/toolkit";
 import { baseApi } from "./apis/baseApi";
-import { appReducer, pluginReducer, providerReducer } from "./slices";
+import { appReducer, guardrailReducer, pluginReducer, providerReducer } from "./slices";
 
 // Import enterprise types for TypeScript
 type EnterpriseState = {
-	scim?: import("@enterprise/lib/store/slices/scimSlice").SCIMState;
-	user?: import("@enterprise/lib/store/slices/userSlice").UserState;
-};
+	//@ts-ignore
+} & import("@enterprise/lib/store/slices").EnterpriseState;
 
 // Get enterprise reducers if they are available
 let enterpriseReducers = {};
 try {
 	const enterprise = require("@enterprise/lib/store/slices");
-	if (enterprise.scimReducer) {
-		enterpriseReducers = {
-			...enterpriseReducers,
-			scim: enterprise.scimReducer,
-		};
-	}
-	if (enterprise.userReducer) {
-		enterpriseReducers = {
-			...enterpriseReducers,
-			user: enterprise.userReducer,
-		};
+	// Use the explicit reducers map from enterprise slices
+	if (enterprise.reducers) {
+		enterpriseReducers = enterprise.reducers;
 	}
 } catch (e) {
 	// Enterprise reducers not available, continue without them
@@ -30,14 +21,12 @@ try {
 
 // Inject enterprise APIs if they are available
 try {
+	//@ts-ignore
 	const enterpriseApis = require("@enterprise/lib/store/apis");
-	if (enterpriseApis.scimApi) {
-		// APIs are already injected into baseApi via injectEndpoints
-		// This just ensures the module is loaded
-	}
-	if (enterpriseApis.userApi) {
-		// APIs are already injected into baseApi via injectEndpoints
-		// This just ensures the module is loaded
+	// Access the apis array to ensure all API modules are loaded
+	// APIs are already injected into baseApi via injectEndpoints
+	if (enterpriseApis.apis) {
+		// Just accessing the array ensures all APIs are loaded
 	}
 } catch (e) {
 	// Enterprise APIs not available, continue without them
@@ -53,6 +42,8 @@ export const store = configureStore({
 		provider: providerReducer,
 		// Plugin state slice
 		plugin: pluginReducer,
+		// Guardrail state slice
+		guardrail: guardrailReducer,
 		// Enterprise reducers (if available)
 		...enterpriseReducers,
 	},

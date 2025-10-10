@@ -108,6 +108,7 @@
             "group": "Enterprise Features",
             "icon": "building",
             "pages": [
+              "enterprise/guardrails",              
               "enterprise/clustering",
               "enterprise/governance",
               "enterprise/mcp-with-fa",
@@ -115,6 +116,7 @@
               "enterprise/invpc-deployments",
               "enterprise/intelligent-load-balancing",
               "enterprise/custom-plugins",
+              "enterprise/audit-logs",
               "enterprise/log-exports"
             ]
           }
