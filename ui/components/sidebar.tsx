@@ -5,6 +5,7 @@ import {
 	BoxIcon,
 	BugIcon,
 	Building2,
+	Construction,
 	KeyRound,
 	Layers,
 	LogOut,
@@ -84,10 +85,10 @@ const items = [
 		description: "Manage virtual keys & access",
 	},
 	{
-		title: "Teams & Customers",
-		url: "/teams-customers",
+		title: "Users & Groups",
+		url: "/user-groups",
 		icon: Users,
-		description: "Manage teams & customers",
+		description: "Manage users & groups",
 	},
 
 	{
@@ -95,6 +96,12 @@ const items = [
 		url: "/mcp-clients",
 		icon: MCPIcon,
 		description: "MCP configuration",
+	},
+	{
+		title: "Guardrails",
+		url: "/guardrails",
+		icon: Construction,
+		description: "Guardrails configuration",
 	},
 	{
 		title: "Config",
@@ -266,7 +273,7 @@ export default function AppSidebar() {
 	const [mounted, setMounted] = useState(false);
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
 		skip: !mounted, // Only fetch after component is mounted
-	});	
+	});
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 	const showNewReleaseBanner = useMemo(() => {
@@ -289,8 +296,6 @@ export default function AppSidebar() {
 		if (url !== "/" && pathname.startsWith(url)) return true;
 		return false;
 	};
-
-	
 
 	// Always render the light theme version for SSR to avoid hydration mismatch
 	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.png" : "/bifrost-logo.png";

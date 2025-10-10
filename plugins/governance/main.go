@@ -90,7 +90,6 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store conf
 		logger:         logger,
 		isVkMandatory:  config.IsVkMandatory,
 	}
-
 	return plugin, nil
 }
 

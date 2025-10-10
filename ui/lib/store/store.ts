@@ -4,7 +4,9 @@ import { appReducer, pluginReducer, providerReducer } from "./slices";
 
 // Import enterprise types for TypeScript
 type EnterpriseState = {
+	//@ts-ignore
 	scim?: import("@enterprise/lib/store/slices/scimSlice").SCIMState;
+	//@ts-ignore
 	user?: import("@enterprise/lib/store/slices/userSlice").UserState;
 };
 
