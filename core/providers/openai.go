@@ -279,6 +279,8 @@ func handleOpenAITextCompletionStreaming(
 
 		var finishReason *string
 		var messageID string
+		startTime := time.Now()
+		lastChunkTime := startTime
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -381,6 +383,8 @@ func handleOpenAITextCompletionStreaming(
 				response.ExtraFields.Provider = providerName
 				response.ExtraFields.ModelRequested = request.Model
 				response.ExtraFields.ChunkIndex = chunkIndex
+				response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				lastChunkTime = time.Now()
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 			}
@@ -392,6 +396,7 @@ func handleOpenAITextCompletionStreaming(
 			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, logger)
 		} else {
 			response := createBifrostCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
+			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()
@@ -813,6 +818,9 @@ func handleOpenAIStreaming(
 		chunkIndex := -1
 		usage := &schemas.LLMUsage{}
 
+		startTime := time.Now()
+		lastChunkTime := startTime
+
 		var finishReason *string
 		var messageID string
 
@@ -832,8 +840,8 @@ func handleOpenAIStreaming(
 			var jsonData string
 
 			// Parse SSE data
-			if strings.HasPrefix(line, "data: ") {
-				jsonData = strings.TrimPrefix(line, "data: ")
+			if after, ok := strings.CutPrefix(line, "data: "); ok {
+				jsonData = after
 			} else {
 				// Handle raw JSON errors (without "data: " prefix)
 				jsonData = line
@@ -917,6 +925,8 @@ func handleOpenAIStreaming(
 				response.ExtraFields.Provider = providerName
 				response.ExtraFields.ModelRequested = request.Model
 				response.ExtraFields.ChunkIndex = chunkIndex
+				response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				lastChunkTime = time.Now()
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 			}
@@ -928,6 +938,7 @@ func handleOpenAIStreaming(
 			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, logger)
 		} else {
 			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()
@@ -1099,6 +1110,9 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		scanner := bufio.NewScanner(resp.Body)
 		chunkIndex := -1
 
+		startTime := time.Now()
+		lastChunkTime := startTime
+
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -1164,12 +1178,14 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				RequestType:    schemas.SpeechStreamRequest,
 				Provider:       providerName,
 				ModelRequested: request.Model,
+				ChunkIndex:     chunkIndex,
+				Latency:        time.Since(lastChunkTime).Milliseconds(),
 			}
-
-			response.ExtraFields.ChunkIndex = chunkIndex
+			lastChunkTime = time.Now()
 
 			if speechResponse.Usage != nil {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 				return
 			}
@@ -1369,6 +1385,9 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 		scanner := bufio.NewScanner(resp.Body)
 		chunkIndex := -1
 
+		startTime := time.Now()
+		lastChunkTime := startTime
+
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -1432,12 +1451,14 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				RequestType:    schemas.TranscriptionStreamRequest,
 				Provider:       providerName,
 				ModelRequested: request.Model,
+				ChunkIndex:     chunkIndex,
+				Latency:        time.Since(lastChunkTime).Milliseconds(),
 			}
-
-			response.ExtraFields.ChunkIndex = chunkIndex
+			lastChunkTime = time.Now()
 
 			if transcriptionResponse.Usage != nil {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 				return
 			}

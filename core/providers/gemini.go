@@ -363,6 +363,8 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens
 		chunkIndex := -1
 		usage := &schemas.AudioLLMUsage{}
+		startTime := time.Now()
+		lastChunkTime := startTime
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -452,8 +454,10 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
 					},
 				}
+				lastChunkTime = time.Now()
 
 				// Process response through post-hooks and send to channel
 				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
@@ -475,9 +479,11 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 					Provider:       providerName,
 					ModelRequested: request.Model,
 					ChunkIndex:     chunkIndex + 1,
+					Latency:        time.Since(startTime).Milliseconds(),
 				},
 			}
 
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 		}
 	}()
@@ -629,6 +635,8 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 		scanner := bufio.NewScanner(resp.Body)
 		chunkIndex := -1
 		usage := &schemas.TranscriptionUsage{}
+		startTime := time.Now()
+		lastChunkTime := startTime
 
 		var fullTranscriptionText string
 
@@ -727,8 +735,10 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
 					},
 				}
+				lastChunkTime = time.Now()
 
 				// Process response through post-hooks and send to channel
 				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
@@ -756,9 +766,11 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 					Provider:       providerName,
 					ModelRequested: request.Model,
 					ChunkIndex:     chunkIndex + 1,
+					Latency:        time.Since(startTime).Milliseconds(),
 				},
 			}
 
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 		}
 	}()

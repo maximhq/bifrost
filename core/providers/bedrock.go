@@ -644,6 +644,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		reader := bufio.NewReader(resp.Body)
 		buffer := make([]byte, 1024*1024) // 1MB buffer
 		var accumulator []byte            // Accumulate data across reads
+		startTime := time.Now()
+		lastChunkTime := startTime
 
 		for {
 			n, err := reader.Read(buffer)
@@ -651,7 +653,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 				if err == io.EOF {
 					// Process any remaining data in the accumulator
 					if len(accumulator) > 0 {
-						_ = provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, request.Model, providerName, responseChan)
+						_ = provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, request.Model, providerName, responseChan, &lastChunkTime)
 					}
 					break
 				}
@@ -668,7 +670,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 			accumulator = append(accumulator, buffer[:n]...)
 
 			// Process the accumulated data and get the remaining unprocessed part
-			remaining := provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, request.Model, providerName, responseChan)
+			remaining := provider.processAWSEventStreamData(ctx, postHookRunner, accumulator, &messageID, &chunkIndex, &usage, &finishReason, request.Model, providerName, responseChan, &lastChunkTime)
 
 			// Reset accumulator with remaining data
 			accumulator = remaining
@@ -676,6 +678,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 		// Send final response
 		response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
 	}()
 
@@ -695,6 +698,7 @@ func (provider *BedrockProvider) processAWSEventStreamData(
 	model string,
 	providerName schemas.ModelProvider,
 	responseChan chan *schemas.BifrostStream,
+	lastChunkTime *time.Time,
 ) []byte {
 	lastProcessed := 0
 	depth := 0
@@ -741,7 +745,7 @@ func (provider *BedrockProvider) processAWSEventStreamData(
 						bytes.Contains(jsonBytes, []byte(`metadata`))
 
 					if hasQuotes && hasRelevantContent {
-						provider.processEventBuffer(ctx, postHookRunner, jsonBytes, messageID, chunkIndex, usage, finishReason, model, providerName, responseChan)
+						provider.processEventBuffer(ctx, postHookRunner, jsonBytes, messageID, chunkIndex, usage, finishReason, model, providerName, responseChan, lastChunkTime)
 						lastProcessed = i + 1
 					}
 					objStart = -1
@@ -759,7 +763,7 @@ func (provider *BedrockProvider) processAWSEventStreamData(
 }
 
 // processEventBuffer processes AWS Event Stream JSON payloads using typed Bedrock stream events
-func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHookRunner schemas.PostHookRunner, eventBuffer []byte, messageID *string, chunkIndex *int, usage **schemas.LLMUsage, finishReason **string, model string, providerName schemas.ModelProvider, responseChan chan *schemas.BifrostStream) {
+func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHookRunner schemas.PostHookRunner, eventBuffer []byte, messageID *string, chunkIndex *int, usage **schemas.LLMUsage, finishReason **string, model string, providerName schemas.ModelProvider, responseChan chan *schemas.BifrostStream, lastChunkTime *time.Time) {
 	// Parse the JSON event into our typed structure
 	var streamEvent bedrock.BedrockStreamEvent
 	if err := sonic.Unmarshal(eventBuffer, &streamEvent); err != nil {
@@ -798,9 +802,11 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 				Provider:       providerName,
 				ModelRequested: model,
 				ChunkIndex:     *chunkIndex,
+				Latency:        time.Since(*lastChunkTime).Milliseconds(),
 			},
 		}
 
+		*lastChunkTime = time.Now()
 		processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 
 	case streamEvent.Start != nil && streamEvent.Start.ToolUse != nil:
@@ -838,9 +844,11 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 				Provider:       providerName,
 				ModelRequested: model,
 				ChunkIndex:     *chunkIndex,
+				Latency:        time.Since(*lastChunkTime).Milliseconds(),
 			},
 		}
 
+		*lastChunkTime = time.Now()
 		processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 
 	case streamEvent.ContentBlockIndex != nil && streamEvent.Delta != nil:
@@ -872,9 +880,11 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 						Provider:       providerName,
 						ModelRequested: model,
 						ChunkIndex:     *chunkIndex,
+						Latency:        time.Since(*lastChunkTime).Milliseconds(),
 					},
 				}
 
+				*lastChunkTime = time.Now()
 				processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 			}
 
@@ -909,9 +919,11 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 					Provider:       providerName,
 					ModelRequested: model,
 					ChunkIndex:     *chunkIndex,
+					Latency:        time.Since(*lastChunkTime).Milliseconds(),
 				},
 			}
 
+			*lastChunkTime = time.Now()
 			processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, provider.logger)
 		}
 

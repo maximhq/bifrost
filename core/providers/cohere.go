@@ -436,6 +436,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 		scanner := bufio.NewScanner(resp.Body)
 		var responseID string
+		startTime := time.Now()
+		lastChunkTime := startTime
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -487,8 +489,10 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
 					},
 				}
+				lastChunkTime = time.Now()
 
 				switch event.Type {
 				case cohere.StreamEventMessageStart:
@@ -569,6 +573,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 						}
 
 						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 					}
 
 				case cohere.StreamEventToolCallEnd, cohere.StreamEventContentEnd:

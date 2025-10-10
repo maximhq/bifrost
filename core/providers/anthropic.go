@@ -444,6 +444,9 @@ func handleAnthropicStreaming(
 		scanner := bufio.NewScanner(resp.Body)
 		chunkIndex := -1
 
+		startTime := time.Now()
+		lastChunkTime := startTime
+
 		// Track minimal state needed for response format
 		var messageID string
 		var modelName string
@@ -527,8 +530,10 @@ func handleAnthropicStreaming(
 								Provider:       providerType,
 								ModelRequested: modelName,
 								ChunkIndex:     chunkIndex,
+								Latency:        time.Since(lastChunkTime).Milliseconds(),
 							},
 						}
+						lastChunkTime = time.Now()
 
 						// Use utility function to process and send response
 						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
@@ -573,8 +578,10 @@ func handleAnthropicStreaming(
 									Provider:       providerType,
 									ModelRequested: modelName,
 									ChunkIndex:     chunkIndex,
+									Latency:        time.Since(lastChunkTime).Milliseconds(),
 								},
 							}
+							lastChunkTime = time.Now()
 
 							// Use utility function to process and send response
 							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
@@ -610,8 +617,10 @@ func handleAnthropicStreaming(
 								Provider:       providerType,
 								ModelRequested: modelName,
 								ChunkIndex:     chunkIndex,
+								Latency:        time.Since(lastChunkTime).Milliseconds(),
 							},
 						}
+						lastChunkTime = time.Now()
 
 						// Use utility function to process and send response
 						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
@@ -646,8 +655,10 @@ func handleAnthropicStreaming(
 									Provider:       providerType,
 									ModelRequested: modelName,
 									ChunkIndex:     chunkIndex,
+									Latency:        time.Since(lastChunkTime).Milliseconds(),
 								},
 							}
+							lastChunkTime = time.Now()
 
 							// Use utility function to process and send response
 							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
@@ -683,8 +694,10 @@ func handleAnthropicStreaming(
 									Provider:       providerType,
 									ModelRequested: modelName,
 									ChunkIndex:     chunkIndex,
+									Latency:        time.Since(lastChunkTime).Milliseconds(),
 								},
 							}
+							lastChunkTime = time.Now()
 
 							// Use utility function to process and send response
 							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
@@ -713,8 +726,10 @@ func handleAnthropicStreaming(
 									Provider:       providerType,
 									ModelRequested: modelName,
 									ChunkIndex:     chunkIndex,
+									Latency:        time.Since(lastChunkTime).Milliseconds(),
 								},
 							}
+							lastChunkTime = time.Now()
 
 							// Use utility function to process and send response
 							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
@@ -774,6 +789,7 @@ func handleAnthropicStreaming(
 			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerType, modelName, logger)
 		} else {
 			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerType, modelName)
+			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()

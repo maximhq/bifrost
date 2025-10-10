@@ -492,7 +492,7 @@ type BifrostResponseExtraFields struct {
 	RequestType    RequestType        `json:"request_type"`
 	Provider       ModelProvider      `json:"provider"`
 	ModelRequested string             `json:"model_requested"`
-	Latency        int64              `json:"latency,omitempty"` // in milliseconds
+	Latency        int64              `json:"latency,omitempty"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	BilledUsage    *BilledLLMUsage    `json:"billed_usage,omitempty"`
 	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse    interface{}        `json:"raw_response,omitempty"`
@@ -525,6 +525,21 @@ const (
 type BifrostStream struct {
 	*BifrostResponse
 	*BifrostError
+}
+
+// MarshalJSON implements custom JSON marshaling for BifrostStream.
+// This ensures that only the non-nil embedded struct is marshaled,
+// preventing conflicts between BifrostResponse.ExtraFields and BifrostError.ExtraFields.
+func (bs BifrostStream) MarshalJSON() ([]byte, error) {
+	if bs.BifrostResponse != nil {
+		// Marshal the BifrostResponse with its ExtraFields
+		return sonic.Marshal(bs.BifrostResponse)
+	} else if bs.BifrostError != nil {
+		// Marshal the BifrostError with its ExtraFields
+		return sonic.Marshal(bs.BifrostError)
+	}
+	// Return empty object if both are nil (shouldn't happen in practice)
+	return []byte("{}"), nil
 }
 
 // BifrostError represents an error from the Bifrost system.

@@ -771,11 +771,7 @@ func (h *CompletionHandler) handleStreamingTextCompletion(ctx *fasthttp.RequestC
 		return h.client.TextCompletionStreamRequest(*bifrostCtx, req)
 	}
 
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		return response, true
-	}
-
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
+	h.handleStreamingResponse(ctx, getStream)
 }
 
 // handleStreamingChatCompletion handles streaming chat completion requests using Server-Sent Events (SSE)
@@ -784,11 +780,7 @@ func (h *CompletionHandler) handleStreamingChatCompletion(ctx *fasthttp.RequestC
 		return h.client.ChatCompletionStreamRequest(*bifrostCtx, req)
 	}
 
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		return response, true
-	}
-
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
+	h.handleStreamingResponse(ctx, getStream)
 }
 
 // handleStreamingResponses handles streaming responses requests using Server-Sent Events (SSE)
@@ -797,11 +789,7 @@ func (h *CompletionHandler) handleStreamingResponses(ctx *fasthttp.RequestCtx, r
 		return h.client.ResponsesStreamRequest(*bifrostCtx, req)
 	}
 
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		return response, true
-	}
-
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
+	h.handleStreamingResponse(ctx, getStream)
 }
 
 // handleStreamingSpeech handles streaming speech requests using Server-Sent Events (SSE)
@@ -810,14 +798,7 @@ func (h *CompletionHandler) handleStreamingSpeech(ctx *fasthttp.RequestCtx, req 
 		return h.client.SpeechStreamRequest(*bifrostCtx, req)
 	}
 
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		if response.Speech == nil || response.Speech.BifrostSpeechStreamResponse == nil {
-			return nil, false
-		}
-		return response.Speech, true
-	}
-
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
+	h.handleStreamingResponse(ctx, getStream)
 }
 
 // handleStreamingTranscriptionRequest handles streaming transcription requests using Server-Sent Events (SSE)
@@ -826,18 +807,11 @@ func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.Re
 		return h.client.TranscriptionStreamRequest(*bifrostCtx, req)
 	}
 
-	extractResponse := func(response *schemas.BifrostStream) (interface{}, bool) {
-		if response.Transcribe == nil || response.Transcribe.BifrostTranscribeStreamResponse == nil {
-			return nil, false
-		}
-		return response.Transcribe, true
-	}
-
-	h.handleStreamingResponse(ctx, getStream, extractResponse)
+	h.handleStreamingResponse(ctx, getStream)
 }
 
 // handleStreamingResponse is a generic function to handle streaming responses using Server-Sent Events (SSE)
-func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, getStream func() (chan *schemas.BifrostStream, *schemas.BifrostError), extractResponse func(*schemas.BifrostStream) (interface{}, bool)) {
+func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, getStream func() (chan *schemas.BifrostStream, *schemas.BifrostError)) {
 	// Set SSE headers
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
@@ -857,26 +831,24 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 		defer w.Flush()
 
 		// Process streaming responses
-		for response := range stream {
-			if response == nil {
+		for chunk := range stream {
+			if chunk == nil {
 				continue
 			}
 
-			// Extract and validate the response data
-			data, valid := extractResponse(response)
-			if !valid {
-				continue
+			if chunk.BifrostResponse != nil {
+				h.logger.Info(fmt.Sprintf("Streaming response is a BifrostResponse with type %s, provider %s, model %s and latency %d", chunk.BifrostResponse.ExtraFields.RequestType, chunk.BifrostResponse.ExtraFields.Provider, chunk.BifrostResponse.ExtraFields.ModelRequested, chunk.BifrostResponse.ExtraFields.Latency))
 			}
 
 			// Convert response to JSON
-			responseJSON, err := sonic.Marshal(data)
+			chunkJSON, err := sonic.Marshal(chunk)
 			if err != nil {
 				h.logger.Warn(fmt.Sprintf("Failed to marshal streaming response: %v", err))
 				continue
 			}
 
 			// Send as SSE data
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", chunkJSON); err != nil {
 				h.logger.Warn(fmt.Sprintf("Failed to write SSE data: %v", err))
 				break
 			}
