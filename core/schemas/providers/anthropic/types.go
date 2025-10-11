@@ -227,6 +227,7 @@ type AnthropicStreamEventType string
 
 const (
 	AnthropicStreamEventTypeMessageStart      AnthropicStreamEventType = "message_start"
+	AnthropicStreamEventTypeMessageStop       AnthropicStreamEventType = "message_stop"
 	AnthropicStreamEventTypeContentBlockStart AnthropicStreamEventType = "content_block_start"
 	AnthropicStreamEventTypeContentBlockDelta AnthropicStreamEventType = "content_block_delta"
 	AnthropicStreamEventTypeContentBlockStop  AnthropicStreamEventType = "content_block_stop"
