@@ -177,7 +177,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 	}
 
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/openai/chat/completions",

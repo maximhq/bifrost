@@ -3,7 +3,6 @@ package schemas
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/bytedance/sonic"
 )
@@ -251,6 +250,7 @@ type BifrostResponse struct {
 	ExtraFields       BifrostResponseExtraFields  `json:"extra_fields"`
 
 	*ResponsesResponse
+	*ResponsesStreamResponse
 }
 
 // ToTextCompletionResponse converts a Bifrost response to a Bifrost text completion response
@@ -337,161 +337,12 @@ type BilledLLMUsage struct {
 	Classifications  *float64 `json:"classifications,omitempty"`
 }
 
-// LogProb represents the log probability of a token.
-type LogProb struct {
-	Bytes   []int   `json:"bytes,omitempty"`
-	LogProb float64 `json:"logprob"`
-	Token   string  `json:"token"`
-}
-
-// ContentLogProb represents log probability information for content.
-type ContentLogProb struct {
-	Bytes       []int     `json:"bytes"`
-	LogProb     float64   `json:"logprob"`
-	Token       string    `json:"token"`
-	TopLogProbs []LogProb `json:"top_logprobs"`
-}
-
-// TextCompletionLogProb represents log probability information for text completion.
-type TextCompletionLogProb struct {
-	TextOffset    []int                `json:"text_offset"`
-	TokenLogProbs []float64            `json:"token_logprobs"`
-	Tokens        []string             `json:"tokens"`
-	TopLogProbs   []map[string]float64 `json:"top_logprobs"`
-}
-
 // LogProbs represents the log probabilities for different aspects of a response.
 type LogProbs struct {
 	Content []ContentLogProb `json:"content,omitempty"`
 	Refusal []LogProb        `json:"refusal,omitempty"`
 
 	*TextCompletionLogProb
-}
-
-type BifrostEmbedding struct {
-	Index     int                      `json:"index"`
-	Object    string                   `json:"object"`    // embedding
-	Embedding BifrostEmbeddingResponse `json:"embedding"` // can be []float32 or string
-}
-
-type BifrostEmbeddingResponse struct {
-	EmbeddingStr     *string
-	EmbeddingArray   []float32
-	Embedding2DArray [][]float32
-}
-
-func (be BifrostEmbeddingResponse) MarshalJSON() ([]byte, error) {
-	if be.EmbeddingStr != nil {
-		return sonic.Marshal(be.EmbeddingStr)
-	}
-	if be.EmbeddingArray != nil {
-		return sonic.Marshal(be.EmbeddingArray)
-	}
-	if be.Embedding2DArray != nil {
-		return sonic.Marshal(be.Embedding2DArray)
-	}
-	return nil, fmt.Errorf("no embedding found")
-}
-
-func (be *BifrostEmbeddingResponse) UnmarshalJSON(data []byte) error {
-	// First, try to unmarshal as a direct string
-	var stringContent string
-	if err := sonic.Unmarshal(data, &stringContent); err == nil {
-		be.EmbeddingStr = &stringContent
-		return nil
-	}
-
-	// Try to unmarshal as a direct array of float32
-	var arrayContent []float32
-	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
-		be.EmbeddingArray = arrayContent
-		return nil
-	}
-
-	// Try to unmarshal as a direct 2D array of float32
-	var arrayContent2D [][]float32
-	if err := sonic.Unmarshal(data, &arrayContent2D); err == nil {
-		be.Embedding2DArray = arrayContent2D
-		return nil
-	}
-
-	return fmt.Errorf("embedding field is neither a string nor an array of float32 nor a 2D array of float32")
-}
-
-// BifrostChatResponseChoice represents a choice in the completion result.
-// This struct can represent either a streaming or non-streaming response choice.
-// IMPORTANT: Only one of BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
-// should be non-nil at a time.
-type BifrostChatResponseChoice struct {
-	Index        int       `json:"index"`
-	FinishReason *string   `json:"finish_reason,omitempty"`
-	LogProbs     *LogProbs `json:"log_probs,omitempty"`
-
-	*BifrostTextCompletionResponseChoice
-	*BifrostNonStreamResponseChoice
-	*BifrostStreamResponseChoice
-}
-
-type BifrostTextCompletionResponseChoice struct {
-	Text *string `json:"text,omitempty"`
-}
-
-// BifrostNonStreamResponseChoice represents a choice in the non-stream response
-type BifrostNonStreamResponseChoice struct {
-	Message    *ChatMessage `json:"message"`
-	StopString *string      `json:"stop,omitempty"`
-}
-
-// BifrostStreamResponseChoice represents a choice in the stream response
-type BifrostStreamResponseChoice struct {
-	Delta *BifrostStreamDelta `json:"delta,omitempty"` // Partial message info
-}
-
-// BifrostStreamDelta represents a delta in the stream response
-type BifrostStreamDelta struct {
-	Role      *string                        `json:"role,omitempty"`       // Only in the first chunk
-	Content   *string                        `json:"content,omitempty"`    // May be empty string or null
-	Thought   *string                        `json:"thought,omitempty"`    // May be empty string or null
-	Refusal   *string                        `json:"refusal,omitempty"`    // Refusal content if any
-	ToolCalls []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
-}
-
-type BifrostSpeech struct {
-	Usage *AudioLLMUsage `json:"usage,omitempty"`
-	Audio []byte         `json:"audio"`
-
-	*BifrostSpeechStreamResponse
-}
-
-type BifrostSpeechStreamResponse struct {
-	Type string `json:"type"`
-}
-
-// BifrostTranscribe represents transcription response data
-type BifrostTranscribe struct {
-	// Common fields for both streaming and non-streaming
-	Text     string                 `json:"text"`
-	LogProbs []TranscriptionLogProb `json:"logprobs,omitempty"`
-	Usage    *TranscriptionUsage    `json:"usage,omitempty"`
-
-	// Embedded structs for specific fields only
-	*BifrostTranscribeNonStreamResponse
-	*BifrostTranscribeStreamResponse
-}
-
-// BifrostTranscribeNonStreamResponse represents non-streaming specific fields only
-type BifrostTranscribeNonStreamResponse struct {
-	Task     *string                `json:"task,omitempty"`     // e.g., "transcribe"
-	Language *string                `json:"language,omitempty"` // e.g., "english"
-	Duration *float64               `json:"duration,omitempty"` // Duration in seconds
-	Words    []TranscriptionWord    `json:"words,omitempty"`
-	Segments []TranscriptionSegment `json:"segments,omitempty"`
-}
-
-// BifrostTranscribeStreamResponse represents streaming specific fields only
-type BifrostTranscribeStreamResponse struct {
-	Type  *string `json:"type,omitempty"`  // "transcript.text.delta" or "transcript.text.done"
-	Delta *string `json:"delta,omitempty"` // For delta events
 }
 
 // BifrostResponseExtraFields contains additional fields in a response.

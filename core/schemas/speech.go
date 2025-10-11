@@ -13,9 +13,9 @@ type SpeechInput struct {
 
 type SpeechParameters struct {
 	VoiceConfig    *SpeechVoiceInput `json:"voice"`
-	Instructions   string           `json:"instructions,omitempty"`
-	ResponseFormat string           `json:"response_format,omitempty"` // Default is "mp3"
-	Speed          *float64         `json:"speed,omitempty"`
+	Instructions   string            `json:"instructions,omitempty"`
+	ResponseFormat string            `json:"response_format,omitempty"` // Default is "mp3"
+	Speed          *float64          `json:"speed,omitempty"`
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
@@ -81,4 +81,15 @@ func (vi *SpeechVoiceInput) UnmarshalJSON(data []byte) error {
 	}
 
 	return fmt.Errorf("voice field is neither a string, nor an array of VoiceConfig objects")
+}
+
+type BifrostSpeech struct {
+	Usage *AudioLLMUsage `json:"usage,omitempty"`
+	Audio []byte         `json:"audio"`
+
+	*BifrostSpeechStreamResponse
+}
+
+type BifrostSpeechStreamResponse struct {
+	Type string `json:"type"`
 }

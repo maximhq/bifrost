@@ -93,3 +93,53 @@ type EmbeddingParameters struct {
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
 }
+
+type BifrostEmbedding struct {
+	Index     int                      `json:"index"`
+	Object    string                   `json:"object"`    // embedding
+	Embedding BifrostEmbeddingResponse `json:"embedding"` // can be []float32 or string
+}
+
+type BifrostEmbeddingResponse struct {
+	EmbeddingStr     *string
+	EmbeddingArray   []float32
+	Embedding2DArray [][]float32
+}
+
+func (be BifrostEmbeddingResponse) MarshalJSON() ([]byte, error) {
+	if be.EmbeddingStr != nil {
+		return sonic.Marshal(be.EmbeddingStr)
+	}
+	if be.EmbeddingArray != nil {
+		return sonic.Marshal(be.EmbeddingArray)
+	}
+	if be.Embedding2DArray != nil {
+		return sonic.Marshal(be.Embedding2DArray)
+	}
+	return nil, fmt.Errorf("no embedding found")
+}
+
+func (be *BifrostEmbeddingResponse) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var stringContent string
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+		be.EmbeddingStr = &stringContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct array of float32
+	var arrayContent []float32
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+		be.EmbeddingArray = arrayContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct 2D array of float32
+	var arrayContent2D [][]float32
+	if err := sonic.Unmarshal(data, &arrayContent2D); err == nil {
+		be.Embedding2DArray = arrayContent2D
+		return nil
+	}
+
+	return fmt.Errorf("embedding field is neither a string nor an array of float32 nor a 2D array of float32")
+}
