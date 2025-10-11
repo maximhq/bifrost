@@ -347,3 +347,56 @@ type ChatAssistantMessageToolCallFunction struct {
 	Name      *string `json:"name"`
 	Arguments string  `json:"arguments"` // stringified json as retured by OpenAI, might not be a valid JSON always
 }
+
+// BifrostChatResponseChoice represents a choice in the completion result.
+// This struct can represent either a streaming or non-streaming response choice.
+// IMPORTANT: Only one of BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
+// should be non-nil at a time.
+type BifrostChatResponseChoice struct {
+	Index        int       `json:"index"`
+	FinishReason *string   `json:"finish_reason,omitempty"`
+	LogProbs     *LogProbs `json:"log_probs,omitempty"`
+
+	*BifrostTextCompletionResponseChoice
+	*BifrostNonStreamResponseChoice
+	*BifrostStreamResponseChoice
+}
+
+type BifrostTextCompletionResponseChoice struct {
+	Text *string `json:"text,omitempty"`
+}
+
+// BifrostNonStreamResponseChoice represents a choice in the non-stream response
+type BifrostNonStreamResponseChoice struct {
+	Message    *ChatMessage `json:"message"`
+	StopString *string      `json:"stop,omitempty"`
+}
+
+// BifrostStreamResponseChoice represents a choice in the stream response
+type BifrostStreamResponseChoice struct {
+	Delta *BifrostStreamDelta `json:"delta,omitempty"` // Partial message info
+}
+
+// BifrostStreamDelta represents a delta in the stream response
+type BifrostStreamDelta struct {
+	Role      *string                        `json:"role,omitempty"`       // Only in the first chunk
+	Content   *string                        `json:"content,omitempty"`    // May be empty string or null
+	Thought   *string                        `json:"thought,omitempty"`    // May be empty string or null
+	Refusal   *string                        `json:"refusal,omitempty"`    // Refusal content if any
+	ToolCalls []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+}
+
+// LogProb represents the log probability of a token.
+type LogProb struct {
+	Bytes   []int   `json:"bytes,omitempty"`
+	LogProb float64 `json:"logprob"`
+	Token   string  `json:"token"`
+}
+
+// ContentLogProb represents log probability information for content.
+type ContentLogProb struct {
+	Bytes       []int     `json:"bytes"`
+	LogProb     float64   `json:"logprob"`
+	Token       string    `json:"token"`
+	TopLogProbs []LogProb `json:"top_logprobs"`
+}

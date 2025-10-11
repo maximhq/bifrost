@@ -453,10 +453,21 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer w.Flush()
 
+		var requestType schemas.RequestType
+
 		// Process streaming responses
 		for response := range streamChan {
 			if response == nil {
 				continue
+			}
+
+			// Extract request type from the first response for stream format detection
+			if requestType == "" {
+				if response.BifrostResponse != nil {
+					requestType = response.BifrostResponse.ExtraFields.RequestType
+				} else if response.BifrostError != nil {
+					requestType = response.BifrostError.ExtraFields.RequestType
+				}
 			}
 
 			// Check for context cancellation
@@ -554,19 +565,47 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 						return // Network error, stop streaming
 					}
 				} else {
-					// STANDARD SSE FORMAT: The converter returned an object
-					// This will be JSON marshaled and wrapped as "data: {json}\n\n"
-					// Used by most providers (OpenAI, Google, etc.)
-					responseJSON, err := json.Marshal(convertedResponse)
-					if err != nil {
-						// Log JSON marshaling error but continue processing
-						log.Printf("Failed to marshal streaming response: %v", err)
-						continue
-					}
+					// Handle different streaming formats based on request type
+					if requestType == schemas.ResponsesStreamRequest {
+						// OPENAI RESPONSES FORMAT: Use event: and data: lines for OpenAI responses API compatibility
+						eventType := ""
+						if response.BifrostResponse.ResponsesStreamResponse != nil {
+							eventType = string(response.BifrostResponse.ResponsesStreamResponse.Type)
+						}
 
-					// Send as SSE data
-					if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
-						return // Network error, stop streaming
+						// Send event line if available
+						if eventType != "" {
+							if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
+								return // Network error, stop streaming
+							}
+						}
+
+						// Send data line
+						responseJSON, err := json.Marshal(convertedResponse)
+						if err != nil {
+							// Log JSON marshaling error but continue processing
+							log.Printf("Failed to marshal streaming response: %v", err)
+							continue
+						}
+
+						if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
+							return // Network error, stop streaming
+						}
+					} else {
+						// STANDARD SSE FORMAT: The converter returned an object
+						// This will be JSON marshaled and wrapped as "data: {json}\n\n"
+						// Used by most providers (OpenAI chat/completions, Google, etc.)
+						responseJSON, err := json.Marshal(convertedResponse)
+						if err != nil {
+							// Log JSON marshaling error but continue processing
+							log.Printf("Failed to marshal streaming response: %v", err)
+							continue
+						}
+
+						// Send as SSE data
+						if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
+							return // Network error, stop streaming
+						}
 					}
 				}
 
@@ -576,6 +615,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 				}
 			}
 		}
+
+		// Send [DONE] marker only for non-responses APIs (OpenAI responses API doesn't use [DONE])
+		if requestType != schemas.ResponsesStreamRequest {
+			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+				log.Printf("Failed to write SSE done marker: %v", err)
+			}
+		}
+		// Note: OpenAI responses API doesn't use [DONE] marker, it ends when the stream closes
 	})
 }
 

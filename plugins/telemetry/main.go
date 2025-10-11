@@ -136,8 +136,6 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 					}
 				}
 				return // Exit goroutine for intermediate chunks
-			} else {
-				p.StreamInterTokenLatency.WithLabelValues(promLabelValues...).Observe(float64(result.ExtraFields.Latency) / 1000.0)
 			}
 		}
 

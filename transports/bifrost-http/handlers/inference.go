@@ -825,6 +825,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 		return
 	}
 
+	var requestType schemas.RequestType
+
 	// Use streaming response writer
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer w.Flush()
@@ -835,6 +837,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 				continue
 			}
 
+			if requestType == "" {
+				if chunk.BifrostResponse != nil {
+					requestType = chunk.BifrostResponse.ExtraFields.RequestType
+				} else if chunk.BifrostError != nil {
+					requestType = chunk.BifrostError.ExtraFields.RequestType
+				}
+			}
+
 			// Convert response to JSON
 			chunkJSON, err := sonic.Marshal(chunk)
 			if err != nil {
@@ -843,9 +853,30 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 
 			// Send as SSE data
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", chunkJSON); err != nil {
-				h.logger.Warn(fmt.Sprintf("Failed to write SSE data: %v", err))
-				break
+			if requestType == schemas.ResponsesStreamRequest {
+				// For responses API, use OpenAI-compatible format with event line
+				eventType := ""
+				if chunk.BifrostResponse != nil && chunk.BifrostResponse.ResponsesStreamResponse != nil {
+					eventType = string(chunk.BifrostResponse.ResponsesStreamResponse.Type)
+				}
+
+				if eventType != "" {
+					if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
+						h.logger.Warn(fmt.Sprintf("Failed to write SSE event: %v", err))
+						break
+					}
+				}
+
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", chunkJSON); err != nil {
+					h.logger.Warn(fmt.Sprintf("Failed to write SSE data: %v", err))
+					break
+				}
+			} else {
+				// For other APIs, use standard format
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", chunkJSON); err != nil {
+					h.logger.Warn(fmt.Sprintf("Failed to write SSE data: %v", err))
+					break
+				}
 			}
 
 			// Flush immediately to send the chunk
@@ -855,10 +886,13 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 		}
 
-		// Send the [DONE] marker to indicate the end of the stream
-		if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-			h.logger.Warn(fmt.Sprintf("Failed to write SSE done marker: %v", err))
+		if requestType != schemas.ResponsesStreamRequest {
+			// Send the [DONE] marker to indicate the end of the stream (only for non-responses APIs)
+			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+				h.logger.Warn(fmt.Sprintf("Failed to write SSE done marker: %v", err))
+			}
 		}
+		// Note: OpenAI responses API doesn't use [DONE] marker, it ends when the stream closes
 	})
 }
 

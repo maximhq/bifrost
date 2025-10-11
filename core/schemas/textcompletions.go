@@ -68,3 +68,11 @@ type TextCompletionParameters struct {
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
 }
+
+// TextCompletionLogProb represents log probability information for text completion.
+type TextCompletionLogProb struct {
+	TextOffset    []int                `json:"text_offset"`
+	TokenLogProbs []float64            `json:"token_logprobs"`
+	Tokens        []string             `json:"tokens"`
+	TopLogProbs   []map[string]float64 `json:"top_logprobs"`
+}

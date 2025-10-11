@@ -222,7 +222,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		return nil, &schemas.BifrostError{
@@ -259,7 +259,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		// Remove client from pool for non-context errors (could be auth/network issues)
@@ -414,7 +414,7 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
@@ -445,7 +445,7 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 				},
 			}
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) ||  errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 		}
 		// Remove client from pool for non-context errors (could be auth/network issues)
@@ -588,7 +588,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			authHeader["Authorization"] = "Bearer " + key.Value
 		}
 		// Use shared OpenAI streaming logic
-		return handleOpenAIStreaming(
+		return handleOpenAIChatCompletionStreaming(
 			ctx,
 			client,
 			url,

@@ -176,7 +176,7 @@ func (provider *GroqProvider) Embedding(ctx context.Context, key schemas.Key, re
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",

@@ -85,6 +85,7 @@ type ResponsesTextConfigFormatJSONSchema struct {
 type ResponsesResponse struct {
 	Background         *bool                          `json:"background,omitempty"`
 	Conversation       *ResponsesResponseConversation `json:"conversation,omitempty"`
+	Error              *ResponsesResponseError        `json:"error,omitempty"`
 	Include            []string                       `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
 	Instructions       *ResponsesResponseInstructions `json:"instructions,omitempty"`
 	MaxOutputTokens    *int                           `json:"max_output_tokens,omitempty"`
@@ -1174,7 +1175,6 @@ type ResponsesLocalShellCallOutput struct {
 // MCP (Model Context Protocol) Tools
 // -----------------------------------------------------------------------------
 
-
 // ResponsesMCPListTools represents a list of MCP tools
 type ResponsesMCPListTools struct {
 	ServerLabel string             `json:"server_label"`
@@ -1613,4 +1613,108 @@ type ResponsesToolCustomFormat struct {
 type ResponsesToolWebSearchPreview struct {
 	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The user's location
+}
+
+// ======================================================= Streaming Structs =======================================================
+
+type ResponsesStreamResponseType string
+
+const (
+	ResponsesStreamResponseTypeCreated    ResponsesStreamResponseType = "response.created"
+	ResponsesStreamResponseTypeInProgress ResponsesStreamResponseType = "response.in_progress"
+	ResponsesStreamResponseTypeCompleted  ResponsesStreamResponseType = "response.completed"
+	ResponsesStreamResponseTypeFailed     ResponsesStreamResponseType = "response.failed"
+	ResponsesStreamResponseTypeIncomplete ResponsesStreamResponseType = "response.incomplete"
+
+	ResponsesStreamResponseTypeOutputItemAdded ResponsesStreamResponseType = "response.output_item.added"
+	ResponsesStreamResponseTypeOutputItemDone  ResponsesStreamResponseType = "response.output_item.done"
+
+	ResponsesStreamResponseTypeContentPartAdded ResponsesStreamResponseType = "response.content_part.added"
+	ResponsesStreamResponseTypeContentPartDone  ResponsesStreamResponseType = "response.content_part.done"
+
+	ResponsesStreamResponseTypeOutputTextAdded ResponsesStreamResponseType = "response.output_text.added"
+	ResponsesStreamResponseTypeOutputTextDone  ResponsesStreamResponseType = "response.output_text.done"
+
+	ResponsesStreamResponseTypeRefusalDelta ResponsesStreamResponseType = "response.refusal.delta"
+	ResponsesStreamResponseTypeRefusalDone  ResponsesStreamResponseType = "response.refusal.done"
+
+	ResponsesStreamResponseTypeFunctionCallArgumentsAdded     ResponsesStreamResponseType = "response.function_call_arguments.added"
+	ResponsesStreamResponseTypeFunctionCallArgumentsDone      ResponsesStreamResponseType = "response.function_call_arguments.done"
+	ResponsesStreamResponseTypeFileSearchCallInProgress       ResponsesStreamResponseType = "response.file_search_call.in_progress"
+	ResponsesStreamResponseTypeFileSearchCallSearching        ResponsesStreamResponseType = "response.file_search_call.searching"
+	ResponsesStreamResponseTypeFileSearchCallResultsAdded     ResponsesStreamResponseType = "response.file_search_call.results.added"
+	ResponsesStreamResponseTypeFileSearchCallResultsCompleted ResponsesStreamResponseType = "response.file_search_call.results.completed"
+	ResponsesStreamResponseTypeWebSearchCallSearching         ResponsesStreamResponseType = "response.web_search_call.searching"
+	ResponsesStreamResponseTypeWebSearchCallResultsAdded      ResponsesStreamResponseType = "response.web_search_call.results.added"
+	ResponsesStreamResponseTypeWebSearchCallResultsCompleted  ResponsesStreamResponseType = "response.web_search_call.results.completed"
+
+	ResponsesStreamResponseTypeReasoningSummaryPartAdded ResponsesStreamResponseType = "response.reasoning_summary_part.added"
+	ResponsesStreamResponseTypeReasoningSummaryPartDone  ResponsesStreamResponseType = "response.reasoning_summary_part.done"
+	ResponsesStreamResponseTypeReasoningSummaryTextDelta ResponsesStreamResponseType = "response.reasoning_summary_text.delta"
+	ResponsesStreamResponseTypeReasoningSummaryTextDone  ResponsesStreamResponseType = "response.reasoning_summary_text.done"
+
+	ResponsesStreamResponseTypeImageGenerationCallCompleted    ResponsesStreamResponseType = "response.image_generation_call.completed"
+	ResponsesStreamResponseTypeImageGenerationCallGenerating   ResponsesStreamResponseType = "response.image_generation_call.generating"
+	ResponsesStreamResponseTypeImageGenerationCallInProgress   ResponsesStreamResponseType = "response.image_generation_call.in_progress"
+	ResponsesStreamResponseTypeImageGenerationCallPartialImage ResponsesStreamResponseType = "response.image_generation_call.partial_image"
+
+	ResponsesStreamResponseTypeMCPCallArgumentsDelta  ResponsesStreamResponseType = "response.mcp_call_arguments.delta"
+	ResponsesStreamResponseTypeMCPCallArgumentsDone   ResponsesStreamResponseType = "response.mcp_call_arguments.done"
+	ResponsesStreamResponseTypeMCPCallCompleted       ResponsesStreamResponseType = "response.mcp_call.completed"
+	ResponsesStreamResponseTypeMCPCallFailed          ResponsesStreamResponseType = "response.mcp_call.failed"
+	ResponsesStreamResponseTypeMCPCallInProgress      ResponsesStreamResponseType = "response.mcp_call.in_progress"
+	ResponsesStreamResponseTypeMCPListToolsCompleted  ResponsesStreamResponseType = "response.mcp_list_tools.completed"
+	ResponsesStreamResponseTypeMCPListToolsFailed     ResponsesStreamResponseType = "response.mcp_list_tools.failed"
+	ResponsesStreamResponseTypeMCPListToolsInProgress ResponsesStreamResponseType = "response.mcp_list_tools.in_progress"
+
+	ResponsesStreamResponseTypeCodeInterpreterCallInProgress   ResponsesStreamResponseType = "response.code_interpreter_call.in_progress"
+	ResponsesStreamResponseTypeCodeInterpreterCallInterpreting ResponsesStreamResponseType = "response.code_interpreter_call.interpreting"
+	ResponsesStreamResponseTypeCodeInterpreterCallCompleted    ResponsesStreamResponseType = "response.code_interpreter_call.completed"
+	ResponsesStreamResponseTypeCodeInterpreterCallCodeDelta    ResponsesStreamResponseType = "response.code_interpreter_call_code.delta"
+	ResponsesStreamResponseTypeCodeInterpreterCallCodeDone     ResponsesStreamResponseType = "response.code_interpreter_call_code.done"
+
+	ResponsesStreamResponseTypeOutputTextAnnotationAdded ResponsesStreamResponseType = "response.output_text_annotation.added"
+
+	ResponsesStreamResponseTypeQueued ResponsesStreamResponseType = "response.queued"
+
+	ResponsesStreamResponseTypeCustomToolCallInputDelta ResponsesStreamResponseType = "response.custom_tool_call_input.delta"
+	ResponsesStreamResponseTypeCustomToolCallInputDone  ResponsesStreamResponseType = "response.custom_tool_call_input.done"
+
+	ResponsesStreamResponseTypeError ResponsesStreamResponseType = "error"
+)
+
+type ResponsesStreamResponse struct {
+	Type           ResponsesStreamResponseType `json:"type"`
+	SequenceNumber int                         `json:"sequence_number"`
+
+	Response *ResponsesStreamResponseStruct `json:"response,omitempty"`
+
+	OutputIndex *int              `json:"output_index,omitempty"`
+	Item        *ResponsesMessage `json:"item,omitempty"`
+
+	ContentIndex *int                          `json:"content_index,omitempty"`
+	ItemID       *string                       `json:"item_id,omitempty"`
+	Part         *ResponsesMessageContentBlock `json:"part,omitempty"`
+
+	Delta    *string                                    `json:"delta,omitempty"`
+	LogProbs []ResponsesOutputMessageContentTextLogProb `json:"logprobs,omitempty"`
+
+	Refusal *string `json:"refusal,omitempty"`
+
+	Arguments *string `json:"arguments,omitempty"`
+
+	PartialImageB64   *string `json:"partial_image_b64,omitempty"`
+	PartialImageIndex *int    `json:"partial_image_index,omitempty"`
+
+	Annotation      *ResponsesOutputMessageContentTextAnnotation `json:"annotation,omitempty"`
+	AnnotationIndex *int                                         `json:"annotation_index,omitempty"`
+
+	Code    *string `json:"code,omitempty"`
+	Message *string `json:"message,omitempty"`
+	Param   *string `json:"param,omitempty"`
+}
+
+type ResponsesStreamResponseStruct struct {
+	*ResponsesResponse
+	Usage *ResponsesResponseUsage `json:"usage,omitempty"`
 }

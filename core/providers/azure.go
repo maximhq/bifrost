@@ -369,7 +369,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 	}
 
 	// Use shared streaming logic from OpenAI
-	return handleOpenAIStreaming(
+	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		fullURL,
