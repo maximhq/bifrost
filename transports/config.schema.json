@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2019-09/schema",
-  "$id": "https://www.getbifrost.ai/schema",
+  "$id": "https://www.getbifrost.ai/schema",  
   "title": "Bifrost Configuration Schema",
   "description": "Schema for Bifrost HTTP transport configuration",
   "type": "object",
@@ -179,7 +179,8 @@
           "type": "string",
           "enum": [
             "sqlite",
-            "postgres"
+            "postgres",
+            "mysql"
           ],
           "description": "Configuration store type"
         },
@@ -253,6 +254,53 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "mysql"
+                  }
+                }
+              },
+              "then": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "Database host"
+                  },
+                  "port": {
+                    "type": "string",
+                    "description": "Database port"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "Database user"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                  },
+                  "db_name": {
+                    "type": "string",
+                    "description": "Database name"
+                  },
+                  "ssl_mode": {
+                    "type": "string",
+                    "description": "Database SSL mode"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
+                "additionalProperties": false
+              }
             }
           ]
         }
@@ -271,7 +319,8 @@
           "type": "string",
           "enum": [
             "sqlite",
-            "postgres"
+            "postgres",
+            "mysql"
           ],
           "description": "Logs store type"
         },
@@ -304,6 +353,52 @@
                 "properties": {
                   "../type": {
                     "const": "postgres"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "Database host"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "description": "Database port"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "Database user"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                  },
+                  "db_name": {
+                    "type": "string",
+                    "description": "Database name"
+                  },
+                  "ssl_mode": {
+                    "type": "string",
+                    "description": "Database SSL mode"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "mysql"
                   }
                 }
               },
