@@ -299,6 +299,186 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponse) *Anthrop
 	return anthropicResp
 }
 
+// ToBifrostResponsesStream converts an Anthropic stream event to a Bifrost Responses Stream response
+func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+	switch chunk.Type {
+	case AnthropicStreamEventTypeMessageStart:
+		// Message start - create output item added event
+		if chunk.Message != nil {
+			messageType := schemas.ResponsesMessageTypeMessage
+			role := schemas.ResponsesInputMessageRoleAssistant
+
+			item := &schemas.ResponsesMessage{
+				ID:   &chunk.Message.ID,
+				Type: &messageType,
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr(""), // Empty content initially
+				},
+			}
+
+			return &schemas.BifrostResponse{
+				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0), // Assuming single output for now
+					Item:           item,
+				},
+			}, nil, false
+		}
+
+	case AnthropicStreamEventTypeContentBlockStart:
+		// Content block start - create content part added event
+		if chunk.ContentBlock != nil && chunk.Index != nil {
+			var contentType schemas.ResponsesMessageContentBlockType
+			var part *schemas.ResponsesMessageContentBlock
+
+			switch chunk.ContentBlock.Type {
+			case AnthropicContentBlockTypeText:
+				contentType = schemas.ResponsesOutputMessageContentTypeText
+				part = &schemas.ResponsesMessageContentBlock{
+					Type: contentType,
+					Text: schemas.Ptr(""), // Empty text initially
+				}
+			case AnthropicContentBlockTypeToolUse:
+				// This is a function call starting
+				contentType = schemas.ResponsesInputMessageContentBlockTypeText // Will be updated to function call
+				part = &schemas.ResponsesMessageContentBlock{
+					Type: contentType,
+					Text: schemas.Ptr(""), // Will contain function call info
+				}
+			}
+
+			if part != nil {
+				return &schemas.BifrostResponse{
+					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
+						ContentIndex:   chunk.Index,
+						Part:           part,
+					},
+				}, nil, false
+			}
+		}
+
+	case AnthropicStreamEventTypeContentBlockDelta:
+		if chunk.Index != nil && chunk.Delta != nil {
+			// Handle different delta types
+			switch chunk.Delta.Type {
+			case AnthropicStreamDeltaTypeText:
+				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
+					// Text content delta
+					return &schemas.BifrostResponse{
+						ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeOutputTextAdded,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    schemas.Ptr(0),
+							ContentIndex:   chunk.Index,
+							Delta:          chunk.Delta.Text,
+						},
+					}, nil, false
+				}
+
+			case AnthropicStreamDeltaTypeInputJSON:
+				// Function call arguments delta
+				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
+					return &schemas.BifrostResponse{
+						ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsAdded,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    schemas.Ptr(0),
+							ContentIndex:   chunk.Index,
+							Arguments:      chunk.Delta.PartialJSON,
+						},
+					}, nil, false
+				}
+
+			case AnthropicStreamDeltaTypeThinking:
+				// Reasoning/thinking content delta
+				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
+					return &schemas.BifrostResponse{
+						ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    schemas.Ptr(0),
+							ContentIndex:   chunk.Index,
+							Delta:          chunk.Delta.Thinking,
+						},
+					}, nil, false
+				}
+
+			case AnthropicStreamDeltaTypeSignature:
+				// Handle signature verification for thinking content
+				// This is used to verify the integrity of thinking content
+				// For now, we don't need to emit a specific event for signatures
+				return nil, nil, false
+			}
+		}
+
+	case AnthropicStreamEventTypeContentBlockStop:
+		// Content block is complete
+		if chunk.Index != nil {
+			return &schemas.BifrostResponse{
+				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   chunk.Index,
+				},
+			}, nil, false
+		}
+
+	case AnthropicStreamEventTypeMessageDelta:
+		// Message-level updates (like stop reason, usage, etc.)
+		if chunk.Delta != nil && chunk.Delta.StopReason != nil {
+			// Indicate the output item is done
+			return &schemas.BifrostResponse{
+				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+				},
+			}, nil, false
+		}
+
+	case AnthropicStreamEventTypeMessageStop:
+		// Message stop - this is the final chunk indicating stream completion
+		return &schemas.BifrostResponse{
+			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeCompleted,
+				SequenceNumber: sequenceNumber,
+			},
+		}, nil, true // Indicate stream is complete
+
+	case AnthropicStreamEventTypePing:
+		// Ping events are just keepalive, no action needed
+		return nil, nil, false
+
+	case AnthropicStreamEventTypeError:
+		if chunk.Error != nil {
+			// Send error event
+			bifrostErr := &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    &chunk.Error.Type,
+					Message: chunk.Error.Message,
+				},
+			}
+
+			return &schemas.BifrostResponse{
+				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeError,
+					SequenceNumber: sequenceNumber,
+					Message:        &chunk.Error.Message,
+				},
+			}, bifrostErr, false
+		}
+	}
+
+	return nil, nil, false
+}
+
 // convertAnthropicMessageToBifrostResponsesMessages converts AnthropicMessage to ChatMessage format
 func convertAnthropicMessageToBifrostResponsesMessages(msg *AnthropicMessage) []schemas.ResponsesMessage {
 	var bifrostMessages []schemas.ResponsesMessage

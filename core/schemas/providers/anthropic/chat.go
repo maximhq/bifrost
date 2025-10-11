@@ -537,14 +537,14 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 				// Convert text content
 				if msg.Content.ContentStr != nil {
 					content = append(content, AnthropicContentBlock{
-						Type: "text",
+						Type: AnthropicContentBlockTypeText,
 						Text: msg.Content.ContentStr,
 					})
 				} else if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
 							content = append(content, AnthropicContentBlock{
-								Type: "text",
+								Type: AnthropicContentBlockTypeText,
 								Text: block.Text,
 							})
 						} else if block.ImageURLStruct != nil {
@@ -558,7 +558,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 			if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 				for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 					toolUse := AnthropicContentBlock{
-						Type: "tool_use",
+						Type: AnthropicContentBlockTypeToolUse,
 						ID:   toolCall.ID,
 						Name: toolCall.Function.Name,
 					}
@@ -576,7 +576,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 			}
 
 			// Set content
-			if len(content) == 1 && content[0].Type == "text" {
+			if len(content) == 1 && content[0].Type == AnthropicContentBlockTypeText {
 				// Single text content can be string
 				anthropicMsg.Content = AnthropicContent{ContentStr: content[0].Text}
 			} else if len(content) > 0 {
@@ -632,14 +632,14 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 		// Add text content
 		if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
 			content = append(content, AnthropicContentBlock{
-				Type: "text",
+				Type: AnthropicContentBlockTypeText,
 				Text: choice.Message.Content.ContentStr,
 			})
 		} else if choice.Message.Content.ContentBlocks != nil {
 			for _, block := range choice.Message.Content.ContentBlocks {
 				if block.Text != nil {
 					content = append(content, AnthropicContentBlock{
-						Type: "text",
+						Type: AnthropicContentBlockTypeText,
 						Text: block.Text,
 					})
 				}
@@ -660,7 +660,7 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 				}
 
 				content = append(content, AnthropicContentBlock{
-					Type:  "tool_use",
+					Type:  AnthropicContentBlockTypeToolUse,
 					ID:    toolCall.ID,
 					Name:  toolCall.Function.Name,
 					Input: input,
@@ -677,7 +677,8 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 	return anthropicResp
 }
 
-func (chunk *AnthropicStreamEvent) ToBifrostStream() (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+// ToBifrostChatCompletionStream converts an Anthropic stream event to a Bifrost Chat Completion Stream response
+func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
 		return nil, nil, false
@@ -794,6 +795,125 @@ func (chunk *AnthropicStreamEvent) ToBifrostStream() (*schemas.BifrostResponse, 
 	return nil, nil, false
 }
 
+// ToAnthropicResponsesStreamResponse converts a Bifrost Responses stream response to Anthropic SSE string format
+func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponse) string {
+	if bifrostResp == nil || bifrostResp.ResponsesStreamResponse == nil {
+		return ""
+	}
+
+	streamResp := &AnthropicStreamEvent{}
+	responsesStream := bifrostResp.ResponsesStreamResponse
+
+	// Map ResponsesStreamResponse types to Anthropic stream events
+	switch responsesStream.Type {
+	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		streamResp.Type = AnthropicStreamEventTypeMessageStart
+		if responsesStream.Item != nil {
+			// Create message start event
+			streamMessage := &AnthropicMessageResponse{
+				Type: "message",
+				Role: string(schemas.ResponsesInputMessageRoleAssistant),
+			}
+			if responsesStream.Item.ID != nil {
+				streamMessage.ID = *responsesStream.Item.ID
+			}
+			streamResp.Message = streamMessage
+		}
+
+	case schemas.ResponsesStreamResponseTypeContentPartAdded:
+		streamResp.Type = AnthropicStreamEventTypeContentBlockStart
+		if responsesStream.ContentIndex != nil {
+			streamResp.Index = responsesStream.ContentIndex
+		}
+		if responsesStream.Part != nil {
+			contentBlock := &AnthropicContentBlock{}
+			switch responsesStream.Part.Type {
+			case schemas.ResponsesOutputMessageContentTypeText:
+				contentBlock.Type = AnthropicContentBlockTypeText
+				if responsesStream.Part.Text != nil {
+					contentBlock.Text = responsesStream.Part.Text
+				}
+			}
+			streamResp.ContentBlock = contentBlock
+		}
+
+	case schemas.ResponsesStreamResponseTypeOutputTextAdded:
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		if responsesStream.ContentIndex != nil {
+			streamResp.Index = responsesStream.ContentIndex
+		}
+		if responsesStream.Delta != nil {
+			streamResp.Delta = &AnthropicStreamDelta{
+				Type: AnthropicStreamDeltaTypeText,
+				Text: responsesStream.Delta,
+			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsAdded:
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		if responsesStream.ContentIndex != nil {
+			streamResp.Index = responsesStream.ContentIndex
+		}
+		if responsesStream.Arguments != nil {
+			streamResp.Delta = &AnthropicStreamDelta{
+				Type:        AnthropicStreamDeltaTypeInputJSON,
+				PartialJSON: responsesStream.Arguments,
+			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		if responsesStream.ContentIndex != nil {
+			streamResp.Index = responsesStream.ContentIndex
+		}
+		if responsesStream.Delta != nil {
+			streamResp.Delta = &AnthropicStreamDelta{
+				Type:     AnthropicStreamDeltaTypeThinking,
+				Thinking: responsesStream.Delta,
+			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeContentPartDone:
+		streamResp.Type = AnthropicStreamEventTypeContentBlockStop
+		if responsesStream.ContentIndex != nil {
+			streamResp.Index = responsesStream.ContentIndex
+		}
+
+	case schemas.ResponsesStreamResponseTypeOutputItemDone:
+		streamResp.Type = AnthropicStreamEventTypeMessageDelta
+		// Add stop reason if available (this would need to be passed through somehow)
+		streamResp.Delta = &AnthropicStreamDelta{
+			Type: AnthropicStreamDeltaTypeText, // Use text delta type for message deltas
+			// StopReason would be set based on the completion reason
+		}
+
+	case schemas.ResponsesStreamResponseTypeCompleted:
+		streamResp.Type = AnthropicStreamEventTypeMessageStop
+
+	case schemas.ResponsesStreamResponseTypeError:
+		streamResp.Type = AnthropicStreamEventTypeError
+		if responsesStream.Message != nil {
+			streamResp.Error = &AnthropicStreamError{
+				Type:    "error",
+				Message: *responsesStream.Message,
+			}
+		}
+
+	default:
+		// Unknown event type, return empty
+		return ""
+	}
+
+	// Marshal to JSON and format as SSE
+	jsonData, err := json.Marshal(streamResp)
+	if err != nil {
+		return ""
+	}
+
+	// Format as Anthropic SSE
+	return fmt.Sprintf("event: %s\ndata: %s\n\n", streamResp.Type, jsonData)
+}
+
 // ToAnthropicChatCompletionStreamResponse converts a Bifrost streaming response to Anthropic SSE string format
 func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostResponse) string {
 	if bifrostResp == nil {
@@ -815,7 +935,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 				streamResp.Type = "content_block_delta"
 				streamResp.Index = &choice.Index
 				streamResp.Delta = &AnthropicStreamDelta{
-					Type: "text_delta",
+					Type: AnthropicStreamDeltaTypeText,
 					Text: delta.Content,
 				}
 			} else if delta.Thought != nil {
@@ -823,7 +943,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 				streamResp.Type = "content_block_delta"
 				streamResp.Index = &choice.Index
 				streamResp.Delta = &AnthropicStreamDelta{
-					Type:     "thinking_delta",
+					Type:     AnthropicStreamDeltaTypeThinking,
 					Thinking: delta.Thought,
 				}
 			} else if len(delta.ToolCalls) > 0 {
@@ -835,7 +955,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 					streamResp.Type = "content_block_start"
 					streamResp.Index = &choice.Index
 					streamResp.ContentBlock = &AnthropicContentBlock{
-						Type: "tool_use",
+						Type: AnthropicContentBlockTypeToolUse,
 						ID:   toolCall.ID,
 						Name: toolCall.Function.Name,
 					}
@@ -844,7 +964,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 					streamResp.Type = "content_block_delta"
 					streamResp.Index = &choice.Index
 					streamResp.Delta = &AnthropicStreamDelta{
-						Type:        "input_json_delta",
+						Type:        AnthropicStreamDeltaTypeInputJSON,
 						PartialJSON: &toolCall.Function.Arguments,
 					}
 				}
@@ -874,7 +994,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 			var content []AnthropicContentBlock
 			if choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr != nil {
 				content = append(content, AnthropicContentBlock{
-					Type: "text",
+					Type: AnthropicContentBlockTypeText,
 					Text: choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr,
 				})
 			}
@@ -908,7 +1028,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 		streamResp.Type = "content_block_delta"
 		streamResp.Index = schemas.Ptr(0)
 		streamResp.Delta = &AnthropicStreamDelta{
-			Type: "text_delta",
+			Type: AnthropicStreamDeltaTypeText,
 			Text: schemas.Ptr(""),
 		}
 	}
@@ -921,6 +1041,30 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 
 	// Format as Anthropic SSE
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", streamResp.Type, jsonData)
+}
+
+// ToAnthropicResponsesStreamError converts a BifrostError to Anthropic responses streaming error in SSE format
+func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
+	if bifrostErr == nil {
+		return ""
+	}
+
+	streamResp := &AnthropicStreamEvent{
+		Type: AnthropicStreamEventTypeError,
+		Error: &AnthropicStreamError{
+			Type:    "error",
+			Message: bifrostErr.Error.Message,
+		},
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(streamResp)
+	if err != nil {
+		return ""
+	}
+
+	// Format as Anthropic SSE error event
+	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }
 
 // ToAnthropicChatCompletionStreamError converts a BifrostError to Anthropic streaming error in SSE format
