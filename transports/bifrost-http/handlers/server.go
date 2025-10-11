@@ -528,8 +528,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
 
-	fmt.Println("configDir", configDir)
-
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
