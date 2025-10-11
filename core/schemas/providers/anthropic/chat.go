@@ -10,8 +10,8 @@ import (
 var fnTypePtr = schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction))
 
 // ToBifrostRequest converts an Anthropic messages request to Bifrost format
-func (mr *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
-	provider, model := schemas.ParseModelString(mr.Model, schemas.Anthropic)
+func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
+	provider, model := schemas.ParseModelString(r.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: provider,
@@ -21,17 +21,17 @@ func (mr *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatReques
 	messages := []schemas.ChatMessage{}
 
 	// Add system message if present
-	if mr.System != nil {
-		if mr.System.ContentStr != nil && *mr.System.ContentStr != "" {
+	if r.System != nil {
+		if r.System.ContentStr != nil && *r.System.ContentStr != "" {
 			messages = append(messages, schemas.ChatMessage{
 				Role: schemas.ChatMessageRoleSystem,
 				Content: &schemas.ChatMessageContent{
-					ContentStr: mr.System.ContentStr,
+					ContentStr: r.System.ContentStr,
 				},
 			})
-		} else if mr.System.ContentBlocks != nil {
+		} else if r.System.ContentBlocks != nil {
 			contentBlocks := []schemas.ChatContentBlock{}
-			for _, block := range mr.System.ContentBlocks {
+			for _, block := range r.System.ContentBlocks {
 				if block.Text != nil { // System messages will only have text content
 					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 						Type: schemas.ChatContentBlockTypeText,
@@ -49,7 +49,7 @@ func (mr *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatReques
 	}
 
 	// Convert messages
-	for _, msg := range mr.Messages {
+	for _, msg := range r.Messages {
 		if msg.Content.ContentStr != nil {
 			// Simple text message
 			bifrostMsg := schemas.ChatMessage{
@@ -169,34 +169,34 @@ func (mr *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatReques
 	bifrostReq.Input = messages
 
 	// Convert parameters
-	if mr.MaxTokens > 0 || mr.Temperature != nil || mr.TopP != nil || mr.TopK != nil || mr.StopSequences != nil {
+	if r.MaxTokens > 0 || r.Temperature != nil || r.TopP != nil || r.TopK != nil || r.StopSequences != nil {
 		params := &schemas.ChatParameters{
 			ExtraParams: make(map[string]interface{}),
 		}
 
-		if mr.MaxTokens > 0 {
-			params.MaxCompletionTokens = &mr.MaxTokens
+		if r.MaxTokens > 0 {
+			params.MaxCompletionTokens = &r.MaxTokens
 		}
-		if mr.Temperature != nil {
-			params.Temperature = mr.Temperature
+		if r.Temperature != nil {
+			params.Temperature = r.Temperature
 		}
-		if mr.TopP != nil {
-			params.TopP = mr.TopP
+		if r.TopP != nil {
+			params.TopP = r.TopP
 		}
-		if mr.TopK != nil {
-			params.ExtraParams["top_k"] = *mr.TopK
+		if r.TopK != nil {
+			params.ExtraParams["top_k"] = *r.TopK
 		}
-		if mr.StopSequences != nil {
-			params.Stop = mr.StopSequences
+		if r.StopSequences != nil {
+			params.Stop = r.StopSequences
 		}
 
 		bifrostReq.Params = params
 	}
 
 	// Convert tools
-	if mr.Tools != nil {
+	if r.Tools != nil {
 		tools := []schemas.ChatTool{}
-		for _, tool := range mr.Tools {
+		for _, tool := range r.Tools {
 			// Convert input_schema to FunctionParameters
 			params := schemas.ToolFunctionParameters{
 				Type: "object",
@@ -223,23 +223,23 @@ func (mr *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatReques
 	}
 
 	// Convert tool choice
-	if mr.ToolChoice != nil {
+	if r.ToolChoice != nil {
 		if bifrostReq.Params == nil {
 			bifrostReq.Params = &schemas.ChatParameters{}
 		}
 		toolChoice := &schemas.ChatToolChoice{
 			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
 				Type: func() schemas.ChatToolChoiceType {
-					if mr.ToolChoice.Type == "tool" {
+					if r.ToolChoice.Type == "tool" {
 						return schemas.ChatToolChoiceTypeFunction
 					}
-					return schemas.ChatToolChoiceType(mr.ToolChoice.Type)
+					return schemas.ChatToolChoiceType(r.ToolChoice.Type)
 				}(),
 			},
 		}
-		if mr.ToolChoice.Type == "tool" && mr.ToolChoice.Name != "" {
+		if r.ToolChoice.Type == "tool" && r.ToolChoice.Name != "" {
 			toolChoice.ChatToolChoiceStruct.Function = schemas.ChatToolChoiceFunction{
-				Name: mr.ToolChoice.Name,
+				Name: r.ToolChoice.Name,
 			}
 		}
 		bifrostReq.Params.ToolChoice = toolChoice
@@ -677,13 +677,130 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 	return anthropicResp
 }
 
+func (chunk *AnthropicStreamEvent) ToBifrostStream() (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+	switch chunk.Type {
+	case AnthropicStreamEventTypeMessageStart:
+		return nil, nil, false
+
+	case AnthropicStreamEventTypeContentBlockStart:
+		return nil, nil, false
+
+	case AnthropicStreamEventTypeContentBlockDelta:
+		if chunk.Index != nil && chunk.Delta != nil {
+			// Handle different delta types
+			switch chunk.Delta.Type {
+			case AnthropicStreamDeltaTypeText:
+				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
+					// Create streaming response for this delta
+					streamResponse := &schemas.BifrostResponse{
+						Object: "chat.completion.chunk",
+						Choices: []schemas.BifrostChatResponseChoice{
+							{
+								Index: *chunk.Index,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: &schemas.BifrostStreamDelta{
+										Content: chunk.Delta.Text,
+									},
+								},
+							},
+						},
+					}
+
+					return streamResponse, nil, false
+				}
+
+			case AnthropicStreamDeltaTypeInputJSON:
+				// Handle tool use streaming - accumulate partial JSON
+				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
+					// Create streaming response for tool input delta
+					streamResponse := &schemas.BifrostResponse{
+						Object: "chat.completion.chunk",
+						Choices: []schemas.BifrostChatResponseChoice{
+							{
+								Index: *chunk.Index,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: &schemas.BifrostStreamDelta{
+										ToolCalls: []schemas.ChatAssistantMessageToolCall{
+											{
+												Type: func() *string { s := "function"; return &s }(),
+												Function: schemas.ChatAssistantMessageToolCallFunction{
+													Arguments: *chunk.Delta.PartialJSON,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					}
+
+					return streamResponse, nil, false
+				}
+
+			case AnthropicStreamDeltaTypeThinking:
+				// Handle thinking content streaming
+				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
+					// Create streaming response for thinking delta
+					streamResponse := &schemas.BifrostResponse{
+						Object: "chat.completion.chunk",
+						Choices: []schemas.BifrostChatResponseChoice{
+							{
+								Index: *chunk.Index,
+								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+									Delta: &schemas.BifrostStreamDelta{
+										Thought: chunk.Delta.Thinking,
+									},
+								},
+							},
+						},
+					}
+
+					return streamResponse, nil, false
+				}
+
+			case AnthropicStreamDeltaTypeSignature:
+				// Handle signature verification for thinking content
+				// This is used to verify the integrity of thinking content
+
+			}
+		}
+
+	case AnthropicStreamEventTypeContentBlockStop:
+		// Content block is complete, no specific action needed for streaming
+		return nil, nil, true
+
+	case AnthropicStreamEventTypeMessageDelta:
+		return nil, nil, false
+
+	case AnthropicStreamEventTypePing:
+		// Ping events are just keepalive, no action needed
+		return nil, nil, false
+
+	case AnthropicStreamEventTypeError:
+		if chunk.Error != nil {
+			// Send error through channel before closing
+			bifrostErr := &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    &chunk.Error.Type,
+					Message: chunk.Error.Message,
+				},
+			}
+
+			return nil, bifrostErr, false
+		}
+	}
+
+	return nil, nil, false
+}
+
 // ToAnthropicChatCompletionStreamResponse converts a Bifrost streaming response to Anthropic SSE string format
 func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostResponse) string {
 	if bifrostResp == nil {
 		return ""
 	}
 
-	streamResp := &AnthropicStreamResponse{}
+	streamResp := &AnthropicStreamEvent{}
 
 	// Handle different streaming event types based on the response content
 	if len(bifrostResp.Choices) > 0 {
@@ -746,7 +863,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 			streamResp.Type = "message_start"
 
 			// Create message start event
-			streamMessage := &AnthropicStreamMessage{
+			streamMessage := &AnthropicMessageResponse{
 				ID:    bifrostResp.ID,
 				Type:  "message",
 				Role:  string(choice.BifrostNonStreamResponseChoice.Message.Role),
@@ -783,7 +900,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 		streamResp.ID = &bifrostResp.ID
 	}
 	if bifrostResp.Model != "" {
-		streamResp.Model = &bifrostResp.Model
+		streamResp.Message.Model = bifrostResp.Model
 	}
 
 	// Default to empty content_block_delta if no specific type was set

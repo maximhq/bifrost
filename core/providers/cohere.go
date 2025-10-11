@@ -584,6 +584,10 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					continue
 				}
 
+				if provider.sendBackRawResponse {
+					response.ExtraFields.RawResponse = jsonData
+				}
+
 				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
 
 				// End stream after message-end

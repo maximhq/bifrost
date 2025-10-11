@@ -145,8 +145,8 @@ func (provider *GroqProvider) ChatCompletion(ctx context.Context, key schemas.Ke
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -183,6 +183,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHook
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		schemas.Groq,
 		postHookRunner,
 		provider.logger,
