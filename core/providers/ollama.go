@@ -93,6 +93,7 @@ func (provider *OllamaProvider) TextCompletionStream(ctx context.Context, postHo
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
@@ -108,8 +109,8 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, key schemas.
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -155,6 +156,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		schemas.Ollama,
 		postHookRunner,
 		provider.logger,

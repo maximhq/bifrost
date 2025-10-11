@@ -89,6 +89,7 @@ func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, post
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
@@ -104,8 +105,8 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schema
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -142,6 +143,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		schemas.Cerebras,
 		postHookRunner,
 		provider.logger,

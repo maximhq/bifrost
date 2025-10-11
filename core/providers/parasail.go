@@ -87,8 +87,8 @@ func (provider *ParasailProvider) ChatCompletion(ctx context.Context, key schema
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -125,6 +125,7 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, post
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		schemas.Parasail,
 		postHookRunner,
 		provider.logger,

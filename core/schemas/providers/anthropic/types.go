@@ -223,60 +223,48 @@ type AnthropicUsage struct {
 
 // ==================== STREAMING TYPES ====================
 
-// AnthropicStreamResponse represents a single chunk in the Anthropic streaming response
-type AnthropicStreamResponse struct {
-	Type         string                  `json:"type"`
-	ID           *string                 `json:"id,omitempty"`
-	Model        *string                 `json:"model,omitempty"`
-	Index        *int                    `json:"index,omitempty"`
-	Message      *AnthropicStreamMessage `json:"message,omitempty"`
-	ContentBlock *AnthropicContentBlock  `json:"content_block,omitempty"`
-	Delta        *AnthropicStreamDelta   `json:"delta,omitempty"`
-	Usage        *AnthropicUsage         `json:"usage,omitempty"`
-}
+type AnthropicStreamEventType string
+
+const (
+	AnthropicStreamEventTypeMessageStart      AnthropicStreamEventType = "message_start"
+	AnthropicStreamEventTypeContentBlockStart AnthropicStreamEventType = "content_block_start"
+	AnthropicStreamEventTypeContentBlockDelta AnthropicStreamEventType = "content_block_delta"
+	AnthropicStreamEventTypeContentBlockStop  AnthropicStreamEventType = "content_block_stop"
+	AnthropicStreamEventTypeMessageDelta      AnthropicStreamEventType = "message_delta"
+	AnthropicStreamEventTypePing              AnthropicStreamEventType = "ping"
+	AnthropicStreamEventTypeError             AnthropicStreamEventType = "error"
+)
 
 // AnthropicStreamEvent represents a single event in the Anthropic streaming response
 type AnthropicStreamEvent struct {
-	Type         string                  `json:"type"`
-	Message      *AnthropicStreamMessage `json:"message,omitempty"`
-	Index        *int                    `json:"index,omitempty"`
-	ContentBlock *AnthropicContentBlock  `json:"content_block,omitempty"`
-	Delta        *AnthropicDelta         `json:"delta,omitempty"`
-	Usage        *AnthropicUsage         `json:"usage,omitempty"`
-	Error        *AnthropicStreamError   `json:"error,omitempty"`
+	ID           *string                   `json:"id,omitempty"`
+	Type         AnthropicStreamEventType  `json:"type"`
+	Message      *AnthropicMessageResponse `json:"message,omitempty"`
+	Index        *int                      `json:"index,omitempty"`
+	ContentBlock *AnthropicContentBlock    `json:"content_block,omitempty"`
+	Delta        *AnthropicStreamDelta     `json:"delta,omitempty"`
+	Usage        *AnthropicUsage           `json:"usage,omitempty"`
+	Error        *AnthropicStreamError     `json:"error,omitempty"`
 }
 
-// AnthropicStreamMessage represents the message structure in streaming events
-type AnthropicStreamMessage struct {
-	ID           string                  `json:"id"`
-	Type         string                  `json:"type"`
-	Role         string                  `json:"role"`
-	Content      []AnthropicContentBlock `json:"content"`
-	Model        string                  `json:"model"`
-	StopReason   *string                 `json:"stop_reason,omitempty"`
-	StopSequence *string                 `json:"stop_sequence,omitempty"`
-	Usage        *schemas.LLMUsage       `json:"usage,omitempty"`
-}
+type AnthropicStreamDeltaType string
 
-// AnthropicStreamDelta represents the incremental content in a streaming chunk
+const (
+	AnthropicStreamDeltaTypeText      AnthropicStreamDeltaType = "text_delta"
+	AnthropicStreamDeltaTypeInputJSON AnthropicStreamDeltaType = "input_json_delta"
+	AnthropicStreamDeltaTypeThinking  AnthropicStreamDeltaType = "thinking_delta"
+	AnthropicStreamDeltaTypeSignature AnthropicStreamDeltaType = "signature_delta"
+)
+
+// AnthropicStreamDelta represents incremental updates to content blocks during streaming (legacy)
 type AnthropicStreamDelta struct {
-	Type         string  `json:"type"`
-	Text         *string `json:"text,omitempty"`
-	Thinking     *string `json:"thinking,omitempty"`
-	PartialJSON  *string `json:"partial_json,omitempty"`
-	StopReason   *string `json:"stop_reason,omitempty"`
-	StopSequence *string `json:"stop_sequence,omitempty"`
-}
-
-// AnthropicDelta represents incremental updates to content blocks during streaming (legacy)
-type AnthropicDelta struct {
-	Type         string  `json:"type"`
-	Text         string  `json:"text,omitempty"`
-	PartialJSON  string  `json:"partial_json,omitempty"`
-	Thinking     string  `json:"thinking,omitempty"`
-	Signature    string  `json:"signature,omitempty"`
-	StopReason   *string `json:"stop_reason,omitempty"`
-	StopSequence *string `json:"stop_sequence,omitempty"`
+	Type         AnthropicStreamDeltaType `json:"type"`
+	Text         *string                  `json:"text,omitempty"`
+	PartialJSON  *string                  `json:"partial_json,omitempty"`
+	Thinking     *string                  `json:"thinking,omitempty"`
+	Signature    *string                  `json:"signature,omitempty"`
+	StopReason   *string                  `json:"stop_reason,omitempty"`
+	StopSequence *string                  `json:"stop_sequence,omitempty"`
 }
 
 // ==================== ERROR TYPES ====================

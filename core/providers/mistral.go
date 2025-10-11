@@ -87,8 +87,8 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, key schemas
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -137,6 +137,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postH
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		schemas.Mistral,
 		postHookRunner,
 		provider.logger,

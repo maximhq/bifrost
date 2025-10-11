@@ -184,6 +184,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
@@ -400,6 +401,11 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 							Message: err.Error(),
 							Error:   err,
 						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ChatCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
@@ -458,6 +464,10 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 					},
 				}
 				lastChunkTime = time.Now()
+
+				if provider.sendBackRawResponse {
+					response.ExtraFields.RawResponse = jsonData
+				}
 
 				// Process response through post-hooks and send to channel
 				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
@@ -677,6 +687,11 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 						Message: fmt.Sprintf("Gemini API error: %v", errorCheck["error"]),
 						Error:   fmt.Errorf("stream error: %v", errorCheck["error"]),
 					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						RequestType:    schemas.TranscriptionStreamRequest,
+						Provider:       providerName,
+						ModelRequested: request.Model,
+					},
 				}
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
@@ -739,6 +754,10 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 					},
 				}
 				lastChunkTime = time.Now()
+
+				if provider.sendBackRawResponse {
+					response.ExtraFields.RawResponse = jsonData
+				}
 
 				// Process response through post-hooks and send to channel
 				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)

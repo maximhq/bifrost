@@ -94,6 +94,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookR
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
@@ -109,8 +110,8 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, key schemas.Key
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -157,6 +158,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		schemas.SGL,
 		postHookRunner,
 		provider.logger,

@@ -355,6 +355,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 		reqBody,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
@@ -370,6 +371,7 @@ func handleAnthropicStreaming(
 	requestBody interface{},
 	headers map[string]string,
 	extraHeaders map[string]string,
+	sendBackRawResponse bool,
 	providerType schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	logger schemas.Logger,
@@ -466,8 +468,8 @@ func handleAnthropicStreaming(
 			}
 
 			// Parse SSE event - track event type and data separately
-			if strings.HasPrefix(line, "event: ") {
-				eventType = strings.TrimPrefix(line, "event: ")
+			if after, ok := strings.CutPrefix(line, "event: "); ok {
+				eventType = after
 				continue
 			} else if strings.HasPrefix(line, "data: ") {
 				eventData = strings.TrimPrefix(line, "data: ")
@@ -497,286 +499,42 @@ func handleAnthropicStreaming(
 				mappedReason := anthropic.MapAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 				finishReason = &mappedReason
 			}
+			if event.Message != nil {
+				// Handle different event types
+				messageID = event.Message.ID
+				modelName = event.Message.Model
+			}
 
-			// Handle different event types
-			switch eventType {
-			case "message_start":
-				if event.Message != nil {
-					messageID = event.Message.ID
-					modelName = event.Message.Model
+			response, bifrostErr, isLastChunk := event.ToBifrostStream()
+			if response != nil {
+				response.ExtraFields = schemas.BifrostResponseExtraFields{
+					RequestType:    schemas.ChatCompletionStreamRequest,
+					Provider:       providerType,
+					ModelRequested: modelName,
+					ChunkIndex:     chunkIndex,
+					Latency:        time.Since(lastChunkTime).Milliseconds(),
+				}
+				lastChunkTime = time.Now()
+				chunkIndex++
 
-					// Send first chunk with role
-					if event.Message.Role != "" {
-						chunkIndex++
-						role := event.Message.Role
-
-						// Create streaming response for message start with role
-						streamResponse := &schemas.BifrostResponse{
-							ID:     messageID,
-							Object: "chat.completion.chunk",
-							Model:  modelName,
-							Choices: []schemas.BifrostChatResponseChoice{
-								{
-									Index: 0,
-									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-										Delta: &schemas.BifrostStreamDelta{
-											Role: &role,
-										},
-									},
-								},
-							},
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								RequestType:    schemas.ChatCompletionStreamRequest,
-								Provider:       providerType,
-								ModelRequested: modelName,
-								ChunkIndex:     chunkIndex,
-								Latency:        time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						lastChunkTime = time.Now()
-
-						// Use utility function to process and send response
-						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-					}
+				if sendBackRawResponse {
+					response.ExtraFields.RawResponse = eventData
 				}
 
-			case "content_block_start":
-				if event.Index != nil && event.ContentBlock != nil {
-					chunkIndex++
-
-					// Handle different content block types
-					switch event.ContentBlock.Type {
-					case "tool_use":
-						// Tool use content block initialization
-						if event.ContentBlock.Name != nil && *event.ContentBlock.Name != "" &&
-							event.ContentBlock.ID != nil && *event.ContentBlock.ID != "" {
-							// Create streaming response for tool start
-							streamResponse := &schemas.BifrostResponse{
-								ID:     messageID,
-								Object: "chat.completion.chunk",
-								Model:  modelName,
-								Choices: []schemas.BifrostChatResponseChoice{
-									{
-										Index: *event.Index,
-										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-											Delta: &schemas.BifrostStreamDelta{
-												ToolCalls: []schemas.ChatAssistantMessageToolCall{
-													{
-														Type: func() *string { s := "function"; return &s }(),
-														ID:   event.ContentBlock.ID,
-														Function: schemas.ChatAssistantMessageToolCallFunction{
-															Name: event.ContentBlock.Name,
-														},
-													},
-												},
-											},
-										},
-									},
-								},
-								ExtraFields: schemas.BifrostResponseExtraFields{
-									RequestType:    schemas.ChatCompletionStreamRequest,
-									Provider:       providerType,
-									ModelRequested: modelName,
-									ChunkIndex:     chunkIndex,
-									Latency:        time.Since(lastChunkTime).Milliseconds(),
-								},
-							}
-							lastChunkTime = time.Now()
-
-							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-						}
-					default:
-						thought := ""
-						if event.ContentBlock.Thinking != nil && *event.ContentBlock.Thinking != "" {
-							thought = *event.ContentBlock.Thinking
-						}
-						content := ""
-						if event.ContentBlock.Text != nil && *event.ContentBlock.Text != "" {
-							content = *event.ContentBlock.Text
-						}
-
-						// Send empty message for other content block types
-						streamResponse := &schemas.BifrostResponse{
-							ID:     messageID,
-							Object: "chat.completion.chunk",
-							Model:  modelName,
-							Choices: []schemas.BifrostChatResponseChoice{
-								{
-									Index: *event.Index,
-									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-										Delta: &schemas.BifrostStreamDelta{
-											Thought: &thought,
-											Content: &content,
-										},
-									},
-								},
-							},
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								RequestType:    schemas.ChatCompletionStreamRequest,
-								Provider:       providerType,
-								ModelRequested: modelName,
-								ChunkIndex:     chunkIndex,
-								Latency:        time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						lastChunkTime = time.Now()
-
-						// Use utility function to process and send response
-						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-					}
+				processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
+				if isLastChunk {
+					break
+				}
+			}
+			if bifrostErr != nil {
+				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.ChatCompletionStreamRequest,
+					Provider:       providerType,
+					ModelRequested: modelName,
 				}
 
-			case "content_block_delta":
-				if event.Index != nil && event.Delta != nil {
-					chunkIndex++
-
-					// Handle different delta types
-					switch event.Delta.Type {
-					case "text_delta":
-						if event.Delta.Text != "" {
-							// Create streaming response for this delta
-							streamResponse := &schemas.BifrostResponse{
-								ID:     messageID,
-								Object: "chat.completion.chunk",
-								Model:  modelName,
-								Choices: []schemas.BifrostChatResponseChoice{
-									{
-										Index: *event.Index,
-										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-											Delta: &schemas.BifrostStreamDelta{
-												Content: &event.Delta.Text,
-											},
-										},
-									},
-								},
-								ExtraFields: schemas.BifrostResponseExtraFields{
-									RequestType:    schemas.ChatCompletionStreamRequest,
-									Provider:       providerType,
-									ModelRequested: modelName,
-									ChunkIndex:     chunkIndex,
-									Latency:        time.Since(lastChunkTime).Milliseconds(),
-								},
-							}
-							lastChunkTime = time.Now()
-
-							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-						}
-
-					case "input_json_delta":
-						// Handle tool use streaming - accumulate partial JSON
-						if event.Delta.PartialJSON != "" {
-							// Create streaming response for tool input delta
-							streamResponse := &schemas.BifrostResponse{
-								ID:     messageID,
-								Object: "chat.completion.chunk",
-								Model:  modelName,
-								Choices: []schemas.BifrostChatResponseChoice{
-									{
-										Index: *event.Index,
-										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-											Delta: &schemas.BifrostStreamDelta{
-												ToolCalls: []schemas.ChatAssistantMessageToolCall{
-													{
-														Type: func() *string { s := "function"; return &s }(),
-														Function: schemas.ChatAssistantMessageToolCallFunction{
-															Arguments: event.Delta.PartialJSON,
-														},
-													},
-												},
-											},
-										},
-									},
-								},
-								ExtraFields: schemas.BifrostResponseExtraFields{
-									RequestType:    schemas.ChatCompletionStreamRequest,
-									Provider:       providerType,
-									ModelRequested: modelName,
-									ChunkIndex:     chunkIndex,
-									Latency:        time.Since(lastChunkTime).Milliseconds(),
-								},
-							}
-							lastChunkTime = time.Now()
-
-							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-						}
-
-					case "thinking_delta":
-						// Handle thinking content streaming
-						if event.Delta.Thinking != "" {
-							// Create streaming response for thinking delta
-							streamResponse := &schemas.BifrostResponse{
-								ID:     messageID,
-								Object: "chat.completion.chunk",
-								Model:  modelName,
-								Choices: []schemas.BifrostChatResponseChoice{
-									{
-										Index: *event.Index,
-										BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-											Delta: &schemas.BifrostStreamDelta{
-												Thought: &event.Delta.Thinking,
-											},
-										},
-									},
-								},
-								ExtraFields: schemas.BifrostResponseExtraFields{
-									RequestType:    schemas.ChatCompletionStreamRequest,
-									Provider:       providerType,
-									ModelRequested: modelName,
-									ChunkIndex:     chunkIndex,
-									Latency:        time.Since(lastChunkTime).Milliseconds(),
-								},
-							}
-							lastChunkTime = time.Now()
-
-							// Use utility function to process and send response
-							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-						}
-
-					case "signature_delta":
-						// Handle signature verification for thinking content
-						// This is used to verify the integrity of thinking content
-
-					}
-				}
-
-			case "content_block_stop":
-				// Content block is complete, no specific action needed for streaming
-				continue
-
-			case "message_delta":
-				continue
-
-			case "message_stop":
-				continue
-
-			case "ping":
-				// Ping events are just keepalive, no action needed
-				continue
-
-			case "error":
-				if event.Error != nil {
-					// Send error through channel before closing
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Type:    &event.Error.Type,
-							Message: event.Error.Message,
-						},
-					}
-
-					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-					processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
-				}
-				return
-
-			default:
-				// Unknown event type - handle gracefully as per Anthropic's versioning policy
-				// New event types may be added, so we should not error but log and continue
-				logger.Debug(fmt.Sprintf("Unknown %s stream event type: %s, data: %s", providerType, eventType, eventData))
-				continue
+				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+				break
 			}
 
 			// Reset for next event

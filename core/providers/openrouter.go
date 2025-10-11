@@ -87,6 +87,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx context.Context, po
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
@@ -102,8 +103,8 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, key sche
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -116,8 +117,8 @@ func (provider *OpenRouterProvider) Responses(ctx context.Context, key schemas.K
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
 		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
 		provider.logger,
 	)
 }
@@ -135,6 +136,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
 		schemas.OpenRouter,
 		postHookRunner,
 		provider.logger,
