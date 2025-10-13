@@ -90,7 +90,7 @@ func (p *PrometheusPlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 //   - Request latency
 //   - Total request count
 func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	requestType, provider, model := bifrost.GetRequestFields(result, bifrostErr)
+	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 
 	startTime, ok := (*ctx).Value(startTimeKey).(time.Time)
 	if !ok {
@@ -129,10 +129,11 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 			if !ok || !isFinalChunk {
 				// Record metrics for the first token
 				if result != nil {
-					if result.ExtraFields.ChunkIndex == 0 {
-						p.StreamFirstTokenLatency.WithLabelValues(promLabelValues...).Observe(float64(result.ExtraFields.Latency) / 1000.0)
+					extraFields := result.GetExtraFields()
+					if extraFields.ChunkIndex == 0 {
+						p.StreamFirstTokenLatency.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
 					} else {
-						p.StreamInterTokenLatency.WithLabelValues(promLabelValues...).Observe(float64(result.ExtraFields.Latency) / 1000.0)
+						p.StreamInterTokenLatency.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
 					}
 				}
 				return // Exit goroutine for intermediate chunks
@@ -168,16 +169,52 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 		if result != nil {
 			// Record input and output tokens
-			if result.Usage != nil {
-				p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(result.Usage.PromptTokens))
-				p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(result.Usage.CompletionTokens))
+			var inputTokens, outputTokens int
+
+			switch {
+			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+				inputTokens = result.TextCompletionResponse.Usage.PromptTokens
+				outputTokens = result.TextCompletionResponse.Usage.CompletionTokens
+			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+				inputTokens = result.ChatResponse.Usage.PromptTokens
+				outputTokens = result.ChatResponse.Usage.CompletionTokens
+			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+				inputTokens = result.ResponsesResponse.Usage.InputTokens
+				outputTokens = result.ResponsesResponse.Usage.OutputTokens
+			case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+				inputTokens = result.ResponsesStreamResponse.Response.Usage.InputTokens
+				outputTokens = result.ResponsesStreamResponse.Response.Usage.OutputTokens
+			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+				inputTokens = result.EmbeddingResponse.Usage.PromptTokens
+				outputTokens = result.EmbeddingResponse.Usage.CompletionTokens
+			case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
+				inputTokens = result.SpeechStreamResponse.Usage.InputTokens
+				outputTokens = result.SpeechStreamResponse.Usage.OutputTokens
+			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+				if result.TranscriptionResponse.Usage.InputTokens != nil {
+					inputTokens = *result.TranscriptionResponse.Usage.InputTokens
+				}
+				if result.TranscriptionResponse.Usage.OutputTokens != nil {
+					outputTokens = *result.TranscriptionResponse.Usage.OutputTokens
+				}
+			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil:
+				if result.TranscriptionStreamResponse.Usage.InputTokens != nil {
+					inputTokens = *result.TranscriptionStreamResponse.Usage.InputTokens
+				}
+				if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
+					outputTokens = *result.TranscriptionStreamResponse.Usage.OutputTokens
+				}
 			}
 
+			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(inputTokens))
+			p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(outputTokens))
+
 			// Record cache hits with cache type
-			if result.ExtraFields.CacheDebug != nil && result.ExtraFields.CacheDebug.CacheHit {
+			extraFields := result.GetExtraFields()
+			if extraFields.CacheDebug != nil && extraFields.CacheDebug.CacheHit {
 				cacheType := "unknown"
-				if result.ExtraFields.CacheDebug.HitType != nil {
-					cacheType = *result.ExtraFields.CacheDebug.HitType
+				if extraFields.CacheDebug.HitType != nil {
+					cacheType = *extraFields.CacheDebug.HitType
 				}
 
 				// Add cache_type to label values (create new slice to avoid modifying original)

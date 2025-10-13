@@ -10,8 +10,8 @@ import (
 )
 
 // ToResponsesBifrostRequest converts an Anthropic message request to Bifrost format
-func (mr *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostResponsesRequest {
-	provider, model := schemas.ParseModelString(mr.Model, schemas.Anthropic)
+func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider: provider,
@@ -23,20 +23,20 @@ func (mr *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostR
 		ExtraParams: make(map[string]interface{}),
 	}
 
-	if mr.MaxTokens > 0 {
-		params.MaxOutputTokens = &mr.MaxTokens
+	if request.MaxTokens > 0 {
+		params.MaxOutputTokens = &request.MaxTokens
 	}
-	if mr.Temperature != nil {
-		params.Temperature = mr.Temperature
+	if request.Temperature != nil {
+		params.Temperature = request.Temperature
 	}
-	if mr.TopP != nil {
-		params.TopP = mr.TopP
+	if request.TopP != nil {
+		params.TopP = request.TopP
 	}
-	if mr.TopK != nil {
-		params.ExtraParams["top_k"] = *mr.TopK
+	if request.TopK != nil {
+		params.ExtraParams["top_k"] = *request.TopK
 	}
-	if mr.StopSequences != nil {
-		params.ExtraParams["stop"] = mr.StopSequences
+	if request.StopSequences != nil {
+		params.ExtraParams["stop"] = request.StopSequences
 	}
 	bifrostReq.Params = params
 
@@ -44,14 +44,14 @@ func (mr *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostR
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Handle system message - convert Anthropic system field to first message with role "system"
-	if mr.System != nil {
+	if request.System != nil {
 		var systemText string
-		if mr.System.ContentStr != nil {
-			systemText = *mr.System.ContentStr
-		} else if mr.System.ContentBlocks != nil {
+		if request.System.ContentStr != nil {
+			systemText = *request.System.ContentStr
+		} else if request.System.ContentBlocks != nil {
 			// Combine text blocks from system content
 			var textParts []string
-			for _, block := range mr.System.ContentBlocks {
+			for _, block := range request.System.ContentBlocks {
 				if block.Text != nil {
 					textParts = append(textParts, *block.Text)
 				}
@@ -72,15 +72,15 @@ func (mr *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostR
 	}
 
 	// Convert regular messages
-	for _, msg := range mr.Messages {
+	for _, msg := range request.Messages {
 		convertedMessages := convertAnthropicMessageToBifrostResponsesMessages(&msg)
 		bifrostMessages = append(bifrostMessages, convertedMessages...)
 	}
 
 	// Convert tools if present
-	if mr.Tools != nil {
+	if request.Tools != nil {
 		var bifrostTools []schemas.ResponsesTool
-		for _, tool := range mr.Tools {
+		for _, tool := range request.Tools {
 			bifrostTool := convertAnthropicToolToBifrost(&tool)
 			if bifrostTool != nil {
 				bifrostTools = append(bifrostTools, *bifrostTool)
@@ -92,8 +92,8 @@ func (mr *AnthropicMessageRequest) ToResponsesBifrostRequest() *schemas.BifrostR
 	}
 
 	// Convert tool choice if present
-	if mr.ToolChoice != nil {
-		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(mr.ToolChoice)
+	if request.ToolChoice != nil {
+		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(request.ToolChoice)
 		if bifrostToolChoice != nil {
 			bifrostReq.Params.ToolChoice = bifrostToolChoice
 		}
@@ -196,87 +196,69 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 }
 
 // ToResponsesBifrostResponse converts an Anthropic response to BifrostResponse with Responses structure
-func (response *AnthropicMessageResponse) ToResponsesBifrostResponse() *schemas.BifrostResponse {
+func (response *AnthropicMessageResponse) ToBifrostResponsesResponse() *schemas.BifrostResponsesResponse {
 	if response == nil {
 		return nil
 	}
 
 	// Create the BifrostResponse with Responses structure
-	bifrostResp := &schemas.BifrostResponse{
-		ID:     response.ID,
-		Model:  response.Model,
-		Object: "response",
-		ResponsesResponse: &schemas.ResponsesResponse{
-			CreatedAt: int(time.Now().Unix()),
-		},
+	bifrostResp := &schemas.BifrostResponsesResponse{
+		ID:        schemas.Ptr(response.ID),
+		CreatedAt: int(time.Now().Unix()),
 	}
 
 	// Convert usage information
 	if response.Usage != nil {
-		bifrostResp.Usage = &schemas.LLMUsage{
-			TotalTokens: response.Usage.InputTokens + response.Usage.OutputTokens,
-			ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{
-				InputTokens:  response.Usage.InputTokens,
-				OutputTokens: response.Usage.OutputTokens,
-			},
+		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+			TotalTokens:  response.Usage.InputTokens + response.Usage.OutputTokens,
 		}
 
 		// Handle cached tokens if present
 		if response.Usage.CacheReadInputTokens > 0 {
-			if bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails == nil {
-				bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+			if bifrostResp.Usage.InputTokensDetails == nil {
+				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
-			bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails.CachedTokens = response.Usage.CacheReadInputTokens
+			bifrostResp.Usage.InputTokensDetails.CachedTokens = response.Usage.CacheReadInputTokens
 		}
 	}
 
 	// Convert content to Responses output messages
 	outputMessages := convertAnthropicContentBlocksToResponsesMessages(response.Content)
 	if len(outputMessages) > 0 {
-		bifrostResp.ResponsesResponse.Output = outputMessages
+		bifrostResp.Output = outputMessages
 	}
 
 	return bifrostResp
 }
 
 // ToAnthropicResponsesResponse converts a BifrostResponse with Responses structure back to AnthropicMessageResponse
-func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponse) *AnthropicMessageResponse {
+func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *AnthropicMessageResponse {
 	anthropicResp := &AnthropicMessageResponse{
-		ID:    bifrostResp.ID,
-		Model: bifrostResp.Model,
-		Type:  "message",
-		Role:  "assistant",
+		Type: "message",
+		Role: "assistant",
+	}
+	if bifrostResp.ID != nil {
+		anthropicResp.ID = *bifrostResp.ID
 	}
 
 	// Convert usage information
 	if bifrostResp.Usage != nil {
 		anthropicResp.Usage = &AnthropicUsage{
-			InputTokens:  bifrostResp.Usage.PromptTokens,
-			OutputTokens: bifrostResp.Usage.CompletionTokens,
+			InputTokens:  bifrostResp.Usage.InputTokens,
+			OutputTokens: bifrostResp.Usage.OutputTokens,
 		}
 
-		responsesUsage := bifrostResp.Usage.ResponsesExtendedResponseUsage
-
-		if responsesUsage != nil && responsesUsage.InputTokens > 0 {
-			anthropicResp.Usage.InputTokens = responsesUsage.InputTokens
-		}
-
-		if responsesUsage != nil && responsesUsage.OutputTokens > 0 {
-			anthropicResp.Usage.OutputTokens = responsesUsage.OutputTokens
-		}
-
-		// Handle cached tokens if present
-		if responsesUsage != nil &&
-			responsesUsage.InputTokensDetails != nil &&
-			responsesUsage.InputTokensDetails.CachedTokens > 0 {
-			anthropicResp.Usage.CacheReadInputTokens = responsesUsage.InputTokensDetails.CachedTokens
+		if bifrostResp.Usage.InputTokensDetails != nil && bifrostResp.Usage.InputTokensDetails.CachedTokens > 0 {
+			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
 		}
 	}
 
 	// Convert output messages to Anthropic content blocks
 	var contentBlocks []AnthropicContentBlock
-	if bifrostResp.ResponsesResponse != nil && bifrostResp.ResponsesResponse.Output != nil {
-		contentBlocks = convertBifrostMessagesToAnthropicContent(bifrostResp.ResponsesResponse.Output)
+	if bifrostResp.Output != nil {
+		contentBlocks = convertBifrostMessagesToAnthropicContent(bifrostResp.Output)
 	}
 
 	if len(contentBlocks) > 0 {
@@ -300,7 +282,7 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponse) *Anthrop
 }
 
 // ToBifrostResponsesStream converts an Anthropic stream event to a Bifrost Responses Stream response
-func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
 		// Message start - create output item added event
@@ -317,13 +299,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 				},
 			}
 
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0), // Assuming single output for now
-					Item:           item,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0), // Assuming single output for now
+				Item:           item,
 			}, nil, false
 		}
 
@@ -353,25 +333,21 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 					},
 				}
 
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
-						Item:           item,
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					Item:           item,
 				}, nil, false
 			}
 
 			if part != nil {
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
-						ContentIndex:   chunk.Index,
-						Part:           part,
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   chunk.Index,
+					Part:           part,
 				}, nil, false
 			}
 		}
@@ -383,42 +359,36 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
 					// Text content delta
-					return &schemas.BifrostResponse{
-						ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: sequenceNumber,
-							OutputIndex:    schemas.Ptr(0),
-							ContentIndex:   chunk.Index,
-							Delta:          chunk.Delta.Text,
-						},
+					return &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
+						ContentIndex:   chunk.Index,
+						Delta:          chunk.Delta.Text,
 					}, nil, false
 				}
 
 			case AnthropicStreamDeltaTypeInputJSON:
 				// Function call arguments delta
 				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
-					return &schemas.BifrostResponse{
-						ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-							SequenceNumber: sequenceNumber,
-							OutputIndex:    schemas.Ptr(0),
-							ContentIndex:   chunk.Index,
-							Delta:          chunk.Delta.PartialJSON,
-						},
+					return &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
+						ContentIndex:   chunk.Index,
+						Delta:          chunk.Delta.PartialJSON,
 					}, nil, false
 				}
 
 			case AnthropicStreamDeltaTypeThinking:
 				// Reasoning/thinking content delta
 				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
-					return &schemas.BifrostResponse{
-						ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
-							SequenceNumber: sequenceNumber,
-							OutputIndex:    schemas.Ptr(0),
-							ContentIndex:   chunk.Index,
-							Delta:          chunk.Delta.Thinking,
-						},
+					return &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
+						ContentIndex:   chunk.Index,
+						Delta:          chunk.Delta.Thinking,
 					}, nil, false
 				}
 
@@ -433,13 +403,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 	case AnthropicStreamEventTypeContentBlockStop:
 		// Content block is complete
 		if chunk.Index != nil {
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-					ContentIndex:   chunk.Index,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				ContentIndex:   chunk.Index,
 			}, nil, false
 		}
 
@@ -447,22 +415,18 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 		// Message-level updates (like stop reason, usage, etc.)
 		if chunk.Delta != nil && chunk.Delta.StopReason != nil {
 			// Indicate the output item is done
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
 			}, nil, false
 		}
 
 	case AnthropicStreamEventTypeMessageStop:
 		// Message stop - this is the final chunk indicating stream completion
-		return &schemas.BifrostResponse{
-			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeCompleted,
-				SequenceNumber: sequenceNumber,
-			},
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: sequenceNumber,
 		}, nil, true // Indicate stream is complete
 
 	case AnthropicStreamEventTypePing:
@@ -480,12 +444,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 				},
 			}
 
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeError,
-					SequenceNumber: sequenceNumber,
-					Message:        &chunk.Error.Message,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeError,
+				SequenceNumber: sequenceNumber,
+				Message:        &chunk.Error.Message,
 			}, bifrostErr, false
 		}
 	}
@@ -494,42 +456,41 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 }
 
 // ToAnthropicResponsesStreamResponse converts a Bifrost Responses stream response to Anthropic SSE string format
-func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponse) string {
-	if bifrostResp == nil || bifrostResp.ResponsesStreamResponse == nil {
+func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse) string {
+	if bifrostResp == nil {
 		return ""
 	}
 
 	streamResp := &AnthropicStreamEvent{}
-	responsesStream := bifrostResp.ResponsesStreamResponse
 
 	// Map ResponsesStreamResponse types to Anthropic stream events
-	switch responsesStream.Type {
+	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
-		if responsesStream.Item != nil {
+		if bifrostResp.Item != nil {
 			// Create message start event
 			streamMessage := &AnthropicMessageResponse{
 				Type: "message",
 				Role: string(schemas.ResponsesInputMessageRoleAssistant),
 			}
-			if responsesStream.Item.ID != nil {
-				streamMessage.ID = *responsesStream.Item.ID
+			if bifrostResp.Item.ID != nil {
+				streamMessage.ID = *bifrostResp.Item.ID
 			}
 			streamResp.Message = streamMessage
 		}
 
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockStart
-		if responsesStream.ContentIndex != nil {
-			streamResp.Index = responsesStream.ContentIndex
+		if bifrostResp.ContentIndex != nil {
+			streamResp.Index = bifrostResp.ContentIndex
 		}
-		if responsesStream.Part != nil {
+		if bifrostResp.Part != nil {
 			contentBlock := &AnthropicContentBlock{}
-			switch responsesStream.Part.Type {
+			switch bifrostResp.Part.Type {
 			case schemas.ResponsesOutputMessageContentTypeText:
 				contentBlock.Type = AnthropicContentBlockTypeText
-				if responsesStream.Part.Text != nil {
-					contentBlock.Text = responsesStream.Part.Text
+				if bifrostResp.Part.Text != nil {
+					contentBlock.Text = bifrostResp.Part.Text
 				}
 			}
 			streamResp.ContentBlock = contentBlock
@@ -537,44 +498,44 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponse) st
 
 	case schemas.ResponsesStreamResponseTypeOutputTextDelta:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
-		if responsesStream.ContentIndex != nil {
-			streamResp.Index = responsesStream.ContentIndex
+		if bifrostResp.ContentIndex != nil {
+			streamResp.Index = bifrostResp.ContentIndex
 		}
-		if responsesStream.Delta != nil {
+		if bifrostResp.Delta != nil {
 			streamResp.Delta = &AnthropicStreamDelta{
 				Type: AnthropicStreamDeltaTypeText,
-				Text: responsesStream.Delta,
+				Text: bifrostResp.Delta,
 			}
 		}
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
-		if responsesStream.ContentIndex != nil {
-			streamResp.Index = responsesStream.ContentIndex
+		if bifrostResp.ContentIndex != nil {
+			streamResp.Index = bifrostResp.ContentIndex
 		}
-		if responsesStream.Arguments != nil {
+		if bifrostResp.Arguments != nil {
 			streamResp.Delta = &AnthropicStreamDelta{
 				Type:        AnthropicStreamDeltaTypeInputJSON,
-				PartialJSON: responsesStream.Arguments,
+				PartialJSON: bifrostResp.Arguments,
 			}
 		}
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
-		if responsesStream.ContentIndex != nil {
-			streamResp.Index = responsesStream.ContentIndex
+		if bifrostResp.ContentIndex != nil {
+			streamResp.Index = bifrostResp.ContentIndex
 		}
-		if responsesStream.Delta != nil {
+		if bifrostResp.Delta != nil {
 			streamResp.Delta = &AnthropicStreamDelta{
 				Type:     AnthropicStreamDeltaTypeThinking,
-				Thinking: responsesStream.Delta,
+				Thinking: bifrostResp.Delta,
 			}
 		}
 
 	case schemas.ResponsesStreamResponseTypeContentPartDone:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockStop
-		if responsesStream.ContentIndex != nil {
-			streamResp.Index = responsesStream.ContentIndex
+		if bifrostResp.ContentIndex != nil {
+			streamResp.Index = bifrostResp.ContentIndex
 		}
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
@@ -590,10 +551,10 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponse) st
 
 	case schemas.ResponsesStreamResponseTypeError:
 		streamResp.Type = AnthropicStreamEventTypeError
-		if responsesStream.Message != nil {
+		if bifrostResp.Message != nil {
 			streamResp.Error = &AnthropicStreamError{
 				Type:    "error",
-				Message: *responsesStream.Message,
+				Message: *bifrostResp.Message,
 			}
 		}
 
@@ -1095,21 +1056,6 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 	}
 
 	return anthropicMessages, systemContent
-}
-
-// Helper function to parse JSON input arguments back to interface{}
-func parseJSONInput(jsonStr string) interface{} {
-	if jsonStr == "" || jsonStr == "{}" {
-		return map[string]interface{}{}
-	}
-
-	var result interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		// If parsing fails, return as string
-		return jsonStr
-	}
-
-	return result
 }
 
 // Helper function to convert Tool back to AnthropicTool

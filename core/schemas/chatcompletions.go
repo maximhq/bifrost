@@ -7,6 +7,138 @@ import (
 	"github.com/bytedance/sonic"
 )
 
+// BifrostChatRequest is the request struct for chat completion requests
+type BifrostChatRequest struct {
+	Provider  ModelProvider   `json:"provider"`
+	Model     string          `json:"model"`
+	Input     []ChatMessage   `json:"input,omitempty"`
+	Params    *ChatParameters `json:"params,omitempty"`
+	Fallbacks []Fallback      `json:"fallbacks,omitempty"`
+}
+
+type BifrostChatResponse struct {
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier       string                     `json:"service_tier"`
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// ToTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
+func (r *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletionResponse {
+	if r == nil {
+		return nil
+	}
+
+	if len(r.Choices) == 0 {
+		return &BifrostTextCompletionResponse{
+			ID:                r.ID,
+			Model:             r.Model,
+			Object:            "text_completion",
+			SystemFingerprint: r.SystemFingerprint,
+			Usage:             r.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:    TextCompletionRequest,
+				ChunkIndex:     r.ExtraFields.ChunkIndex,
+				Provider:       r.ExtraFields.Provider,
+				ModelRequested: r.ExtraFields.ModelRequested,
+				Latency:        r.ExtraFields.Latency,
+				RawResponse:    r.ExtraFields.RawResponse,
+				CacheDebug:     r.ExtraFields.CacheDebug,
+			},
+		}
+	}
+
+	choice := r.Choices[0]
+
+	// Handle streaming response choice
+	if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+		return &BifrostTextCompletionResponse{
+			ID:                r.ID,
+			Model:             r.Model,
+			Object:            "text_completion",
+			SystemFingerprint: r.SystemFingerprint,
+			Choices: []BifrostResponseChoice{
+				{
+					Index: 0,
+					TextCompletionResponseChoice: &TextCompletionResponseChoice{
+						Text: choice.ChatStreamResponseChoice.Delta.Content,
+					},
+					FinishReason: choice.FinishReason,
+					LogProbs:     choice.LogProbs,
+				},
+			},
+			Usage: r.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:    TextCompletionRequest,
+				ChunkIndex:     r.ExtraFields.ChunkIndex,
+				Provider:       r.ExtraFields.Provider,
+				ModelRequested: r.ExtraFields.ModelRequested,
+				Latency:        r.ExtraFields.Latency,
+				RawResponse:    r.ExtraFields.RawResponse,
+				CacheDebug:     r.ExtraFields.CacheDebug,
+			},
+		}
+	}
+
+	// Handle non-streaming response choice
+	if choice.ChatNonStreamResponseChoice != nil {
+		msg := choice.ChatNonStreamResponseChoice.Message
+		var textContent *string
+		if msg != nil && msg.Content != nil && msg.Content.ContentStr != nil {
+			textContent = msg.Content.ContentStr
+		}
+		return &BifrostTextCompletionResponse{
+			ID:                r.ID,
+			Model:             r.Model,
+			Object:            "text_completion",
+			SystemFingerprint: r.SystemFingerprint,
+			Choices: []BifrostResponseChoice{
+				{
+					Index: 0,
+					TextCompletionResponseChoice: &TextCompletionResponseChoice{
+						Text: textContent,
+					},
+					FinishReason: choice.FinishReason,
+					LogProbs:     choice.LogProbs,
+				},
+			},
+			Usage: r.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:    TextCompletionRequest,
+				ChunkIndex:     r.ExtraFields.ChunkIndex,
+				Provider:       r.ExtraFields.Provider,
+				ModelRequested: r.ExtraFields.ModelRequested,
+				Latency:        r.ExtraFields.Latency,
+				RawResponse:    r.ExtraFields.RawResponse,
+				CacheDebug:     r.ExtraFields.CacheDebug,
+			},
+		}
+	}
+
+	// Fallback case - return basic response structure
+	return &BifrostTextCompletionResponse{
+		ID:                r.ID,
+		Model:             r.Model,
+		Object:            "text_completion",
+		SystemFingerprint: r.SystemFingerprint,
+		Usage:             r.Usage,
+		ExtraFields: BifrostResponseExtraFields{
+			RequestType:    TextCompletionRequest,
+			ChunkIndex:     r.ExtraFields.ChunkIndex,
+			Provider:       r.ExtraFields.Provider,
+			ModelRequested: r.ExtraFields.ModelRequested,
+			Latency:        r.ExtraFields.Latency,
+			RawResponse:    r.ExtraFields.RawResponse,
+			CacheDebug:     r.ExtraFields.CacheDebug,
+		},
+	}
+}
+
 // ChatParameters represents the parameters for a chat completion.
 type ChatParameters struct {
 	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`     // Penalizes frequent tokens
@@ -71,11 +203,12 @@ type ChatToolFunction struct {
 
 // ToolFunctionParameters represents the parameters for a function definition.
 type ToolFunctionParameters struct {
-	Type        string                 `json:"type"`                  // Type of the parameters
-	Description *string                `json:"description,omitempty"` // Description of the parameters
-	Required    []string               `json:"required,omitempty"`    // Required parameter names
-	Properties  map[string]interface{} `json:"properties,omitempty"`  // Parameter properties
-	Enum        []string               `json:"enum,omitempty"`        // Enum values for the parameters
+	Type                 string                 `json:"type"`                           // Type of the parameters
+	Description          *string                `json:"description,omitempty"`          // Description of the parameters
+	Required             []string               `json:"required,omitempty"`             // Required parameter names
+	Properties           map[string]interface{} `json:"properties,omitempty"`           // Parameter properties
+	Enum                 []string               `json:"enum,omitempty"`                 // Enum values for the parameters
+	AdditionalProperties *bool                  `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 }
 
 type ChatToolCustom struct {
@@ -348,37 +481,45 @@ type ChatAssistantMessageToolCallFunction struct {
 	Arguments string  `json:"arguments"` // stringified json as retured by OpenAI, might not be a valid JSON always
 }
 
-// BifrostChatResponseChoice represents a choice in the completion result.
+// ChatResponseChoice represents a choice in the completion result.
 // This struct can represent either a streaming or non-streaming response choice.
-// IMPORTANT: Only one of BifrostTextCompletionResponseChoice, BifrostNonStreamResponseChoice or BifrostStreamResponseChoice
+// IMPORTANT: Only one of TextCompletionResponseChoice, NonStreamResponseChoice or StreamResponseChoice
 // should be non-nil at a time.
-type BifrostChatResponseChoice struct {
-	Index        int       `json:"index"`
-	FinishReason *string   `json:"finish_reason,omitempty"`
-	LogProbs     *LogProbs `json:"log_probs,omitempty"`
+type BifrostResponseChoice struct {
+	Index        int              `json:"index"`
+	FinishReason *string          `json:"finish_reason,omitempty"`
+	LogProbs     *BifrostLogProbs `json:"log_probs,omitempty"`
 
-	*BifrostTextCompletionResponseChoice
-	*BifrostNonStreamResponseChoice
-	*BifrostStreamResponseChoice
+	*TextCompletionResponseChoice
+	*ChatNonStreamResponseChoice
+	*ChatStreamResponseChoice
 }
 
-type BifrostTextCompletionResponseChoice struct {
+// LogProbs represents the log probabilities for different aspects of a response.
+type BifrostLogProbs struct {
+	Content []ContentLogProb `json:"content,omitempty"`
+	Refusal []LogProb        `json:"refusal,omitempty"`
+
+	*TextCompletionLogProb
+}
+
+type TextCompletionResponseChoice struct {
 	Text *string `json:"text,omitempty"`
 }
 
-// BifrostNonStreamResponseChoice represents a choice in the non-stream response
-type BifrostNonStreamResponseChoice struct {
+// NonStreamResponseChoice represents a choice in the non-stream response
+type ChatNonStreamResponseChoice struct {
 	Message    *ChatMessage `json:"message"`
 	StopString *string      `json:"stop,omitempty"`
 }
 
-// BifrostStreamResponseChoice represents a choice in the stream response
-type BifrostStreamResponseChoice struct {
-	Delta *BifrostStreamDelta `json:"delta,omitempty"` // Partial message info
+// StreamResponseChoice represents a choice in the stream response
+type ChatStreamResponseChoice struct {
+	Delta *ChatStreamResponseChoiceDelta `json:"delta,omitempty"` // Partial message info
 }
 
-// BifrostStreamDelta represents a delta in the stream response
-type BifrostStreamDelta struct {
+// StreamDelta represents a delta in the stream response
+type ChatStreamResponseChoiceDelta struct {
 	Role      *string                        `json:"role,omitempty"`       // Only in the first chunk
 	Content   *string                        `json:"content,omitempty"`    // May be empty string or null
 	Thought   *string                        `json:"thought,omitempty"`    // May be empty string or null
@@ -399,4 +540,11 @@ type ContentLogProb struct {
 	LogProb     float64   `json:"logprob"`
 	Token       string    `json:"token"`
 	TopLogProbs []LogProb `json:"top_logprobs"`
+}
+
+// BifrostLLMUsage represents token usage information
+type BifrostLLMUsage struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens"`
 }

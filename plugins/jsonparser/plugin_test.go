@@ -124,11 +124,11 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 				t.Logf("Streaming response error: %v", streamResponse.BifrostError)
 			}
 
-			if streamResponse.BifrostResponse != nil {
-				if streamResponse.BifrostResponse.ResponsesResponse != nil {
-					for _, outputMsg := range streamResponse.BifrostResponse.ResponsesResponse.Output {
-						if outputMsg.Content != nil && outputMsg.Content.ContentStr != nil {
-							content := *outputMsg.Content.ContentStr
+			if streamResponse.BifrostChatResponse != nil {
+				if streamResponse.BifrostChatResponse.Choices != nil {
+					for _, outputMsg := range streamResponse.BifrostChatResponse.Choices {
+						if outputMsg.ChatStreamResponseChoice != nil && outputMsg.ChatStreamResponseChoice.Delta.Content != nil {
+							content := *outputMsg.ChatStreamResponseChoice.Delta.Content
 							if content != "" {
 								t.Logf("Chunk %d: %s", responseCount, content)
 							}
@@ -227,10 +227,10 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 				t.Logf("Streaming response error: %v", streamResponse.BifrostError)
 			}
 
-			if streamResponse.BifrostResponse != nil {
-				for _, choice := range streamResponse.BifrostResponse.Choices {
-					if choice.BifrostStreamResponseChoice != nil && choice.BifrostStreamResponseChoice.Delta.Content != nil {
-						content := *choice.BifrostStreamResponseChoice.Delta.Content
+			if streamResponse.BifrostChatResponse != nil {
+				for _, choice := range streamResponse.BifrostChatResponse.Choices {
+					if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta.Content != nil {
+						content := *choice.ChatStreamResponseChoice.Delta.Content
 						if content != "" {
 							t.Logf("Per-request chunk %d: %s", responseCount, content)
 						}

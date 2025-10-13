@@ -41,8 +41,8 @@ func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Be
 }
 
 // ToBifrostResponse converts a Bedrock Converse API response to Bifrost format
-func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.BifrostResponse, error) {
-	if bedrockResp == nil {
+func (response *BedrockConverseResponse) ToBifrostChatResponse() (*schemas.BifrostChatResponse, error) {
+	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
 
@@ -50,8 +50,8 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	var contentBlocks []schemas.ChatContentBlock
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 
-	if bedrockResp.Output.Message != nil {
-		for _, contentBlock := range bedrockResp.Output.Message.Content {
+	if response.Output.Message != nil {
+		for _, contentBlock := range response.Output.Message.Content {
 			// Handle text content
 			if contentBlock.Text != nil && *contentBlock.Text != "" {
 				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
@@ -105,31 +105,31 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	}
 
 	// Create the response choice
-	choices := []schemas.BifrostChatResponseChoice{
+	choices := []schemas.BifrostResponseChoice{
 		{
 			Index: 0,
-			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 				Message: &schemas.ChatMessage{
 					Role:                 schemas.ChatMessageRoleAssistant,
 					Content:              &messageContent,
 					ChatAssistantMessage: assistantMessage,
 				},
 			},
-			FinishReason: schemas.Ptr(schemas.MapProviderFinishReasonToBifrost(bedrockResp.StopReason, schemas.Bedrock)),
+			FinishReason: schemas.Ptr(schemas.MapProviderFinishReasonToBifrost(response.StopReason, schemas.Bedrock)),
 		},
 	}
-	var usage *schemas.LLMUsage
-	if bedrockResp.Usage != nil {
+	var usage *schemas.BifrostLLMUsage
+	if response.Usage != nil {
 		// Convert usage information
-		usage = &schemas.LLMUsage{
-			PromptTokens:     bedrockResp.Usage.InputTokens,
-			CompletionTokens: bedrockResp.Usage.OutputTokens,
-			TotalTokens:      bedrockResp.Usage.TotalTokens,
+		usage = &schemas.BifrostLLMUsage{
+			PromptTokens:     response.Usage.InputTokens,
+			CompletionTokens: response.Usage.OutputTokens,
+			TotalTokens:      response.Usage.TotalTokens,
 		}
 	}
 
 	// Create the final Bifrost response
-	bifrostResponse := &schemas.BifrostResponse{
+	bifrostResponse := &schemas.BifrostChatResponse{
 		Choices: choices,
 		Usage:   usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
@@ -141,18 +141,18 @@ func (bedrockResp *BedrockConverseResponse) ToBifrostResponse() (*schemas.Bifros
 	return bifrostResponse, nil
 }
 
-func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	// event with metrics/usage is the last and with stop reason is the second last
 	switch {
 	case chunk.Role != nil:
 		// Send empty response to signal start
-		streamResponse := &schemas.BifrostResponse{
+		streamResponse := &schemas.BifrostChatResponse{
 			Object: "chat.completion.chunk",
-			Choices: []schemas.BifrostChatResponseChoice{
+			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index: 0,
-					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-						Delta: &schemas.BifrostStreamDelta{
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
 							Role: chunk.Role,
 						},
 					},
@@ -178,13 +178,13 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
 		toolCall.Function.Arguments = "{}" // Start with empty arguments
 
-		streamResponse := &schemas.BifrostResponse{
+		streamResponse := &schemas.BifrostChatResponse{
 			Object: "chat.completion.chunk",
-			Choices: []schemas.BifrostChatResponseChoice{
+			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index: contentBlockIndex,
-					BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-						Delta: &schemas.BifrostStreamDelta{
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
 							ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},
 						},
 					},
@@ -203,13 +203,13 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 			// Handle text delta
 			text := *chunk.Delta.Text
 			if text != "" {
-				streamResponse := &schemas.BifrostResponse{
+				streamResponse := &schemas.BifrostChatResponse{
 					Object: "chat.completion.chunk",
-					Choices: []schemas.BifrostChatResponseChoice{
+					Choices: []schemas.BifrostResponseChoice{
 						{
 							Index: contentBlockIndex,
-							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-								Delta: &schemas.BifrostStreamDelta{
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
 									Content: &text,
 								},
 							},
@@ -232,13 +232,13 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 			// This is a simplified approach - in practice, you'd need to track tool calls across chunks
 			toolCall.Function.Arguments = toolUseDelta.Input
 
-			streamResponse := &schemas.BifrostResponse{
+			streamResponse := &schemas.BifrostChatResponse{
 				Object: "chat.completion.chunk",
-				Choices: []schemas.BifrostChatResponseChoice{
+				Choices: []schemas.BifrostResponseChoice{
 					{
 						Index: contentBlockIndex,
-						BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-							Delta: &schemas.BifrostStreamDelta{
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},
 							},
 						},

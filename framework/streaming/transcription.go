@@ -10,14 +10,14 @@ import (
 )
 
 // buildCompleteMessageFromTranscriptionStreamChunks builds a complete message from accumulated transcription chunks
-func (a *Accumulator) buildCompleteMessageFromTranscriptionStreamChunks(chunks []*TranscriptionStreamChunk) *schemas.BifrostTranscribe {
-	completeMessage := &schemas.BifrostTranscribe{}
+func (a *Accumulator) buildCompleteMessageFromTranscriptionStreamChunks(chunks []*TranscriptionStreamChunk) *schemas.BifrostTranscriptionResponse {
+	completeMessage := &schemas.BifrostTranscriptionResponse{}
 	finalContent := ""
 	for _, chunk := range chunks {
 		if chunk.Delta == nil {
 			continue
 		}
-		if chunk.Delta.Type != nil && *chunk.Delta.Type == "transcript.text.delta" && chunk.Delta.Delta != nil {
+		if chunk.Delta.Type == schemas.TranscriptionStreamResponseTypeDelta && chunk.Delta.Delta != nil {
 			finalContent += *chunk.Delta.Delta
 		}
 	}
@@ -51,7 +51,6 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 		TokenUsage:     nil,
 		CacheDebug:     nil,
 		Cost:           nil,
-		Object:         "audio.transcription",
 	}
 	// Build complete message from accumulated chunks
 	completeMessage := a.buildCompleteMessageFromTranscriptionStreamChunks(accumulator.TranscriptionStreamChunks)
@@ -74,16 +73,16 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 	// Update token usage from final chunk if available
 	if len(accumulator.TranscriptionStreamChunks) > 0 {
 		lastChunk := accumulator.TranscriptionStreamChunks[len(accumulator.TranscriptionStreamChunks)-1]
-		if lastChunk.TranscriptionUsage != nil {
-			data.TokenUsage = &schemas.LLMUsage{}
-			if lastChunk.TranscriptionUsage.InputTokens != nil {
-				data.TokenUsage.PromptTokens = *lastChunk.TranscriptionUsage.InputTokens
+		if lastChunk.TokenUsage != nil {
+			data.TokenUsage = &schemas.BifrostLLMUsage{}
+			if lastChunk.TokenUsage.InputTokens != nil {
+				data.TokenUsage.PromptTokens = *lastChunk.TokenUsage.InputTokens
 			}
-			if lastChunk.TranscriptionUsage.OutputTokens != nil {
-				data.TokenUsage.CompletionTokens = *lastChunk.TranscriptionUsage.OutputTokens
+			if lastChunk.TokenUsage.OutputTokens != nil {
+				data.TokenUsage.CompletionTokens = *lastChunk.TokenUsage.OutputTokens
 			}
-			if lastChunk.TranscriptionUsage.TotalTokens != nil {
-				data.TokenUsage.TotalTokens = *lastChunk.TranscriptionUsage.TotalTokens
+			if lastChunk.TokenUsage.TotalTokens != nil {
+				data.TokenUsage.TotalTokens = *lastChunk.TokenUsage.TotalTokens
 			}
 		}
 	}
@@ -101,10 +100,6 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
 	}
-	// Update object field from accumulator (stored once for the entire stream)
-	if accumulator.Object != "" {
-		data.Object = accumulator.Object
-	}
 	return data, nil
 }
 
@@ -116,7 +111,7 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *context.Context
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("request-id not found in context or is empty")
 	}
-	_, provider, model := bifrost.GetRequestFields(result, bifrostErr)
+	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	// For audio, all the data comes in the final chunk
 	chunk := a.getTranscriptionStreamChunk()
@@ -125,29 +120,28 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *context.Context
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil {
-		if result.Transcribe != nil && result.Transcribe.BifrostTranscribeStreamResponse != nil {
+		if result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil {
 			// We create a deep copy of the delta to avoid pointing to stack memory
-			newDelta := &schemas.BifrostTranscribeStreamResponse{
-				Type:  result.Transcribe.BifrostTranscribeStreamResponse.Type,
-				Delta: result.Transcribe.BifrostTranscribeStreamResponse.Delta,
+			newDelta := &schemas.BifrostTranscriptionStreamResponse{
+				Type:  result.TranscriptionStreamResponse.Type,
+				Delta: result.TranscriptionStreamResponse.Delta,
 			}
 			chunk.Delta = newDelta
-			chunk.TranscriptionUsage = result.Transcribe.Usage
 		}
-		chunk.TokenUsage = result.Usage
+		if result.TranscriptionStreamResponse.Usage != nil {
+			chunk.TokenUsage = result.TranscriptionStreamResponse.Usage
+		}
 	}
-	object := ""
 	if result != nil {
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.ExtraFields.CacheDebug
+			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 		}
-		object = result.Object
 	}
-	if addErr := a.addTranscriptionStreamChunk(requestID, chunk, object, isFinalChunk); addErr != nil {
+	if addErr := a.addTranscriptionStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
 		return nil, fmt.Errorf("failed to add stream chunk for request %s: %w", requestID, addErr)
 	}
 	if isFinalChunk {

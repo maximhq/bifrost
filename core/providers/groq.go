@@ -67,7 +67,7 @@ func (provider *GroqProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Groq provider.
-func (provider *GroqProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	// Checking if litellm fallback is set
 	if _, ok := ctx.Value(schemas.BifrostContextKey("x-litellm-fallback")).(string); !ok {
 		return nil, newUnsupportedOperationError("text completion", "groq")
@@ -82,11 +82,11 @@ func (provider *GroqProvider) TextCompletion(ctx context.Context, key schemas.Ke
 			},
 		}
 	}
-	response, err := provider.ChatCompletion(ctx, key, chatRequest)
+	chatResponse, err := provider.ChatCompletion(ctx, key, chatRequest)
 	if err != nil {
 		return nil, err
 	}
-	response.ToTextCompletionResponse()
+	response := chatResponse.ToTextCompletionResponse()
 	response.ExtraFields.RequestType = schemas.TextCompletionRequest
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
@@ -125,10 +125,10 @@ func (provider *GroqProvider) TextCompletionStream(ctx context.Context, postHook
 				continue
 			}
 			response.ToTextCompletionResponse()
-			if response.BifrostResponse != nil {
-				response.BifrostResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
-				response.BifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
-				response.BifrostResponse.ExtraFields.ModelRequested = request.Model
+			if response.BifrostTextCompletionResponse != nil {
+				response.BifrostTextCompletionResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
+				response.BifrostTextCompletionResponse.ExtraFields.Provider = provider.GetProviderKey()
+				response.BifrostTextCompletionResponse.ExtraFields.ModelRequested = request.Model
 			}
 			responseChan <- response
 		}
@@ -137,7 +137,7 @@ func (provider *GroqProvider) TextCompletionStream(ctx context.Context, postHook
 }
 
 // ChatCompletion performs a chat completion request to the Groq API.
-func (provider *GroqProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -171,13 +171,13 @@ func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHook
 	)
 }
 
-func (provider *GroqProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	response, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+func (provider *GroqProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}
 
-	response.ToResponsesOnly()
+	response := chatResponse.ToBifrostResponsesResponse()
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
@@ -195,11 +195,11 @@ func (provider *GroqProvider) ResponsesStream(ctx context.Context, postHookRunne
 }
 
 // Embedding is not supported by the Groq provider.
-func (provider *GroqProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "groq")
 }
 
-func (provider *GroqProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "groq")
 }
 
@@ -207,7 +207,7 @@ func (provider *GroqProvider) SpeechStream(ctx context.Context, postHookRunner s
 	return nil, newUnsupportedOperationError("speech stream", "groq")
 }
 
-func (provider *GroqProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "groq")
 }
 

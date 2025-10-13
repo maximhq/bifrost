@@ -6,6 +6,20 @@ import (
 	"github.com/bytedance/sonic"
 )
 
+type BifrostSpeechRequest struct {
+	Provider  ModelProvider     `json:"provider"`
+	Model     string            `json:"model"`
+	Input     *SpeechInput      `json:"input,omitempty"`
+	Params    *SpeechParameters `json:"params,omitempty"`
+	Fallbacks []Fallback        `json:"fallbacks,omitempty"`
+}
+
+type BifrostSpeechResponse struct {
+	Audio       []byte                     `json:"audio"`
+	Usage       *SpeechUsage               `json:"usage"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 // SpeechInput represents the input for a speech request.
 type SpeechInput struct {
 	Input string `json:"input"`
@@ -83,13 +97,22 @@ func (vi *SpeechVoiceInput) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("voice field is neither a string, nor an array of VoiceConfig objects")
 }
 
-type BifrostSpeech struct {
-	Usage *AudioLLMUsage `json:"usage,omitempty"`
-	Audio []byte         `json:"audio"`
+type SpeechStreamResponseType string
 
-	*BifrostSpeechStreamResponse
-}
+const (
+	SpeechStreamResponseTypeDelta SpeechStreamResponseType = "speech.audio.delta"
+	SpeechStreamResponseTypeDone  SpeechStreamResponseType = "speech.audio.done"
+)
 
 type BifrostSpeechStreamResponse struct {
-	Type string `json:"type"`
+	Type        SpeechStreamResponseType   `json:"type"`
+	Audio       []byte                     `json:"audio"`
+	Usage       *SpeechUsage               `json:"usage"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+type SpeechUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }

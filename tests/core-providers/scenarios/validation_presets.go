@@ -192,6 +192,33 @@ func TranscriptionExpectations(minTextLength int) ResponseExpectations {
 	}
 }
 
+// ReasoningExpectations returns validation expectations for reasoning scenarios
+func ReasoningExpectations() ResponseExpectations {
+	return ResponseExpectations{
+		ShouldHaveContent:    true,
+		MinContentLength:     50,   // Reasoning requires substantial content
+		MaxContentLength:     3000, // Reasoning can be very verbose
+		ExpectedChoiceCount:  1,    // Usually expect one choice
+		ShouldHaveUsageStats: true,
+		ShouldHaveTimestamps: true,
+		ShouldHaveModel:      true,
+		// Reasoning-specific validations
+		ShouldContainAnyOf: []string{
+			"step", "first", "then", "next", "calculate", "therefore", "because",
+			"reasoning", "think", "analysis", "conclusion", "solution",
+		},
+		ShouldNotContainWords: []string{
+			"i can't", "i cannot", "i'm unable", "i am unable",
+			"cannot solve", "unable to calculate", "need more information",
+			"insufficient data", "missing information",
+		},
+		ProviderSpecific: map[string]interface{}{
+			"response_type":        "reasoning",
+			"expects_step_by_step": true,
+		},
+	}
+}
+
 // =============================================================================
 // SCENARIO-SPECIFIC EXPECTATION BUILDERS
 // =============================================================================
@@ -269,6 +296,16 @@ func GetExpectationsForScenario(scenarioName string, testConfig config.Comprehen
 			return TranscriptionExpectations(minLength)
 		}
 		return TranscriptionExpectations(10) // Default minimum 10 characters
+
+	case "Reasoning":
+		expectations := ReasoningExpectations()
+		if requiresReasoning, ok := customParams["requires_reasoning"].(bool); ok && requiresReasoning {
+			expectations.ShouldContainAnyOf = []string{"step", "first", "then", "calculate", "therefore", "because"}
+		}
+		if isMathematical, ok := customParams["mathematical_problem"].(bool); ok && isMathematical {
+			expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "calculate", "profit", "$")
+		}
+		return expectations
 
 	case "ProviderSpecific":
 		expectations := BasicChatExpectations()

@@ -114,14 +114,52 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+			TextResponseConverter: func(resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 				return resp, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				TextStreamResponseConverter: func(resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+					return resp, nil
+				},
+				ErrorConverter: func(err *schemas.BifrostError) interface{} {
+					return err
+				},
+			},
+			PreCallback: AzureEndpointPreHook(handlerStore),
+		})
+	}
+
+	// Chat completions endpoint
+	for _, path := range []string{
+		"/v1/chat/completions",
+		"/chat/completions",
+		"/openai/deployments/{deployment-id}/chat/completions",
+	} {
+		routes = append(routes, RouteConfig{
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &openai.OpenAIChatRequest{}
+			},
+			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
+					return &schemas.BifrostRequest{
+						ChatRequest: openaiReq.ToBifrostRequest(),
+					}, nil
+				}
+				return nil, errors.New("invalid request type")
+			},
+			ChatResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				return err
+			},
+			StreamConfig: &StreamConfig{
+				ChatStreamResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
 					return resp, nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -153,52 +191,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+			ResponsesResponseConverter: func(resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 				return resp, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return resp, nil
-				},
-				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return err
-				},
-			},
-			PreCallback: AzureEndpointPreHook(handlerStore),
-		})
-	}
-
-	// Chat completions endpoint
-	for _, path := range []string{
-		"/v1/chat/completions",
-		"/chat/completions",
-		"/openai/deployments/{deployment-id}/chat/completions",
-	} {
-		routes = append(routes, RouteConfig{
-			Path:   pathPrefix + path,
-			Method: "POST",
-			GetRequestTypeInstance: func() interface{} {
-				return &openai.OpenAIChatRequest{}
-			},
-			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
-					return &schemas.BifrostRequest{
-						ChatRequest: openaiReq.ToBifrostRequest(),
-					}, nil
-				}
-				return nil, errors.New("invalid request type")
-			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return resp, nil
-			},
-			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return err
-			},
-			StreamConfig: &StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				ResponsesStreamResponseConverter: func(resp *schemas.BifrostResponsesStreamResponse) (interface{}, error) {
 					return resp, nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -229,7 +229,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid embedding request type")
 			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+			EmbeddingResponseConverter: func(resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 				return resp, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -259,16 +259,12 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid speech request type")
 			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				speechResp := openai.ToOpenAISpeechResponse(resp)
-				return speechResp.Audio, nil
-			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-					return openai.ToOpenAISpeechResponse(resp), nil
+				SpeechStreamResponseConverter: func(resp *schemas.BifrostSpeechStreamResponse) (interface{}, error) {
+					return resp, nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
 					return err
@@ -299,14 +295,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid transcription request type")
 			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+			TranscriptionResponseConverter: func(resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 				return resp, nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				TranscriptionStreamResponseConverter: func(resp *schemas.BifrostTranscriptionStreamResponse) (interface{}, error) {
 					return resp, nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -321,9 +317,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 }
 
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
-func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *OpenAIRouter {
+func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, CreateOpenAIRouteConfigs("/openai", handlerStore)),
+		GenericRouter: NewGenericRouter(client, handlerStore, CreateOpenAIRouteConfigs("/openai", handlerStore), logger),
 	}
 }
 

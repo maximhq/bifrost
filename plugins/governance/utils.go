@@ -3,8 +3,6 @@ package governance
 
 import (
 	"context"
-
-	"github.com/maximhq/bifrost/core/schemas"
 )
 
 type ContextKey string
@@ -35,28 +33,4 @@ func getStringFromContext(ctx context.Context, key any) string {
 		}
 	}
 	return ""
-}
-
-// hasUsageData checks if the response contains actual usage information
-func hasUsageData(result *schemas.BifrostResponse) bool {
-	if result == nil {
-		return false
-	}
-
-	// Check main usage field
-	if result.Usage != nil {
-		return true
-	}
-
-	// Check speech usage
-	if result.Speech != nil && result.Speech.Usage != nil {
-		return true
-	}
-
-	// Check transcribe usage
-	if result.Transcribe != nil && result.Transcribe.Usage != nil {
-		return true
-	}
-
-	return false
 }

@@ -3,6 +3,8 @@ package semanticcache
 import (
 	"context"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestCacheNoStoreBasicFunctionality tests that CacheNoStoreKey prevents caching
@@ -33,7 +35,7 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should be cached
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should be cached
 
 	// Test 2: NoStore = true (should not cache)
 	ctx2 := CreateContextWithCacheKeyAndNoStore("test-no-store-disabled", true)
@@ -71,7 +73,7 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	if err6 != nil {
 		t.Fatalf("Sixth request failed: %v", err6)
 	}
-	AssertCacheHit(t, response6, "direct") // Should be cached
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response6}, "direct") // Should be cached
 
 	t.Log("✅ CacheNoStoreKey basic functionality works correctly")
 }
@@ -240,7 +242,7 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should be cached (invalid value ignored)
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should be cached (invalid value ignored)
 
 	// Test with nil value (should cache normally)
 	ctx2 := CreateContextWithCacheKey("test-no-store-nil")
@@ -260,7 +262,7 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 	if err4 != nil {
 		t.Fatalf("Fourth request failed: %v", err4)
 	}
-	AssertCacheHit(t, response4, "direct") // Should be cached (nil ignored)
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}, "direct") // Should be cached (nil ignored)
 
 	t.Log("✅ CacheNoStoreKey error handling works correctly")
 }
@@ -296,7 +298,7 @@ func TestCacheNoStoreReadButNoWrite(t *testing.T) {
 	}
 	// The current implementation should still read from cache even with no-store
 	// (no-store only affects writing, not reading)
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 
 	// Step 3: Make a semantically similar request with no-store (strong paraphrase for deterministic semantic hit)
 	newRequest := CreateBasicChatRequest("Describe the three laws of motion by Isaac Newton", 0.7, 50)
@@ -306,7 +308,7 @@ func TestCacheNoStoreReadButNoWrite(t *testing.T) {
 		t.Fatalf("Third request failed: %v", err3)
 	}
 	// Should get semantic cache hit (no-store allows reads, just prevents writes)
-	AssertCacheHit(t, response3, "semantic")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "semantic")
 
 	WaitForCache()
 
@@ -317,7 +319,7 @@ func TestCacheNoStoreReadButNoWrite(t *testing.T) {
 		t.Fatalf("Fourth request failed: %v", err4)
 	}
 	// Should get semantic cache hit again (consistent behavior)
-	AssertCacheHit(t, response4, "semantic")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}, "semantic")
 
 	t.Log("✅ CacheNoStoreKey allows reading but prevents writing")
 }

@@ -353,6 +353,8 @@ func (plugin *Plugin) TransportInterceptor(url string, headers map[string]string
 //   - *schemas.BifrostResponse: Cached response if found, nil otherwise
 //   - error: Any error that occurred during cache lookup
 func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+	provider, model, _ := req.GetRequestFields()
+
 	// Get the cache key from the context
 	var cacheKey string
 	var ok bool
@@ -373,8 +375,8 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 
 	// Store request ID, model, and provider in context for PostHook
 	*ctx = context.WithValue(*ctx, requestIDKey, requestID)
-	*ctx = context.WithValue(*ctx, requestModelKey, req.Model)
-	*ctx = context.WithValue(*ctx, requestProviderKey, req.Provider)
+	*ctx = context.WithValue(*ctx, requestModelKey, model)
+	*ctx = context.WithValue(*ctx, requestProviderKey, provider)
 
 	performDirectSearch, performSemanticSearch := true, true
 	if (*ctx).Value(CacheTypeKey) != nil {
@@ -506,7 +508,8 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 		}
 	}
 
-	requestType := res.ExtraFields.RequestType
+	extraFields := res.GetExtraFields()
+	requestType := extraFields.RequestType
 
 	// Get embedding from context if available and needed
 	if shouldStoreEmbeddings && requestType != schemas.EmbeddingRequest && requestType != schemas.TranscriptionRequest {
@@ -544,13 +547,13 @@ func (plugin *Plugin) PostHook(ctx *context.Context, res *schemas.BifrostRespons
 		isStreamRequest := bifrost.IsStreamRequestType(requestType)
 
 		if !isStreamRequest || (isStreamRequest && isFinalChunk) {
-			if res.ExtraFields.CacheDebug == nil {
-				res.ExtraFields.CacheDebug = &schemas.BifrostCacheDebug{}
+			if extraFields.CacheDebug == nil {
+				extraFields.CacheDebug = &schemas.BifrostCacheDebug{}
 			}
-			res.ExtraFields.CacheDebug.CacheHit = false
-			res.ExtraFields.CacheDebug.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
-			res.ExtraFields.CacheDebug.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
-			res.ExtraFields.CacheDebug.InputTokens = &inputTokens
+			extraFields.CacheDebug.CacheHit = false
+			extraFields.CacheDebug.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
+			extraFields.CacheDebug.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
+			extraFields.CacheDebug.InputTokens = &inputTokens
 		}
 	}
 

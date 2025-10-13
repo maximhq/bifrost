@@ -199,7 +199,6 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		TokenUsage:     nil,
 		CacheDebug:     nil,
 		Cost:           nil,
-		Object:         "",
 	}
 
 	// Build complete messages from accumulated chunks
@@ -256,11 +255,6 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		data.FinishReason = lastChunk.FinishReason
 	}
 
-	// Update object field from accumulator (stored once for the entire stream)
-	if accumulator.Object != "" {
-		data.Object = accumulator.Object
-	}
-
 	return data, nil
 }
 
@@ -274,7 +268,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 		return nil, fmt.Errorf("request-id not found in context or is empty")
 	}
 
-	_, provider, model := bifrost.GetRequestFields(result, bifrostErr)
+	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	accumulator.mu.Lock()
@@ -297,9 +291,8 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 					Stream:         true,
 					StartTimestamp: startTimestamp,
 					EndTimestamp:   endTimestamp,
-					Latency:        result.ExtraFields.Latency,
+					Latency:        result.GetExtraFields().Latency,
 					ErrorDetails:   bifrostErr,
-					Object:         result.Object,
 				}
 
 				if bifrostErr != nil {
@@ -307,16 +300,14 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 				}
 
 				// Extract the complete response from the stream response
-				if result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.ResponsesResponse != nil {
-					data.OutputMessages = result.ResponsesStreamResponse.Response.ResponsesResponse.Output
+				if result.ResponsesStreamResponse.Response != nil {
+					data.OutputMessages = result.ResponsesStreamResponse.Response.Output
 					if result.ResponsesStreamResponse.Response.Usage != nil {
 						// Convert ResponsesResponseUsage to schemas.LLMUsage
-						data.TokenUsage = &schemas.LLMUsage{
-							ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{
-								InputTokens:  result.ResponsesStreamResponse.Response.Usage.InputTokens,
-								OutputTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
-							},
-							TotalTokens: result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+						data.TokenUsage = &schemas.BifrostLLMUsage{
+							PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
+							CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
+							TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
 						}
 					}
 				}
@@ -363,30 +354,26 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 		// Extract token usage from stream response if available
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.Usage != nil {
-			chunk.TokenUsage = &schemas.LLMUsage{
-				ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{
-					InputTokens:  result.ResponsesStreamResponse.Response.Usage.InputTokens,
-					OutputTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
-				},
-				TotalTokens: result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+			chunk.TokenUsage = &schemas.BifrostLLMUsage{
+				PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
+				CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
+				TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
 			}
 		}
 	}
 
 	// Add chunk to accumulator synchronously to maintain order
-	object := ""
 	if result != nil {
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.ExtraFields.CacheDebug
+			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 		}
-		object = result.Object
 	}
 
-	if addErr := a.addResponsesStreamChunk(requestID, chunk, object, isFinalChunk); addErr != nil {
+	if addErr := a.addResponsesStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
 		return nil, fmt.Errorf("failed to add responses stream chunk for request %s: %w", requestID, addErr)
 	}
 

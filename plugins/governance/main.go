@@ -280,9 +280,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 		}
 	}
 
-	// Extract provider and model from request
-	provider := req.Provider
-	model := req.Model
+	provider, model, _ := req.GetRequestFields()
 
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
@@ -372,7 +370,7 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	}
 
 	// Extract request type, provider, and model
-	requestType, provider, model := bifrost.GetRequestFields(result, err)
+	requestType, provider, model := bifrost.GetResponseFields(result, err)
 
 	// Extract cache and batch flags from context
 	isCacheRead := false
@@ -420,46 +418,54 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
-	hasUsageData := hasUsageData(result)
 
-	// Extract usage information from response (including speech and transcribe)
-	var tokensUsed int64
-
-	if result != nil {
-		if result.Usage != nil {
-			tokensUsed = int64(result.Usage.TotalTokens)
-		} else if result.Speech != nil && result.Speech.Usage != nil {
-			tokensUsed = int64(result.Speech.Usage.TotalTokens)
-		} else if result.Transcribe != nil && result.Transcribe.Usage != nil && result.Transcribe.Usage.TotalTokens != nil {
-			tokensUsed = int64(*result.Transcribe.Usage.TotalTokens)
-		}
-	}
-
-	cost := 0.0
 	if !isStreaming || (isStreaming && isFinalChunk) {
+		var cost float64
 		if p.pricingManager != nil && result != nil {
 			cost = p.pricingManager.CalculateCost(result)
 		}
-	}
+		tokensUsed := 0
+		if result != nil {
+			switch {
+			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+				tokensUsed = result.TextCompletionResponse.Usage.TotalTokens
+			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+				tokensUsed = result.ChatResponse.Usage.TotalTokens
+			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+				tokensUsed = result.ResponsesResponse.Usage.TotalTokens
+			case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+				tokensUsed = result.ResponsesStreamResponse.Response.Usage.TotalTokens
+			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+				tokensUsed = result.EmbeddingResponse.Usage.TotalTokens
+			case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
+				tokensUsed = result.SpeechResponse.Usage.TotalTokens
+			case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
+				tokensUsed = result.SpeechStreamResponse.Usage.TotalTokens
+			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil && result.TranscriptionResponse.Usage.TotalTokens != nil:
+				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
+			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
+				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+			}
+		}
+		// Create usage update for tracker (business logic)
+		usageUpdate := &UsageUpdate{
+			VirtualKey:   virtualKey,
+			Provider:     provider,
+			Model:        model,
+			Success:      success,
+			TokensUsed:   int64(tokensUsed),
+			Cost:         cost,
+			RequestID:    requestID,
+			TeamID:       teamID,
+			CustomerID:   customerID,
+			IsStreaming:  isStreaming,
+			IsFinalChunk: isFinalChunk,
+			HasUsageData: tokensUsed > 0,
+		}
 
-	// Create usage update for tracker (business logic)
-	usageUpdate := &UsageUpdate{
-		VirtualKey:   virtualKey,
-		Provider:     provider,
-		Model:        model,
-		Success:      success,
-		TokensUsed:   tokensUsed,
-		Cost:         cost,
-		RequestID:    requestID,
-		TeamID:       teamID,
-		CustomerID:   customerID,
-		IsStreaming:  isStreaming,
-		IsFinalChunk: isFinalChunk,
-		HasUsageData: hasUsageData,
+		// Queue usage update asynchronously using tracker
+		p.tracker.UpdateUsage(p.ctx, usageUpdate)
 	}
-
-	// Queue usage update asynchronously using tracker
-	p.tracker.UpdateUsage(p.ctx, usageUpdate)
 }
 
 // GetGovernanceStore returns the governance store

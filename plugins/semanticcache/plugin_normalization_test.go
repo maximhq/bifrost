@@ -96,7 +96,7 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.Choices) == 0 {
+	if response1 == nil || len(response1.ChatResponse.Choices) == 0 {
 		t.Fatal("First response is invalid")
 	}
 
@@ -118,7 +118,7 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 		}
 
 		// Should be cache hit due to normalization
-		AssertCacheHit(t, response, "direct")
+		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response}, "direct")
 		t.Logf("✓ Cache hit for '%s' variation", tc.name)
 	}
 }
@@ -154,11 +154,11 @@ func testSpeechNormalization(t *testing.T, setup *TestSetup) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || response1.Speech == nil {
+	if response1 == nil {
 		t.Fatal("First response is invalid")
 	}
 
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{SpeechResponse: response1})
 	WaitForCache()
 
 	// Test all other variations should hit cache due to normalization
@@ -171,12 +171,12 @@ func testSpeechNormalization(t *testing.T, setup *TestSetup) {
 			t.Fatalf("Request for case '%s' failed: %v", tc.name, err)
 		}
 
-		if response == nil || response.Speech == nil {
+		if response == nil {
 			t.Fatalf("Response for case '%s' is invalid", tc.name)
 		}
 
 		// Should be cache hit due to normalization
-		AssertCacheHit(t, response, "direct")
+		AssertCacheHit(t, &schemas.BifrostResponse{SpeechResponse: response}, "direct")
 		t.Logf("✓ Cache hit for '%s' variation", tc.name)
 	}
 }
@@ -248,7 +248,7 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.Choices) == 0 {
+	if response1 == nil || len(response1.ChatResponse.Choices) == 0 {
 		t.Fatal("First response is invalid")
 	}
 
@@ -270,7 +270,7 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 		}
 
 		// Should be cache hit due to normalization
-		AssertCacheHit(t, response, "direct")
+		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response}, "direct")
 		t.Logf("✓ Cache hit for '%s' variation", tc.name)
 	}
 }
@@ -306,7 +306,7 @@ func TestNormalizationWithSemanticCache(t *testing.T) {
 	}
 
 	// This should be a direct cache hit since the normalized text is identical
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 	t.Log("✓ Direct cache hit with normalized text")
 
 	// Test with semantically similar but different text
@@ -318,7 +318,7 @@ func TestNormalizationWithSemanticCache(t *testing.T) {
 	}
 
 	// This should be a semantic cache hit
-	AssertCacheHit(t, response3, "semantic")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "semantic")
 	t.Log("✓ Semantic cache hit with similar content")
 }
 

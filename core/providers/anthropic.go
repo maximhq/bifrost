@@ -177,7 +177,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 // TextCompletion performs a text completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func (provider *AnthropicProvider) TextCompletionStream(ctx context.Context, pos
 // ChatCompletion performs a chat completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 	}
 
 	// Create final response
-	bifrostResponse := response.ToBifrostResponse()
+	bifrostResponse := response.ToBifrostChatResponse()
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
@@ -400,7 +400,7 @@ func handleAnthropicChatCompletionStreaming(
 		// Track minimal state needed for response format
 		var messageID string
 		var modelName string
-		var usage *schemas.LLMUsage
+		var usage *schemas.BifrostLLMUsage
 		var finishReason *string
 
 		// Track SSE event parsing state
@@ -437,7 +437,7 @@ func handleAnthropicChatCompletionStreaming(
 			}
 
 			if event.Usage != nil {
-				usage = &schemas.LLMUsage{
+				usage = &schemas.BifrostLLMUsage{
 					PromptTokens:     event.Usage.InputTokens,
 					CompletionTokens: event.Usage.OutputTokens,
 					TotalTokens:      event.Usage.InputTokens + event.Usage.OutputTokens,
@@ -469,7 +469,7 @@ func handleAnthropicChatCompletionStreaming(
 					response.ExtraFields.RawResponse = eventData
 				}
 
-				processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 				if isLastChunk {
 					break
 				}
@@ -496,7 +496,7 @@ func handleAnthropicChatCompletionStreaming(
 		} else {
 			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerType, modelName)
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
+			handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
 		}
 	}()
 
@@ -506,7 +506,7 @@ func handleAnthropicChatCompletionStreaming(
 // Responses performs a chat completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
@@ -533,7 +533,7 @@ func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Ke
 	}
 
 	// Create final response
-	bifrostResponse := response.ToResponsesBifrostResponse()
+	bifrostResponse := response.ToBifrostResponsesResponse()
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
@@ -643,7 +643,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 		lastChunkTime := startTime
 
 		// Track minimal state needed for response format
-		var usage *schemas.LLMUsage
+		var usage *schemas.ResponsesResponseUsage
 
 		// Track SSE event parsing state
 		var eventType string
@@ -679,16 +679,16 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 			}
 
 			if chunkIndex == 0 {
-				sendCreatedEventResponsesChunk(ctx, postHookRunner, provider.GetProviderKey(), request.Model, startTime, responseChan, provider.logger)
-				sendInProgressEventResponsesChunk(ctx, postHookRunner, provider.GetProviderKey(), request.Model, startTime, responseChan, provider.logger)
+				sendCreatedEventResponsesChunk(ctx, postHookRunner, provider.GetProviderKey(), request.Model, startTime, responseChan)
+				sendInProgressEventResponsesChunk(ctx, postHookRunner, provider.GetProviderKey(), request.Model, startTime, responseChan)
 				chunkIndex = 2
 			}
 
 			if event.Usage != nil {
-				usage = &schemas.LLMUsage{
-					PromptTokens:     event.Usage.InputTokens,
-					CompletionTokens: event.Usage.OutputTokens,
-					TotalTokens:      event.Usage.InputTokens + event.Usage.OutputTokens,
+				usage = &schemas.ResponsesResponseUsage{
+					InputTokens:  event.Usage.InputTokens,
+					OutputTokens: event.Usage.OutputTokens,
+					TotalTokens:  event.Usage.InputTokens + event.Usage.OutputTokens,
 				}
 			}
 
@@ -709,27 +709,17 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 				}
 
 				if isLastChunk {
-					if response.ResponsesStreamResponse == nil {
-						response.ResponsesStreamResponse = &schemas.ResponsesStreamResponse{
-							Response: &schemas.ResponsesStreamResponseStruct{},
-						}
-					} else if response.ResponsesStreamResponse.Response == nil {
-						response.ResponsesStreamResponse.Response = &schemas.ResponsesStreamResponseStruct{}
+					if response.Response == nil {
+						response.Response = &schemas.BifrostResponsesResponse{}
 					}
 					if usage != nil {
-						response.ResponsesStreamResponse.Response.Usage = &schemas.ResponsesResponseUsage{
-							ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{
-								InputTokens:  usage.PromptTokens,
-								OutputTokens: usage.CompletionTokens,
-							},
-							TotalTokens: usage.TotalTokens,
-						}
+						response.Response.Usage = usage
 					}
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-					handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
+					handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(nil, nil, response, nil, nil), postHookRunner, responseChan)
 					break
 				}
-				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
 			}
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -757,11 +747,11 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 }
 
 // Embedding is not supported by the Anthropic provider.
-func (provider *AnthropicProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "anthropic")
 }
 
-func (provider *AnthropicProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "anthropic")
 }
 
@@ -769,7 +759,7 @@ func (provider *AnthropicProvider) SpeechStream(ctx context.Context, postHookRun
 	return nil, newUnsupportedOperationError("speech stream", "anthropic")
 }
 
-func (provider *AnthropicProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *AnthropicProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "anthropic")
 }
 

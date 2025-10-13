@@ -46,52 +46,52 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 }
 
 // ToBifrostRequest converts an Anthropic text request back to Bifrost format
-func (r *AnthropicTextRequest) ToBifrostRequest() *schemas.BifrostTextCompletionRequest {
-	if r == nil {
+func (request *AnthropicTextRequest) ToBifrostRequest() *schemas.BifrostTextCompletionRequest {
+	if request == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(r.Model, schemas.Anthropic)
+	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostTextCompletionRequest{
 		Provider: provider,
 		Model:    model,
 		Input: &schemas.TextCompletionInput{
-			PromptStr: &r.Prompt,
+			PromptStr: &request.Prompt,
 		},
 		Params: &schemas.TextCompletionParameters{
-			MaxTokens:   &r.MaxTokensToSample,
-			Temperature: r.Temperature,
-			TopP:        r.TopP,
-			Stop:        r.StopSequences,
+			MaxTokens:   &request.MaxTokensToSample,
+			Temperature: request.Temperature,
+			TopP:        request.TopP,
+			Stop:        request.StopSequences,
 		},
 	}
 
 	// Add extra params if present
-	if r.TopK != nil {
+	if request.TopK != nil {
 		bifrostReq.Params.ExtraParams = map[string]interface{}{
-			"top_k": *r.TopK,
+			"top_k": *request.TopK,
 		}
 	}
 
 	return bifrostReq
 }
 
-func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostResponse {
+func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostTextCompletionResponse {
 	if response == nil {
 		return nil
 	}
-	return &schemas.BifrostResponse{
+	return &schemas.BifrostTextCompletionResponse{
 		ID: response.ID,
-		Choices: []schemas.BifrostChatResponseChoice{
+		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index: 0,
-				BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
+				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
 					Text: &response.Completion,
 				},
 			},
 		},
-		Usage: &schemas.LLMUsage{
+		Usage: &schemas.BifrostLLMUsage{
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
@@ -105,7 +105,7 @@ func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostRespo
 }
 
 // ToAnthropicTextCompletionResponse converts a BifrostResponse back to Anthropic text completion format
-func ToAnthropicTextCompletionResponse(bifrostResp *schemas.BifrostResponse) *AnthropicTextResponse {
+func ToAnthropicTextCompletionResponse(bifrostResp *schemas.BifrostTextCompletionResponse) *AnthropicTextResponse {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -120,8 +120,8 @@ func ToAnthropicTextCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 	if len(bifrostResp.Choices) > 0 {
 		choice := bifrostResp.Choices[0] // Anthropic text API typically returns one choice
 
-		if choice.BifrostTextCompletionResponseChoice != nil && choice.BifrostTextCompletionResponseChoice.Text != nil {
-			anthropicResp.Completion = *choice.BifrostTextCompletionResponseChoice.Text
+		if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
+			anthropicResp.Completion = *choice.TextCompletionResponseChoice.Text
 		}
 	}
 

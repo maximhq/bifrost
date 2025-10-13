@@ -5,6 +5,7 @@ package handlers
 import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
@@ -15,14 +16,14 @@ type IntegrationHandler struct {
 }
 
 // NewIntegrationHandler creates a new integration handler instance
-func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *IntegrationHandler {
+func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *IntegrationHandler {
 	// Initialize all available integration routers
 	extensions := []integrations.ExtensionRouter{
-		integrations.NewOpenAIRouter(client, handlerStore),
-		integrations.NewAnthropicRouter(client, handlerStore),
-		integrations.NewGenAIRouter(client, handlerStore),
-		integrations.NewLiteLLMRouter(client, handlerStore),
-		integrations.NewLangChainRouter(client, handlerStore),
+		integrations.NewOpenAIRouter(client, handlerStore, logger),
+		integrations.NewAnthropicRouter(client, handlerStore, logger),
+		integrations.NewGenAIRouter(client, handlerStore, logger),
+		integrations.NewLiteLLMRouter(client, handlerStore, logger),
+		integrations.NewLangChainRouter(client, handlerStore, logger),
 	}
 
 	return &IntegrationHandler{

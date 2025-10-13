@@ -45,8 +45,28 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "paris")                                   // Should mention Paris as the capital
 		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{"berlin", "london", "madrid"}...) // Common wrong answers
 
-		// Create operations for both Chat Completions and Responses API
-		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		// Create Chat Completions API retry config
+		chatRetryConfig := ChatRetryConfig{
+			MaxAttempts: retryConfig.MaxAttempts,
+			BaseDelay:   retryConfig.BaseDelay,
+			MaxDelay:    retryConfig.MaxDelay,
+			Conditions:  []ChatRetryCondition{}, // Add specific chat retry conditions as needed
+			OnRetry:     retryConfig.OnRetry,
+			OnFinalFail: retryConfig.OnFinalFail,
+		}
+
+		// Create Responses API retry config
+		responsesRetryConfig := ResponsesRetryConfig{
+			MaxAttempts: retryConfig.MaxAttempts,
+			BaseDelay:   retryConfig.BaseDelay,
+			MaxDelay:    retryConfig.MaxDelay,
+			Conditions:  []ResponsesRetryCondition{}, // Add specific responses retry conditions as needed
+			OnRetry:     retryConfig.OnRetry,
+			OnFinalFail: retryConfig.OnFinalFail,
+		}
+
+		// Test Chat Completions API
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -55,10 +75,25 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 					MaxCompletionTokens: bifrost.Ptr(150),
 				},
 			}
-			return client.ChatCompletionRequest(ctx, chatReq)
+			response, err := client.ChatCompletionRequest(ctx, chatReq)
+			if err != nil {
+				return nil, err
+			}
+			if response != nil {
+				return response, nil
+			}
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: "No chat response returned",
+				},
+			}
 		}
 
-		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatResponse, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "SimpleChat_Chat", chatOperation)
+
+		// Test Responses API
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -67,42 +102,45 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 					MaxOutputTokens: bifrost.Ptr(150),
 				},
 			}
-			return client.ResponsesRequest(ctx, responsesReq)
+			response, err := client.ResponsesRequest(ctx, responsesReq)
+			if err != nil {
+				return nil, err
+			}
+			if response != nil {
+				return response, nil
+			}
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: "No responses response returned",
+				},
+			}
 		}
 
-		// Execute dual API test - passes only if BOTH APIs succeed
-		result := WithDualAPITestRetry(t,
-			retryConfig,
-			retryContext,
-			expectations,
-			"SimpleChat",
-			chatOperation,
-			responsesOperation)
+		responsesResponse, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "SimpleChat_Responses", responsesOperation)
 
-		// Validate both APIs succeeded
-		if !result.BothSucceeded {
-			var errors []string
-			if result.ChatCompletionsError != nil {
-				errors = append(errors, "Chat Completions: "+GetErrorMessage(result.ChatCompletionsError))
-			}
-			if result.ResponsesAPIError != nil {
-				errors = append(errors, "Responses API: "+GetErrorMessage(result.ResponsesAPIError))
-			}
-			if len(errors) == 0 {
-				errors = append(errors, "One or both APIs failed validation (see logs above)")
-			}
-			t.Fatalf("❌ SimpleChat dual API test failed: %v", errors)
+		// Check that both APIs succeeded
+		if chatError != nil {
+			t.Errorf("❌ Chat Completions API failed: %s", GetErrorMessage(chatError))
+		}
+		if responsesError != nil {
+			t.Errorf("❌ Responses API failed: %s", GetErrorMessage(responsesError))
 		}
 
 		// Log results from both APIs
-		if result.ChatCompletionsResponse != nil {
-			chatContent := GetResultContent(result.ChatCompletionsResponse)
+		if chatResponse != nil {
+			chatContent := GetChatContent(chatResponse)
 			t.Logf("✅ Chat Completions API result: %s", chatContent)
 		}
 
-		if result.ResponsesAPIResponse != nil {
-			responsesContent := GetResultContent(result.ResponsesAPIResponse)
+		if responsesResponse != nil {
+			responsesContent := GetResponsesContent(responsesResponse)
 			t.Logf("✅ Responses API result: %s", responsesContent)
+		}
+
+		// Fail test if either API failed
+		if chatError != nil || responsesError != nil {
+			t.Fatalf("❌ SimpleChat test failed - one or both APIs failed")
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed SimpleChat test!")

@@ -776,139 +776,128 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 // RESPONSE CONVERSION METHODS
 // =============================================================================
 
-// ToResponsesOnly converts the BifrostResponse to use only Responses API format
-// This converts Chat-style fields (Choices) to embedded ResponsesResponse format
-func (br *BifrostResponse) ToResponsesOnly() {
-	// If ResponsesResponse already exists, keep it and clear Chat fields
-	if br.ResponsesResponse != nil {
-		br.Choices = nil
-		return
+// ToBifrostResponsesResponse converts the BifrostChatResponse to BifrostResponsesResponse format
+// This converts Chat-style fields (Choices) to Responses API format
+func (br *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesResponse {
+	if br == nil {
+		return nil
 	}
 
-	// Create ResponsesResponse from Chat fields
-	br.ResponsesResponse = &ResponsesResponse{
+	// Create new BifrostResponsesResponse from Chat fields
+	responsesResp := &BifrostResponsesResponse{
 		CreatedAt: br.Created,
 	}
-
-	br.Created = 0
 
 	// Convert Choices to Output messages
 	var outputMessages []ResponsesMessage
 	for _, choice := range br.Choices {
-		if choice.BifrostNonStreamResponseChoice != nil {
+		if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
 			// Convert ChatMessage to ResponsesMessages
-			responsesMessages := choice.BifrostNonStreamResponseChoice.Message.ToResponsesMessages()
+			responsesMessages := choice.ChatNonStreamResponseChoice.Message.ToResponsesMessages()
 			outputMessages = append(outputMessages, responsesMessages...)
 		}
 		// Note: Stream choices would need different handling if needed
 	}
 
 	if len(outputMessages) > 0 {
-		br.ResponsesResponse.Output = outputMessages
+		responsesResp.Output = outputMessages
 	}
 
 	// Convert Usage if needed
 	if br.Usage != nil {
-		if br.Usage.ResponsesExtendedResponseUsage == nil {
-			br.Usage.ResponsesExtendedResponseUsage = &ResponsesExtendedResponseUsage{
-				InputTokens:  br.Usage.PromptTokens,
-				OutputTokens: br.Usage.CompletionTokens,
-			}
+		responsesResp.Usage = &ResponsesResponseUsage{
+			InputTokens:  br.Usage.PromptTokens,
+			OutputTokens: br.Usage.CompletionTokens,
+			TotalTokens:  br.Usage.TotalTokens,
+		}
 
-			if br.Usage.TotalTokens == 0 {
-				br.Usage.TotalTokens = br.Usage.PromptTokens + br.Usage.CompletionTokens
-			}
-
-			br.Usage.PromptTokens = 0
-			br.Usage.CompletionTokens = 0
+		if responsesResp.Usage.TotalTokens == 0 {
+			responsesResp.Usage.TotalTokens = br.Usage.PromptTokens + br.Usage.CompletionTokens
 		}
 	}
 
-	// Clear Chat fields after conversion
-	br.Choices = nil
-	br.Object = "response"
-	br.ExtraFields.RequestType = ResponsesRequest
+	// Copy other relevant fields
+	responsesResp.ExtraFields = br.ExtraFields
+	responsesResp.ExtraFields.RequestType = ResponsesRequest
+
+	return responsesResp
 }
 
-// ToChatOnly converts the BifrostResponse to use only Chat API format
-// This converts embedded ResponsesResponse format to Chat-style fields (Choices)
-func (br *BifrostResponse) ToChatOnly() {
-	if br == nil {
-		return
+// ToBifrostChatResponse converts a BifrostResponsesResponse to BifrostChatResponse format
+// This converts Responses API format to Chat-style fields (Choices)
+func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostChatResponse {
+	if responsesResp == nil {
+		return nil
 	}
 
-	// If Choices already exist, keep them and clear ResponsesResponse
-	if len(br.Choices) > 0 {
-		br.ResponsesResponse = nil
-		return
+	// Create new BifrostChatResponse from Responses fields
+	chatResp := &BifrostChatResponse{
+		Created: responsesResp.CreatedAt,
+		Object:  "chat.completion",
 	}
 
 	// Create Choices from ResponsesResponse
-	if br.ResponsesResponse != nil && len(br.ResponsesResponse.Output) > 0 {
+	if len(responsesResp.Output) > 0 {
 		// Convert ResponsesMessages back to ChatMessages
-		chatMessages := ToChatMessages(br.ResponsesResponse.Output)
+		chatMessages := ToChatMessages(responsesResp.Output)
 
 		// Create choices from chat messages
-		choices := make([]BifrostChatResponseChoice, 0, len(chatMessages))
+		choices := make([]BifrostResponseChoice, 0, len(chatMessages))
 		for i, chatMsg := range chatMessages {
-			choice := BifrostChatResponseChoice{
+			choice := BifrostResponseChoice{
 				Index: i,
-				BifrostNonStreamResponseChoice: &BifrostNonStreamResponseChoice{
+				ChatNonStreamResponseChoice: &ChatNonStreamResponseChoice{
 					Message: &chatMsg,
 				},
 			}
 			choices = append(choices, choice)
 		}
 
-		br.Choices = choices
-
-		// Update Created timestamp from ResponsesResponse
-		if br.ResponsesResponse.CreatedAt > 0 {
-			br.Created = br.ResponsesResponse.CreatedAt
-		}
+		chatResp.Choices = choices
 	}
 
 	// Convert Usage if needed
-	if br.Usage != nil && br.Usage.ResponsesExtendedResponseUsage != nil {
+	if responsesResp.Usage != nil {
 		// Map Responses usage to Chat usage
-		br.Usage.PromptTokens = br.Usage.ResponsesExtendedResponseUsage.InputTokens
-		br.Usage.CompletionTokens = br.Usage.ResponsesExtendedResponseUsage.OutputTokens
-		if br.Usage.TotalTokens == 0 {
-			br.Usage.TotalTokens = br.Usage.PromptTokens + br.Usage.CompletionTokens
+		chatResp.Usage = &BifrostLLMUsage{
+			PromptTokens:     responsesResp.Usage.InputTokens,
+			CompletionTokens: responsesResp.Usage.OutputTokens,
+			TotalTokens:      responsesResp.Usage.TotalTokens,
+		}
+
+		if chatResp.Usage.TotalTokens == 0 {
+			chatResp.Usage.TotalTokens = chatResp.Usage.PromptTokens + chatResp.Usage.CompletionTokens
 		}
 	}
 
-	// Clear ResponsesResponse after conversion
-	br.ResponsesResponse = nil
+	// Copy other relevant fields
+	chatResp.ExtraFields = responsesResp.ExtraFields
+	chatResp.ExtraFields.RequestType = ChatCompletionRequest
+
+	return chatResp
 }
 
-// ToResponsesStream converts the BifrostResponse from Chat streaming format to Responses streaming format
-// This converts Chat stream chunks (Choices with Deltas) to ResponsesStreamResponse format
-func (br *BifrostResponse) ToResponsesStream() {
+// ToBifrostResponsesStreamResponse converts the BifrostChatResponse from Chat streaming format to Responses streaming format
+// This converts Chat stream chunks (Choices with Deltas) to BifrostResponsesStreamResponse format
+func (br *BifrostChatResponse) ToBifrostResponsesStreamResponse() *BifrostResponsesStreamResponse {
 	if br == nil {
-		return
-	}
-
-	// If ResponsesStreamResponse already exists, keep it and clear Chat fields
-	if br.ResponsesStreamResponse != nil {
-		br.Choices = nil
-		return
+		return nil
 	}
 
 	// If no choices to convert, return early
 	if len(br.Choices) == 0 {
-		return
+		return nil
 	}
 
-	// Convert first streaming choice to ResponsesStreamResponse
+	// Convert first streaming choice to BifrostResponsesStreamResponse
 	// Note: Chat API typically has one choice per chunk in streaming
 	choice := br.Choices[0]
-	if choice.BifrostStreamResponseChoice == nil || choice.BifrostStreamResponseChoice.Delta == nil {
-		return
+	if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
+		return nil
 	}
 
-	delta := choice.BifrostStreamResponseChoice.Delta
-	streamResp := &ResponsesStreamResponse{
+	delta := choice.ChatStreamResponseChoice.Delta
+	streamResp := &BifrostResponsesStreamResponse{
 		SequenceNumber: br.ExtraFields.ChunkIndex,
 		ContentIndex:   Ptr(0),
 		OutputIndex:    &choice.Index,
@@ -985,13 +974,11 @@ func (br *BifrostResponse) ToResponsesStream() {
 
 			// Add usage information if present in the response
 			if br.Usage != nil {
-				streamResp.Response = &ResponsesStreamResponseStruct{
+				streamResp.Response = &BifrostResponsesResponse{
 					Usage: &ResponsesResponseUsage{
-						ResponsesExtendedResponseUsage: &ResponsesExtendedResponseUsage{
-							InputTokens:  br.Usage.PromptTokens,
-							OutputTokens: br.Usage.CompletionTokens,
-						},
-						TotalTokens: br.Usage.TotalTokens,
+						InputTokens:  br.Usage.PromptTokens,
+						OutputTokens: br.Usage.CompletionTokens,
+						TotalTokens:  br.Usage.TotalTokens,
 					},
 				}
 			}
@@ -1002,7 +989,7 @@ func (br *BifrostResponse) ToResponsesStream() {
 				streamResp.Delta = delta.Content
 			} else {
 				// Unknown delta type, return without setting ResponsesStreamResponse
-				return
+				return nil
 			}
 		}
 	}
@@ -1023,9 +1010,6 @@ func (br *BifrostResponse) ToResponsesStream() {
 		}
 	}
 
-	// Set the ResponsesStreamResponse and clear Chat fields
-	br.ResponsesStreamResponse = streamResp
-	br.ExtraFields.RequestType = ResponsesStreamRequest
-	br.Choices = nil
-	br.Object = ""
+	// Return the created stream response
+	return streamResp
 }

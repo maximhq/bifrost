@@ -193,7 +193,7 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 		logger.Warn("span not found in ongoing spans")
 		return resp, bifrostErr, nil
 	}
-	requestType, _, _ := bifrost.GetRequestFields(resp, bifrostErr)
+	requestType, _, _ := bifrost.GetResponseFields(resp, bifrostErr)
 	if span, ok := span.(*ResourceSpan); ok {
 		// We handle streaming responses differently, we will use the accumulator to process the response and then emit the final response
 		if bifrost.IsStreamRequestType(requestType) {

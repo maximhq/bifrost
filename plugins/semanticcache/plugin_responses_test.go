@@ -32,12 +32,12 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.Output) == 0 {
+	if response1 == nil || len(response1.ResponsesResponse.Output) == 0 {
 		t.Fatal("First Responses response is invalid")
 	}
 
 	t.Logf("First request completed in %v", duration1)
-	t.Logf("Response contains %d output messages", len(response1.Output))
+	t.Logf("Response contains %d output messages", len(response1.ResponsesResponse.Output))
 
 	// Wait for cache to be written
 	WaitForCache()
@@ -60,7 +60,7 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 	t.Logf("Second request completed in %v", duration2)
 
 	// Verify cache hit
-	AssertCacheHit(t, response2, string(CacheTypeDirect))
+	AssertCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}, string(CacheTypeDirect))
 
 	// Performance comparison
 	t.Logf("Performance Summary:")
@@ -144,10 +144,10 @@ func TestResponsesAPIDifferentParameters(t *testing.T) {
 			}
 
 			if tt.shouldCache {
-				AssertCacheHit(t, response2, "direct")
+				AssertCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}, "direct")
 				t.Log("✓ Parameters match: cache hit as expected")
 			} else {
-				AssertNoCacheHit(t, response2)
+				AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2})
 				t.Log("✓ Parameters differ: no cache hit as expected")
 			}
 		})
@@ -185,7 +185,7 @@ func TestResponsesAPISemanticMatching(t *testing.T) {
 	}
 
 	// This should be a semantic cache hit
-	AssertCacheHit(t, response2, "semantic")
+	AssertCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}, "semantic")
 	t.Log("✓ Semantic cache hit with similar content")
 }
 
@@ -232,7 +232,7 @@ func TestResponsesAPIWithInstructions(t *testing.T) {
 	}
 
 	// Should be a cache hit
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}, "direct")
 	t.Log("✓ Responses API with instructions cached correctly")
 }
 
@@ -265,7 +265,7 @@ func TestResponsesAPICacheExpiration(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}, "direct")
 
 	t.Logf("Waiting for TTL expiration (%v)...", shortTTL)
 	time.Sleep(shortTTL + 2*time.Second) // Wait for TTL to expire
@@ -360,12 +360,12 @@ func TestResponsesAPIStreaming(t *testing.T) {
 		t.Fatalf("Streaming Responses request failed: %v", err2)
 	}
 
-	var streamResponses []schemas.BifrostResponse
+	var streamResponses []schemas.BifrostResponsesStreamResponse
 	for streamMsg := range stream {
 		if streamMsg.BifrostError != nil {
 			t.Fatalf("Error in Responses stream: %v", streamMsg.BifrostError)
 		}
-		streamResponses = append(streamResponses, *streamMsg.BifrostResponse)
+		streamResponses = append(streamResponses, *streamMsg.BifrostResponsesStreamResponse)
 	}
 
 	if len(streamResponses) == 0 {
@@ -433,6 +433,6 @@ func TestResponsesAPIComplexParameters(t *testing.T) {
 	}
 
 	// Should be a cache hit
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}, "direct")
 	t.Log("✓ Responses API with complex parameters cached correctly")
 }

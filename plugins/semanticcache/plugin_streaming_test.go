@@ -30,13 +30,13 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	var responses1 []schemas.BifrostResponse
+	var responses1 []schemas.BifrostChatResponse
 	for streamMsg := range stream1 {
 		if streamMsg.BifrostError != nil {
 			t.Fatalf("Error in first stream: %v", streamMsg.BifrostError)
 		}
-		if streamMsg.BifrostResponse != nil {
-			responses1 = append(responses1, *streamMsg.BifrostResponse)
+		if streamMsg.BifrostChatResponse != nil {
+			responses1 = append(responses1, *streamMsg.BifrostChatResponse)
 		}
 	}
 	duration1 := time.Since(start1)
@@ -59,13 +59,13 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 		t.Fatalf("Second streaming request failed: %v", err2)
 	}
 
-	var responses2 []schemas.BifrostResponse
+	var responses2 []schemas.BifrostChatResponse
 	for streamMsg := range stream2 {
 		if streamMsg.BifrostError != nil {
 			t.Fatalf("Error in second stream: %v", streamMsg.BifrostError)
 		}
-		if streamMsg.BifrostResponse != nil {
-			responses2 = append(responses2, *streamMsg.BifrostResponse)
+		if streamMsg.BifrostChatResponse != nil {
+			responses2 = append(responses2, *streamMsg.BifrostChatResponse)
 		}
 	}
 	duration2 := time.Since(start2)
@@ -140,13 +140,13 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 		t.Fatalf("Streaming request failed: %v", err2)
 	}
 
-	var streamResponses []schemas.BifrostResponse
+	var streamResponses []schemas.BifrostChatResponse
 	for streamMsg := range stream {
 		if streamMsg.BifrostError != nil {
 			t.Fatalf("Error in stream: %v", streamMsg.BifrostError)
 		}
-		if streamMsg.BifrostResponse != nil {
-			streamResponses = append(streamResponses, *streamMsg.BifrostResponse)
+		if streamMsg.BifrostChatResponse != nil {
+			streamResponses = append(streamResponses, *streamMsg.BifrostChatResponse)
 		}
 	}
 
@@ -202,13 +202,13 @@ func TestStreamingChunkOrdering(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	var originalChunks []schemas.BifrostResponse
+	var originalChunks []schemas.BifrostChatResponse
 	for streamMsg := range stream1 {
 		if streamMsg.BifrostError != nil {
 			t.Fatalf("Error in first stream: %v", streamMsg.BifrostError)
 		}
-		if streamMsg.BifrostResponse != nil {
-			originalChunks = append(originalChunks, *streamMsg.BifrostResponse)
+		if streamMsg.BifrostChatResponse != nil {
+			originalChunks = append(originalChunks, *streamMsg.BifrostChatResponse)
 		}
 	}
 
@@ -226,13 +226,13 @@ func TestStreamingChunkOrdering(t *testing.T) {
 		t.Fatalf("Second streaming request failed: %v", err2)
 	}
 
-	var cachedChunks []schemas.BifrostResponse
+	var cachedChunks []schemas.BifrostChatResponse
 	for streamMsg := range stream2 {
 		if streamMsg.BifrostError != nil {
 			t.Fatalf("Error in second stream: %v", streamMsg.BifrostError)
 		}
-		if streamMsg.BifrostResponse != nil {
-			cachedChunks = append(cachedChunks, *streamMsg.BifrostResponse)
+		if streamMsg.BifrostChatResponse != nil {
+			cachedChunks = append(cachedChunks, *streamMsg.BifrostChatResponse)
 		}
 	}
 
@@ -253,7 +253,7 @@ func TestStreamingChunkOrdering(t *testing.T) {
 
 		// Only verify cache hit on the last chunk (where CacheDebug is set)
 		if i == len(cachedChunks)-1 {
-			AssertCacheHit(t, &cachedChunks[i], string(CacheTypeDirect))
+			AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: &cachedChunks[i]}, string(CacheTypeDirect))
 		}
 	}
 
@@ -317,7 +317,7 @@ func TestSpeechSynthesisStreaming(t *testing.T) {
 	t.Logf("Second speech request completed in %v", duration2)
 
 	// Check if second request was cached
-	AssertCacheHit(t, response2, string(CacheTypeDirect))
+	AssertCacheHit(t, &schemas.BifrostResponse{SpeechResponse: response2}, string(CacheTypeDirect))
 
 	// Performance comparison
 	t.Logf("Speech Synthesis Performance:")

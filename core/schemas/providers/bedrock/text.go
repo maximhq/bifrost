@@ -58,16 +58,16 @@ func ToBedrockTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionReq
 }
 
 // ToBifrostResponse converts a Bedrock Anthropic text response to Bifrost format
-func (response *BedrockAnthropicTextResponse) ToBifrostResponse() *schemas.BifrostResponse {
+func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() *schemas.BifrostTextCompletionResponse {
 	if response == nil {
 		return nil
 	}
 
-	return &schemas.BifrostResponse{
-		Choices: []schemas.BifrostChatResponseChoice{
+	return &schemas.BifrostTextCompletionResponse{
+		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index: 0,
-				BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
+				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
 					Text: &response.Completion,
 				},
 				FinishReason: &response.StopReason,
@@ -81,23 +81,23 @@ func (response *BedrockAnthropicTextResponse) ToBifrostResponse() *schemas.Bifro
 }
 
 // ToBifrostResponse converts a Bedrock Mistral text response to Bifrost format
-func (response *BedrockMistralTextResponse) ToBifrostResponse() *schemas.BifrostResponse {
+func (response *BedrockMistralTextResponse) ToBifrostTextCompletionResponse() *schemas.BifrostTextCompletionResponse {
 	if response == nil {
 		return nil
 	}
 
-	var choices []schemas.BifrostChatResponseChoice
+	var choices []schemas.BifrostResponseChoice
 	for i, output := range response.Outputs {
-		choices = append(choices, schemas.BifrostChatResponseChoice{
+		choices = append(choices, schemas.BifrostResponseChoice{
 			Index: i,
-			BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
+			TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
 				Text: &output.Text,
 			},
 			FinishReason: &output.StopReason,
 		})
 	}
 
-	return &schemas.BifrostResponse{
+	return &schemas.BifrostTextCompletionResponse{
 		Choices: choices,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.TextCompletionRequest,

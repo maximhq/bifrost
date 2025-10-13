@@ -118,64 +118,85 @@ func (pm *PricingManager) CalculateCost(result *schemas.BifrostResponse) float64
 		return 0.0
 	}
 
-	var usage *schemas.LLMUsage
+	var usage *schemas.BifrostLLMUsage
 	var audioSeconds *int
-	var audioTokenDetails *schemas.AudioTokenDetails
+	var audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails
 
 	//TODO: Detect cache and batch operations
 	isCacheRead := false
 	isBatch := false
 
-	// Check main usage field
-	if result.Usage != nil {
-		usage = result.Usage
-	} else if result.Speech != nil && result.Speech.Usage != nil {
-		// For speech synthesis, create LLMUsage from AudioLLMUsage
-		usage = &schemas.LLMUsage{
-			PromptTokens:     result.Speech.Usage.InputTokens,
-			CompletionTokens: 0, // Speech doesn't have completion tokens
-			TotalTokens:      result.Speech.Usage.TotalTokens,
+	switch {
+	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+		usage = result.TextCompletionResponse.Usage
+	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+		usage = result.ChatResponse.Usage
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{
+			PromptTokens:     result.ResponsesResponse.Usage.InputTokens,
+			CompletionTokens: result.ResponsesResponse.Usage.OutputTokens,
+			TotalTokens:      result.ResponsesResponse.Usage.TotalTokens,
 		}
-
-		// Extract audio token details if available
-		if result.Speech.Usage.InputTokensDetails != nil {
-			audioTokenDetails = result.Speech.Usage.InputTokensDetails
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{
+			PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
+			CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
+			TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
 		}
-	} else if result.Transcribe != nil && result.Transcribe.Usage != nil && result.Transcribe.Usage.TotalTokens != nil {
-		// For transcription, create LLMUsage from TranscriptionUsage
-		inputTokens := 0
-		outputTokens := 0
-		if result.Transcribe.Usage.InputTokens != nil {
-			inputTokens = *result.Transcribe.Usage.InputTokens
+	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+		usage = result.EmbeddingResponse.Usage
+	case result.SpeechResponse != nil:
+		return 0
+	case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{
+			PromptTokens:     result.SpeechStreamResponse.Usage.InputTokens,
+			CompletionTokens: result.SpeechStreamResponse.Usage.OutputTokens,
+			TotalTokens:      result.SpeechStreamResponse.Usage.TotalTokens,
 		}
-		if result.Transcribe.Usage.OutputTokens != nil {
-			outputTokens = *result.Transcribe.Usage.OutputTokens
+	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{}
+		if result.TranscriptionResponse.Usage.InputTokens != nil {
+			usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
 		}
-		usage = &schemas.LLMUsage{
-			PromptTokens:     inputTokens,
-			CompletionTokens: outputTokens,
-			TotalTokens:      int(*result.Transcribe.Usage.TotalTokens),
+		if result.TranscriptionResponse.Usage.OutputTokens != nil {
+			usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
 		}
-
-		// Extract audio duration if available (for duration-based pricing)
-		if result.Transcribe.Usage.Seconds != nil {
-			audioSeconds = result.Transcribe.Usage.Seconds
+		if result.TranscriptionResponse.Usage.TotalTokens != nil {
+			usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
+		} else {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
-
-		// Extract audio token details if available
-		if result.Transcribe.Usage.InputTokenDetails != nil {
-			audioTokenDetails = result.Transcribe.Usage.InputTokenDetails
+		if result.TranscriptionResponse.Usage.InputTokenDetails != nil {
+			audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{}
+			audioTokenDetails.AudioTokens = result.TranscriptionResponse.Usage.InputTokenDetails.AudioTokens
+			audioTokenDetails.TextTokens = result.TranscriptionResponse.Usage.InputTokenDetails.TextTokens
 		}
-	} else if result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil {
-		usage = &schemas.LLMUsage{
-			ResponsesExtendedResponseUsage: result.ResponsesStreamResponse.Response.Usage.ResponsesExtendedResponseUsage,
-			TotalTokens:                    result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+	case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{}
+		if result.TranscriptionStreamResponse.Usage.InputTokens != nil {
+			usage.PromptTokens = *result.TranscriptionStreamResponse.Usage.InputTokens
 		}
+		if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
+			usage.CompletionTokens = *result.TranscriptionStreamResponse.Usage.OutputTokens
+		}
+		if result.TranscriptionStreamResponse.Usage.TotalTokens != nil {
+			usage.TotalTokens = *result.TranscriptionStreamResponse.Usage.TotalTokens
+		} else {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
+		if result.TranscriptionStreamResponse.Usage.InputTokenDetails != nil {
+			audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{}
+			audioTokenDetails.AudioTokens = result.TranscriptionStreamResponse.Usage.InputTokenDetails.AudioTokens
+			audioTokenDetails.TextTokens = result.TranscriptionStreamResponse.Usage.InputTokenDetails.TextTokens
+		}
+	default:
+		return 0
 	}
 
 	cost := 0.0
 	if usage != nil || audioSeconds != nil || audioTokenDetails != nil {
-		cost = pm.CalculateCostFromUsage(string(result.ExtraFields.Provider), result.ExtraFields.ModelRequested, usage, result.ExtraFields.RequestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
+		extraFields := result.GetExtraFields()
+		cost = pm.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, usage, extraFields.RequestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
 	}
 
 	return cost
@@ -185,13 +206,13 @@ func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostRes
 	if result == nil {
 		return 0.0
 	}
-	cacheDebug := result.ExtraFields.CacheDebug
+	cacheDebug := result.GetExtraFields().CacheDebug
 	if cacheDebug != nil {
 		if cacheDebug.CacheHit {
 			if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
 				return 0
 			} else if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				return pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.LLMUsage{
+				return pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
@@ -204,7 +225,7 @@ func (pm *PricingManager) CalculateCostWithCacheDebug(result *schemas.BifrostRes
 			baseCost := pm.CalculateCost(result)
 			var semanticCacheCost float64
 			if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				semanticCacheCost = pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.LLMUsage{
+				semanticCacheCost = pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
@@ -233,7 +254,7 @@ func (pm *PricingManager) Cleanup() error {
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
-func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, usage *schemas.LLMUsage, requestType schemas.RequestType, isCacheRead bool, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.AudioTokenDetails) float64 {
+func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isCacheRead bool, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
 	// Allow audio-only flows by only returning early if we have no usage data at all
 	if usage == nil && audioSeconds == nil && audioTokenDetails == nil {
 		return 0.0
@@ -249,24 +270,18 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 	var inputCost, outputCost float64
 
 	// Helper function to safely get token counts with zero defaults
-	safeTokenCount := func(usage *schemas.LLMUsage, getter func(*schemas.LLMUsage) int) int {
+	safeTokenCount := func(usage *schemas.BifrostLLMUsage, getter func(*schemas.BifrostLLMUsage) int) int {
 		if usage == nil {
 			return 0
 		}
 		return getter(usage)
 	}
 
-	totalTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int { return u.TotalTokens })
-	promptTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int {
-		if u.ResponsesExtendedResponseUsage != nil {
-			return u.ResponsesExtendedResponseUsage.InputTokens
-		}
+	totalTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int { return u.TotalTokens })
+	promptTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
 		return u.PromptTokens
 	})
-	completionTokens := safeTokenCount(usage, func(u *schemas.LLMUsage) int {
-		if u.ResponsesExtendedResponseUsage != nil {
-			return u.ResponsesExtendedResponseUsage.OutputTokens
-		}
+	completionTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
 		return u.CompletionTokens
 	})
 

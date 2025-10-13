@@ -97,7 +97,7 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the Cohere provider.
 // Returns an error indicating that text completion is not supported.
-func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "cohere")
 }
 
@@ -106,6 +106,44 @@ func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *CohereProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion stream", "cohere")
+}
+
+// ChatCompletion performs a chat completion request to the Cohere API using v2 converter.
+// It formats the request, sends it to Cohere, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	// Check if chat completion is allowed
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Convert to Cohere v2 request
+	reqBody := cohere.ToCohereChatCompletionRequest(request)
+	if reqBody == nil {
+		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
+	}
+
+	cohereResponse, rawResponse, latency, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert Cohere v2 response to Bifrost response
+	reponse := cohereResponse.ToBifrostChatResponse()
+
+	reponse.Model = request.Model
+	reponse.ExtraFields.Provider = providerName
+	reponse.ExtraFields.ModelRequested = request.Model
+	reponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
+	reponse.ExtraFields.Latency = latency.Milliseconds()
+
+	if provider.sendBackRawResponse {
+		reponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return reponse, nil
 }
 
 func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Context, reqBody *cohere.CohereChatRequest, key schemas.Key) (*cohere.CohereChatResponse, interface{}, time.Duration, *schemas.BifrostError) {
@@ -183,44 +221,6 @@ func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Co
 	}
 
 	return &cohereResponse, rawResponse, latency, nil
-}
-
-// ChatCompletion performs a chat completion request to the Cohere API using v2 converter.
-// It formats the request, sends it to Cohere, and processes the response.
-// Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	// Check if chat completion is allowed
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
-		return nil, err
-	}
-
-	providerName := provider.GetProviderKey()
-
-	// Convert to Cohere v2 request
-	reqBody := cohere.ToCohereChatCompletionRequest(request)
-	if reqBody == nil {
-		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
-	}
-
-	cohereResponse, rawResponse, latency, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert Cohere v2 response to Bifrost response
-	bifrostResponse := cohereResponse.ToBifrostResponse()
-
-	bifrostResponse.Model = request.Model
-	bifrostResponse.ExtraFields.Provider = providerName
-	bifrostResponse.ExtraFields.ModelRequested = request.Model
-	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	return bifrostResponse, nil
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Cohere API.
@@ -353,15 +353,15 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 				}
 
 				// Create base response with current responseID
-				response := &schemas.BifrostResponse{
+				response := &schemas.BifrostChatResponse{
 					ID:     responseID,
 					Object: "chat.completion.chunk",
 					Model:  request.Model,
-					Choices: []schemas.BifrostChatResponseChoice{
+					Choices: []schemas.BifrostResponseChoice{
 						{
 							Index: 0,
-							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-								Delta: &schemas.BifrostStreamDelta{},
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{},
 							},
 						},
 					},
@@ -378,18 +378,18 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 				switch event.Type {
 				case cohere.StreamEventMessageStart:
 					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.Role != nil {
-						response.Choices[0].BifrostStreamResponseChoice.Delta.Role = event.Delta.Message.Role
+						response.Choices[0].ChatStreamResponseChoice.Delta.Role = event.Delta.Message.Role
 					}
 
 				case cohere.StreamEventContentDelta:
 					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.Content != nil && event.Delta.Message.Content.Text != nil {
 						// Try to cast content to CohereStreamContent
-						response.Choices[0].BifrostStreamResponseChoice.Delta.Content = event.Delta.Message.Content.Text
+						response.Choices[0].ChatStreamResponseChoice.Delta.Content = event.Delta.Message.Content.Text
 					}
 
 				case cohere.StreamEventToolPlanDelta:
 					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.ToolPlan != nil {
-						response.Choices[0].BifrostStreamResponseChoice.Delta.Content = event.Delta.Message.ToolPlan
+						response.Choices[0].ChatStreamResponseChoice.Delta.Content = event.Delta.Message.ToolPlan
 					}
 
 				case cohere.StreamEventContentStart:
@@ -412,7 +412,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 							toolCall.Function.Arguments = cohereToolCall.Function.Arguments
 						}
 
-						response.Choices[0].BifrostStreamResponseChoice.Delta.ToolCalls = []schemas.ChatAssistantMessageToolCall{toolCall}
+						response.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls = []schemas.ChatAssistantMessageToolCall{toolCall}
 					}
 
 				case cohere.StreamEventMessageEnd:
@@ -425,7 +425,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 						// Set usage information
 						if event.Delta.Usage != nil {
-							usage := &schemas.LLMUsage{}
+							usage := &schemas.BifrostLLMUsage{}
 							if event.Delta.Usage.Tokens != nil {
 								if event.Delta.Usage.Tokens.InputTokens != nil {
 									usage.PromptTokens = int(*event.Delta.Usage.Tokens.InputTokens)
@@ -436,17 +436,6 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 								usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 							}
 							response.Usage = usage
-
-							// Set billed usage
-							if event.Delta.Usage.BilledUnits != nil {
-								response.ExtraFields.BilledUsage = &schemas.BilledLLMUsage{}
-								if event.Delta.Usage.BilledUnits.InputTokens != nil {
-									response.ExtraFields.BilledUsage.PromptTokens = event.Delta.Usage.BilledUnits.InputTokens
-								}
-								if event.Delta.Usage.BilledUnits.OutputTokens != nil {
-									response.ExtraFields.BilledUsage.CompletionTokens = event.Delta.Usage.BilledUnits.OutputTokens
-								}
-							}
 						}
 
 						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -465,7 +454,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					response.ExtraFields.RawResponse = jsonData
 				}
 
-				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 
 				// End stream after message-end
 				if event.Type == cohere.StreamEventMessageEnd {
@@ -483,7 +472,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	return responseChan, nil
 }
 
-func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed
 	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
@@ -503,19 +492,18 @@ func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, 
 	}
 
 	// Convert Cohere v2 response to Bifrost response
-	bifrostResponse := cohereResponse.ToResponsesBifrostResponse()
+	response := cohereResponse.ToResponsesBifrostResponsesResponse()
 
-	bifrostResponse.Model = request.Model
-	bifrostResponse.ExtraFields.Provider = providerName
-	bifrostResponse.ExtraFields.ModelRequested = request.Model
-	bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ResponsesRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
@@ -648,8 +636,8 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 			}
 
 			if chunkIndex == 0 {
-				sendCreatedEventResponsesChunk(ctx, postHookRunner, providerName, request.Model, startTime, responseChan, provider.logger)
-				sendInProgressEventResponsesChunk(ctx, postHookRunner, providerName, request.Model, startTime, responseChan, provider.logger)
+				sendCreatedEventResponsesChunk(ctx, postHookRunner, providerName, request.Model, startTime, responseChan)
+				sendInProgressEventResponsesChunk(ctx, postHookRunner, providerName, request.Model, startTime, responseChan)
 				chunkIndex = 2
 			}
 
@@ -663,16 +651,6 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 					Latency:        time.Since(lastChunkTime).Milliseconds(),
 				}
 
-				if event.Type == cohere.StreamEventMessageEnd && event.Delta != nil && event.Delta.Usage != nil && event.Delta.Usage.BilledUnits != nil {
-					response.ExtraFields.BilledUsage = &schemas.BilledLLMUsage{}
-					if event.Delta.Usage.BilledUnits.InputTokens != nil {
-						response.ExtraFields.BilledUsage.PromptTokens = event.Delta.Usage.BilledUnits.InputTokens
-					}
-					if event.Delta.Usage.BilledUnits.OutputTokens != nil {
-						response.ExtraFields.BilledUsage.CompletionTokens = event.Delta.Usage.BilledUnits.OutputTokens
-					}
-				}
-				
 				lastChunkTime = time.Now()
 				chunkIndex++
 
@@ -681,18 +659,14 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 				}
 
 				if isLastChunk {
-					if response.ResponsesStreamResponse == nil {
-						response.ResponsesStreamResponse = &schemas.ResponsesStreamResponse{
-							Response: &schemas.ResponsesStreamResponseStruct{},
-						}
-					} else if response.ResponsesStreamResponse.Response == nil {
-						response.ResponsesStreamResponse.Response = &schemas.ResponsesStreamResponseStruct{}
+					if response.Response == nil {
+						response.Response = &schemas.BifrostResponsesResponse{}
 					}
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-					handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
+					handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(nil, nil, response, nil, nil), postHookRunner, responseChan)
 					break
 				}
-				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
 			}
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -717,7 +691,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 
 // Embedding generates embeddings for the given input text(s) using the Cohere API.
 // Supports Cohere's embedding models and returns a BifrostResponse containing the embedding(s).
-func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed
 	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
@@ -783,23 +757,23 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 	}
 
 	// Create BifrostResponse
-	bifrostResponse := cohereResp.ToBifrostResponse()
+	response := cohereResp.ToBifrostEmbeddingResponse()
 
-	bifrostResponse.Model = request.Model
-	bifrostResponse.ExtraFields.Provider = providerName
-	bifrostResponse.ExtraFields.ModelRequested = request.Model
-	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	response.Model = request.Model
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.EmbeddingRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Only include RawResponse if sendBackRawResponse is enabled
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
-func (provider *CohereProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "cohere")
 }
 
@@ -807,7 +781,7 @@ func (provider *CohereProvider) SpeechStream(ctx context.Context, postHookRunner
 	return nil, newUnsupportedOperationError("speech stream", "cohere")
 }
 
-func (provider *CohereProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CohereProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "cohere")
 }
 

@@ -24,17 +24,17 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequ
 	return openaiReq
 }
 
-func (r *OpenAITextCompletionRequest) ToBifrostRequest() *schemas.BifrostTextCompletionRequest {
-	if r == nil {
+func (request *OpenAITextCompletionRequest) ToBifrostRequest() *schemas.BifrostTextCompletionRequest {
+	if request == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
 
 	return &schemas.BifrostTextCompletionRequest{
 		Provider: provider,
 		Model:    model,
-		Input:    r.Prompt,
-		Params:   &r.TextCompletionParameters,
+		Input:    request.Prompt,
+		Params:   &request.TextCompletionParameters,
 	}
 }

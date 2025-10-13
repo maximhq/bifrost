@@ -3,16 +3,16 @@ package openai
 import "github.com/maximhq/bifrost/core/schemas"
 
 // ToBifrostRequest converts an OpenAI transcription request to Bifrost format
-func (r *OpenAITranscriptionRequest) ToBifrostRequest() *schemas.BifrostTranscriptionRequest {
-	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+func (request *OpenAITranscriptionRequest) ToBifrostRequest() *schemas.BifrostTranscriptionRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
 
 	bifrostReq := &schemas.BifrostTranscriptionRequest{
 		Provider: provider,
 		Model:    model,
 		Input: &schemas.TranscriptionInput{
-			File: r.File,
+			File: request.File,
 		},
-		Params: &r.TranscriptionParameters,
+		Params: &request.TranscriptionParameters,
 	}
 
 	return bifrostReq

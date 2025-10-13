@@ -362,11 +362,13 @@ func getResponsesRequestParams(req *schemas.BifrostResponsesRequest) []*KeyValue
 
 // createResourceSpan creates a new resource span for a Bifrost request
 func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
+	provider, model, _ := req.GetRequestFields()
+
 	// preparing parameters
 	params := []*KeyValue{}
 	spanName := "span"
-	params = append(params, kvStr("gen_ai.provider.name", string(req.Provider)))
-	params = append(params, kvStr("gen_ai.request.model", req.Model))
+	params = append(params, kvStr("gen_ai.provider.name", string(provider)))
+	params = append(params, kvStr("gen_ai.request.model", model))
 	// Preparing parameters
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
@@ -420,67 +422,42 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 // completeResourceSpan completes a resource span for a Bifrost response
 func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, pricingManager *pricing.PricingManager) *ResourceSpan {
 	params := []*KeyValue{}
-	if resp != nil && resp.Usage != nil {
-		params = append(params, kvStr("gen_ai.response.id", resp.ID))
-		if resp.Usage.ResponsesExtendedResponseUsage == nil {
-			params = append(params, kvInt("gen_ai.usage.prompt_tokens", int64(resp.Usage.PromptTokens)))
-			params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(resp.Usage.CompletionTokens)))
-			params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.Usage.TotalTokens)))
-		}
-		if resp.Usage.ResponsesExtendedResponseUsage != nil {
-			params = append(params, kvInt("gen_ai.usage.input_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.InputTokens)))
-			params = append(params, kvInt("gen_ai.usage.output_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.OutputTokens)))
-		}
-		if resp.Usage.ResponsesExtendedResponseUsage != nil && resp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails != nil {
-			params = append(params, kvInt("gen_ai.usage.input_token_details.cached_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails.CachedTokens)))
-		}
-		if resp.Usage.ResponsesExtendedResponseUsage != nil && resp.Usage.ResponsesExtendedResponseUsage.OutputTokensDetails != nil {
-			params = append(params, kvInt("gen_ai.usage.output_tokens_details.reasoning_tokens", int64(resp.Usage.ResponsesExtendedResponseUsage.OutputTokensDetails.ReasoningTokens)))
-		}
-		// Computing cost
-		if pricingManager != nil {
-			cost := pricingManager.CalculateCostWithCacheDebug(resp)
-			params = append(params, kvDbl("gen_ai.usage.cost", cost))
-		}
-	}
-	if resp != nil && resp.Speech != nil && resp.Speech.Usage != nil {
-		params = append(params, kvInt("gen_ai.usage.input_tokens", int64(resp.Speech.Usage.InputTokens)))
-		params = append(params, kvInt("gen_ai.usage.output_tokens", int64(resp.Speech.Usage.OutputTokens)))
-		params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.Speech.Usage.TotalTokens)))
-		if resp.Speech.Usage.InputTokensDetails != nil {
-			params = append(params, kvInt("gen_ai.usage.input_tokens_details.text_tokens", int64(resp.Speech.Usage.InputTokensDetails.TextTokens)))
-			params = append(params, kvInt("gen_ai.usage.input_tokens_details.audio_tokens", int64(resp.Speech.Usage.InputTokensDetails.AudioTokens)))
-		}
-	}
-	if resp != nil && resp.Transcribe != nil && resp.Transcribe.Usage != nil {
-		if resp.Transcribe.Usage.InputTokens != nil {
-			params = append(params, kvInt("gen_ai.usage.input_tokens", int64(*resp.Transcribe.Usage.InputTokens)))
-		}
-		if resp.Transcribe.Usage.OutputTokens != nil {
-			params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(*resp.Transcribe.Usage.OutputTokens)))
-		}
-		if resp.Transcribe.Usage.TotalTokens != nil {
-			params = append(params, kvInt("gen_ai.usage.total_tokens", int64(*resp.Transcribe.Usage.TotalTokens)))
-		}
-		if resp.Transcribe.Usage.InputTokenDetails != nil {
-			params = append(params, kvInt("gen_ai.usage.input_token_details.text_tokens", int64(resp.Transcribe.Usage.InputTokenDetails.TextTokens)))
-			params = append(params, kvInt("gen_ai.usage.input_token_details.audio_tokens", int64(resp.Transcribe.Usage.InputTokenDetails.AudioTokens)))
-		}
-	}
-	if resp != nil {
-		params = append(params, kvStr("gen_ai.chat.object", resp.Object))
-		params = append(params, kvStr("gen_ai.text.model", resp.Model))
-		params = append(params, kvStr("gen_ai.chat.created", fmt.Sprintf("%d", resp.Created)))
-	}
-	if resp != nil && resp.SystemFingerprint != nil {
-		params = append(params, kvStr("gen_ai.chat.system_fingerprint", *resp.SystemFingerprint))
-	}
 
 	if resp != nil {
-		switch resp.Object {
-		case "chat.completion":
+		switch { // Accumulator wont return stream type responses
+		case resp.TextCompletionResponse != nil:
+			params = append(params, kvStr("gen_ai.text.id", resp.TextCompletionResponse.ID))
+			params = append(params, kvStr("gen_ai.text.model", resp.TextCompletionResponse.Model))
+			params = append(params, kvStr("gen_ai.text.object", resp.TextCompletionResponse.Object))
+			params = append(params, kvStr("gen_ai.text.system_fingerprint", resp.TextCompletionResponse.SystemFingerprint))
 			outputMessages := []*AnyValue{}
-			for _, choice := range resp.Choices {
+			for _, choice := range resp.TextCompletionResponse.Choices {
+				kvs := []*KeyValue{kvStr("role", string(choice.Message.Role))}
+				if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
+					kvs = append(kvs, kvStr("content", *choice.TextCompletionResponseChoice.Text))
+				}
+				outputMessages = append(outputMessages, listValue(kvs...))
+			}
+			params = append(params, kvAny("gen_ai.text.output_messages", arrValue(outputMessages...)))
+			if resp.TextCompletionResponse.Usage != nil {
+				params = append(params, kvInt("gen_ai.usage.prompt_tokens", int64(resp.TextCompletionResponse.Usage.PromptTokens)))
+				params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(resp.TextCompletionResponse.Usage.CompletionTokens)))
+				params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.TextCompletionResponse.Usage.TotalTokens)))
+			}
+			// Computing cost
+			if pricingManager != nil {
+				cost := pricingManager.CalculateCostWithCacheDebug(resp)
+				params = append(params, kvDbl("gen_ai.usage.cost", cost))
+			}
+		case resp.ChatResponse != nil:
+			params = append(params, kvStr("gen_ai.chat.id", resp.ChatResponse.ID))
+			params = append(params, kvStr("gen_ai.chat.model", resp.ChatResponse.Model))
+			params = append(params, kvStr("gen_ai.chat.object", resp.ChatResponse.Object))
+			params = append(params, kvStr("gen_ai.chat.system_fingerprint", resp.ChatResponse.SystemFingerprint))
+			params = append(params, kvStr("gen_ai.chat.created", fmt.Sprintf("%d", resp.ChatResponse.Created)))
+			params = append(params, kvStr("gen_ai.chat.service_tier", resp.ChatResponse.ServiceTier))
+			outputMessages := []*AnyValue{}
+			for _, choice := range resp.ChatResponse.Choices {
 				kvs := []*KeyValue{kvStr("role", string(choice.Message.Role))}
 				if choice.Message.Content.ContentStr != nil {
 					kvs = append(kvs, kvStr("content", *choice.Message.Content.ContentStr))
@@ -488,22 +465,17 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 				outputMessages = append(outputMessages, listValue(kvs...))
 			}
 			params = append(params, kvAny("gen_ai.chat.output_messages", arrValue(outputMessages...)))
-		case "text.completion":
-			outputMessages := []*AnyValue{}
-			for _, choice := range resp.Choices {
-				kvs := []*KeyValue{kvStr("role", string(choice.Message.Role))}
-				if choice.Message.Content.ContentStr != nil {
-					kvs = append(kvs, kvStr("content", *choice.Message.Content.ContentStr))
-				}
-				outputMessages = append(outputMessages, listValue(kvs...))
+			if resp.ChatResponse.Usage != nil {
+				params = append(params, kvInt("gen_ai.usage.prompt_tokens", int64(resp.ChatResponse.Usage.PromptTokens)))
+				params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(resp.ChatResponse.Usage.CompletionTokens)))
+				params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.ChatResponse.Usage.TotalTokens)))
 			}
-			params = append(params, kvAny("gen_ai.text.output_messages", arrValue(outputMessages...)))
-		case "audio.transcription":
-			outputMessages := []*AnyValue{}
-			kvs := []*KeyValue{kvStr("text", resp.Transcribe.Text)}
-			outputMessages = append(outputMessages, listValue(kvs...))
-			params = append(params, kvAny("gen_ai.transcribe.output_messages", arrValue(outputMessages...)))
-		case "response":
+			// Computing cost
+			if pricingManager != nil {
+				cost := pricingManager.CalculateCostWithCacheDebug(resp)
+				params = append(params, kvDbl("gen_ai.usage.cost", cost))
+			}
+		case resp.ResponsesResponse != nil:
 			outputMessages := []*AnyValue{}
 			for _, message := range resp.ResponsesResponse.Output {
 				if message.Role == nil {
@@ -534,79 +506,114 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 
 			}
 			params = append(params, kvAny("gen_ai.responses.output_messages", arrValue(outputMessages...)))
-			if resp.Include != nil {
-				params = append(params, kvStr("gen_ai.responses.include", strings.Join(resp.Include, ",")))
+
+			responsesResponse := resp.ResponsesResponse
+			if responsesResponse.Include != nil {
+				params = append(params, kvStr("gen_ai.responses.include", strings.Join(responsesResponse.Include, ",")))
 			}
-			if resp.MaxOutputTokens != nil {
-				params = append(params, kvInt("gen_ai.responses.max_output_tokens", int64(*resp.MaxOutputTokens)))
+			if responsesResponse.MaxOutputTokens != nil {
+				params = append(params, kvInt("gen_ai.responses.max_output_tokens", int64(*responsesResponse.MaxOutputTokens)))
 			}
-			if resp.MaxToolCalls != nil {
-				params = append(params, kvInt("gen_ai.responses.max_tool_calls", int64(*resp.MaxToolCalls)))
+			if responsesResponse.MaxToolCalls != nil {
+				params = append(params, kvInt("gen_ai.responses.max_tool_calls", int64(*responsesResponse.MaxToolCalls)))
 			}
-			if resp.Metadata != nil {
-				params = append(params, kvStr("gen_ai.responses.metadata", fmt.Sprintf("%v", resp.Metadata)))
+			if responsesResponse.Metadata != nil {
+				params = append(params, kvStr("gen_ai.responses.metadata", fmt.Sprintf("%v", responsesResponse.Metadata)))
 			}
-			if resp.PreviousResponseID != nil {
-				params = append(params, kvStr("gen_ai.responses.previous_response_id", *resp.PreviousResponseID))
+			if responsesResponse.PreviousResponseID != nil {
+				params = append(params, kvStr("gen_ai.responses.previous_response_id", *responsesResponse.PreviousResponseID))
 			}
-			if resp.PromptCacheKey != nil {
-				params = append(params, kvStr("gen_ai.responses.prompt_cache_key", *resp.PromptCacheKey))
+			if responsesResponse.PromptCacheKey != nil {
+				params = append(params, kvStr("gen_ai.responses.prompt_cache_key", *responsesResponse.PromptCacheKey))
 			}
-			if resp.Reasoning != nil {
-				if resp.Reasoning.Summary != nil {
-					params = append(params, kvStr("gen_ai.responses.reasoning", *resp.Reasoning.Summary))
+			if responsesResponse.Reasoning != nil {
+				if responsesResponse.Reasoning.Summary != nil {
+					params = append(params, kvStr("gen_ai.responses.reasoning", *responsesResponse.Reasoning.Summary))
 				}
-				if resp.Reasoning.Effort != nil {
-					params = append(params, kvStr("gen_ai.responses.reasoning_effort", *resp.Reasoning.Effort))
+				if responsesResponse.Reasoning.Effort != nil {
+					params = append(params, kvStr("gen_ai.responses.reasoning_effort", *responsesResponse.Reasoning.Effort))
 				}
-				if resp.Reasoning.GenerateSummary != nil {
-					params = append(params, kvStr("gen_ai.responses.reasoning_generate_summary", *resp.Reasoning.GenerateSummary))
-				}
-			}
-			if resp.SafetyIdentifier != nil {
-				params = append(params, kvStr("gen_ai.responses.safety_identifier", *resp.SafetyIdentifier))
-			}
-			if resp.ServiceTier != nil {
-				params = append(params, kvStr("gen_ai.responses.service_tier", *resp.ServiceTier))
-			}
-			if resp.Store != nil {
-				params = append(params, kvBool("gen_ai.responses.store", *resp.Store))
-			}
-			if resp.Temperature != nil {
-				params = append(params, kvDbl("gen_ai.responses.temperature", *resp.Temperature))
-			}
-			if resp.Text != nil {
-				if resp.Text.Verbosity != nil {
-					params = append(params, kvStr("gen_ai.responses.text", *resp.Text.Verbosity))
-				}
-				if resp.Text.Format != nil {
-					params = append(params, kvStr("gen_ai.responses.text_format_type", resp.Text.Format.Type))
+				if responsesResponse.Reasoning.GenerateSummary != nil {
+					params = append(params, kvStr("gen_ai.responses.reasoning_generate_summary", *responsesResponse.Reasoning.GenerateSummary))
 				}
 			}
-			if resp.TopLogProbs != nil {
-				params = append(params, kvInt("gen_ai.responses.top_logprobs", int64(*resp.TopLogProbs)))
+			if responsesResponse.SafetyIdentifier != nil {
+				params = append(params, kvStr("gen_ai.responses.safety_identifier", *responsesResponse.SafetyIdentifier))
 			}
-			if resp.TopP != nil {
-				params = append(params, kvDbl("gen_ai.responses.top_p", *resp.TopP))
+			if responsesResponse.ServiceTier != nil {
+				params = append(params, kvStr("gen_ai.responses.service_tier", *responsesResponse.ServiceTier))
 			}
-			if resp.ToolChoice != nil {
-				params = append(params, kvStr("gen_ai.responses.tool_choice_type", *resp.ToolChoice.ResponsesToolChoiceStr))
-				if resp.ToolChoice.ResponsesToolChoiceStruct != nil && resp.ToolChoice.ResponsesToolChoiceStruct.Name != nil {
-					params = append(params, kvStr("gen_ai.responses.tool_choice_name", *resp.ToolChoice.ResponsesToolChoiceStruct.Name))
+			if responsesResponse.Store != nil {
+				params = append(params, kvBool("gen_ai.responses.store", *responsesResponse.Store))
+			}
+			if responsesResponse.Temperature != nil {
+				params = append(params, kvDbl("gen_ai.responses.temperature", *responsesResponse.Temperature))
+			}
+			if responsesResponse.Text != nil {
+				if responsesResponse.Text.Verbosity != nil {
+					params = append(params, kvStr("gen_ai.responses.text", *responsesResponse.Text.Verbosity))
+				}
+				if responsesResponse.Text.Format != nil {
+					params = append(params, kvStr("gen_ai.responses.text_format_type", responsesResponse.Text.Format.Type))
 				}
 			}
-			if resp.Truncation != nil {
-				params = append(params, kvStr("gen_ai.responses.truncation", *resp.Truncation))
+			if responsesResponse.TopLogProbs != nil {
+				params = append(params, kvInt("gen_ai.responses.top_logprobs", int64(*responsesResponse.TopLogProbs)))
 			}
-			if resp.Tools != nil {
-				tools := make([]string, len(resp.Tools))
-				for i, tool := range resp.Tools {
+			if responsesResponse.TopP != nil {
+				params = append(params, kvDbl("gen_ai.responses.top_p", *responsesResponse.TopP))
+			}
+			if responsesResponse.ToolChoice != nil {
+				if responsesResponse.ToolChoice.ResponsesToolChoiceStruct != nil && responsesResponse.ToolChoice.ResponsesToolChoiceStr != nil {
+					params = append(params, kvStr("gen_ai.responses.tool_choice_type", *responsesResponse.ToolChoice.ResponsesToolChoiceStr))
+				}
+				if responsesResponse.ToolChoice.ResponsesToolChoiceStruct != nil && responsesResponse.ToolChoice.ResponsesToolChoiceStruct.Name != nil {
+					params = append(params, kvStr("gen_ai.responses.tool_choice_name", *responsesResponse.ToolChoice.ResponsesToolChoiceStruct.Name))
+				}
+			}
+			if responsesResponse.Truncation != nil {
+				params = append(params, kvStr("gen_ai.responses.truncation", *responsesResponse.Truncation))
+			}
+			if responsesResponse.Tools != nil {
+				tools := make([]string, len(responsesResponse.Tools))
+				for i, tool := range responsesResponse.Tools {
 					tools[i] = tool.Type
 				}
 				params = append(params, kvStr("gen_ai.responses.tools", strings.Join(tools, ",")))
 			}
+		case resp.EmbeddingResponse != nil:
+			if resp.EmbeddingResponse.Usage != nil {
+				params = append(params, kvInt("gen_ai.usage.prompt_tokens", int64(resp.EmbeddingResponse.Usage.PromptTokens)))
+				params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(resp.EmbeddingResponse.Usage.CompletionTokens)))
+				params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.EmbeddingResponse.Usage.TotalTokens)))
+			}
+		case resp.SpeechResponse != nil:
+			if resp.SpeechResponse.Usage != nil {
+				params = append(params, kvInt("gen_ai.usage.input_tokens", int64(resp.SpeechResponse.Usage.InputTokens)))
+				params = append(params, kvInt("gen_ai.usage.output_tokens", int64(resp.SpeechResponse.Usage.OutputTokens)))
+				params = append(params, kvInt("gen_ai.usage.total_tokens", int64(resp.SpeechResponse.Usage.TotalTokens)))
+			}
+		case resp.TranscriptionResponse != nil:
+			outputMessages := []*AnyValue{}
+			kvs := []*KeyValue{kvStr("text", resp.TranscriptionResponse.Text)}
+			outputMessages = append(outputMessages, listValue(kvs...))
+			params = append(params, kvAny("gen_ai.transcribe.output_messages", arrValue(outputMessages...)))
+			if resp.TranscriptionResponse.Usage.InputTokens != nil {
+				params = append(params, kvInt("gen_ai.usage.input_tokens", int64(*resp.TranscriptionResponse.Usage.InputTokens)))
+			}
+			if resp.TranscriptionResponse.Usage.OutputTokens != nil {
+				params = append(params, kvInt("gen_ai.usage.completion_tokens", int64(*resp.TranscriptionResponse.Usage.OutputTokens)))
+			}
+			if resp.TranscriptionResponse.Usage.TotalTokens != nil {
+				params = append(params, kvInt("gen_ai.usage.total_tokens", int64(*resp.TranscriptionResponse.Usage.TotalTokens)))
+			}
+			if resp.TranscriptionResponse.Usage.InputTokenDetails != nil {
+				params = append(params, kvInt("gen_ai.usage.input_token_details.text_tokens", int64(resp.TranscriptionResponse.Usage.InputTokenDetails.TextTokens)))
+				params = append(params, kvInt("gen_ai.usage.input_token_details.audio_tokens", int64(resp.TranscriptionResponse.Usage.InputTokenDetails.AudioTokens)))
+			}
 		}
 	}
+
 	// This is a fallback for worst case scenario where latency is not available
 	status := tracepb.Status_STATUS_CODE_OK
 	if bifrostErr != nil {
@@ -618,20 +625,6 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 			params = append(params, kvStr("gen_ai.error.code", *bifrostErr.Error.Code))
 		}
 		params = append(params, kvStr("gen_ai.error", bifrostErr.Error.Message))
-	}
-	if resp != nil && resp.ExtraFields.BilledUsage != nil {
-		if resp.ExtraFields.BilledUsage.PromptTokens != nil {
-			params = append(params, kvInt("gen_ai.usage.cost.prompt_tokens", int64(*resp.ExtraFields.BilledUsage.PromptTokens)))
-		}
-		if resp.ExtraFields.BilledUsage.CompletionTokens != nil {
-			params = append(params, kvInt("gen_ai.usage.cost.completion_tokens", int64(*resp.ExtraFields.BilledUsage.CompletionTokens)))
-		}
-		if resp.ExtraFields.BilledUsage.SearchUnits != nil {
-			params = append(params, kvInt("gen_ai.usage.cost.search_units", int64(*resp.ExtraFields.BilledUsage.SearchUnits)))
-		}
-		if resp.ExtraFields.BilledUsage.Classifications != nil {
-			params = append(params, kvInt("gen_ai.usage.cost.classifications", int64(*resp.ExtraFields.BilledUsage.Classifications)))
-		}
 	}
 	span.ScopeSpans[0].Spans[0].Attributes = append(span.ScopeSpans[0].Spans[0].Attributes, params...)
 	span.ScopeSpans[0].Spans[0].Status = &tracepb.Status{Code: status}

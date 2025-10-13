@@ -2,6 +2,7 @@ package integrations
 
 import (
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -14,7 +15,7 @@ type LangChainRouter struct {
 }
 
 // NewLangChainRouter creates a new LangChainRouter with the given bifrost client.
-func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *LangChainRouter {
+func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *LangChainRouter {
 	routes := []RouteConfig{}
 
 	// Add OpenAI routes to LangChain for OpenAI API compatibility
@@ -27,6 +28,6 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) 
 	routes = append(routes, CreateGenAIRouteConfigs("/langchain")...)
 
 	return &LangChainRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
 	}
 }

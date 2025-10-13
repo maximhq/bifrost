@@ -10,19 +10,11 @@ import (
 )
 
 // buildCompleteMessageFromAudioStreamChunks builds a complete message from accumulated audio chunks
-func (a *Accumulator) buildCompleteMessageFromAudioStreamChunks(chunks []*AudioStreamChunk) *schemas.BifrostSpeech {
-	completeMessage := &schemas.BifrostSpeech{
-		Usage: &schemas.AudioLLMUsage{},
-	}
+func (a *Accumulator) buildCompleteMessageFromAudioStreamChunks(chunks []*AudioStreamChunk) *schemas.BifrostSpeechResponse {
+	completeMessage := &schemas.BifrostSpeechResponse{}
 	for _, chunk := range chunks {
 		if chunk.Delta != nil {
 			completeMessage.Audio = append(completeMessage.Audio, chunk.Delta.Audio...)
-		}
-	}
-	if len(chunks) > 0 {
-		lastChunk := chunks[len(chunks)-1]
-		if lastChunk.TokenUsage != nil {
-			completeMessage.Usage = lastChunk.TokenUsage
 		}
 	}
 	return completeMessage
@@ -53,7 +45,6 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 		TokenUsage:     nil,
 		CacheDebug:     nil,
 		Cost:           nil,
-		Object:         "",
 	}
 	completeMessage := a.buildCompleteMessageFromAudioStreamChunks(accumulator.AudioStreamChunks)
 	if !isFinalChunk {
@@ -76,7 +67,7 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 	if len(accumulator.AudioStreamChunks) > 0 {
 		lastChunk := accumulator.AudioStreamChunks[len(accumulator.AudioStreamChunks)-1]
 		if lastChunk.TokenUsage != nil {
-			data.TokenUsage = &schemas.LLMUsage{
+			data.TokenUsage = &schemas.BifrostLLMUsage{
 				PromptTokens:     lastChunk.TokenUsage.InputTokens,
 				CompletionTokens: lastChunk.TokenUsage.OutputTokens,
 				TotalTokens:      lastChunk.TokenUsage.TotalTokens,
@@ -97,10 +88,6 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
 	}
-	// Update object field from accumulator (stored once for the entire stream)
-	if accumulator.Object != "" {
-		data.Object = accumulator.Object
-	}
 	return data, nil
 }
 
@@ -112,7 +99,7 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *context.Context, result
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("request-id not found in context or is empty")
 	}
-	_, provider, model := bifrost.GetRequestFields(result, bifrostErr)
+	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	// For audio, all the data comes in the final chunk
 	chunk := a.getAudioStreamChunk()
@@ -121,31 +108,29 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *context.Context, result
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil {
-		if result.Speech != nil && result.Speech.BifrostSpeechStreamResponse != nil {
+		if result.SpeechStreamResponse != nil {
 			// We create a deep copy of the delta to avoid pointing to stack memory
-			newDelta := &schemas.BifrostSpeech{
-				Usage: result.Speech.Usage,
-				Audio: result.Speech.Audio,
-				BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
-					Type: result.Speech.BifrostSpeechStreamResponse.Type,
-				},
+			newDelta := &schemas.BifrostSpeechStreamResponse{
+				Type:  result.SpeechStreamResponse.Type,
+				Usage: result.SpeechStreamResponse.Usage,
+				Audio: result.SpeechStreamResponse.Audio,
 			}
 			chunk.Delta = newDelta
-			chunk.TokenUsage = result.Speech.Usage
+			if result.SpeechStreamResponse.Usage != nil {
+				chunk.TokenUsage = result.SpeechStreamResponse.Usage
+			}
 		}
 	}
-	object := ""
 	if result != nil {
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.ExtraFields.CacheDebug
+			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 		}
-		object = result.Object
 	}
-	if addErr := a.addAudioStreamChunk(requestID, chunk, object, isFinalChunk); addErr != nil {
+	if addErr := a.addAudioStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
 		return nil, fmt.Errorf("failed to add stream chunk for request %s: %w", requestID, addErr)
 	}
 	if isFinalChunk {

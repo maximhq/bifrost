@@ -195,25 +195,25 @@ type Provider interface {
 	// GetProviderKey returns the provider's identifier
 	GetProviderKey() ModelProvider
 	// TextCompletion performs a text completion request
-	TextCompletion(ctx context.Context, key Key, request *BifrostTextCompletionRequest) (*BifrostResponse, *BifrostError)
+	TextCompletion(ctx context.Context, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
 	// TextCompletionStream performs a text completion stream request
 	TextCompletionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostTextCompletionRequest) (chan *BifrostStream, *BifrostError)
 	// ChatCompletion performs a chat completion request
-	ChatCompletion(ctx context.Context, key Key, request *BifrostChatRequest) (*BifrostResponse, *BifrostError)
+	ChatCompletion(ctx context.Context, key Key, request *BifrostChatRequest) (*BifrostChatResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
 	ChatCompletionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostChatRequest) (chan *BifrostStream, *BifrostError)
 	// Responses performs a completion request using the Responses API (uses chat completion request internally for non-openai providers)
-	Responses(ctx context.Context, key Key, request *BifrostResponsesRequest) (*BifrostResponse, *BifrostError)
+	Responses(ctx context.Context, key Key, request *BifrostResponsesRequest) (*BifrostResponsesResponse, *BifrostError)
 	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
 	ResponsesStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostResponsesRequest) (chan *BifrostStream, *BifrostError)
 	// Embedding performs an embedding request
-	Embedding(ctx context.Context, key Key, request *BifrostEmbeddingRequest) (*BifrostResponse, *BifrostError)
+	Embedding(ctx context.Context, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Speech performs a text to speech request
-	Speech(ctx context.Context, key Key, request *BifrostSpeechRequest) (*BifrostResponse, *BifrostError)
+	Speech(ctx context.Context, key Key, request *BifrostSpeechRequest) (*BifrostSpeechResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
 	SpeechStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostSpeechRequest) (chan *BifrostStream, *BifrostError)
 	// Transcription performs a transcription request
-	Transcription(ctx context.Context, key Key, request *BifrostTranscriptionRequest) (*BifrostResponse, *BifrostError)
+	Transcription(ctx context.Context, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
 	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStream, *BifrostError)
 }

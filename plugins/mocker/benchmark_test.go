@@ -57,8 +57,6 @@ func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
 
 	// Convert to BifrostRequest for PreHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
-		Provider:    req.Provider,
-		Model:       req.Model,
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
@@ -116,8 +114,6 @@ func BenchmarkMockerPlugin_PreHook_RegexRule(b *testing.B) {
 
 	// Convert to BifrostRequest for PreHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
-		Provider:    req.Provider,
-		Model:       req.Model,
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
@@ -197,8 +193,6 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 
 	// Convert to BifrostRequest for PreHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
-		Provider:    req.Provider,
-		Model:       req.Model,
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
@@ -257,8 +251,6 @@ func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
 
 	// Convert to BifrostRequest for PreHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
-		Provider:    req.Provider,
-		Model:       req.Model,
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
@@ -314,8 +306,6 @@ func BenchmarkMockerPlugin_PreHook_Template(b *testing.B) {
 
 	// Convert to BifrostRequest for PreHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
-		Provider:    req.Provider,
-		Model:       req.Model,
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}

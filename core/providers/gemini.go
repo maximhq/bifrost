@@ -71,7 +71,7 @@ func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Gemini provider.
-func (provider *GeminiProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", string(provider.GetProviderKey()))
 }
 
@@ -83,7 +83,7 @@ func (provider *GeminiProvider) TextCompletionStream(ctx context.Context, postHo
 }
 
 // ChatCompletion performs a chat completion request to the Gemini API.
-func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
@@ -137,7 +137,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	// Pre-allocate response structs from pools
 	// response := acquireGeminiResponse()
 	// defer releaseGeminiResponse(response)
-	response := &schemas.BifrostResponse{}
+	response := &schemas.BifrostChatResponse{}
 
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
@@ -146,11 +146,11 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	for _, choice := range response.Choices {
-		if choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
-			for i, toolCall := range choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
+		if choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
+			for i, toolCall := range choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
 				if (toolCall.ID == nil || *toolCall.ID == "") && toolCall.Function.Name != nil && *toolCall.Function.Name != "" {
 					id := *toolCall.Function.Name
-					(choice.BifrostNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls)[i].ID = &id
+					(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls)[i].ID = &id
 				}
 			}
 		}
@@ -194,13 +194,13 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 // Responses performs a chat completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *GeminiProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	response, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+func (provider *GeminiProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}
 
-	response.ToResponsesOnly()
+	response := chatResponse.ToBifrostResponsesResponse()
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
@@ -218,7 +218,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx context.Context, postHookRun
 }
 
 // Embedding performs an embedding request to the Gemini API.
-func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
@@ -238,7 +238,7 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, 
 	)
 }
 
-func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	// Check if speech is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
 		return nil, err
@@ -268,19 +268,19 @@ func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, req
 		return nil, bifrostErr
 	}
 
-	bifrostResponse := geminiResponse.ToBifrostResponse()
+	response := geminiResponse.ToBifrostSpeechResponse()
 
 	// Set ExtraFields
-	bifrostResponse.ExtraFields.Provider = providerName
-	bifrostResponse.ExtraFields.ModelRequested = request.Model
-	bifrostResponse.ExtraFields.RequestType = schemas.SpeechRequest
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.SpeechRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
@@ -372,7 +372,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 		buf := make([]byte, 0, 64*1024) // 64KB buffer
 		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens
 		chunkIndex := -1
-		usage := &schemas.AudioLLMUsage{}
+		usage := &schemas.SpeechUsage{}
 		startTime := time.Now()
 		lastChunkTime := startTime
 
@@ -455,15 +455,9 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				chunkIndex++
 
 				// Create Bifrost speech response for streaming
-				response := &schemas.BifrostResponse{
-					Object: "audio.speech.chunk",
-					Model:  request.Model,
-					Speech: &schemas.BifrostSpeech{
-						Audio: audioChunk,
-						BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
-							Type: "audio.speech.chunk",
-						},
-					},
+				response := &schemas.BifrostSpeechStreamResponse{
+					Type:  schemas.SpeechStreamResponseTypeDelta,
+					Audio: audioChunk,
 					ExtraFields: schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.SpeechStreamRequest,
 						Provider:       providerName,
@@ -479,7 +473,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				}
 
 				// Process response through post-hooks and send to channel
-				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, nil, response, nil), responseChan)
 			}
 		}
 
@@ -488,11 +482,9 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, provider.logger)
 		} else {
-			response := &schemas.BifrostResponse{
-				Object: "audio.speech.chunk",
-				Speech: &schemas.BifrostSpeech{
-					Usage: usage,
-				},
+			response := &schemas.BifrostSpeechStreamResponse{
+				Type:  schemas.SpeechStreamResponseTypeDone,
+				Usage: usage,
 				ExtraFields: schemas.BifrostResponseExtraFields{
 					RequestType:    schemas.SpeechStreamRequest,
 					Provider:       providerName,
@@ -503,14 +495,14 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 			}
 
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
+			handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(nil, nil, nil, response, nil), postHookRunner, responseChan)
 		}
 	}()
 
 	return responseChan, nil
 }
 
-func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	// Check if transcription is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
@@ -544,19 +536,19 @@ func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.K
 		return nil, bifrostErr
 	}
 
-	bifrostResponse := geminiResponse.ToBifrostResponse()
+	response := geminiResponse.ToBifrostTranscriptionResponse()
 
 	// Set ExtraFields
-	bifrostResponse.ExtraFields.Provider = providerName
-	bifrostResponse.ExtraFields.ModelRequested = request.Model
-	bifrostResponse.ExtraFields.RequestType = schemas.TranscriptionRequest
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.TranscriptionRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 }
 
 func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
@@ -745,15 +737,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				chunkIndex++
 
 				// Create Bifrost transcription response for streaming
-				response := &schemas.BifrostResponse{
-					Object: "audio.transcription.chunk",
-					Transcribe: &schemas.BifrostTranscribe{
-						BifrostTranscribeStreamResponse: &schemas.BifrostTranscribeStreamResponse{
-							Type:  schemas.Ptr("transcript.text.delta"),
-							Delta: &deltaText, // Delta text for this chunk
-						},
-					},
-					Model: request.Model,
+				response := &schemas.BifrostTranscriptionStreamResponse{
+					Type:  schemas.TranscriptionStreamResponseTypeDelta,
+					Delta: &deltaText, // Delta text for this chunk
 					ExtraFields: schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.TranscriptionStreamRequest,
 						Provider:       providerName,
@@ -769,7 +755,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				}
 
 				// Process response through post-hooks and send to channel
-				processAndSendResponse(ctx, postHookRunner, response, responseChan, provider.logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
 			}
 		}
 
@@ -778,16 +764,14 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
 		} else {
-			response := &schemas.BifrostResponse{
-				Object: "audio.transcription.chunk",
-				Transcribe: &schemas.BifrostTranscribe{
-					Text: fullTranscriptionText,
-					Usage: &schemas.TranscriptionUsage{
-						Type:         "tokens",
-						InputTokens:  usage.InputTokens,
-						OutputTokens: usage.OutputTokens,
-						TotalTokens:  usage.TotalTokens,
-					},
+			response := &schemas.BifrostTranscriptionStreamResponse{
+				Type: schemas.TranscriptionStreamResponseTypeDone,
+				Text: fullTranscriptionText,
+				Usage: &schemas.TranscriptionUsage{
+					Type:         "tokens",
+					InputTokens:  usage.InputTokens,
+					OutputTokens: usage.OutputTokens,
+					TotalTokens:  usage.TotalTokens,
 				},
 				ExtraFields: schemas.BifrostResponseExtraFields{
 					RequestType:    schemas.TranscriptionStreamRequest,
@@ -799,7 +783,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 			}
 
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, provider.logger)
+			handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(nil, nil, nil, nil, response), postHookRunner, responseChan)
 		}
 	}()
 

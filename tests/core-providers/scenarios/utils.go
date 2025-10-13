@@ -289,83 +289,6 @@ func CreateToolResponsesMessage(content string, toolCallID string) schemas.Respo
 	}
 }
 
-// GetResultContent returns the string content from a BifrostResponse
-// It looks through all choices and returns content from the first choice that has any
-func GetResultContent(result *schemas.BifrostResponse) string {
-	if result == nil || (result.Choices == nil && result.ResponsesResponse == nil) {
-		return ""
-	}
-
-	if result.Choices != nil {
-		// Try to find content from any choice, prioritizing non-empty content
-		for _, choice := range result.Choices {
-			if choice.BifrostTextCompletionResponseChoice != nil && choice.BifrostTextCompletionResponseChoice.Text != nil {
-				return *choice.Text
-			}
-
-			if choice.Message.Content != nil {
-				// Check if content has any data (either ContentStr or ContentBlocks)
-				if choice.Message.Content.ContentStr != nil || choice.Message.Content.ContentBlocks != nil {
-					if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
-						return *choice.Message.Content.ContentStr
-					} else if choice.Message.Content.ContentBlocks != nil {
-						var builder strings.Builder
-						for _, block := range choice.Message.Content.ContentBlocks {
-							if block.Text != nil {
-								builder.WriteString(*block.Text)
-							}
-						}
-						content := builder.String()
-						if content != "" {
-							return content
-						}
-					}
-				}
-			}
-		}
-
-		// Fallback to first choice if no content found
-		if len(result.Choices) > 0 {
-			choice := result.Choices[0]
-			if choice.Message.Content != nil {
-				if choice.Message.Content.ContentStr != nil || choice.Message.Content.ContentBlocks != nil {
-					if choice.Message.Content.ContentStr != nil {
-						return *choice.Message.Content.ContentStr
-					} else if choice.Message.Content.ContentBlocks != nil {
-						var builder strings.Builder
-						for _, block := range choice.Message.Content.ContentBlocks {
-							if block.Text != nil {
-								builder.WriteString(*block.Text)
-							}
-						}
-						return builder.String()
-					}
-				}
-			}
-		}
-	} else if result.ResponsesResponse != nil {
-		for _, output := range result.ResponsesResponse.Output {
-			if output.Content != nil {
-				if output.Content.ContentStr != nil {
-					return *output.Content.ContentStr
-				} else if output.Content.ContentBlocks != nil {
-					var builder strings.Builder
-					for _, block := range output.Content.ContentBlocks {
-						if block.Text != nil {
-							builder.WriteString(*block.Text)
-						}
-					}
-					content := builder.String()
-					if content != "" {
-						return content
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
 // ToolCallInfo represents extracted tool call information for both API formats
 type ToolCallInfo struct {
 	Name      string
@@ -373,70 +296,130 @@ type ToolCallInfo struct {
 	ID        string
 }
 
-// ExtractToolCalls extracts tool call information from a BifrostResponse for both Chat Completions and Responses API
-func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
-	if response == nil {
-		return nil
+// GetChatContent returns the string content from a BifrostChatResponse
+func GetChatContent(response *schemas.BifrostChatResponse) string {
+	if response == nil || response.Choices == nil {
+		return ""
 	}
 
-	var toolCalls []ToolCallInfo
-
-	// Extract from Chat Completions API format
-	if response.Choices != nil {
-		for _, choice := range response.Choices {
-			if choice.Message.ChatAssistantMessage != nil &&
-				choice.Message.ChatAssistantMessage.ToolCalls != nil {
-
-				chatToolCalls := choice.Message.ChatAssistantMessage.ToolCalls
-				for _, toolCall := range chatToolCalls {
-					info := ToolCallInfo{
-						Arguments: toolCall.Function.Arguments,
+	// Try to find content from any choice, prioritizing non-empty content
+	for _, choice := range response.Choices {
+		if choice.Message.Content != nil {
+			// Check if content has any data (either ContentStr or ContentBlocks)
+			if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
+				return *choice.Message.Content.ContentStr
+			} else if choice.Message.Content.ContentBlocks != nil {
+				var builder strings.Builder
+				for _, block := range choice.Message.Content.ContentBlocks {
+					if block.Text != nil {
+						builder.WriteString(*block.Text)
 					}
-					if toolCall.Function.Name != nil {
-						info.Name = *toolCall.Function.Name
-					}
-					if toolCall.ID != nil {
-						info.ID = *toolCall.ID
-					}
-
-					// Only append if we have at least some meaningful data
-					// (Name, ID, or non-empty Arguments)
-					if info.Name != "" || info.ID != "" || info.Arguments != "" {
-						toolCalls = append(toolCalls, info)
-					}
+				}
+				content := builder.String()
+				if content != "" {
+					return content
 				}
 			}
 		}
 	}
 
-	// Extract from Responses API format
-	if response.ResponsesResponse != nil {
-		for _, output := range response.ResponsesResponse.Output {
-			// Check for function calls in assistant messages
-			// Only process if this is a function_call type with ResponsesToolMessage
-			if output.ResponsesToolMessage != nil &&
-				output.Type != nil &&
-				*output.Type == "function_call" {
+	return ""
+}
 
-				info := ToolCallInfo{}
+// GetTextCompletionContent returns the string content from a BifrostTextCompletionResponse
+func GetTextCompletionContent(response *schemas.BifrostTextCompletionResponse) string {
+	if response == nil || response.Choices == nil {
+		return ""
+	}
 
-				if output.Name != nil {
-					info.Name = *output.Name
+	// Try to find content from any choice, prioritizing non-empty content
+	for _, choice := range response.Choices {
+		if choice.Text != nil && *choice.Text != "" {
+			return *choice.Text
+		}
+	}
+
+	return ""
+}
+
+// GetResponsesContent returns the string content from a BifrostResponsesResponse
+func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
+	if response == nil || response.Output == nil {
+		return ""
+	}
+
+	for _, output := range response.Output {
+		if output.Content != nil {
+			if output.Content.ContentStr != nil && *output.Content.ContentStr != "" {
+				return *output.Content.ContentStr
+			} else if output.Content.ContentBlocks != nil {
+				var builder strings.Builder
+				for _, block := range output.Content.ContentBlocks {
+					if block.Text != nil {
+						builder.WriteString(*block.Text)
+					}
 				}
-				if output.ResponsesToolMessage.CallID != nil {
-					info.ID = *output.ResponsesToolMessage.CallID
-				}
-
-				// Get arguments from embedded function tool call if available
-				if output.Arguments != nil {
-					info.Arguments = *output.Arguments
-				}
-
-				// Only append if we have at least one of Name, ID, or Arguments
-				if info.Name != "" || info.ID != "" || info.Arguments != "" {
-					toolCalls = append(toolCalls, info)
+				content := builder.String()
+				if content != "" {
+					return content
 				}
 			}
+		}
+	}
+
+	return ""
+}
+
+// ExtractChatToolCalls extracts tool call information from a BifrostChatResponse
+func ExtractChatToolCalls(response *schemas.BifrostChatResponse) []ToolCallInfo {
+	var toolCalls []ToolCallInfo
+
+	if response == nil || response.Choices == nil {
+		return toolCalls
+	}
+
+	for _, choice := range response.Choices {
+		if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
+			for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
+				info := ToolCallInfo{
+					ID: *toolCall.ID,
+				}
+				if toolCall.Function.Name != nil {
+					info.Name = *toolCall.Function.Name
+				}
+				if toolCall.Function.Arguments != nil {
+					if argStr, ok := toolCall.Function.Arguments.(string); ok {
+						info.Arguments = argStr
+					}
+				}
+				toolCalls = append(toolCalls, info)
+			}
+		}
+	}
+
+	return toolCalls
+}
+
+// ExtractResponsesToolCalls extracts tool call information from a BifrostResponsesResponse
+func ExtractResponsesToolCalls(response *schemas.BifrostResponsesResponse) []ToolCallInfo {
+	var toolCalls []ToolCallInfo
+
+	if response == nil || response.Output == nil {
+		return toolCalls
+	}
+
+	for _, output := range response.Output {
+		if output.ResponsesToolMessage != nil {
+			info := ToolCallInfo{}
+			if output.ResponsesToolMessage.Name != nil {
+				info.Name = *output.ResponsesToolMessage.Name
+			}
+			if output.ResponsesToolMessage.Arguments != nil {
+				if argStr, ok := (*output.ResponsesToolMessage.Arguments).(string); ok {
+					info.Arguments = argStr
+				}
+			}
+			toolCalls = append(toolCalls, info)
 		}
 	}
 

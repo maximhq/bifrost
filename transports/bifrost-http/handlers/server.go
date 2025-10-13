@@ -463,7 +463,7 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	providerHandler := NewProviderHandler(s.Config, s.Client, logger)
 	inferenceHandler := NewInferenceHandler(s.Client, s.Config, logger)
 	mcpHandler := NewMCPHandler(s.Client, logger, s.Config)
-	integrationHandler := NewIntegrationHandler(s.Client, s.Config)
+	integrationHandler := NewIntegrationHandler(s.Client, s.Config, logger)
 	configHandler := NewConfigHandler(s.Client, logger, s.Config, s)
 	pluginsHandler := NewPluginsHandler(s, s.Config.ConfigStore, logger)
 	// Register all handler routes

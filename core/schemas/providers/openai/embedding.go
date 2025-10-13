@@ -5,14 +5,14 @@ import (
 )
 
 // ToBifrostRequest converts an OpenAI embedding request to Bifrost format
-func (r *OpenAIEmbeddingRequest) ToBifrostRequest() *schemas.BifrostEmbeddingRequest {
-	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+func (request *OpenAIEmbeddingRequest) ToBifrostRequest() *schemas.BifrostEmbeddingRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
 
 	bifrostReq := &schemas.BifrostEmbeddingRequest{
 		Provider: provider,
 		Model:    model,
-		Input:    r.Input,
-		Params:   &r.EmbeddingParameters,
+		Input:    request.Input,
+		Params:   &request.EmbeddingParameters,
 	}
 
 	return bifrostReq

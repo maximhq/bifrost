@@ -79,7 +79,7 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // TextCompletion is not supported by the OpenAI provider.
 // Returns an error indicating that text completion is not available.
-func (provider *OpenAIProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func handleOpenAITextCompletionRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
-) (*schemas.BifrostResponse, *schemas.BifrostError) {
+) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	reqBody := openai.ToOpenAITextCompletionRequest(request)
 	if reqBody == nil {
 		return nil, newBifrostOperationError("text completion input is not provided", nil, providerName)
@@ -153,7 +153,7 @@ func handleOpenAITextCompletionRequest(
 
 	responseBody := resp.Body()
 
-	response := &schemas.BifrostResponse{}
+	response := &schemas.BifrostTextCompletionResponse{}
 
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
 	if bifrostErr != nil {
@@ -282,7 +282,7 @@ func handleOpenAITextCompletionStreaming(
 
 		scanner := bufio.NewScanner(resp.Body)
 		chunkIndex := -1
-		usage := &schemas.LLMUsage{}
+		usage := &schemas.BifrostLLMUsage{}
 
 		var finishReason *string
 		var messageID string
@@ -337,7 +337,7 @@ func handleOpenAITextCompletionStreaming(
 			}
 
 			// Parse into bifrost response
-			var response schemas.BifrostResponse
+			var response schemas.BifrostTextCompletionResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
@@ -383,7 +383,7 @@ func handleOpenAITextCompletionStreaming(
 			}
 
 			// Handle regular content chunks
-			if choice.BifrostTextCompletionResponseChoice != nil && choice.BifrostTextCompletionResponseChoice.Text != nil {
+			if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
 				chunkIndex++
 
 				response.ExtraFields.RequestType = schemas.TextCompletionStreamRequest
@@ -397,7 +397,7 @@ func handleOpenAITextCompletionStreaming(
 					response.ExtraFields.RawResponse = jsonData
 				}
 
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(&response, nil, nil, nil, nil), responseChan)
 			}
 		}
 
@@ -406,9 +406,9 @@ func handleOpenAITextCompletionStreaming(
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, logger)
 		} else {
-			response := createBifrostCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
+			response := createBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
+			handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(response, nil, nil, nil, nil), postHookRunner, responseChan)
 		}
 	}()
 
@@ -418,7 +418,7 @@ func handleOpenAITextCompletionStreaming(
 // ChatCompletion performs a chat completion request to the OpenAI API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
 	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
@@ -447,7 +447,7 @@ func handleOpenAIChatCompletionRequest(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
-) (*schemas.BifrostResponse, *schemas.BifrostError) {
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Use centralized converter
 	reqBody := openai.ToOpenAIChatRequest(request)
 	if reqBody == nil {
@@ -495,7 +495,7 @@ func handleOpenAIChatCompletionRequest(
 	// Pre-allocate response structs from pools
 	// response := acquireOpenAIResponse()
 	// defer releaseOpenAIResponse(response)
-	response := &schemas.BifrostResponse{}
+	response := &schemas.BifrostChatResponse{}
 
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
@@ -641,7 +641,7 @@ func handleOpenAIChatCompletionStreaming(
 
 		scanner := bufio.NewScanner(resp.Body)
 		chunkIndex := -1
-		usage := &schemas.LLMUsage{}
+		usage := &schemas.BifrostLLMUsage{}
 
 		startTime := time.Now()
 		lastChunkTime := startTime
@@ -698,7 +698,7 @@ func handleOpenAIChatCompletionStreaming(
 			}
 
 			// Parse into bifrost response
-			var response schemas.BifrostResponse
+			var response schemas.BifrostChatResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
@@ -744,10 +744,10 @@ func handleOpenAIChatCompletionStreaming(
 			}
 
 			// Handle regular content chunks
-			if choice.BifrostStreamResponseChoice != nil &&
-				choice.BifrostStreamResponseChoice.Delta != nil &&
-				(choice.BifrostStreamResponseChoice.Delta.Content != nil ||
-					len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0) {
+			if choice.ChatStreamResponseChoice != nil &&
+				choice.ChatStreamResponseChoice.Delta != nil &&
+				(choice.ChatStreamResponseChoice.Delta.Content != nil ||
+					len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
 				chunkIndex++
 
 				response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
@@ -761,7 +761,7 @@ func handleOpenAIChatCompletionStreaming(
 					response.ExtraFields.RawResponse = jsonData
 				}
 
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, &response, nil, nil, nil), responseChan)
 			}
 		}
 
@@ -772,14 +772,14 @@ func handleOpenAIChatCompletionStreaming(
 		} else {
 			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
+			handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
 		}
 	}()
 
 	return responseChan, nil
 }
 
-func (provider *OpenAIProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
 	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
@@ -808,7 +808,7 @@ func handleOpenAIResponsesRequest(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
-) (*schemas.BifrostResponse, *schemas.BifrostError) {
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Use centralized converter
 	reqBody := openai.ToOpenAIResponsesRequest(request)
 	if reqBody == nil {
@@ -856,7 +856,7 @@ func handleOpenAIResponsesRequest(
 	// Pre-allocate response structs from pools
 	// response := acquireOpenAIResponse()
 	// defer releaseOpenAIResponse(response)
-	response := &schemas.BifrostResponse{}
+	response := &schemas.BifrostResponsesResponse{}
 
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
@@ -1031,17 +1031,13 @@ func handleOpenAIResponsesStreaming(
 			}
 
 			// Parse into bifrost response
-			var response schemas.BifrostResponse
+			var response schemas.BifrostResponsesStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
 			}
 
-			if response.ResponsesStreamResponse == nil {
-				continue
-			}
-
-			if response.ResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeError {
+			if response.Type == schemas.ResponsesStreamResponseTypeError {
 				bifrostErr := &schemas.BifrostError{
 					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
 					IsBifrostError: false,
@@ -1053,14 +1049,14 @@ func handleOpenAIResponsesStreaming(
 					},
 				}
 
-				if response.ResponsesStreamResponse.Message != nil {
-					bifrostErr.Error.Message = *response.ResponsesStreamResponse.Message
+				if response.Message != nil {
+					bifrostErr.Error.Message = *response.Message
 				}
-				if response.ResponsesStreamResponse.Param != nil {
-					bifrostErr.Error.Param = *response.ResponsesStreamResponse.Param
+				if response.Param != nil {
+					bifrostErr.Error.Param = *response.Param
 				}
-				if response.ResponsesStreamResponse.Code != nil {
-					bifrostErr.Error.Code = response.ResponsesStreamResponse.Code
+				if response.Code != nil {
+					bifrostErr.Error.Code = response.Code
 				}
 
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1071,23 +1067,23 @@ func handleOpenAIResponsesStreaming(
 			response.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 			response.ExtraFields.Provider = providerName
 			response.ExtraFields.ModelRequested = request.Model
-			response.ExtraFields.ChunkIndex = response.ResponsesStreamResponse.SequenceNumber
+			response.ExtraFields.ChunkIndex = response.SequenceNumber
 
 			if sendBackRawResponse {
 				response.ExtraFields.RawResponse = jsonData
 			}
 
-			if response.ResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
 				return
 			}
 
 			response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
 			lastChunkTime = time.Now()
 
-			processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
+			processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
 		}
 		// Handle scanner errors first
 		if err := scanner.Err(); err != nil {
@@ -1102,7 +1098,7 @@ func handleOpenAIResponsesStreaming(
 // Embedding generates embeddings for the given input text(s).
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed for this provider
 	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
@@ -1134,7 +1130,7 @@ func handleOpenAIEmbeddingRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
-) (*schemas.BifrostResponse, *schemas.BifrostError) {
+) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Use centralized converter
 	reqBody := openai.ToOpenAIEmbeddingRequest(request)
 	if reqBody == nil {
@@ -1180,7 +1176,7 @@ func handleOpenAIEmbeddingRequest(
 	responseBody := resp.Body()
 
 	// Pre-allocate response structs
-	response := &schemas.BifrostResponse{}
+	response := &schemas.BifrostEmbeddingResponse{}
 
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
@@ -1203,7 +1199,7 @@ func handleOpenAIEmbeddingRequest(
 // Speech handles non-streaming speech synthesis requests.
 // It formats the request body, makes the API call, and returns the response.
 // Returns the response and any error that occurred.
-func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
 		return nil, err
 	}
@@ -1255,12 +1251,8 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 	// Create final response with the audio data
 	// Note: For speech synthesis, we return the binary audio data in the raw response
 	// The audio data is typically in MP3, WAV, or other audio formats as specified by response_format
-	bifrostResponse := &schemas.BifrostResponse{
-		Object: "audio.speech",
-		Model:  request.Model,
-		Speech: &schemas.BifrostSpeech{
-			Audio: audioData,
-		},
+	bifrostResponse := &schemas.BifrostSpeechResponse{
+		Audio: audioData,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.SpeechRequest,
 			Provider:       providerName,
@@ -1415,19 +1407,14 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			}
 
 			// Parse into bifrost response
-			var response schemas.BifrostResponse
-
-			var speechResponse schemas.BifrostSpeech
-			if err := sonic.Unmarshal([]byte(jsonData), &speechResponse); err != nil {
+			var response schemas.BifrostSpeechStreamResponse
+			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				provider.logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
 			}
 
 			chunkIndex++
 
-			response.Speech = &speechResponse
-			response.Object = "audio.speech.chunk"
-			response.Model = request.Model
 			response.ExtraFields = schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.SpeechStreamRequest,
 				Provider:       providerName,
@@ -1441,14 +1428,14 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				response.ExtraFields.RawResponse = jsonData
 			}
 
-			if speechResponse.Usage != nil {
+			if response.Usage != nil {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
 				return
 			}
 
-			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
+			processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
 		}
 
 		// Handle scanner errors
@@ -1464,7 +1451,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 // Transcription handles non-streaming transcription requests.
 // It creates a multipart form, adds fields, makes the API call, and returns the response.
 // Returns the response and any error that occurred.
-func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
 	}
@@ -1516,11 +1503,9 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 	responseBody := resp.Body()
 
 	// Parse OpenAI's transcription response directly into BifrostTranscribe
-	transcribeResponse := &schemas.BifrostTranscribe{
-		BifrostTranscribeNonStreamResponse: &schemas.BifrostTranscribeNonStreamResponse{},
-	}
+	response := &schemas.BifrostTranscriptionResponse{}
 
-	if err := sonic.Unmarshal(responseBody, transcribeResponse); err != nil {
+	if err := sonic.Unmarshal(responseBody, response); err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 	}
 
@@ -1530,24 +1515,18 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 		return nil, newBifrostOperationError(schemas.ErrProviderDecodeRaw, err, providerName)
 	}
 
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		Object:     "audio.transcription",
-		Model:      request.Model,
-		Transcribe: transcribeResponse,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.TranscriptionRequest,
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			Latency:        latency.Milliseconds(),
-		},
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType:    schemas.TranscriptionRequest,
+		Provider:       providerName,
+		ModelRequested: request.Model,
+		Latency:        latency.Milliseconds(),
 	}
 
 	if provider.sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return bifrostResponse, nil
+	return response, nil
 
 }
 
@@ -1692,19 +1671,14 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				return
 			}
 
-			var response schemas.BifrostResponse
-
-			var transcriptionResponse schemas.BifrostTranscribe
-			if err := sonic.Unmarshal([]byte(jsonData), &transcriptionResponse); err != nil {
+			var response schemas.BifrostTranscriptionStreamResponse
+			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				provider.logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
 			}
 
 			chunkIndex++
 
-			response.Transcribe = &transcriptionResponse
-			response.Object = "audio.transcription.chunk"
-			response.Model = request.Model
 			response.ExtraFields = schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.TranscriptionStreamRequest,
 				Provider:       providerName,
@@ -1718,14 +1692,14 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				response.ExtraFields.RawResponse = jsonData
 			}
 
-			if transcriptionResponse.Usage != nil {
+			if response.Usage != nil {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-				processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
+				processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
 				return
 			}
 
-			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
+			processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
 		}
 
 		// Handle scanner errors

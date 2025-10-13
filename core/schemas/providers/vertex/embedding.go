@@ -67,16 +67,16 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 }
 
 // ToBifrostResponse converts a Vertex AI embedding response to Bifrost format
-func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostResponse {
-	if vertexResp == nil || len(vertexResp.Predictions) == 0 {
+func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
+	if response == nil || len(response.Predictions) == 0 {
 		return nil
 	}
 
 	// Convert predictions to Bifrost embeddings
-	embeddings := make([]schemas.BifrostEmbedding, 0, len(vertexResp.Predictions))
-	var usage *schemas.LLMUsage
+	embeddings := make([]schemas.EmbeddingData, 0, len(response.Predictions))
+	var usage *schemas.BifrostLLMUsage
 
-	for i, prediction := range vertexResp.Predictions {
+	for i, prediction := range response.Predictions {
 		if prediction.Embeddings == nil || len(prediction.Embeddings.Values) == 0 {
 			continue
 		}
@@ -88,9 +88,9 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 		}
 
 		// Create embedding object
-		embedding := schemas.BifrostEmbedding{
+		embedding := schemas.EmbeddingData{
 			Object: "embedding",
-			Embedding: schemas.BifrostEmbeddingResponse{
+			Embedding: schemas.EmbeddingStruct{
 				EmbeddingArray: embeddingFloat32,
 			},
 			Index: i,
@@ -99,7 +99,7 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 		// Extract statistics if available
 		if prediction.Embeddings.Statistics != nil {
 			if usage == nil {
-				usage = &schemas.LLMUsage{}
+				usage = &schemas.BifrostLLMUsage{}
 			}
 			usage.TotalTokens += prediction.Embeddings.Statistics.TokenCount
 			usage.PromptTokens += prediction.Embeddings.Statistics.TokenCount
@@ -108,8 +108,7 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 		embeddings = append(embeddings, embedding)
 	}
 
-	// Create final response
-	response := &schemas.BifrostResponse{
+	return &schemas.BifrostEmbeddingResponse{
 		Object: "list",
 		Data:   embeddings,
 		Usage:  usage,
@@ -118,6 +117,4 @@ func (vertexResp *VertexEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 			Provider:    schemas.Vertex,
 		},
 	}
-
-	return response
 }

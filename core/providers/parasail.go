@@ -67,7 +67,7 @@ func (provider *ParasailProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // TextCompletion is not supported by the Parasail provider.
-func (provider *ParasailProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *ParasailProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "parasail")
 }
 
@@ -79,7 +79,7 @@ func (provider *ParasailProvider) TextCompletionStream(ctx context.Context, post
 }
 
 // ChatCompletion performs a chat completion request to the Parasail API.
-func (provider *ParasailProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *ParasailProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -113,13 +113,13 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, post
 	)
 }
 
-func (provider *ParasailProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	response, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+func (provider *ParasailProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}
 
-	response.ToResponsesOnly()
+	response := chatResponse.ToBifrostResponsesResponse()
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
@@ -137,12 +137,12 @@ func (provider *ParasailProvider) ResponsesStream(ctx context.Context, postHookR
 }
 
 // Embedding is not supported by the Parasail provider.
-func (provider *ParasailProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *ParasailProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "parasail")
 }
 
 // Speech is not supported by the Parasail provider.
-func (provider *ParasailProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *ParasailProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "parasail")
 }
 
@@ -152,7 +152,7 @@ func (provider *ParasailProvider) SpeechStream(ctx context.Context, postHookRunn
 }
 
 // Transcription is not supported by the Parasail provider.
-func (provider *ParasailProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *ParasailProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "parasail")
 }
 

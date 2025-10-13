@@ -169,7 +169,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 					cohereReq.ToolChoice = &toolChoice
 				default:
 					toolChoice := ToolChoiceAuto
-					cohereReq.ToolChoice = &toolChoice					
+					cohereReq.ToolChoice = &toolChoice
 				}
 			}
 		}
@@ -179,18 +179,18 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 }
 
 // ToBifrostResponse converts a Cohere v2 response to Bifrost format
-func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostResponse {
-	if cohereResp == nil {
+func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
+	if response == nil {
 		return nil
 	}
 
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:     cohereResp.ID,
+	bifrostResponse := &schemas.BifrostChatResponse{
+		ID:     response.ID,
 		Object: "chat.completion",
-		Choices: []schemas.BifrostChatResponseChoice{
+		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index: 0,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 					Message: &schemas.ChatMessage{
 						Role: schemas.ChatMessageRoleAssistant,
 					},
@@ -204,15 +204,15 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 	}
 
 	// Convert message content
-	if cohereResp.Message != nil {
-		if cohereResp.Message.Content != nil {
-			if cohereResp.Message.Content.IsString() {
-				content := cohereResp.Message.Content.GetString()
-				bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{
+	if response.Message != nil {
+		if response.Message.Content != nil {
+			if response.Message.Content.IsString() {
+				content := response.Message.Content.GetString()
+				bifrostResponse.Choices[0].ChatNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{
 					ContentStr: content,
 				}
-			} else if cohereResp.Message.Content.IsBlocks() {
-				blocks := cohereResp.Message.Content.GetBlocks()
+			} else if response.Message.Content.IsBlocks() {
+				blocks := response.Message.Content.GetBlocks()
 				if blocks != nil {
 					var contentBlocks []schemas.ChatContentBlock
 					for _, block := range blocks {
@@ -231,7 +231,7 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 						}
 					}
 					if len(contentBlocks) > 0 {
-						bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{
+						bifrostResponse.Choices[0].ChatNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{
 							ContentBlocks: contentBlocks,
 						}
 					}
@@ -240,9 +240,9 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 		}
 
 		// Convert tool calls
-		if cohereResp.Message.ToolCalls != nil {
+		if response.Message.ToolCalls != nil {
 			var toolCalls []schemas.ChatAssistantMessageToolCall
-			for _, toolCall := range cohereResp.Message.ToolCalls {
+			for _, toolCall := range response.Message.ToolCalls {
 				// Check if Function is nil to avoid nil pointer dereference
 				if toolCall.Function == nil {
 					// Skip this tool call if Function is nil
@@ -272,44 +272,33 @@ func (cohereResp *CohereChatResponse) ToBifrostResponse() *schemas.BifrostRespon
 				}
 				toolCalls = append(toolCalls, bifrostToolCall)
 			}
-			bifrostResponse.Choices[0].BifrostNonStreamResponseChoice.Message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			bifrostResponse.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls: toolCalls,
 			}
 		}
 	}
 
 	// Convert finish reason
-	if cohereResp.FinishReason != nil {
-		finishReason := string(*cohereResp.FinishReason)
+	if response.FinishReason != nil {
+		finishReason := string(*response.FinishReason)
 		bifrostResponse.Choices[0].FinishReason = &finishReason
 	}
 
 	// Convert usage information
-	if cohereResp.Usage != nil {
-		usage := &schemas.LLMUsage{}
+	if response.Usage != nil {
+		usage := &schemas.BifrostLLMUsage{}
 
-		if cohereResp.Usage.Tokens != nil {
-			if cohereResp.Usage.Tokens.InputTokens != nil {
-				usage.PromptTokens = int(*cohereResp.Usage.Tokens.InputTokens)
+		if response.Usage.Tokens != nil {
+			if response.Usage.Tokens.InputTokens != nil {
+				usage.PromptTokens = int(*response.Usage.Tokens.InputTokens)
 			}
-			if cohereResp.Usage.Tokens.OutputTokens != nil {
-				usage.CompletionTokens = int(*cohereResp.Usage.Tokens.OutputTokens)
+			if response.Usage.Tokens.OutputTokens != nil {
+				usage.CompletionTokens = int(*response.Usage.Tokens.OutputTokens)
 			}
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
 
 		bifrostResponse.Usage = usage
-
-		// Convert billed usage
-		if cohereResp.Usage.BilledUnits != nil {
-			bifrostResponse.ExtraFields.BilledUsage = &schemas.BilledLLMUsage{}
-			if cohereResp.Usage.BilledUnits.InputTokens != nil {
-				bifrostResponse.ExtraFields.BilledUsage.PromptTokens = cohereResp.Usage.BilledUnits.InputTokens
-			}
-			if cohereResp.Usage.BilledUnits.OutputTokens != nil {
-				bifrostResponse.ExtraFields.BilledUsage.CompletionTokens = cohereResp.Usage.BilledUnits.OutputTokens
-			}
-		}
 	}
 
 	return bifrostResponse

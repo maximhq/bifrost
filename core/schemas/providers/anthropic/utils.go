@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"encoding/json"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -89,4 +91,19 @@ func getImageURLFromBlock(block AnthropicContentBlock) string {
 	}
 
 	return ""
+}
+
+// Helper function to parse JSON input arguments back to interface{}
+func parseJSONInput(jsonStr string) interface{} {
+	if jsonStr == "" || jsonStr == "{}" {
+		return map[string]interface{}{}
+	}
+
+	var result interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		// If parsing fails, return as string
+		return jsonStr
+	}
+
+	return result
 }

@@ -43,6 +43,7 @@ type Bifrost struct {
 	responseStreamPool  sync.Pool                        // Pool for response stream channels, initial pool size is set in Init
 	pluginPipelinePool  sync.Pool                        // Pool for PluginPipeline objects
 	bifrostRequestPool  sync.Pool                        // Pool for BifrostRequest objects
+	bifrostResponsePool sync.Pool                        // Pool for BifrostResponse objects
 	logger              schemas.Logger                   // logger instance, default logger is used if not provided
 	mcpManager          *MCPManager                      // MCP integration manager (nil if MCP not configured)
 	dropExcessRequests  atomic.Bool                      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
@@ -130,7 +131,11 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			return &schemas.BifrostRequest{}
 		},
 	}
-
+	bifrost.bifrostResponsePool = sync.Pool{
+		New: func() interface{} {
+			return &schemas.BifrostResponse{}
+		},
+	}
 	// Prewarm pools with multiple objects
 	for range config.InitialPoolSize {
 		// Create and put new objects directly into pools
@@ -143,6 +148,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			postHookErrors: make([]error, 0),
 		})
 		bifrost.bifrostRequestPool.Put(&schemas.BifrostRequest{})
+		bifrost.bifrostResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
 	providerKeys, err := bifrost.account.GetConfiguredProviders()
@@ -204,7 +210,7 @@ func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 // PUBLIC API METHODS
 
 // TextCompletionRequest sends a text completion request to the specified provider.
-func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -223,13 +229,15 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 	}
 	// Preparing request
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.TextCompletionRequest
 	bifrostReq.TextCompletionRequest = req
-	// Hand over to bifrost core
-	return bifrost.handleRequest(ctx, bifrostReq)
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	//TODO: Release the response
+	return response.TextCompletionResponse, nil
 }
 
 // TextCompletionStreamRequest sends a streaming text completion request to the specified provider.
@@ -251,16 +259,13 @@ func (bifrost *Bifrost) TextCompletionStreamRequest(ctx context.Context, req *sc
 		}
 	}
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.TextCompletionStreamRequest
 	bifrostReq.TextCompletionRequest = req
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
-func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -279,13 +284,15 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.ChatCompletionRequest
 	bifrostReq.ChatRequest = req
 
-	return bifrost.handleRequest(ctx, bifrostReq)
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	//TODO: Release the response
+	return response.ChatResponse, nil
 }
 
 // ChatCompletionStreamRequest sends a chat completion stream request to the specified provider.
@@ -308,9 +315,6 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *sc
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.ChatCompletionStreamRequest
 	bifrostReq.ChatRequest = req
 
@@ -318,7 +322,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *sc
 }
 
 // ResponsesRequest sends a responses request to the specified provider.
-func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -337,13 +341,15 @@ func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.Bifro
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.ResponsesRequest
 	bifrostReq.ResponsesRequest = req
 
-	return bifrost.handleRequest(ctx, bifrostReq)
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	//TODO: Release the response
+	return response.ResponsesResponse, nil
 }
 
 // ResponsesStreamRequest sends a responses stream request to the specified provider.
@@ -366,9 +372,6 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx context.Context, req *schemas
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.ResponsesStreamRequest
 	bifrostReq.ResponsesRequest = req
 
@@ -376,7 +379,7 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx context.Context, req *schemas
 }
 
 // EmbeddingRequest sends an embedding request to the specified provider.
-func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -395,17 +398,19 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.EmbeddingRequest
 	bifrostReq.EmbeddingRequest = req
 
-	return bifrost.handleRequest(ctx, bifrostReq)
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	//TODO: Release the response
+	return response.EmbeddingResponse, nil
 }
 
 // SpeechRequest sends a speech request to the specified provider.
-func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -424,13 +429,15 @@ func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostS
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.SpeechRequest
 	bifrostReq.SpeechRequest = req
 
-	return bifrost.handleRequest(ctx, bifrostReq)
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	//TODO: Release the response
+	return response.SpeechResponse, nil
 }
 
 // SpeechStreamRequest sends a speech stream request to the specified provider.
@@ -453,9 +460,6 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.Bi
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.SpeechStreamRequest
 	bifrostReq.SpeechRequest = req
 
@@ -463,7 +467,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.Bi
 }
 
 // TranscriptionRequest sends a transcription request to the specified provider.
-func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -482,13 +486,15 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.B
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.TranscriptionRequest
 	bifrostReq.TranscriptionRequest = req
 
-	return bifrost.handleRequest(ctx, bifrostReq)
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	//TODO: Release the response
+	return response.TranscriptionResponse, nil
 }
 
 // TranscriptionStreamRequest sends a transcription stream request to the specified provider.
@@ -511,9 +517,6 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *sch
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
-	bifrostReq.Provider = req.Provider
-	bifrostReq.Model = req.Model
-	bifrostReq.Fallbacks = req.Fallbacks
 	bifrostReq.RequestType = schemas.TranscriptionStreamRequest
 	bifrostReq.TranscriptionRequest = req
 
@@ -1114,7 +1117,8 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 	}
 
 	// If no fallbacks configured, return primary error
-	if len(req.Fallbacks) == 0 {
+	_, _, fallbacks := req.GetRequestFields()
+	if len(fallbacks) == 0 {
 		bifrost.logger.Debug("No fallbacks configured, we should not try fallbacks")
 		return false
 	}
@@ -1178,9 +1182,6 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		fallbackReq.TranscriptionRequest = &tmp
 	}
 
-	fallbackReq.Provider = fallback.Provider
-	fallbackReq.Model = fallback.Model
-
 	return &fallbackReq
 }
 
@@ -1207,11 +1208,13 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
 
+	provider, model, fallbacks := req.GetRequestFields()
+
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       req.Provider,
-			ModelRequested: req.Model,
 			RequestType:    req.RequestType,
+			Provider:       provider,
+			ModelRequested: model,
 		}
 		return nil, err
 	}
@@ -1221,15 +1224,15 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 		ctx = bifrost.ctx
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s and %d fallbacks", req.Provider, req.Model, len(req.Fallbacks)))
+	bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
 
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryRequest(req, ctx)
 
 	if primaryErr != nil {
-		bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %v", req.Provider, req.Model, primaryErr))
-		if len(req.Fallbacks) > 0 {
-			bifrost.logger.Debug(fmt.Sprintf("Check if we should try %d fallbacks", len(req.Fallbacks)))
+		bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+		if len(fallbacks) > 0 {
+			bifrost.logger.Debug(fmt.Sprintf("Check if we should try %d fallbacks", len(fallbacks)))
 		}
 	}
 
@@ -1240,7 +1243,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	}
 
 	// Try fallbacks in order
-	for _, fallback := range req.Fallbacks {
+	for _, fallback := range fallbacks {
 		bifrost.logger.Debug(fmt.Sprintf("Trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
@@ -1274,11 +1277,13 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
 
+	provider, model, fallbacks := req.GetRequestFields()
+
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       req.Provider,
-			ModelRequested: req.Model,
 			RequestType:    req.RequestType,
+			Provider:       provider,
+			ModelRequested: model,
 		}
 		return nil, err
 	}
@@ -1298,7 +1303,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 	}
 
 	// Try fallbacks in order
-	for _, fallback := range req.Fallbacks {
+	for _, fallback := range fallbacks {
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
@@ -1325,7 +1330,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	queue, err := bifrost.getProviderQueue(req.Provider)
+	provider, _, _ := req.GetRequestFields()
+	queue, err := bifrost.getProviderQueue(provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
@@ -1413,7 +1419,8 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 // tryStreamRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx context.Context) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	queue, err := bifrost.getProviderQueue(req.Provider)
+	provider, _, _ := req.GetRequestFields()
+	queue, err := bifrost.getProviderQueue(provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
@@ -1453,14 +1460,42 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 						continue
 					}
 
+					bifrostResponse := bifrost.bifrostResponsePool.Get().(*schemas.BifrostResponse)
+					if streamMsg.BifrostTextCompletionResponse != nil {
+						bifrostResponse.TextCompletionResponse = streamMsg.BifrostTextCompletionResponse
+					}
+					if streamMsg.BifrostChatResponse != nil {
+						bifrostResponse.ChatResponse = streamMsg.BifrostChatResponse
+					}
+					if streamMsg.BifrostResponsesStreamResponse != nil {
+						bifrostResponse.ResponsesStreamResponse = streamMsg.BifrostResponsesStreamResponse
+					}
+					if streamMsg.BifrostSpeechStreamResponse != nil {
+						bifrostResponse.SpeechStreamResponse = streamMsg.BifrostSpeechStreamResponse
+					}
+					if streamMsg.BifrostTranscriptionStreamResponse != nil {
+						bifrostResponse.TranscriptionStreamResponse = streamMsg.BifrostTranscriptionStreamResponse
+					}
+
 					// Run post hooks on the stream message
-					processedResp, processedErr := pipelinePostHookRunner(&ctx, streamMsg.BifrostResponse, streamMsg.BifrostError)
+					processedResponse, processedError := pipelinePostHookRunner(&ctx, bifrostResponse, streamMsg.BifrostError)
+
+					streamResponse := &schemas.BifrostStream{}
+					if processedResponse != nil {
+						streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
+						streamResponse.BifrostChatResponse = processedResponse.ChatResponse
+						streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
+						streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
+						streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
+					}
+					if processedError != nil {
+						streamResponse.BifrostError = processedError
+					}
 
 					// Send the processed message to the output stream
-					outputStream <- &schemas.BifrostStream{
-						BifrostResponse: processedResp,
-						BifrostError:    processedErr,
-					}
+					outputStream <- streamResponse
+
+					//TODO: Release the processed response immediately after use
 				}
 			}()
 
@@ -1535,6 +1570,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	}()
 
 	for req := range queue {
+		_, model, _ := req.BifrostRequest.GetRequestFields()
+
 		var result *schemas.BifrostResponse
 		var stream chan *schemas.BifrostStream
 		var bifrostError *schemas.BifrostError
@@ -1549,9 +1586,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		key := schemas.Key{}
 		if providerRequiresKey(baseProvider) {
 			// Use the custom provider name for actual key selection, but pass base provider type for key validation
-			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, provider.GetProviderKey(), req.Model, baseProvider)
+			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, provider.GetProviderKey(), model, baseProvider)
 			if err != nil {
-				bifrost.logger.Warn("error selecting key for model %s: %v", req.Model, err)
+				bifrost.logger.Warn("error selecting key for model %s: %v", model, err)
 				req.Err <- schemas.BifrostError{
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
@@ -1586,7 +1623,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 			if attempts > 0 {
 				// Log retry attempt
-				bifrost.logger.Info("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, req.Model, bifrostError.Error.Message)
+				bifrost.logger.Info("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, bifrostError.Error.Message)
 
 				// Calculate and apply backoff
 				backoff := calculateBackoff(attempts-1, config)
@@ -1602,7 +1639,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					break // Don't retry client errors
 				}
 			} else {
-				result, bifrostError = handleProviderRequest(provider, req, key)
+				result, bifrostError = bifrost.handleProviderRequest(provider, req, key)
 				if bifrostError != nil {
 					break // Don't retry client errors
 				}
@@ -1626,7 +1663,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 			bifrostError.ExtraFields = schemas.BifrostErrorExtraFields{
 				Provider:       provider.GetProviderKey(),
-				ModelRequested: req.Model,
+				ModelRequested: model,
 				RequestType:    req.RequestType,
 			}
 
@@ -1655,10 +1692,6 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
 				}
 			} else {
-				result.ExtraFields.RequestType = req.RequestType
-				result.ExtraFields.Provider = provider.GetProviderKey()
-				result.ExtraFields.ModelRequested = req.Model
-
 				// Send response with context awareness to prevent deadlock
 				select {
 				case req.Response <- result:
@@ -1678,20 +1711,45 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
-func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.TextCompletionRequest:
-		return provider.TextCompletion(req.Context, key, req.BifrostRequest.TextCompletionRequest)
+		textCompletionResponse, bifrostError := provider.TextCompletion(req.Context, key, req.BifrostRequest.TextCompletionRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.TextCompletionResponse = textCompletionResponse
 	case schemas.ChatCompletionRequest:
-		return provider.ChatCompletion(req.Context, key, req.BifrostRequest.ChatRequest)
+		chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, req.BifrostRequest.ChatRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
-		return provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
+		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ResponsesResponse = responsesResponse
 	case schemas.EmbeddingRequest:
-		return provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
+		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.EmbeddingResponse = embeddingResponse
 	case schemas.SpeechRequest:
-		return provider.Speech(req.Context, key, req.BifrostRequest.SpeechRequest)
+		speechResponse, bifrostError := provider.Speech(req.Context, key, req.BifrostRequest.SpeechRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.SpeechResponse = speechResponse
 	case schemas.TranscriptionRequest:
-		return provider.Transcription(req.Context, key, req.BifrostRequest.TranscriptionRequest)
+		transcriptionResponse, bifrostError := provider.Transcription(req.Context, key, req.BifrostRequest.TranscriptionRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.TranscriptionResponse = transcriptionResponse
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1700,6 +1758,7 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 			},
 		}
 	}
+	return response, nil
 }
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
@@ -1794,7 +1853,6 @@ func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 	pipeline := bifrost.pluginPipelinePool.Get().(*PluginPipeline)
 	pipeline.plugins = *bifrost.plugins.Load()
 	pipeline.logger = bifrost.logger
-	pipeline.resetPluginPipeline()
 	return pipeline
 }
 
@@ -1802,33 +1860,6 @@ func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 	pipeline.resetPluginPipeline()
 	bifrost.pluginPipelinePool.Put(pipeline)
-}
-
-// resetBifrostRequest resets a BifrostRequest instance for reuse
-func resetBifrostRequest(req *schemas.BifrostRequest) {
-	req.Provider = ""
-	req.Model = ""
-	req.Fallbacks = nil
-	req.RequestType = ""
-	req.TextCompletionRequest = nil
-	req.ChatRequest = nil
-	req.ResponsesRequest = nil
-	req.EmbeddingRequest = nil
-	req.SpeechRequest = nil
-	req.TranscriptionRequest = nil
-}
-
-// getBifrostRequest gets a BifrostRequest from the pool
-func (bifrost *Bifrost) getBifrostRequest() *schemas.BifrostRequest {
-	req := bifrost.bifrostRequestPool.Get().(*schemas.BifrostRequest)
-	resetBifrostRequest(req)
-	return req
-}
-
-// releaseBifrostRequest returns a BifrostRequest to the pool
-func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
-	resetBifrostRequest(req)
-	bifrost.bifrostRequestPool.Put(req)
 }
 
 // POOL & RESOURCE MANAGEMENT
@@ -1893,6 +1924,29 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.ResponseStream = nil
 	msg.Err = nil
 	bifrost.channelMessagePool.Put(msg)
+}
+
+// resetBifrostRequest resets a BifrostRequest instance for reuse
+func resetBifrostRequest(req *schemas.BifrostRequest) {
+	req.RequestType = ""
+	req.TextCompletionRequest = nil
+	req.ChatRequest = nil
+	req.ResponsesRequest = nil
+	req.EmbeddingRequest = nil
+	req.SpeechRequest = nil
+	req.TranscriptionRequest = nil
+}
+
+// getBifrostRequest gets a BifrostRequest from the pool
+func (bifrost *Bifrost) getBifrostRequest() *schemas.BifrostRequest {
+	req := bifrost.bifrostRequestPool.Get().(*schemas.BifrostRequest)
+	return req
+}
+
+// releaseBifrostRequest returns a BifrostRequest to the pool
+func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
+	resetBifrostRequest(req)
+	bifrost.bifrostRequestPool.Put(req)
 }
 
 // selectKeyFromProviderForModel selects an appropriate API key for a given provider and model.

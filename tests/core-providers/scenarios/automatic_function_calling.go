@@ -61,7 +61,7 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 		}
 
 		// Create operations for both Chat Completions and Responses API
-		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -84,7 +84,7 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,

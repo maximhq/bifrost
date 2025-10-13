@@ -104,13 +104,15 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		return result, err, nil
 	}
 
+	extraFields := result.GetExtraFields()
+
 	// Check if plugin should run based on usage type
-	if !p.shouldRun(ctx, result.ExtraFields.RequestType) {
+	if !p.shouldRun(ctx, extraFields.RequestType) {
 		return result, err, nil
 	}
 
-	// If no result, return as is
-	if result == nil {
+	// If no chat response, return as is
+	if result == nil || result.ChatResponse == nil {
 		return result, err, nil
 	}
 
@@ -121,14 +123,14 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	}
 
 	// Process only streaming choices to accumulate and fix partial JSON
-	if len(result.Choices) > 0 {
-		for i := range result.Choices {
-			choice := &result.Choices[i]
+	if len(result.ChatResponse.Choices) > 0 {
+		for i := range result.ChatResponse.Choices {
+			choice := &result.ChatResponse.Choices[i]
 
 			// Handle only streaming response
-			if choice.BifrostStreamResponseChoice != nil {
-				if choice.BifrostStreamResponseChoice.Delta.Content != nil {
-					content := *choice.BifrostStreamResponseChoice.Delta.Content
+			if choice.ChatStreamResponseChoice != nil {
+				if choice.ChatStreamResponseChoice.Delta.Content != nil {
+					content := *choice.ChatStreamResponseChoice.Delta.Content
 					if content != "" {
 						// Accumulate the content
 						accumulated := p.accumulateContent(requestID, content)
@@ -150,7 +152,7 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 						}
 
 						// Replace the delta content with the complete valid JSON
-						choice.BifrostStreamResponseChoice.Delta.Content = &fixedContent
+						choice.ChatStreamResponseChoice.Delta.Content = &fixedContent
 					}
 				}
 			}
@@ -172,8 +174,8 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 func (p *JsonParserPlugin) getRequestID(ctx *context.Context, result *schemas.BifrostResponse) string {
 
 	// Try to get from result
-	if result != nil && result.ID != "" {
-		return result.ID
+	if result != nil && result.ChatResponse != nil && result.ChatResponse.ID != "" {
+		return result.ChatResponse.ID
 	}
 
 	// Try to get from context if not available in result

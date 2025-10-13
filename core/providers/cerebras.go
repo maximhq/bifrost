@@ -64,7 +64,7 @@ func (provider *CerebrasProvider) GetProviderKey() schemas.ModelProvider {
 // TextCompletion performs a text completion request to Cerebras's API.
 // It formats the request, sends it to Cerebras, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return handleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
@@ -97,7 +97,7 @@ func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, post
 }
 
 // ChatCompletion performs a chat completion request to the Cerebras API.
-func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -131,13 +131,13 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 	)
 }
 
-func (provider *CerebrasProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	response, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+func (provider *CerebrasProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}
 
-	response.ToResponsesOnly()
+	response := chatResponse.ToBifrostResponsesResponse()
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
@@ -155,11 +155,11 @@ func (provider *CerebrasProvider) ResponsesStream(ctx context.Context, postHookR
 }
 
 // Embedding is not supported by the Cerebras provider.
-func (provider *CerebrasProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "cerebras")
 }
 
-func (provider *CerebrasProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "cerebras")
 }
 
@@ -167,7 +167,7 @@ func (provider *CerebrasProvider) SpeechStream(ctx context.Context, postHookRunn
 	return nil, newUnsupportedOperationError("speech stream", "cerebras")
 }
 
-func (provider *CerebrasProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "cerebras")
 }
 

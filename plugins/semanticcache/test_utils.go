@@ -240,19 +240,21 @@ func CreateSpeechRequest(input string, voice string) *schemas.BifrostSpeechReque
 
 // AssertCacheHit verifies that a response was served from cache
 func AssertCacheHit(t *testing.T, response *schemas.BifrostResponse, expectedCacheType string) {
-	if response.ExtraFields.CacheDebug == nil {
+	extraFields := response.GetExtraFields()
+
+	if extraFields.CacheDebug == nil {
 		t.Error("Cache metadata missing 'cache_debug'")
 		return
 	}
 
 	// Check that it's actually a cache hit
-	if !response.ExtraFields.CacheDebug.CacheHit {
+	if !extraFields.CacheDebug.CacheHit {
 		t.Error("❌ Expected cache hit but response was not cached")
 		return
 	}
 
 	if expectedCacheType != "" {
-		cacheType := response.ExtraFields.CacheDebug.HitType
+		cacheType := extraFields.CacheDebug.HitType
 		if cacheType != nil && *cacheType != expectedCacheType {
 			t.Errorf("Expected cache type '%s', got '%s'", expectedCacheType, *cacheType)
 			return
@@ -266,13 +268,15 @@ func AssertCacheHit(t *testing.T, response *schemas.BifrostResponse, expectedCac
 
 // AssertNoCacheHit verifies that a response was NOT served from cache
 func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
-	if response.ExtraFields.CacheDebug == nil {
+	extraFields := response.GetExtraFields()
+
+	if extraFields.CacheDebug == nil {
 		t.Log("✅ Response correctly not served from cache (no 'cache_debug' flag)")
 		return
 	}
 
 	// Check the actual CacheHit field instead of just checking if CacheDebug exists
-	if response.ExtraFields.CacheDebug.CacheHit {
+	if extraFields.CacheDebug.CacheHit {
 		t.Error("❌ Response was cached when it shouldn't be")
 		return
 	}
@@ -538,7 +542,7 @@ func WithRetries[T any](t *testing.T, operation func() (T, *schemas.BifrostError
 		}
 
 		lastErrorMessage := ""
-		if lastErr != nil && lastErr.Error != nil {
+		if lastErr.Error != nil {
 			lastErrorMessage = lastErr.Error.Message
 		}
 
@@ -563,11 +567,11 @@ func ChatRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		response, err := client.ChatCompletionRequest(ctx, request)
 		if err != nil {
 			if err.Error != nil {
-				return response, err
+				return &schemas.BifrostResponse{ChatResponse: response}, err
 			}
-			return response, err
+			return &schemas.BifrostResponse{ChatResponse: response}, err
 		}
-		return response, nil
+		return &schemas.BifrostResponse{ChatResponse: response}, nil
 	}, config, "chat completion request")
 }
 
@@ -575,7 +579,14 @@ func ChatRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.C
 func ResponsesRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	config := DefaultRetryConfig()
 	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-		return client.ResponsesRequest(ctx, request)
+		response, err := client.ResponsesRequest(ctx, request)
+		if err != nil {
+			if err.Error != nil {
+				return &schemas.BifrostResponse{ResponsesResponse: response}, err
+			}
+			return &schemas.BifrostResponse{ResponsesResponse: response}, err
+		}
+		return &schemas.BifrostResponse{ResponsesResponse: response}, nil
 	}, config, "responses request")
 }
 
@@ -583,7 +594,14 @@ func ResponsesRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx cont
 func EmbeddingRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	config := DefaultRetryConfig()
 	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-		return client.EmbeddingRequest(ctx, request)
+		response, err := client.EmbeddingRequest(ctx, request)
+		if err != nil {
+			if err.Error != nil {
+				return &schemas.BifrostResponse{EmbeddingResponse: response}, err
+			}
+			return &schemas.BifrostResponse{EmbeddingResponse: response}, err
+		}
+		return &schemas.BifrostResponse{EmbeddingResponse: response}, nil
 	}, config, "embedding request")
 }
 
@@ -591,7 +609,14 @@ func EmbeddingRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx cont
 func SpeechRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	config := DefaultRetryConfig()
 	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-		return client.SpeechRequest(ctx, request)
+		response, err := client.SpeechRequest(ctx, request)
+		if err != nil {
+			if err.Error != nil {
+				return &schemas.BifrostResponse{SpeechResponse: response}, err
+			}
+			return &schemas.BifrostResponse{SpeechResponse: response}, err
+		}
+		return &schemas.BifrostResponse{SpeechResponse: response}, nil
 	}, config, "speech request")
 }
 

@@ -71,3 +71,84 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	return geminiReq
 }
+
+// ToBifrostTranscriptionResponse converts a GenerateContentResponse to a BifrostTranscriptionResponse
+func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schemas.BifrostTranscriptionResponse {
+	bifrostResp := &schemas.BifrostTranscriptionResponse{}
+
+	// Extract usage metadata
+	inputTokens, outputTokens, totalTokens := response.extractUsageMetadata()
+
+	// Process candidates to extract text content
+	if len(response.Candidates) > 0 {
+		candidate := response.Candidates[0]
+		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
+			var textContent string
+
+			// Extract text content from all parts
+			for _, part := range candidate.Content.Parts {
+				if part.Text != "" {
+					textContent += part.Text
+				}
+			}
+
+			if textContent != "" {
+				bifrostResp.Text = textContent
+				bifrostResp.Task = schemas.Ptr("transcribe")
+
+				// Set usage information
+				bifrostResp.Usage = &schemas.TranscriptionUsage{
+					Type:         "tokens",
+					InputTokens:  &inputTokens,
+					OutputTokens: &outputTokens,
+					TotalTokens:  &totalTokens,
+				}
+			}
+		}
+	}
+
+	return bifrostResp
+}
+
+// ToGeminiTranscriptionResponse converts a BifrostTranscriptionResponse to Gemini's GenerateContentResponse
+func ToGeminiTranscriptionResponse(bifrostResp *schemas.BifrostTranscriptionResponse) *GenerateContentResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	genaiResp := &GenerateContentResponse{}
+
+	candidate := &Candidate{
+		Content: &Content{
+			Parts: []*Part{
+				{
+					Text: bifrostResp.Text,
+				},
+			},
+			Role: string(RoleModel),
+		},
+	}
+
+	// Set usage metadata from transcription usage
+	if bifrostResp.Usage != nil {
+		var promptTokens, candidatesTokens, totalTokens int32
+		if bifrostResp.Usage.InputTokens != nil {
+			promptTokens = int32(*bifrostResp.Usage.InputTokens)
+		}
+		if bifrostResp.Usage.OutputTokens != nil {
+			candidatesTokens = int32(*bifrostResp.Usage.OutputTokens)
+		}
+		if bifrostResp.Usage.TotalTokens != nil {
+			totalTokens = int32(*bifrostResp.Usage.TotalTokens)
+		}
+
+		genaiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     promptTokens,
+			CandidatesTokenCount: candidatesTokens,
+			TotalTokenCount:      totalTokens,
+		}
+	}
+
+	genaiResp.Candidates = []*Candidate{candidate}
+	return genaiResp
+}

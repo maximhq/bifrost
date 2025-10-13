@@ -2,19 +2,19 @@ package openai
 
 import "github.com/maximhq/bifrost/core/schemas"
 
-func (r *OpenAIResponsesRequest) ToBifrostRequest() *schemas.BifrostResponsesRequest {
-	if r == nil {
+func (request *OpenAIResponsesRequest) ToBifrostRequest() *schemas.BifrostResponsesRequest {
+	if request == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
 
-	input := r.Input.OpenAIResponsesRequestInputArray
+	input := request.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
 		input = []schemas.ResponsesMessage{
 			{
 				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-				Content: &schemas.ResponsesMessageContent{ContentStr: r.Input.OpenAIResponsesRequestInputStr},
+				Content: &schemas.ResponsesMessageContent{ContentStr: request.Input.OpenAIResponsesRequestInputStr},
 			},
 		}
 	}
@@ -23,7 +23,7 @@ func (r *OpenAIResponsesRequest) ToBifrostRequest() *schemas.BifrostResponsesReq
 		Provider: provider,
 		Model:    model,
 		Input:    input,
-		Params:   &r.ResponsesParameters,
+		Params:   &request.ResponsesParameters,
 	}
 }
 

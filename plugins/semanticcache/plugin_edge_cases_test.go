@@ -68,9 +68,9 @@ func TestParameterVariations(t *testing.T) {
 
 			// Check cache behavior
 			if tt.shouldCache {
-				AssertCacheHit(t, response2, string(CacheTypeDirect))
+				AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, string(CacheTypeDirect))
 			} else {
-				AssertNoCacheHit(t, response2)
+				AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2})
 			}
 		})
 	}
@@ -202,7 +202,7 @@ func TestToolVariations(t *testing.T) {
 		t.Fatalf("Second request with tools failed: %v", err3)
 	}
 
-	AssertCacheHit(t, response3, string(CacheTypeDirect))
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, string(CacheTypeDirect))
 
 	// Test 4: Request with different tools (should NOT cache hit)
 	t.Log("Making request with different tools...")
@@ -384,7 +384,7 @@ func TestContentVariations(t *testing.T) {
 			}
 
 			// Should be cached
-			AssertCacheHit(t, response2, string(CacheTypeDirect))
+			AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, string(CacheTypeDirect))
 			t.Logf("✅ %s content variation successful", tt.name)
 		})
 	}

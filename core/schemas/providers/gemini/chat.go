@@ -10,10 +10,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
-	provider, model := schemas.ParseModelString(r.Model, schemas.Gemini)
+func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
-	if provider == schemas.Vertex && !r.IsEmbedding {
+	if provider == schemas.Vertex && !request.IsEmbedding {
 		// Add google/ prefix for Bifrost if not already present
 		if !strings.HasPrefix(model, "google/") {
 			model = "google/" + model
@@ -30,10 +30,10 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 	messages := []schemas.ChatMessage{}
 
 	allGenAiMessages := []Content{}
-	if r.SystemInstruction != nil {
-		allGenAiMessages = append(allGenAiMessages, r.SystemInstruction.ToGenAIContent())
+	if request.SystemInstruction != nil {
+		allGenAiMessages = append(allGenAiMessages, request.SystemInstruction.ToGenAIContent())
 	}
-	for _, content := range r.Contents {
+	for _, content := range request.Contents {
 		allGenAiMessages = append(allGenAiMessages, content.ToGenAIContent())
 	}
 
@@ -196,40 +196,40 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 	bifrostReq.Input = messages
 
 	// Convert generation config to parameters
-	if params := r.convertGenerationConfigToChatParameters(); params != nil {
+	if params := request.convertGenerationConfigToChatParameters(); params != nil {
 		bifrostReq.Params = params
 	}
 
 	// Convert safety settings
-	if len(r.SafetySettings) > 0 {
+	if len(request.SafetySettings) > 0 {
 		ensureExtraParams(bifrostReq)
-		bifrostReq.Params.ExtraParams["safety_settings"] = r.SafetySettings
+		bifrostReq.Params.ExtraParams["safety_settings"] = request.SafetySettings
 	}
 
 	// Convert additional request fields
-	if r.CachedContent != "" {
+	if request.CachedContent != "" {
 		ensureExtraParams(bifrostReq)
-		bifrostReq.Params.ExtraParams["cached_content"] = r.CachedContent
+		bifrostReq.Params.ExtraParams["cached_content"] = request.CachedContent
 	}
 
 	// Convert response modalities
-	if len(r.ResponseModalities) > 0 {
+	if len(request.ResponseModalities) > 0 {
 		ensureExtraParams(bifrostReq)
-		bifrostReq.Params.ExtraParams["response_modalities"] = r.ResponseModalities
+		bifrostReq.Params.ExtraParams["response_modalities"] = request.ResponseModalities
 	}
 
 	// Convert labels
-	if len(r.Labels) > 0 {
+	if len(request.Labels) > 0 {
 		ensureExtraParams(bifrostReq)
-		bifrostReq.Params.ExtraParams["labels"] = r.Labels
+		bifrostReq.Params.ExtraParams["labels"] = request.Labels
 	}
 
 	// Convert tools and tool config
-	if len(r.Tools) > 0 {
+	if len(request.Tools) > 0 {
 		ensureExtraParams(bifrostReq)
 
-		tools := make([]schemas.ChatTool, 0, len(r.Tools))
-		for _, tool := range r.Tools {
+		tools := make([]schemas.ChatTool, 0, len(request.Tools))
+		for _, tool := range request.Tools {
 			if len(tool.FunctionDeclarations) > 0 {
 				for _, fn := range tool.FunctionDeclarations {
 					bifrostTool := schemas.ChatTool{
@@ -241,7 +241,7 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 					}
 					// Convert parameters schema if present
 					if fn.Parameters != nil {
-						params := r.convertSchemaToFunctionParameters(fn.Parameters)
+						params := request.convertSchemaToFunctionParameters(fn.Parameters)
 						bifrostTool.Function.Parameters = &params
 					}
 					tools = append(tools, bifrostTool)
@@ -265,16 +265,16 @@ func (r *GeminiGenerationRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 	}
 
 	// Convert tool config
-	if r.ToolConfig.FunctionCallingConfig != nil || r.ToolConfig.RetrievalConfig != nil {
+	if request.ToolConfig.FunctionCallingConfig != nil || request.ToolConfig.RetrievalConfig != nil {
 		ensureExtraParams(bifrostReq)
-		bifrostReq.Params.ExtraParams["tool_config"] = r.ToolConfig
+		bifrostReq.Params.ExtraParams["tool_config"] = request.ToolConfig
 	}
 
 	return bifrostReq
 }
 
-// ToGeminiChatGenerationRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
-func ToGeminiChatGenerationRequest(bifrostReq *schemas.BifrostChatRequest, responseModalities []string) *GeminiGenerationRequest {
+// ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
+func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest, responseModalities []string) *GeminiGenerationRequest {
 	if bifrostReq == nil {
 		return nil
 	}
@@ -332,143 +332,72 @@ func ToGeminiChatGenerationRequest(bifrostReq *schemas.BifrostChatRequest, respo
 	return geminiReq
 }
 
-func (r *GenerateContentResponse) ToBifrostResponse() *schemas.BifrostResponse {
-	// Create base response structure
-	response := &schemas.BifrostResponse{
-		ID:     r.ResponseID,
-		Model:  r.ModelVersion,
-		Object: "generate_content", // Default object type, will be overridden based on content type
+// ToBifrostChatResponse converts a GenerateContentResponse to a BifrostChatResponse
+func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
+	bifrostResp := &schemas.BifrostChatResponse{
+		ID:     response.ResponseID,
+		Model:  response.ModelVersion,
+		Object: "chat.completion",
 	}
 
 	// Set creation timestamp if available
-	if !r.CreateTime.IsZero() {
-		response.Created = int(r.CreateTime.Unix())
+	if !response.CreateTime.IsZero() {
+		bifrostResp.Created = int(response.CreateTime.Unix())
 	}
 
 	// Extract usage metadata
-	inputTokens, outputTokens, totalTokens := r.extractUsageMetadata()
+	inputTokens, outputTokens, totalTokens := response.extractUsageMetadata()
 
-	// Process candidates to determine response type and extract content
-	if len(r.Candidates) > 0 {
-		candidate := r.Candidates[0]
+	// Process candidates to extract text content
+	if len(response.Candidates) > 0 {
+		candidate := response.Candidates[0]
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-			// Check what type of content we have
-			hasAudio := false
-			hasText := false
-			var audioData []byte
 			var textContent string
 
-			// Process all parts to determine content type
+			// Extract text content from all parts
 			for _, part := range candidate.Content.Parts {
-				if part.InlineData != nil && part.InlineData.Data != nil {
-					// Check if this is audio data
-					if strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
-						hasAudio = true
-						audioData = append(audioData, part.InlineData.Data...)
-					}
-				}
 				if part.Text != "" {
-					hasText = true
 					textContent += part.Text
 				}
 			}
 
-			// Set response type based on content
-			if hasAudio && len(audioData) > 0 {
-				// This is a speech response
-				response.Object = "audio.speech"
-				response.Speech = &schemas.BifrostSpeech{
-					Audio: audioData,
-					Usage: &schemas.AudioLLMUsage{
-						InputTokens:  inputTokens,
-						OutputTokens: outputTokens,
-						TotalTokens:  totalTokens,
-					},
-				}
-			} else if hasText && textContent != "" {
-				// Check if this is actually a transcription response by looking for transcription context
-				// Only treat as transcription if we have explicit transcription metadata or context
-				isTranscription := r.isTranscriptionResponse()
-
-				if isTranscription {
-					// This is a transcription response
-					response.Object = "audio.transcription"
-					response.Transcribe = &schemas.BifrostTranscribe{
-						Text: textContent,
-						Usage: &schemas.TranscriptionUsage{
-							Type:         "tokens",
-							InputTokens:  &inputTokens,
-							OutputTokens: &outputTokens,
-							TotalTokens:  &totalTokens,
-						},
-						BifrostTranscribeNonStreamResponse: &schemas.BifrostTranscribeNonStreamResponse{
-							Task: schemas.Ptr("transcribe"),
-						},
-					}
-				} else {
-					// This is a regular chat completion response
-					response.Object = "chat.completion"
-
-					// Create choice from the candidate
-					choice := schemas.BifrostChatResponseChoice{
-						Index: 0,
-						BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-							Message: &schemas.ChatMessage{
-								Role: schemas.ChatMessageRoleAssistant,
-								Content: &schemas.ChatMessageContent{
-									ContentStr: &textContent,
-								},
+			if textContent != "" {
+				// Create choice from the candidate
+				choice := schemas.BifrostResponseChoice{
+					Index: 0,
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{
+								ContentStr: &textContent,
 							},
 						},
-					}
-
-					// Set finish reason if available
-					if candidate.FinishReason != "" {
-						finishReason := string(candidate.FinishReason)
-						choice.FinishReason = &finishReason
-					}
-
-					response.Choices = []schemas.BifrostChatResponseChoice{choice}
-
-					// Set usage information
-					response.Usage = &schemas.LLMUsage{
-						PromptTokens:     inputTokens,
-						CompletionTokens: outputTokens,
-						TotalTokens:      totalTokens,
-					}
+					},
 				}
+
+				// Set finish reason if available
+				if candidate.FinishReason != "" {
+					finishReason := string(candidate.FinishReason)
+					choice.FinishReason = &finishReason
+				}
+
+				bifrostResp.Choices = []schemas.BifrostResponseChoice{choice}
 			}
 		}
 	}
 
-	return response
-}
-
-// isTranscriptionResponse determines if this response is from a transcription request
-// by checking for transcription-specific context and metadata
-func (r *GenerateContentResponse) isTranscriptionResponse() bool {
-	// Check if any candidates contain audio input data in their parts
-	// This would indicate the original request included audio for transcription
-	for _, candidate := range r.Candidates {
-		if candidate.Content != nil {
-			for _, part := range candidate.Content.Parts {
-				if part.InlineData != nil && part.InlineData.MIMEType != "" {
-					// If we have audio data in the response parts, it's likely a transcription
-					if strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
-						return true
-					}
-				}
-			}
-		}
+	// Set usage information
+	bifrostResp.Usage = &schemas.BifrostLLMUsage{
+		PromptTokens:     inputTokens,
+		CompletionTokens: outputTokens,
+		TotalTokens:      totalTokens,
 	}
 
-	// Default to false - assume it's a regular chat completion
-	// This is safer than incorrectly classifying chat responses as transcriptions
-	return false
+	return bifrostResp
 }
 
-// FromBifrostResponse converts a BifrostResponse back to Gemini's GenerateContentResponse
-func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{} {
+// ToGeminiChatResponse converts a BifrostChatResponse to Gemini's GenerateContentResponse
+func ToGeminiChatResponse(bifrostResp *schemas.BifrostChatResponse) *GenerateContentResponse {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -483,73 +412,7 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 		genaiResp.CreateTime = time.Unix(int64(bifrostResp.Created), 0)
 	}
 
-	// Handle different response types
-	if len(bifrostResp.Data) > 0 {
-		return ToGeminiEmbeddingResponse(bifrostResp)
-	} else if bifrostResp.Speech != nil {
-		// This is a speech response - convert audio data back to Gemini format
-		candidate := &Candidate{
-			Content: &Content{
-				Parts: []*Part{
-					{
-						InlineData: &Blob{
-							Data:     bifrostResp.Speech.Audio,
-							MIMEType: "audio/wav", // Default audio MIME type
-						},
-					},
-				},
-				Role: string(RoleModel),
-			},
-		}
-
-		// Set usage metadata from speech usage
-		if bifrostResp.Speech.Usage != nil {
-			genaiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
-				PromptTokenCount:     int32(bifrostResp.Speech.Usage.InputTokens),
-				CandidatesTokenCount: int32(bifrostResp.Speech.Usage.OutputTokens),
-				TotalTokenCount:      int32(bifrostResp.Speech.Usage.TotalTokens),
-			}
-		}
-
-		genaiResp.Candidates = []*Candidate{candidate}
-
-	} else if bifrostResp.Transcribe != nil {
-		// This is a transcription response - convert text back to Gemini format
-		candidate := &Candidate{
-			Content: &Content{
-				Parts: []*Part{
-					{
-						Text: bifrostResp.Transcribe.Text,
-					},
-				},
-				Role: string(RoleModel),
-			},
-		}
-
-		// Set usage metadata from transcription usage
-		if bifrostResp.Transcribe.Usage != nil {
-			var promptTokens, candidatesTokens, totalTokens int32
-			if bifrostResp.Transcribe.Usage.InputTokens != nil {
-				promptTokens = int32(*bifrostResp.Transcribe.Usage.InputTokens)
-			}
-			if bifrostResp.Transcribe.Usage.OutputTokens != nil {
-				candidatesTokens = int32(*bifrostResp.Transcribe.Usage.OutputTokens)
-			}
-			if bifrostResp.Transcribe.Usage.TotalTokens != nil {
-				totalTokens = int32(*bifrostResp.Transcribe.Usage.TotalTokens)
-			}
-
-			genaiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
-				PromptTokenCount:     promptTokens,
-				CandidatesTokenCount: candidatesTokens,
-				TotalTokenCount:      totalTokens,
-			}
-		}
-
-		genaiResp.Candidates = []*Candidate{candidate}
-
-	} else if len(bifrostResp.Choices) > 0 {
-		// This is a chat completion response
+	if len(bifrostResp.Choices) > 0 {
 		candidates := make([]*Candidate, len(bifrostResp.Choices))
 
 		for i, choice := range bifrostResp.Choices {
@@ -563,40 +426,44 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 
 			// Convert message content to Gemini parts
 			var parts []*Part
-			if choice.Message.Content.ContentStr != nil && *choice.Message.Content.ContentStr != "" {
-				parts = append(parts, &Part{Text: *choice.Message.Content.ContentStr})
-			} else if choice.Message.Content.ContentBlocks != nil {
-				for _, block := range choice.Message.Content.ContentBlocks {
-					if block.Text != nil {
-						parts = append(parts, &Part{Text: *block.Text})
+			if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+				if choice.ChatNonStreamResponseChoice.Message.Content != nil {
+					if choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil && *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != "" {
+						parts = append(parts, &Part{Text: *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr})
+					} else if choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks != nil {
+						for _, block := range choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks {
+							if block.Text != nil {
+								parts = append(parts, &Part{Text: *block.Text})
+							}
+						}
 					}
 				}
-			}
 
-			// Handle tool calls
-			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
-				for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
-					argsMap := make(map[string]interface{})
-					if toolCall.Function.Arguments != "" {
-						json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
-					}
-					if toolCall.Function.Name != nil {
-						fc := &FunctionCall{
-							Name: *toolCall.Function.Name,
-							Args: argsMap,
+				// Handle tool calls
+				if choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
+					for _, toolCall := range choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
+						argsMap := make(map[string]interface{})
+						if toolCall.Function.Arguments != "" {
+							json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
 						}
-						if toolCall.ID != nil {
-							fc.ID = *toolCall.ID
+						if toolCall.Function.Name != nil {
+							fc := &FunctionCall{
+								Name: *toolCall.Function.Name,
+								Args: argsMap,
+							}
+							if toolCall.ID != nil {
+								fc.ID = *toolCall.ID
+							}
+							parts = append(parts, &Part{FunctionCall: fc})
 						}
-						parts = append(parts, &Part{FunctionCall: fc})
 					}
 				}
-			}
 
-			if len(parts) > 0 {
-				candidate.Content = &Content{
-					Parts: parts,
-					Role:  string(choice.Message.Role),
+				if len(parts) > 0 {
+					candidate.Content = &Content{
+						Parts: parts,
+						Role:  string(choice.ChatNonStreamResponseChoice.Message.Role),
+					}
 				}
 			}
 
@@ -604,62 +471,16 @@ func ToGeminiGenerationResponse(bifrostResp *schemas.BifrostResponse) interface{
 		}
 
 		genaiResp.Candidates = candidates
+	}
 
-		// Set usage metadata from LLM usage
-		if bifrostResp.Usage != nil {
-			genaiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
-				PromptTokenCount:     int32(bifrostResp.Usage.PromptTokens),
-				CandidatesTokenCount: int32(bifrostResp.Usage.CompletionTokens),
-				TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
-			}
+	// Set usage metadata from LLM usage
+	if bifrostResp.Usage != nil {
+		genaiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     int32(bifrostResp.Usage.PromptTokens),
+			CandidatesTokenCount: int32(bifrostResp.Usage.CompletionTokens),
+			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
 		}
 	}
 
 	return genaiResp
-}
-
-// ToGeminiEmbeddingResponse converts a BifrostResponse with embedding data to Gemini's embedding response format
-func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostResponse) *GeminiEmbeddingResponse {
-	if bifrostResp == nil || len(bifrostResp.Data) == 0 {
-		return nil
-	}
-
-	geminiResp := &GeminiEmbeddingResponse{
-		Embeddings: make([]GeminiEmbedding, len(bifrostResp.Data)),
-	}
-
-	// Convert each embedding from Bifrost format to Gemini format
-	for i, embedding := range bifrostResp.Data {
-		var values []float32
-
-		// Extract embedding values from BifrostEmbeddingResponse
-		if embedding.Embedding.EmbeddingArray != nil {
-			values = embedding.Embedding.EmbeddingArray
-		} else if len(embedding.Embedding.Embedding2DArray) > 0 {
-			// If it's a 2D array, take the first array
-			values = embedding.Embedding.Embedding2DArray[0]
-		}
-
-		geminiEmbedding := GeminiEmbedding{
-			Values: values,
-		}
-
-		// Add statistics if available (token count from usage metadata)
-		if bifrostResp.Usage != nil {
-			geminiEmbedding.Statistics = &ContentEmbeddingStatistics{
-				TokenCount: int32(bifrostResp.Usage.PromptTokens),
-			}
-		}
-
-		geminiResp.Embeddings[i] = geminiEmbedding
-	}
-
-	// Set metadata if available (for Vertex API compatibility)
-	if bifrostResp.Usage != nil {
-		geminiResp.Metadata = &EmbedContentMetadata{
-			BillableCharacterCount: int32(bifrostResp.Usage.PromptTokens),
-		}
-	}
-
-	return geminiResp
 }

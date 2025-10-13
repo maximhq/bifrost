@@ -41,16 +41,14 @@ const (
 // UpdateLogData contains data for log entry updates
 type UpdateLogData struct {
 	Status              string
-	TokenUsage          *schemas.LLMUsage
+	TokenUsage          *schemas.BifrostLLMUsage
 	Cost                *float64 // Cost in dollars from pricing plugin
 	ChatOutput          *schemas.ChatMessage
 	ResponsesOutput     []schemas.ResponsesMessage
-	EmbeddingOutput     []schemas.BifrostEmbedding
+	EmbeddingOutput     []schemas.EmbeddingData
 	ErrorDetails        *schemas.BifrostError
-	Model               string
-	Object              string
-	SpeechOutput        *schemas.BifrostSpeech     // For non-streaming speech responses
-	TranscriptionOutput *schemas.BifrostTranscribe // For non-streaming transcription responses
+	SpeechOutput        *schemas.BifrostSpeechResponse        // For non-streaming speech responses
+	TranscriptionOutput *schemas.BifrostTranscriptionResponse // For non-streaming transcription responses
 	RawResponse         interface{}
 }
 
@@ -204,9 +202,11 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	}
 	inputHistory := p.extractInputHistory(req)
 
+	provider, model, _ := req.GetRequestFields()
+
 	initialData := &InitialLogData{
-		Provider:     string(req.Provider),
-		Model:        req.Model,
+		Provider:     string(provider),
+		Model:        model,
 		Object:       string(req.RequestType),
 		InputHistory: inputHistory,
 	}
@@ -308,13 +308,13 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	requestType, _, _ := bifrost.GetRequestFields(result, bifrostErr)
+	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
 	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 	logMsg := p.getLogMessage()
 	logMsg.RequestID = requestID
 
 	if result != nil {
-		logMsg.Latency = result.ExtraFields.Latency
+		logMsg.Latency = result.GetExtraFields().Latency
 	} else {
 		logMsg.Latency = 0
 	}
@@ -392,67 +392,76 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 		} else if result != nil {
 			// Success case
 			updateData.Status = "success"
-			if result.Model != "" {
-				updateData.Model = result.ExtraFields.ModelRequested
-			}
 			// Token usage
-			if result.Usage != nil && result.Usage.TotalTokens > 0 {
-				updateData.TokenUsage = result.Usage
+			var usage *schemas.BifrostLLMUsage
+			switch {
+			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+				usage = result.TextCompletionResponse.Usage
+			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+				usage = result.ChatResponse.Usage
+			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+				usage = &schemas.BifrostLLMUsage{
+					PromptTokens:     result.ResponsesResponse.Usage.InputTokens,
+					CompletionTokens: result.ResponsesResponse.Usage.OutputTokens,
+					TotalTokens:      result.ResponsesResponse.Usage.TotalTokens,
+				}
+			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+				usage = result.EmbeddingResponse.Usage
+			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+				usage = &schemas.BifrostLLMUsage{}
+				if result.TranscriptionResponse.Usage.InputTokens != nil {
+					usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
+				}
+				if result.TranscriptionResponse.Usage.OutputTokens != nil {
+					usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
+				}
+				if result.TranscriptionResponse.Usage.TotalTokens != nil {
+					usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
+				} else {
+					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				}
 			}
-			if result.ExtraFields.RawResponse != nil {
-				updateData.RawResponse = result.ExtraFields.RawResponse
+			updateData.TokenUsage = usage
+			// Extract raw response
+			extraFields := result.GetExtraFields()
+			if extraFields.RawResponse != nil {
+				updateData.RawResponse = extraFields.RawResponse
 			}
-			// Output message and tool calls
-			if len(result.Choices) > 0 {
-				choice := result.Choices[0]
-				if choice.BifrostTextCompletionResponseChoice != nil {
-					updateData.ChatOutput = &schemas.ChatMessage{
-						Role: schemas.ChatMessageRoleAssistant,
-						Content: &schemas.ChatMessageContent{
-							ContentStr: choice.BifrostTextCompletionResponseChoice.Text,
-						},
+			if result.TextCompletionResponse != nil {
+				if len(result.TextCompletionResponse.Choices) > 0 {
+					choice := result.TextCompletionResponse.Choices[0]
+					if choice.TextCompletionResponseChoice != nil {
+						updateData.ChatOutput = &schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{
+								ContentStr: choice.TextCompletionResponseChoice.Text,
+							},
+						}
 					}
 				}
-				// Check if this is a non-stream response choice
-				if choice.BifrostNonStreamResponseChoice != nil {
-					updateData.ChatOutput = choice.BifrostNonStreamResponseChoice.Message
+			}
+			if result.ChatResponse != nil {
+				// Output message and tool calls
+				if len(result.ChatResponse.Choices) > 0 {
+					choice := result.ChatResponse.Choices[0]
+					// Check if this is a non-stream response choice
+					if choice.ChatNonStreamResponseChoice != nil {
+						updateData.ChatOutput = choice.ChatNonStreamResponseChoice.Message
+					}
 				}
 			}
 			if result.ResponsesResponse != nil {
 				updateData.ResponsesOutput = result.ResponsesResponse.Output
 			}
-			if result.Data != nil {
-				updateData.EmbeddingOutput = result.Data
+			if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
+				updateData.EmbeddingOutput = result.EmbeddingResponse.Data
 			}
 			// Handle speech and transcription outputs for NON-streaming responses
-			if result.Speech != nil {
-				updateData.SpeechOutput = result.Speech
-				// Extract token usage
-				if result.Speech.Usage != nil && updateData.TokenUsage == nil {
-					updateData.TokenUsage = &schemas.LLMUsage{
-						PromptTokens:     result.Speech.Usage.InputTokens,
-						CompletionTokens: result.Speech.Usage.OutputTokens,
-						TotalTokens:      result.Speech.Usage.TotalTokens,
-					}
-				}
+			if result.SpeechResponse != nil {
+				updateData.SpeechOutput = result.SpeechResponse
 			}
-			if result.Transcribe != nil {
-				updateData.TranscriptionOutput = result.Transcribe
-				// Extract token usage
-				if result.Transcribe.Usage != nil && updateData.TokenUsage == nil {
-					transcriptionUsage := result.Transcribe.Usage
-					updateData.TokenUsage = &schemas.LLMUsage{}
-
-					if transcriptionUsage.InputTokens != nil {
-						updateData.TokenUsage.PromptTokens = *transcriptionUsage.InputTokens
-					}
-					if transcriptionUsage.OutputTokens != nil {
-						updateData.TokenUsage.CompletionTokens = *transcriptionUsage.OutputTokens
-					}
-					if transcriptionUsage.TotalTokens != nil {
-						updateData.TokenUsage.TotalTokens = *transcriptionUsage.TotalTokens
-					}
-				}
+			if result.TranscriptionResponse != nil {
+				updateData.TranscriptionOutput = result.TranscriptionResponse
 			}
 		}
 		logMsg.UpdateData = updateData
@@ -465,7 +474,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 			}()
 			if result != nil {
-				logMsg.SemanticCacheDebug = result.ExtraFields.CacheDebug
+				logMsg.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 			}
 			if logMsg.UpdateData != nil && p.pricingManager != nil {
 				cost := p.pricingManager.CalculateCostWithCacheDebug(result)

@@ -30,6 +30,48 @@ import (
 // 1. CORE API REQUEST/RESPONSE STRUCTURES
 // =============================================================================
 
+type BifrostResponsesRequest struct {
+	Provider  ModelProvider        `json:"provider"`
+	Model     string               `json:"model"`
+	Input     []ResponsesMessage   `json:"input,omitempty"`
+	Params    *ResponsesParameters `json:"params,omitempty"`
+	Fallbacks []Fallback           `json:"fallbacks,omitempty"`
+}
+
+type BifrostResponsesResponse struct {
+	ID *string `json:"id,omitempty"` // used for internal conversions
+
+	Background         *bool                               `json:"background,omitempty"`
+	Conversation       *ResponsesResponseConversation      `json:"conversation,omitempty"`
+	CreatedAt          int                                 `json:"created_at"` // Unix timestamp when Response was created
+	Error              *ResponsesResponseError             `json:"error,omitempty"`
+	Include            []string                            `json:"include,omitempty"`            // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	IncompleteDetails  *ResponsesResponseIncompleteDetails `json:"incomplete_details,omitempty"` // Details about why the response is incomplete
+	Instructions       *ResponsesResponseInstructions      `json:"instructions,omitempty"`
+	MaxOutputTokens    *int                                `json:"max_output_tokens,omitempty"`
+	MaxToolCalls       *int                                `json:"max_tool_calls,omitempty"`
+	Metadata           *map[string]any                     `json:"metadata,omitempty"`
+	Output             []ResponsesMessage                  `json:"output,omitempty"`
+	ParallelToolCalls  *bool                               `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID *string                             `json:"previous_response_id,omitempty"`
+	Prompt             *ResponsesPrompt                    `json:"prompt,omitempty"`            // Reference to a prompt template and variables
+	PromptCacheKey     *string                             `json:"prompt_cache_key,omitempty"`  // Prompt cache key
+	Reasoning          *ResponsesParametersReasoning       `json:"reasoning,omitempty"`         // Configuration options for reasoning models
+	SafetyIdentifier   *string                             `json:"safety_identifier,omitempty"` // Safety identifier
+	ServiceTier        *string                             `json:"service_tier,omitempty"`
+	StreamOptions      *ResponsesStreamOptions             `json:"stream_options,omitempty"`
+	Store              *bool                               `json:"store,omitempty"`
+	Temperature        *float64                            `json:"temperature,omitempty"`
+	Text               *ResponsesTextConfig                `json:"text,omitempty"`
+	TopLogProbs        *int                                `json:"top_logprobs,omitempty"`
+	TopP               *float64                            `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice         *ResponsesToolChoice                `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools              []ResponsesTool                     `json:"tools,omitempty"`       // Tools to use
+	Truncation         *string                             `json:"truncation,omitempty"`
+	Usage              *ResponsesResponseUsage             `json:"usage,omitempty"`
+	ExtraFields        BifrostResponseExtraFields          `json:"extra_fields"`
+}
+
 type ResponsesParameters struct {
 	Background         *bool                         `json:"background,omitempty"`
 	Conversation       *string                       `json:"conversation,omitempty"`
@@ -70,6 +112,7 @@ type ResponsesTextConfig struct {
 
 type ResponsesTextConfigFormat struct {
 	Type       string                               `json:"type"`                  // "text" | "json_schema" | "json_object"
+	Name       *string                              `json:"name,omitempty"`        // Name of the format
 	JSONSchema *ResponsesTextConfigFormatJSONSchema `json:"json_schema,omitempty"` // when type == "json_schema"
 }
 
@@ -81,38 +124,6 @@ type ResponsesTextConfigFormatJSONSchema struct {
 	Description *string        `json:"description,omitempty"`
 	Strict      *bool          `json:"strict,omitempty"`
 }
-
-type ResponsesResponse struct {
-	Background         *bool                          `json:"background,omitempty"`
-	Conversation       *ResponsesResponseConversation `json:"conversation,omitempty"`
-	Error              *ResponsesResponseError        `json:"error,omitempty"`
-	Include            []string                       `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	Instructions       *ResponsesResponseInstructions `json:"instructions,omitempty"`
-	MaxOutputTokens    *int                           `json:"max_output_tokens,omitempty"`
-	MaxToolCalls       *int                           `json:"max_tool_calls,omitempty"`
-	Metadata           *map[string]any                `json:"metadata,omitempty"`
-	ParallelToolCalls  *bool                          `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID *string                        `json:"previous_response_id,omitempty"`
-	PromptCacheKey     *string                        `json:"prompt_cache_key,omitempty"`  // Prompt cache key
-	Reasoning          *ResponsesParametersReasoning  `json:"reasoning,omitempty"`         // Configuration options for reasoning models
-	SafetyIdentifier   *string                        `json:"safety_identifier,omitempty"` // Safety identifier
-	ServiceTier        *string                        `json:"service_tier,omitempty"`
-	StreamOptions      *ResponsesStreamOptions        `json:"stream_options,omitempty"`
-	Store              *bool                          `json:"store,omitempty"`
-	Temperature        *float64                       `json:"temperature,omitempty"`
-	Text               *ResponsesTextConfig           `json:"text,omitempty"`
-	TopLogProbs        *int                           `json:"top_logprobs,omitempty"`
-	TopP               *float64                       `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice         *ResponsesToolChoice           `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools              []ResponsesTool                `json:"tools,omitempty"`       // Tools to use
-	Truncation         *string                        `json:"truncation,omitempty"`
-
-	CreatedAt         int                                 `json:"created_at"`                   // Unix timestamp when Response was created
-	IncompleteDetails *ResponsesResponseIncompleteDetails `json:"incomplete_details,omitempty"` // Details about why the response is incomplete
-	Output            []ResponsesMessage                  `json:"output,omitempty"`
-	Prompt            *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
-}
-
 type ResponsesResponseConversation struct {
 	ResponsesResponseConversationStr    *string
 	ResponsesResponseConversationStruct *ResponsesResponseConversationStruct
@@ -226,16 +237,12 @@ type ResponsesResponseIncompleteDetails struct {
 	Reason string `json:"reason"` // The reason why the response is incomplete
 }
 
-type ResponsesExtendedResponseUsage struct {
+type ResponsesResponseUsage struct {
 	InputTokens         int                            `json:"input_tokens"`          // Number of input tokens
 	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`  // Detailed breakdown of input tokens
 	OutputTokens        int                            `json:"output_tokens"`         // Number of output tokens
-	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"` // Detailed breakdown of output tokens
-}
-
-type ResponsesResponseUsage struct {
-	*ResponsesExtendedResponseUsage
-	TotalTokens int `json:"total_tokens"` // Total number of tokens used
+	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"` // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
+	TotalTokens         int                            `json:"total_tokens"`          // Total number of tokens used
 }
 
 type ResponsesResponseInputTokens struct {
@@ -1633,14 +1640,12 @@ const (
 	ResponsesStreamResponseTypeContentPartAdded ResponsesStreamResponseType = "response.content_part.added"
 	ResponsesStreamResponseTypeContentPartDone  ResponsesStreamResponseType = "response.content_part.done"
 
-	ResponsesStreamResponseTypeOutputTextAdded ResponsesStreamResponseType = "response.output_text.added"
 	ResponsesStreamResponseTypeOutputTextDelta ResponsesStreamResponseType = "response.output_text.delta"
 	ResponsesStreamResponseTypeOutputTextDone  ResponsesStreamResponseType = "response.output_text.done"
 
 	ResponsesStreamResponseTypeRefusalDelta ResponsesStreamResponseType = "response.refusal.delta"
 	ResponsesStreamResponseTypeRefusalDone  ResponsesStreamResponseType = "response.refusal.done"
 
-	ResponsesStreamResponseTypeFunctionCallArgumentsAdded     ResponsesStreamResponseType = "response.function_call_arguments.added"
 	ResponsesStreamResponseTypeFunctionCallArgumentsDelta     ResponsesStreamResponseType = "response.function_call_arguments.delta"
 	ResponsesStreamResponseTypeFunctionCallArgumentsDone      ResponsesStreamResponseType = "response.function_call_arguments.done"
 	ResponsesStreamResponseTypeFileSearchCallInProgress       ResponsesStreamResponseType = "response.file_search_call.in_progress"
@@ -1686,11 +1691,11 @@ const (
 	ResponsesStreamResponseTypeError ResponsesStreamResponseType = "error"
 )
 
-type ResponsesStreamResponse struct {
+type BifrostResponsesStreamResponse struct {
 	Type           ResponsesStreamResponseType `json:"type"`
 	SequenceNumber int                         `json:"sequence_number"`
 
-	Response *ResponsesStreamResponseStruct `json:"response,omitempty"`
+	Response *BifrostResponsesResponse `json:"response,omitempty"`
 
 	OutputIndex *int              `json:"output_index,omitempty"`
 	Item        *ResponsesMessage `json:"item,omitempty"`
@@ -1701,6 +1706,8 @@ type ResponsesStreamResponse struct {
 
 	Delta    *string                                    `json:"delta,omitempty"`
 	LogProbs []ResponsesOutputMessageContentTextLogProb `json:"logprobs,omitempty"`
+
+	Text *string `json:"text,omitempty"` // Full text of the output item, comes with event "response.output_text.done"
 
 	Refusal *string `json:"refusal,omitempty"`
 
@@ -1715,9 +1722,6 @@ type ResponsesStreamResponse struct {
 	Code    *string `json:"code,omitempty"`
 	Message *string `json:"message,omitempty"`
 	Param   *string `json:"param,omitempty"`
-}
 
-type ResponsesStreamResponseStruct struct {
-	*ResponsesResponse
-	Usage *ResponsesResponseUsage `json:"usage,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }

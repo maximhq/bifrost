@@ -77,7 +77,7 @@ func (a *Accumulator) putTranscriptionStreamChunk(chunk *TranscriptionStreamChun
 	chunk.SemanticCacheDebug = nil
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
-	chunk.TranscriptionUsage = nil
+	chunk.TokenUsage = nil
 	a.transcriptionStreamChunkPool.Put(chunk)
 }
 
@@ -106,7 +106,6 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		ResponsesStreamChunks: make([]*ResponsesStreamChunk, 0),
 		IsComplete:            false,
 		Timestamp:             time.Now(),
-		Object:                "",
 	}
 	a.streamAccumulators.Store(requestID, sc)
 	return sc
@@ -122,17 +121,13 @@ func (a *Accumulator) getOrCreateStreamAccumulator(requestID string) *StreamAccu
 }
 
 // AddStreamChunk adds a chunk to the stream accumulator
-func (a *Accumulator) addChatStreamChunk(requestID string, chunk *ChatStreamChunk, object string, isFinalChunk bool) error {
+func (a *Accumulator) addChatStreamChunk(requestID string, chunk *ChatStreamChunk, isFinalChunk bool) error {
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
 	defer accumulator.mu.Unlock()
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
-	}
-	// Store object type once (from first chunk)
-	if accumulator.Object == "" && object != "" {
-		accumulator.Object = object
 	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.ChatStreamChunks = append(accumulator.ChatStreamChunks, chunk)
@@ -146,17 +141,13 @@ func (a *Accumulator) addChatStreamChunk(requestID string, chunk *ChatStreamChun
 }
 
 // AddTranscriptionStreamChunk adds a transcription stream chunk to the stream accumulator
-func (a *Accumulator) addTranscriptionStreamChunk(requestID string, chunk *TranscriptionStreamChunk, object string, isFinalChunk bool) error {
+func (a *Accumulator) addTranscriptionStreamChunk(requestID string, chunk *TranscriptionStreamChunk, isFinalChunk bool) error {
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
 	defer accumulator.mu.Unlock()
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
-	}
-	// Store object type once (from first chunk)
-	if accumulator.Object == "" && object != "" {
-		accumulator.Object = object
 	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.TranscriptionStreamChunks = append(accumulator.TranscriptionStreamChunks, chunk)
@@ -170,17 +161,13 @@ func (a *Accumulator) addTranscriptionStreamChunk(requestID string, chunk *Trans
 }
 
 // AddAudioStreamChunk adds an audio stream chunk to the stream accumulator
-func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamChunk, object string, isFinalChunk bool) error {
+func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamChunk, isFinalChunk bool) error {
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
 	defer accumulator.mu.Unlock()
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
-	}
-	// Store object type once (from first chunk)
-	if accumulator.Object == "" && object != "" {
-		accumulator.Object = object
 	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.AudioStreamChunks = append(accumulator.AudioStreamChunks, chunk)
@@ -194,17 +181,13 @@ func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamCh
 }
 
 // addResponsesStreamChunk adds a responses stream chunk to the stream accumulator
-func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *ResponsesStreamChunk, object string, isFinalChunk bool) error {
+func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *ResponsesStreamChunk, isFinalChunk bool) error {
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
 	defer accumulator.mu.Unlock()
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
-	}
-	// Store object type once (from first chunk)
-	if accumulator.Object == "" && object != "" {
-		accumulator.Object = object
 	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.ResponsesStreamChunks = append(accumulator.ResponsesStreamChunks, chunk)
@@ -315,7 +298,8 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *context.Context, result *sch
 	if result == nil {
 		return nil, fmt.Errorf("result is nil")
 	}
-	requestType := result.ExtraFields.RequestType
+	extraFields := result.GetExtraFields()
+	requestType := extraFields.RequestType
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
 	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest
@@ -335,7 +319,7 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *context.Context, result *sch
 		// Handle responses streaming with responses accumulation
 		return a.processResponsesStreamingResponse(ctx, result, bifrostErr)
 	}
-	return nil, fmt.Errorf("request type missing/invalid for accumulator")
+	return nil, fmt.Errorf("request type missing/invalid for accumulator: %s", requestType)
 }
 
 // Cleanup cleans up the accumulator

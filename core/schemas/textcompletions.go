@@ -6,6 +6,71 @@ import (
 	"github.com/bytedance/sonic"
 )
 
+// BifrostTextCompletionRequest is the request struct for text completion requests
+type BifrostTextCompletionRequest struct {
+	Provider  ModelProvider             `json:"provider"`
+	Model     string                    `json:"model"`
+	Input     *TextCompletionInput      `json:"input,omitempty"`
+	Params    *TextCompletionParameters `json:"params,omitempty"`
+	Fallbacks []Fallback                `json:"fallbacks,omitempty"`
+}
+
+// ToBifrostChatRequest converts a Bifrost text completion request to a Bifrost chat completion request
+// This method is discouraged to use, but is useful for litellm fallback flows
+func (r *BifrostTextCompletionRequest) ToBifrostChatRequest() *BifrostChatRequest {
+	if r == nil || r.Input == nil {
+		return nil
+	}
+	message := ChatMessage{Role: ChatMessageRoleUser}
+	if r.Input.PromptStr != nil {
+		message.Content = &ChatMessageContent{
+			ContentStr: r.Input.PromptStr,
+		}
+	} else if len(r.Input.PromptArray) > 0 {
+		blocks := make([]ChatContentBlock, 0, len(r.Input.PromptArray))
+		for _, prompt := range r.Input.PromptArray {
+			blocks = append(blocks, ChatContentBlock{
+				Type: ChatContentBlockTypeText,
+				Text: &prompt,
+			})
+		}
+		message.Content = &ChatMessageContent{
+			ContentBlocks: blocks,
+		}
+	}
+	params := ChatParameters{}
+	if r.Params != nil {
+		params.MaxCompletionTokens = r.Params.MaxTokens
+		params.Temperature = r.Params.Temperature
+		params.TopP = r.Params.TopP
+		params.Stop = r.Params.Stop
+		params.ExtraParams = r.Params.ExtraParams
+		params.StreamOptions = r.Params.StreamOptions
+		params.User = r.Params.User
+		params.FrequencyPenalty = r.Params.FrequencyPenalty
+		params.LogitBias = r.Params.LogitBias
+		params.PresencePenalty = r.Params.PresencePenalty
+		params.Seed = r.Params.Seed
+	}
+	return &BifrostChatRequest{
+		Provider:  r.Provider,
+		Model:     r.Model,
+		Fallbacks: r.Fallbacks,
+		Input:     []ChatMessage{message},
+		Params:    &params,
+	}
+}
+
+type BifrostTextCompletionResponse struct {
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"` // "text_completion" (same for text completion stream)
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 type TextCompletionInput struct {
 	PromptStr   *string
 	PromptArray []string

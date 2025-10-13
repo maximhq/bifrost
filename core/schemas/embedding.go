@@ -6,6 +6,22 @@ import (
 	"github.com/bytedance/sonic"
 )
 
+type BifrostEmbeddingRequest struct {
+	Provider  ModelProvider        `json:"provider"`
+	Model     string               `json:"model"`
+	Input     *EmbeddingInput      `json:"input,omitempty"`
+	Params    *EmbeddingParameters `json:"params,omitempty"`
+	Fallbacks []Fallback           `json:"fallbacks,omitempty"`
+}
+
+type BifrostEmbeddingResponse struct {
+	Data        []EmbeddingData            `json:"data"` // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
+	Model       string                     `json:"model"`
+	Object      string                     `json:"object"` // "list"
+	Usage       *BifrostLLMUsage           `json:"usage"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 // EmbeddingInput represents the input for an embedding request.
 type EmbeddingInput struct {
 	Text       *string
@@ -94,19 +110,19 @@ type EmbeddingParameters struct {
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
-type BifrostEmbedding struct {
-	Index     int                      `json:"index"`
-	Object    string                   `json:"object"`    // embedding
-	Embedding BifrostEmbeddingResponse `json:"embedding"` // can be []float32 or string
+type EmbeddingData struct {
+	Index     int             `json:"index"`
+	Object    string          `json:"object"`    // "embedding"
+	Embedding EmbeddingStruct `json:"embedding"` // can be string, []float32 or [][]float32
 }
 
-type BifrostEmbeddingResponse struct {
+type EmbeddingStruct struct {
 	EmbeddingStr     *string
 	EmbeddingArray   []float32
 	Embedding2DArray [][]float32
 }
 
-func (be BifrostEmbeddingResponse) MarshalJSON() ([]byte, error) {
+func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
 	if be.EmbeddingStr != nil {
 		return sonic.Marshal(be.EmbeddingStr)
 	}
@@ -119,7 +135,7 @@ func (be BifrostEmbeddingResponse) MarshalJSON() ([]byte, error) {
 	return nil, fmt.Errorf("no embedding found")
 }
 
-func (be *BifrostEmbeddingResponse) UnmarshalJSON(data []byte) error {
+func (be *EmbeddingStruct) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
 	if err := sonic.Unmarshal(data, &stringContent); err == nil {

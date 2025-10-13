@@ -51,7 +51,7 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 	return geminiReq, nil
 }
 
-func (response *GenerateContentResponse) ToResponsesBifrostResponse() *schemas.BifrostResponse {
+func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *schemas.BifrostResponsesResponse {
 	if response == nil {
 		return nil
 	}
@@ -59,28 +59,22 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponse() *schemas.B
 	// Parse model string to get provider and model
 
 	// Create the BifrostResponse with Responses structure
-	bifrostResp := &schemas.BifrostResponse{
-		ID:     response.ResponseID,
-		Object: "response",
-		Model:  response.ModelVersion,
-	}
+	bifrostResp := &schemas.BifrostResponsesResponse{}
 
 	// Convert usage information
 	if response.UsageMetadata != nil {
-		bifrostResp.Usage = &schemas.LLMUsage{
-			TotalTokens: int(response.UsageMetadata.TotalTokenCount),
-			ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{
-				InputTokens:  int(response.UsageMetadata.PromptTokenCount),
-				OutputTokens: int(response.UsageMetadata.CandidatesTokenCount),
-			},
+		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
+			TotalTokens:  int(response.UsageMetadata.TotalTokenCount),
+			InputTokens:  int(response.UsageMetadata.PromptTokenCount),
+			OutputTokens: int(response.UsageMetadata.CandidatesTokenCount),
 		}
 
 		// Handle cached tokens if present
 		if response.UsageMetadata.CachedContentTokenCount > 0 {
-			if bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails == nil {
-				bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+			if bifrostResp.Usage.InputTokensDetails == nil {
+				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
-			bifrostResp.Usage.ResponsesExtendedResponseUsage.InputTokensDetails.CachedTokens = int(response.UsageMetadata.CachedContentTokenCount)
+			bifrostResp.Usage.InputTokensDetails.CachedTokens = int(response.UsageMetadata.CachedContentTokenCount)
 		}
 	}
 
@@ -88,11 +82,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponse() *schemas.B
 	if len(response.Candidates) > 0 {
 		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates)
 		if len(outputMessages) > 0 {
-			// Initialize ResponsesResponse if not already allocated
-			if bifrostResp.ResponsesResponse == nil {
-				bifrostResp.ResponsesResponse = &schemas.ResponsesResponse{}
-			}
-			bifrostResp.ResponsesResponse.Output = outputMessages
+			bifrostResp.Output = outputMessages
 		}
 	}
 

@@ -338,13 +338,11 @@ func newProviderAPIError(message string, err error, statusCode int, providerType
 	}
 }
 
-func sendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream, logger schemas.Logger) {
-	firstChunk := &schemas.BifrostResponse{
-		ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeCreated,
-			SequenceNumber: 0,
-			Response:       &schemas.ResponsesStreamResponseStruct{},
-		},
+func sendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
+	firstChunk := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeCreated,
+		SequenceNumber: 0,
+		Response:       &schemas.BifrostResponsesResponse{},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,
@@ -353,16 +351,19 @@ func sendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.
 			Latency:        time.Since(startTime).Milliseconds(),
 		},
 	}
-	processAndSendResponse(ctx, postHookRunner, firstChunk, responseChan, logger)
+	//TODO add bifrost response pooling here
+	bifrostResponse := &schemas.BifrostResponse{
+		ResponsesStreamResponse: firstChunk,
+	}
+	processAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
 // sendInProgressResponsesChunk sends a ResponsesStreamResponseTypeInProgress event
-func sendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream, logger schemas.Logger) {
-	chunk := &schemas.BifrostResponse{
-		ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeInProgress,
-			SequenceNumber: 1,
-		},
+func sendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
+	chunk := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeInProgress,
+		SequenceNumber: 1,
+		Response:       &schemas.BifrostResponsesResponse{},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,
@@ -371,7 +372,11 @@ func sendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schem
 			Latency:        time.Since(startTime).Milliseconds(),
 		},
 	}
-	processAndSendResponse(ctx, postHookRunner, chunk, responseChan, logger)
+	//TODO add bifrost response pooling here
+	bifrostResponse := &schemas.BifrostResponse{
+		ResponsesStreamResponse: chunk,
+	}
+	processAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
 // processAndSendResponse handles post-hook processing and sends the response to the channel.
@@ -383,35 +388,24 @@ func processAndSendResponse(
 	postHookRunner schemas.PostHookRunner,
 	response *schemas.BifrostResponse,
 	responseChan chan *schemas.BifrostStream,
-	logger schemas.Logger,
 ) {
 	// Run post hooks on the response
-	processedResponse, bifrostErr := postHookRunner(&ctx, response, nil)
-	if bifrostErr != nil {
-		// check if it is a stream error
-		if handleStreamControlSkip(logger, bifrostErr) {
-			return
-		}
+	processedResponse, processedError := postHookRunner(&ctx, response, nil)
 
-		// Send error response and close channel
-		errorResponse := &schemas.BifrostStream{
-			BifrostError: bifrostErr,
-		}
-
-		// Try to send error response before closing
-		select {
-		case responseChan <- errorResponse:
-		case <-ctx.Done():
-		}
-		return
+	streamResponse := &schemas.BifrostStream{}
+	if processedResponse != nil {
+		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
+		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
+		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
+		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
+		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
+	}
+	if processedError != nil {
+		streamResponse.BifrostError = processedError
 	}
 
-	// Send the response
 	select {
-	case responseChan <- &schemas.BifrostStream{
-		BifrostResponse: processedResponse,
-		BifrostError:    bifrostErr,
-	}:
+	case responseChan <- streamResponse:
 	case <-ctx.Done():
 		return
 	}
@@ -435,12 +429,20 @@ func processAndSendBifrostError(
 		return
 	}
 
-	errorResponse := &schemas.BifrostStream{
-		BifrostResponse: processedResponse,
-		BifrostError:    processedError,
+	streamResponse := &schemas.BifrostStream{}
+	if processedResponse != nil {
+		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
+		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
+		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
+		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
+		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
 	}
+	if processedError != nil {
+		streamResponse.BifrostError = processedError
+	}
+
 	select {
-	case responseChan <- errorResponse:
+	case responseChan <- streamResponse:
 	case <-ctx.Done():
 	}
 }
@@ -479,33 +481,41 @@ func processAndSendError(
 		return
 	}
 
-	errorResponse := &schemas.BifrostStream{
-		BifrostResponse: processedResponse,
-		BifrostError:    processedError,
+	streamResponse := &schemas.BifrostStream{}
+	if processedResponse != nil {
+		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
+		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
+		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
+		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
+		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
 	}
+	if processedError != nil {
+		streamResponse.BifrostError = processedError
+	}
+
 	select {
-	case responseChan <- errorResponse:
+	case responseChan <- streamResponse:
 	case <-ctx.Done():
 	}
 }
 
-func createBifrostCompletionChunkResponse(
+func createBifrostTextCompletionChunkResponse(
 	id string,
-	usage *schemas.LLMUsage,
+	usage *schemas.BifrostLLMUsage,
 	finishReason *string,
 	currentChunkIndex int,
 	requestType schemas.RequestType,
 	providerName schemas.ModelProvider,
 	model string,
-) *schemas.BifrostResponse {
-	response := &schemas.BifrostResponse{
+) *schemas.BifrostTextCompletionResponse {
+	response := &schemas.BifrostTextCompletionResponse{
 		ID:     id,
 		Object: "text_completion",
 		Usage:  usage,
-		Choices: []schemas.BifrostChatResponseChoice{
+		Choices: []schemas.BifrostResponseChoice{
 			{
-				FinishReason:                        finishReason,
-				BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{},
+				FinishReason:                 finishReason,
+				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{}, // empty delta
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
@@ -520,22 +530,22 @@ func createBifrostCompletionChunkResponse(
 
 func createBifrostChatCompletionChunkResponse(
 	id string,
-	usage *schemas.LLMUsage,
+	usage *schemas.BifrostLLMUsage,
 	finishReason *string,
 	currentChunkIndex int,
 	requestType schemas.RequestType,
 	providerName schemas.ModelProvider,
 	model string,
-) *schemas.BifrostResponse {
-	response := &schemas.BifrostResponse{
+) *schemas.BifrostChatResponse {
+	response := &schemas.BifrostChatResponse{
 		ID:     id,
 		Object: "chat.completion.chunk",
 		Usage:  usage,
-		Choices: []schemas.BifrostChatResponseChoice{
+		Choices: []schemas.BifrostResponseChoice{
 			{
 				FinishReason: finishReason,
-				BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-					Delta: &schemas.BifrostStreamDelta{}, // empty delta
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{}, // empty delta
 				},
 			},
 		},
@@ -554,10 +564,9 @@ func handleStreamEndWithSuccess(
 	response *schemas.BifrostResponse,
 	postHookRunner schemas.PostHookRunner,
 	responseChan chan *schemas.BifrostStream,
-	logger schemas.Logger,
 ) {
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-	processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
+	processAndSendResponse(ctx, postHookRunner, response, responseChan)
 }
 
 func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostError) bool {
@@ -588,8 +597,11 @@ func getProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 func getResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
 	responsesChunkConverter := func(_ *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
-			result.ToResponsesStream()
-			result.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+			if result.ChatResponse != nil {
+				result.ResponsesStreamResponse = result.ChatResponse.ToBifrostResponsesStreamResponse()
+				result.ResponsesResponse.ExtraFields = result.ResponsesStreamResponse.ExtraFields
+				result.ResponsesResponse.ExtraFields.RequestType = schemas.ResponsesRequest
+			}
 		} else if err != nil {
 			// Ensure downstream knows this is a Responses stream even on errors
 			err.ExtraFields.RequestType = schemas.ResponsesStreamRequest
@@ -606,4 +618,34 @@ func getResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.Pos
 	}
 
 	return combinedPostHookRunner
+}
+
+func getBifrostResponseForStreamResponse(
+	textCompletionResponse *schemas.BifrostTextCompletionResponse,
+	chatResponse *schemas.BifrostChatResponse,
+	responsesStreamResponse *schemas.BifrostResponsesStreamResponse,
+	speechStreamResponse *schemas.BifrostSpeechStreamResponse,
+	transcriptionStreamResponse *schemas.BifrostTranscriptionStreamResponse,
+) *schemas.BifrostResponse {
+	//TODO add bifrost response pooling here
+	bifrostResponse := &schemas.BifrostResponse{}
+
+	switch {
+	case textCompletionResponse != nil:
+		bifrostResponse.TextCompletionResponse = textCompletionResponse
+		return bifrostResponse
+	case chatResponse != nil:
+		bifrostResponse.ChatResponse = chatResponse
+		return bifrostResponse
+	case responsesStreamResponse != nil:
+		bifrostResponse.ResponsesStreamResponse = responsesStreamResponse
+		return bifrostResponse
+	case speechStreamResponse != nil:
+		bifrostResponse.SpeechStreamResponse = speechStreamResponse
+		return bifrostResponse
+	case transcriptionStreamResponse != nil:
+		bifrostResponse.TranscriptionStreamResponse = transcriptionStreamResponse
+		return bifrostResponse
+	}
+	return nil
 }

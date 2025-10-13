@@ -640,15 +640,15 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Send successful response
-	if resp.Speech.Audio == nil {
+	if resp.Audio == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Speech response is missing audio data", h.logger)
 		return
 	}
 
 	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
 	ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
-	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Speech.Audio)))
-	ctx.Response.SetBody(resp.Speech.Audio)
+	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
+	ctx.Response.SetBody(resp.Audio)
 }
 
 // transcription handles POST /v1/audio/transcriptions - Process transcription requests
@@ -841,12 +841,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 				continue
 			}
 
-			if requestType == "" {
-				if chunk.BifrostResponse != nil {
-					requestType = chunk.BifrostResponse.ExtraFields.RequestType
-				} else if chunk.BifrostError != nil {
-					requestType = chunk.BifrostError.ExtraFields.RequestType
-				}
+			includeEventType := false
+			if chunk.BifrostResponsesStreamResponse != nil ||
+				(chunk.BifrostError != nil && chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest) {
+				includeEventType = true
 			}
 
 			// Convert response to JSON
@@ -857,11 +855,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 
 			// Send as SSE data
-			if requestType == schemas.ResponsesStreamRequest {
+			if includeEventType {
 				// For responses API, use OpenAI-compatible format with event line
 				eventType := ""
-				if chunk.BifrostResponse != nil && chunk.BifrostResponse.ResponsesStreamResponse != nil {
-					eventType = string(chunk.BifrostResponse.ResponsesStreamResponse.Type)
+				if chunk.BifrostResponsesStreamResponse != nil {
+					eventType = string(chunk.BifrostResponsesStreamResponse.Type)
 				} else if chunk.BifrostError != nil {
 					eventType = string(schemas.ResponsesStreamResponseTypeError)
 				}

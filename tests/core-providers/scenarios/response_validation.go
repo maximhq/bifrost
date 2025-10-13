@@ -65,8 +65,8 @@ type ValidationResult struct {
 // MAIN VALIDATION FUNCTIONS
 // =============================================================================
 
-// ValidateResponse performs comprehensive response validation
-func ValidateResponse(t *testing.T, response *schemas.BifrostResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+// ValidateChatResponse performs comprehensive validation for chat completion responses
+func ValidateChatResponse(t *testing.T, response *schemas.BifrostChatResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
 	result := ValidationResult{
 		Passed:           true,
 		Errors:           make([]string, 0),
@@ -77,12 +77,8 @@ func ValidateResponse(t *testing.T, response *schemas.BifrostResponse, err *sche
 	// If there's an error when we expected success, that's a failure
 	if err != nil {
 		result.Passed = false
-
-		// Use the error parser to format the error nicely
 		parsed := ParseBifrostError(err)
 		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
-
-		// Log the full error details for debugging
 		LogError(t, err, scenarioName)
 		return result
 	}
@@ -95,22 +91,219 @@ func ValidateResponse(t *testing.T, response *schemas.BifrostResponse, err *sche
 	}
 
 	// Validate basic structure
-	validateBasicStructure(t, response, expectations, &result)
+	validateChatBasicStructure(t, response, expectations, &result)
 
 	// Validate content
-	validateContent(t, response, expectations, &result)
+	validateChatContent(t, response, expectations, &result)
 
 	// Validate tool calls
-	validateToolCalls(t, response, expectations, &result)
+	validateChatToolCalls(t, response, expectations, &result)
 
 	// Validate technical fields
-	validateTechnicalFields(t, response, expectations, &result)
-
-	// Validate provider-specific requirements (speech, transcription, etc.)
-	validateProviderSpecific(t, response, expectations, &result)
+	validateChatTechnicalFields(t, response, expectations, &result)
 
 	// Collect metrics
-	collectResponseMetrics(response, &result)
+	collectChatResponseMetrics(response, &result)
+
+	// Log results
+	logValidationResults(t, result, scenarioName)
+
+	return result
+}
+
+// ValidateTextCompletionResponse performs comprehensive validation for text completion responses
+func ValidateTextCompletionResponse(t *testing.T, response *schemas.BifrostTextCompletionResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+	result := ValidationResult{
+		Passed:           true,
+		Errors:           make([]string, 0),
+		Warnings:         make([]string, 0),
+		MetricsCollected: make(map[string]interface{}),
+	}
+
+	// If there's an error when we expected success, that's a failure
+	if err != nil {
+		result.Passed = false
+		parsed := ParseBifrostError(err)
+		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
+		LogError(t, err, scenarioName)
+		return result
+	}
+
+	// If response is nil when we expected success, that's a failure
+	if response == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Response is nil")
+		return result
+	}
+
+	// Validate basic structure
+	validateTextCompletionBasicStructure(t, response, expectations, &result)
+
+	// Validate content
+	validateTextCompletionContent(t, response, expectations, &result)
+
+	// Validate technical fields
+	validateTextCompletionTechnicalFields(t, response, expectations, &result)
+
+	// Collect metrics
+	collectTextCompletionResponseMetrics(response, &result)
+
+	// Log results
+	logValidationResults(t, result, scenarioName)
+
+	return result
+}
+
+// ValidateResponsesResponse performs comprehensive validation for Responses API responses
+func ValidateResponsesResponse(t *testing.T, response *schemas.BifrostResponsesResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+	result := ValidationResult{
+		Passed:           true,
+		Errors:           make([]string, 0),
+		Warnings:         make([]string, 0),
+		MetricsCollected: make(map[string]interface{}),
+	}
+
+	// If there's an error when we expected success, that's a failure
+	if err != nil {
+		result.Passed = false
+		parsed := ParseBifrostError(err)
+		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
+		LogError(t, err, scenarioName)
+		return result
+	}
+
+	// If response is nil when we expected success, that's a failure
+	if response == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Response is nil")
+		return result
+	}
+
+	// Validate basic structure
+	validateResponsesBasicStructure(response, expectations, &result)
+
+	// Validate content
+	validateResponsesContent(t, response, expectations, &result)
+
+	// Validate tool calls
+	validateResponsesToolCalls(t, response, expectations, &result)
+
+	// Validate technical fields
+	validateResponsesTechnicalFields(t, response, expectations, &result)
+
+	// Collect metrics
+	collectResponsesResponseMetrics(response, &result)
+
+	// Log results
+	logValidationResults(t, result, scenarioName)
+
+	return result
+}
+
+// ValidateSpeechResponse performs comprehensive validation for speech synthesis responses
+func ValidateSpeechResponse(t *testing.T, response *schemas.BifrostSpeechResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+	result := ValidationResult{
+		Passed:           true,
+		Errors:           make([]string, 0),
+		Warnings:         make([]string, 0),
+		MetricsCollected: make(map[string]interface{}),
+	}
+
+	// If there's an error when we expected success, that's a failure
+	if err != nil {
+		result.Passed = false
+		parsed := ParseBifrostError(err)
+		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
+		LogError(t, err, scenarioName)
+		return result
+	}
+
+	// If response is nil when we expected success, that's a failure
+	if response == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Response is nil")
+		return result
+	}
+
+	// Validate speech synthesis specific fields
+	validateSpeechSynthesisResponse(t, response, expectations, &result)
+
+	// Collect metrics
+	collectSpeechResponseMetrics(response, &result)
+
+	// Log results
+	logValidationResults(t, result, scenarioName)
+
+	return result
+}
+
+// ValidateTranscriptionResponse performs comprehensive validation for transcription responses
+func ValidateTranscriptionResponse(t *testing.T, response *schemas.BifrostTranscriptionResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+	result := ValidationResult{
+		Passed:           true,
+		Errors:           make([]string, 0),
+		Warnings:         make([]string, 0),
+		MetricsCollected: make(map[string]interface{}),
+	}
+
+	// If there's an error when we expected success, that's a failure
+	if err != nil {
+		result.Passed = false
+		parsed := ParseBifrostError(err)
+		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
+		LogError(t, err, scenarioName)
+		return result
+	}
+
+	// If response is nil when we expected success, that's a failure
+	if response == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Response is nil")
+		return result
+	}
+
+	// Validate transcription specific fields
+	validateTranscriptionFields(t, response, expectations, &result)
+
+	// Collect metrics
+	collectTranscriptionResponseMetrics(response, &result)
+
+	// Log results
+	logValidationResults(t, result, scenarioName)
+
+	return result
+}
+
+// ValidateEmbeddingResponse performs comprehensive validation for embedding responses
+func ValidateEmbeddingResponse(t *testing.T, response *schemas.BifrostEmbeddingResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+	result := ValidationResult{
+		Passed:           true,
+		Errors:           make([]string, 0),
+		Warnings:         make([]string, 0),
+		MetricsCollected: make(map[string]interface{}),
+	}
+
+	// If there's an error when we expected success, that's a failure
+	if err != nil {
+		result.Passed = false
+		parsed := ParseBifrostError(err)
+		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
+		LogError(t, err, scenarioName)
+		return result
+	}
+
+	// If response is nil when we expected success, that's a failure
+	if response == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Response is nil")
+		return result
+	}
+
+	// Validate embedding specific fields
+	validateEmbeddingFields(t, response, expectations, &result)
+
+	// Collect metrics
+	collectEmbeddingResponseMetrics(response, &result)
 
 	// Log results
 	logValidationResults(t, result, scenarioName)
@@ -119,21 +312,16 @@ func ValidateResponse(t *testing.T, response *schemas.BifrostResponse, err *sche
 }
 
 // =============================================================================
-// VALIDATION HELPER FUNCTIONS
+// VALIDATION HELPER FUNCTIONS - CHAT RESPONSE
 // =============================================================================
 
-// validateBasicStructure checks the basic structure of the response
-func validateBasicStructure(t *testing.T, response *schemas.BifrostResponse, expectations ResponseExpectations, result *ValidationResult) {
+// validateChatBasicStructure checks the basic structure of the chat response
+func validateChatBasicStructure(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
 	// Check choice count
 	if expectations.ExpectedChoiceCount > 0 {
 		actualCount := 0
 		if response.Choices != nil {
 			actualCount = len(response.Choices)
-		}
-		if response.ResponsesResponse != nil {
-			// For Responses API, count "logical choices" instead of raw message count
-			// Group related messages (text + tool calls) as one logical choice
-			actualCount = countLogicalChoicesInResponsesAPI(response.ResponsesResponse.Output)
 		}
 		if actualCount != expectations.ExpectedChoiceCount {
 			result.Passed = false
@@ -142,15 +330,9 @@ func validateBasicStructure(t *testing.T, response *schemas.BifrostResponse, exp
 		}
 	}
 
-	// Check if we have choices at all
-	choices := []schemas.BifrostChatResponseChoice{}
-	if response.Choices != nil {
-		choices = response.Choices
-	}
-
 	// Check finish reasons
-	if expectations.ExpectedFinishReason != nil {
-		for i, choice := range choices {
+	if expectations.ExpectedFinishReason != nil && response.Choices != nil {
+		for i, choice := range response.Choices {
 			if choice.FinishReason == nil {
 				result.Warnings = append(result.Warnings,
 					fmt.Sprintf("Choice %d has no finish reason", i))
@@ -163,14 +345,14 @@ func validateBasicStructure(t *testing.T, response *schemas.BifrostResponse, exp
 	}
 }
 
-// validateContent checks the content of the response
-func validateContent(t *testing.T, response *schemas.BifrostResponse, expectations ResponseExpectations, result *ValidationResult) {
-	// Skip content validation for responses that don't have text content (e.g., speech synthesis)
+// validateChatContent checks the content of the chat response
+func validateChatContent(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Skip content validation for responses that don't have text content
 	if !expectations.ShouldHaveContent {
 		return
 	}
 
-	content := GetResultContent(response)
+	content := GetChatContent(response)
 
 	// Check if content exists when expected
 	if expectations.ShouldHaveContent {
@@ -247,32 +429,575 @@ func validateContent(t *testing.T, response *schemas.BifrostResponse, expectatio
 	result.MetricsCollected["content_word_count"] = len(strings.Fields(content))
 }
 
-// truncateContentForError safely truncates content for error messages
-func truncateContentForError(content string, maxLength int) string {
-	content = strings.TrimSpace(content)
-	if len(content) <= maxLength {
-		return fmt.Sprintf("'%s'", content)
-	}
-	return fmt.Sprintf("'%s...' (truncated from %d chars)", content[:maxLength], len(content))
-}
+// validateChatToolCalls checks tool calling aspects of chat response
+func validateChatToolCalls(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
+	totalToolCalls := 0
 
-// extractToolCallNames extracts tool call function names from response for error messages
-func extractToolCallNames(response *schemas.BifrostResponse) []string {
-	var toolNames []string
-
-	if response.ResponsesResponse != nil {
-		for _, output := range response.ResponsesResponse.Output {
-			if output.ResponsesToolMessage != nil && output.Name != nil {
-				toolNames = append(toolNames, *output.Name)
+	// Count tool calls from Chat Completions API
+	if response.Choices != nil {
+		for _, choice := range response.Choices {
+			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
+				totalToolCalls += len(choice.Message.ChatAssistantMessage.ToolCalls)
 			}
 		}
-	} else if response.Choices != nil {
-		choices := []schemas.BifrostChatResponseChoice{}
-		if response.Choices != nil {
-			choices = response.Choices
-		}
+	}
 
-		for _, choice := range choices {
+	// Check if we should have no function calls
+	if expectations.ShouldNotHaveFunctionCalls && totalToolCalls > 0 {
+		result.Passed = false
+		actualToolNames := extractChatToolCallNames(response)
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("Expected no function calls but found %d: %v", totalToolCalls, actualToolNames))
+	}
+
+	// Validate specific tool calls
+	if len(expectations.ExpectedToolCalls) > 0 {
+		validateChatSpecificToolCalls(response, expectations.ExpectedToolCalls, result)
+	}
+
+	result.MetricsCollected["tool_call_count"] = totalToolCalls
+}
+
+// validateChatTechnicalFields checks technical aspects of the chat response
+func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check usage stats
+	if expectations.ShouldHaveUsageStats {
+		if response.Usage == nil {
+			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+		} else {
+			// Validate usage makes sense
+			if response.Usage.TotalTokens < response.Usage.PromptTokens {
+				result.Warnings = append(result.Warnings, "Total tokens less than prompt tokens")
+			}
+			if response.Usage.TotalTokens < response.Usage.CompletionTokens {
+				result.Warnings = append(result.Warnings, "Total tokens less than completion tokens")
+			}
+		}
+	}
+
+	// Check timestamps
+	if expectations.ShouldHaveTimestamps {
+		if response.Created == 0 {
+			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
+		}
+	}
+
+	// Check model field
+	if expectations.ShouldHaveModel {
+		if strings.TrimSpace(response.Model) == "" {
+			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
+		}
+	}
+}
+
+// collectChatResponseMetrics collects metrics from the chat response for analysis
+func collectChatResponseMetrics(response *schemas.BifrostChatResponse, result *ValidationResult) {
+	result.MetricsCollected["choice_count"] = len(response.Choices)
+	result.MetricsCollected["has_usage"] = response.Usage != nil
+	result.MetricsCollected["has_model"] = response.Model != ""
+	result.MetricsCollected["has_timestamp"] = response.Created > 0
+
+	if response.Usage != nil {
+		result.MetricsCollected["total_tokens"] = response.Usage.TotalTokens
+		result.MetricsCollected["prompt_tokens"] = response.Usage.PromptTokens
+		result.MetricsCollected["completion_tokens"] = response.Usage.CompletionTokens
+	}
+}
+
+// =============================================================================
+// VALIDATION HELPER FUNCTIONS - TEXT COMPLETION RESPONSE
+// =============================================================================
+
+// validateTextCompletionBasicStructure checks the basic structure of the text completion response
+func validateTextCompletionBasicStructure(t *testing.T, response *schemas.BifrostTextCompletionResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check choice count
+	if expectations.ExpectedChoiceCount > 0 {
+		actualCount := 0
+		if response.Choices != nil {
+			actualCount = len(response.Choices)
+		}
+		if actualCount != expectations.ExpectedChoiceCount {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Expected %d choices, got %d", expectations.ExpectedChoiceCount, actualCount))
+		}
+	}
+
+	// Check finish reasons
+	if expectations.ExpectedFinishReason != nil && response.Choices != nil {
+		for i, choice := range response.Choices {
+			if choice.FinishReason == nil {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("Choice %d has no finish reason", i))
+			} else if *choice.FinishReason != *expectations.ExpectedFinishReason {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("Choice %d has finish reason '%s', expected '%s'",
+						i, *choice.FinishReason, *expectations.ExpectedFinishReason))
+			}
+		}
+	}
+}
+
+// validateTextCompletionContent checks the content of the text completion response
+func validateTextCompletionContent(t *testing.T, response *schemas.BifrostTextCompletionResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Skip content validation for responses that don't have text content
+	if !expectations.ShouldHaveContent {
+		return
+	}
+
+	content := GetTextCompletionContent(response)
+
+	// Check if content exists when expected
+	if expectations.ShouldHaveContent {
+		if strings.TrimSpace(content) == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected content but got empty response")
+			return
+		}
+	}
+
+	// Check content length
+	contentLen := len(strings.TrimSpace(content))
+	if expectations.MinContentLength > 0 && contentLen < expectations.MinContentLength {
+		result.Passed = false
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("Content length %d is below minimum %d", contentLen, expectations.MinContentLength))
+	}
+
+	if expectations.MaxContentLength > 0 && contentLen > expectations.MaxContentLength {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("Content length %d exceeds maximum %d", contentLen, expectations.MaxContentLength))
+	}
+
+	// Check required keywords (AND logic - ALL must be present)
+	lowerContent := strings.ToLower(content)
+	for _, keyword := range expectations.ShouldContainKeywords {
+		if !strings.Contains(lowerContent, strings.ToLower(keyword)) {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content should contain keyword '%s' but doesn't. Actual content: %s",
+					keyword, truncateContentForError(content, 200)))
+		}
+	}
+
+	// Check OR keywords (OR logic - AT LEAST ONE must be present)
+	if len(expectations.ShouldContainAnyOf) > 0 {
+		foundAny := false
+		for _, keyword := range expectations.ShouldContainAnyOf {
+			if strings.Contains(lowerContent, strings.ToLower(keyword)) {
+				foundAny = true
+				break
+			}
+		}
+		if !foundAny {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content should contain at least one of these keywords: %v, but doesn't. Actual content: %s",
+					expectations.ShouldContainAnyOf, truncateContentForError(content, 200)))
+		}
+	}
+
+	// Check forbidden words
+	for _, word := range expectations.ShouldNotContainWords {
+		if strings.Contains(lowerContent, strings.ToLower(word)) {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content contains forbidden word '%s'. Actual content: %s",
+					word, truncateContentForError(content, 200)))
+		}
+	}
+
+	// Check content pattern
+	if expectations.ContentPattern != nil {
+		if !expectations.ContentPattern.MatchString(content) {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content doesn't match expected pattern: %s. Actual content: %s",
+					expectations.ContentPattern.String(), truncateContentForError(content, 200)))
+		}
+	}
+
+	// Store content for metrics
+	result.MetricsCollected["content_length"] = contentLen
+	result.MetricsCollected["content_word_count"] = len(strings.Fields(content))
+}
+
+// validateTextCompletionTechnicalFields checks technical aspects of the text completion response
+func validateTextCompletionTechnicalFields(t *testing.T, response *schemas.BifrostTextCompletionResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check usage stats
+	if expectations.ShouldHaveUsageStats {
+		if response.Usage == nil {
+			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+		} else {
+			// Validate usage makes sense
+			if response.Usage.TotalTokens < response.Usage.PromptTokens {
+				result.Warnings = append(result.Warnings, "Total tokens less than prompt tokens")
+			}
+			if response.Usage.TotalTokens < response.Usage.CompletionTokens {
+				result.Warnings = append(result.Warnings, "Total tokens less than completion tokens")
+			}
+		}
+	}
+
+	// Check timestamps - Text completion responses don't have a Created field
+	if expectations.ShouldHaveTimestamps {
+		// Text completion responses don't have timestamps, so skip this check
+		result.Warnings = append(result.Warnings, "Text completion responses don't support timestamp validation")
+	}
+
+	// Check model field
+	if expectations.ShouldHaveModel {
+		if strings.TrimSpace(response.Model) == "" {
+			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
+		}
+	}
+}
+
+// collectTextCompletionResponseMetrics collects metrics from the text completion response for analysis
+func collectTextCompletionResponseMetrics(response *schemas.BifrostTextCompletionResponse, result *ValidationResult) {
+	result.MetricsCollected["choice_count"] = len(response.Choices)
+	result.MetricsCollected["has_usage"] = response.Usage != nil
+	result.MetricsCollected["has_model"] = response.Model != ""
+	result.MetricsCollected["has_timestamp"] = false // Text completion responses don't have timestamps
+
+	if response.Usage != nil {
+		result.MetricsCollected["total_tokens"] = response.Usage.TotalTokens
+		result.MetricsCollected["prompt_tokens"] = response.Usage.PromptTokens
+		result.MetricsCollected["completion_tokens"] = response.Usage.CompletionTokens
+	}
+}
+
+// =============================================================================
+// VALIDATION HELPER FUNCTIONS - RESPONSES API
+// =============================================================================
+
+// validateResponsesBasicStructure checks the basic structure of the Responses API response
+func validateResponsesBasicStructure(response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check choice count
+	if expectations.ExpectedChoiceCount > 0 {
+		actualCount := 0
+		if response.Output != nil {
+			// For Responses API, count "logical choices" instead of raw message count
+			// Group related messages (text + tool calls) as one logical choice
+			actualCount = countLogicalChoicesInResponsesAPI(response.Output)
+		}
+		if actualCount != expectations.ExpectedChoiceCount {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Expected %d choices, got %d", expectations.ExpectedChoiceCount, actualCount))
+		}
+	}
+}
+
+// validateResponsesContent checks the content of the Responses API response
+func validateResponsesContent(t *testing.T, response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Skip content validation for responses that don't have text content
+	if !expectations.ShouldHaveContent {
+		return
+	}
+
+	content := GetResponsesContent(response)
+
+	// Check if content exists when expected
+	if expectations.ShouldHaveContent {
+		if strings.TrimSpace(content) == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected content but got empty response")
+			return
+		}
+	}
+
+	// Check content length
+	contentLen := len(strings.TrimSpace(content))
+	if expectations.MinContentLength > 0 && contentLen < expectations.MinContentLength {
+		result.Passed = false
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("Content length %d is below minimum %d", contentLen, expectations.MinContentLength))
+	}
+
+	if expectations.MaxContentLength > 0 && contentLen > expectations.MaxContentLength {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("Content length %d exceeds maximum %d", contentLen, expectations.MaxContentLength))
+	}
+
+	// Check required keywords (AND logic - ALL must be present)
+	lowerContent := strings.ToLower(content)
+	for _, keyword := range expectations.ShouldContainKeywords {
+		if !strings.Contains(lowerContent, strings.ToLower(keyword)) {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content should contain keyword '%s' but doesn't. Actual content: %s",
+					keyword, truncateContentForError(content, 200)))
+		}
+	}
+
+	// Check OR keywords (OR logic - AT LEAST ONE must be present)
+	if len(expectations.ShouldContainAnyOf) > 0 {
+		foundAny := false
+		for _, keyword := range expectations.ShouldContainAnyOf {
+			if strings.Contains(lowerContent, strings.ToLower(keyword)) {
+				foundAny = true
+				break
+			}
+		}
+		if !foundAny {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content should contain at least one of these keywords: %v, but doesn't. Actual content: %s",
+					expectations.ShouldContainAnyOf, truncateContentForError(content, 200)))
+		}
+	}
+
+	// Check forbidden words
+	for _, word := range expectations.ShouldNotContainWords {
+		if strings.Contains(lowerContent, strings.ToLower(word)) {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content contains forbidden word '%s'. Actual content: %s",
+					word, truncateContentForError(content, 200)))
+		}
+	}
+
+	// Check content pattern
+	if expectations.ContentPattern != nil {
+		if !expectations.ContentPattern.MatchString(content) {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Content doesn't match expected pattern: %s. Actual content: %s",
+					expectations.ContentPattern.String(), truncateContentForError(content, 200)))
+		}
+	}
+
+	// Store content for metrics
+	result.MetricsCollected["content_length"] = contentLen
+	result.MetricsCollected["content_word_count"] = len(strings.Fields(content))
+}
+
+// validateResponsesToolCalls checks tool calling aspects of Responses API response
+func validateResponsesToolCalls(t *testing.T, response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	totalToolCalls := 0
+
+	// Count tool calls from Responses API
+	if response.Output != nil {
+		for _, output := range response.Output {
+			// Check if this is a function_call type message
+			if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeFunctionCall {
+				totalToolCalls++
+			}
+		}
+	}
+
+	// Check if we should have no function calls
+	if expectations.ShouldNotHaveFunctionCalls && totalToolCalls > 0 {
+		result.Passed = false
+		actualToolNames := extractResponsesToolCallNames(response)
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("Expected no function calls but found %d: %v", totalToolCalls, actualToolNames))
+	}
+
+	// Validate specific tool calls
+	if len(expectations.ExpectedToolCalls) > 0 {
+		validateResponsesSpecificToolCalls(response, expectations.ExpectedToolCalls, result)
+	}
+
+	result.MetricsCollected["tool_call_count"] = totalToolCalls
+}
+
+// validateResponsesTechnicalFields checks technical aspects of the Responses API response
+func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check usage stats
+	if expectations.ShouldHaveUsageStats {
+		if response.Usage == nil {
+			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+		}
+	}
+
+	// Check timestamps
+	if expectations.ShouldHaveTimestamps {
+		if response.CreatedAt == 0 {
+			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
+		}
+	}
+}
+
+// collectResponsesResponseMetrics collects metrics from the Responses API response for analysis
+func collectResponsesResponseMetrics(response *schemas.BifrostResponsesResponse, result *ValidationResult) {
+	if response.Output != nil {
+		result.MetricsCollected["choice_count"] = len(response.Output)
+	}
+	result.MetricsCollected["has_usage"] = response.Usage != nil
+	result.MetricsCollected["has_timestamp"] = response.CreatedAt > 0
+
+	if response.Usage != nil {
+		// Responses API has different usage structure
+		result.MetricsCollected["usage_present"] = true
+	}
+}
+
+// =============================================================================
+// VALIDATION HELPER FUNCTIONS - SPEECH RESPONSE
+// =============================================================================
+
+// validateSpeechSynthesisResponse validates speech synthesis responses
+func validateSpeechSynthesisResponse(t *testing.T, response *schemas.BifrostSpeechResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check if response has speech data
+	if response.Audio == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Speech synthesis response missing Audio field")
+		return
+	}
+
+	// Check if audio data exists
+	shouldHaveAudio, _ := expectations.ProviderSpecific["should_have_audio"].(bool)
+	if shouldHaveAudio && response.Audio == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Speech synthesis response missing audio data")
+		return
+	}
+
+	// Check minimum audio bytes
+	if minBytes, ok := expectations.ProviderSpecific["min_audio_bytes"].(int); ok {
+		if response.Audio != nil {
+			actualSize := len(response.Audio)
+			if actualSize < minBytes {
+				result.Passed = false
+				result.Errors = append(result.Errors,
+					fmt.Sprintf("Audio data too small: got %d bytes, expected at least %d", actualSize, minBytes))
+			} else {
+				result.MetricsCollected["audio_bytes"] = actualSize
+			}
+		}
+	}
+
+	// Validate audio format if specified
+	if expectedFormat, ok := expectations.ProviderSpecific["expected_format"].(string); ok {
+		// This could be extended to validate actual audio format based on file headers
+		result.MetricsCollected["expected_audio_format"] = expectedFormat
+	}
+
+	result.MetricsCollected["speech_validation"] = "completed"
+}
+
+// collectSpeechResponseMetrics collects metrics from the speech response for analysis
+func collectSpeechResponseMetrics(response *schemas.BifrostSpeechResponse, result *ValidationResult) {
+	result.MetricsCollected["has_audio"] = response.Audio != nil
+	if response.Audio != nil {
+		result.MetricsCollected["audio_size"] = len(response.Audio)
+	}
+}
+
+// =============================================================================
+// VALIDATION HELPER FUNCTIONS - TRANSCRIPTION RESPONSE
+// =============================================================================
+
+// validateTranscriptionFields validates transcription responses
+func validateTranscriptionFields(t *testing.T, response *schemas.BifrostTranscriptionResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check if transcribed text exists
+	shouldHaveTranscription, _ := expectations.ProviderSpecific["should_have_transcription"].(bool)
+	if shouldHaveTranscription && response.Text == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Transcription response missing transcribed text")
+		return
+	}
+
+	// Check minimum transcription length
+	if minLength, ok := expectations.ProviderSpecific["min_transcription_length"].(int); ok {
+		actualLength := len(response.Text)
+		if actualLength < minLength {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Transcribed text too short: got %d characters, expected at least %d", actualLength, minLength))
+		} else {
+			result.MetricsCollected["transcription_length"] = actualLength
+		}
+	}
+
+	// Check for common transcription failure indicators
+	transcribedText := strings.ToLower(response.Text)
+	for _, errorPhrase := range expectations.ShouldNotContainWords {
+		if strings.Contains(transcribedText, errorPhrase) {
+			result.Passed = false
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("Transcribed text contains error indicator: '%s'", errorPhrase))
+		}
+	}
+
+	// Validate additional transcription fields if available
+	if response.Language != nil {
+		result.MetricsCollected["detected_language"] = *response.Language
+	}
+	if response.Duration != nil {
+		result.MetricsCollected["audio_duration"] = *response.Duration
+	}
+
+	result.MetricsCollected["transcription_validation"] = "completed"
+}
+
+// collectTranscriptionResponseMetrics collects metrics from the transcription response for analysis
+func collectTranscriptionResponseMetrics(response *schemas.BifrostTranscriptionResponse, result *ValidationResult) {
+	result.MetricsCollected["has_text"] = response.Text != ""
+	result.MetricsCollected["text_length"] = len(response.Text)
+	result.MetricsCollected["has_language"] = response.Language != nil
+	result.MetricsCollected["has_duration"] = response.Duration != nil
+}
+
+// =============================================================================
+// VALIDATION HELPER FUNCTIONS - EMBEDDING RESPONSE
+// =============================================================================
+
+// validateEmbeddingFields validates embedding responses
+func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check if response has embedding data
+	if response.Data == nil || len(response.Data) == 0 {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Embedding response missing data")
+		return
+	}
+
+	// Check embedding dimensions
+	if expectedDimensions, ok := expectations.ProviderSpecific["expected_dimensions"].(int); ok {
+		for i, embedding := range response.Data {
+			var actualDimensions int
+			if embedding.Embedding.EmbeddingArray != nil {
+				actualDimensions = len(embedding.Embedding.EmbeddingArray)
+			} else if embedding.Embedding.Embedding2DArray != nil {
+				if len(embedding.Embedding.Embedding2DArray) > 0 {
+					actualDimensions = len(embedding.Embedding.Embedding2DArray[0])
+				}
+			}
+			if actualDimensions != expectedDimensions {
+				result.Passed = false
+				result.Errors = append(result.Errors,
+					fmt.Sprintf("Embedding %d has %d dimensions, expected %d", i, actualDimensions, expectedDimensions))
+			}
+		}
+	}
+
+	result.MetricsCollected["embedding_validation"] = "completed"
+}
+
+// collectEmbeddingResponseMetrics collects metrics from the embedding response for analysis
+func collectEmbeddingResponseMetrics(response *schemas.BifrostEmbeddingResponse, result *ValidationResult) {
+	result.MetricsCollected["has_data"] = response.Data != nil
+	result.MetricsCollected["embedding_count"] = len(response.Data)
+	result.MetricsCollected["has_usage"] = response.Usage != nil
+	if response.Data != nil && len(response.Data) > 0 {
+		var dimensions int
+		if response.Data[0].Embedding.EmbeddingArray != nil {
+			dimensions = len(response.Data[0].Embedding.EmbeddingArray)
+		} else if response.Data[0].Embedding.Embedding2DArray != nil && len(response.Data[0].Embedding.Embedding2DArray) > 0 {
+			dimensions = len(response.Data[0].Embedding.Embedding2DArray[0])
+		}
+		result.MetricsCollected["embedding_dimensions"] = dimensions
+	}
+}
+
+// extractChatToolCallNames extracts tool call function names from chat response for error messages
+func extractChatToolCallNames(response *schemas.BifrostChatResponse) []string {
+	var toolNames []string
+
+	if response.Choices != nil {
+		for _, choice := range response.Choices {
 			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
 				for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
 					if toolCall.Function.Name != nil {
@@ -285,52 +1010,22 @@ func extractToolCallNames(response *schemas.BifrostResponse) []string {
 	return toolNames
 }
 
-// validateToolCalls checks tool calling aspects of the response
-func validateToolCalls(t *testing.T, response *schemas.BifrostResponse, expectations ResponseExpectations, result *ValidationResult) {
-	// Count total tool calls from both Chat Completions API and Responses API
-	totalToolCalls := 0
+// extractResponsesToolCallNames extracts tool call function names from Responses API response for error messages
+func extractResponsesToolCallNames(response *schemas.BifrostResponsesResponse) []string {
+	var toolNames []string
 
-	// Count tool calls from Chat Completions API
-	if response.Choices != nil {
-		for _, choice := range response.Choices {
-			if choice.BifrostTextCompletionResponseChoice != nil {
-				continue
-			}
-
-			if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
-				totalToolCalls += len(choice.Message.ChatAssistantMessage.ToolCalls)
+	if response.Output != nil {
+		for _, output := range response.Output {
+			if output.ResponsesToolMessage != nil && output.Name != nil {
+				toolNames = append(toolNames, *output.Name)
 			}
 		}
 	}
-
-	// Count tool calls from Responses API
-	if response.ResponsesResponse != nil && response.ResponsesResponse.Output != nil {
-		for _, output := range response.ResponsesResponse.Output {
-			// Check if this is a function_call type message
-			if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeFunctionCall {
-				totalToolCalls++
-			}
-		}
-	}
-
-	// Check if we should have no function calls
-	if expectations.ShouldNotHaveFunctionCalls && totalToolCalls > 0 {
-		result.Passed = false
-		actualToolNames := extractToolCallNames(response)
-		result.Errors = append(result.Errors,
-			fmt.Sprintf("Expected no function calls but found %d: %v", totalToolCalls, actualToolNames))
-	}
-
-	// Validate specific tool calls
-	if len(expectations.ExpectedToolCalls) > 0 {
-		validateSpecificToolCalls(response, expectations.ExpectedToolCalls, result)
-	}
-
-	result.MetricsCollected["tool_call_count"] = totalToolCalls
+	return toolNames
 }
 
-// validateSpecificToolCalls validates individual tool call expectations
-func validateSpecificToolCalls(response *schemas.BifrostResponse, expectedCalls []ToolCallExpectation, result *ValidationResult) {
+// validateChatSpecificToolCalls validates individual tool call expectations for chat response
+func validateChatSpecificToolCalls(response *schemas.BifrostChatResponse, expectedCalls []ToolCallExpectation, result *ValidationResult) {
 	for _, expected := range expectedCalls {
 		found := false
 
@@ -347,8 +1042,30 @@ func validateSpecificToolCalls(response *schemas.BifrostResponse, expectedCalls 
 					}
 				}
 			}
-		} else if response.ResponsesResponse != nil {
-			for _, message := range response.ResponsesResponse.Output {
+		}
+
+		if !found {
+			result.Passed = false
+			actualToolNames := extractChatToolCallNames(response)
+			if len(actualToolNames) == 0 {
+				result.Errors = append(result.Errors,
+					fmt.Sprintf("Expected tool call '%s' not found (no tool calls present)", expected.FunctionName))
+			} else {
+				result.Errors = append(result.Errors,
+					fmt.Sprintf("Expected tool call '%s' not found. Actual tool calls found: %v",
+						expected.FunctionName, actualToolNames))
+			}
+		}
+	}
+}
+
+// validateResponsesSpecificToolCalls validates individual tool call expectations for Responses API response
+func validateResponsesSpecificToolCalls(response *schemas.BifrostResponsesResponse, expectedCalls []ToolCallExpectation, result *ValidationResult) {
+	for _, expected := range expectedCalls {
+		found := false
+
+		if response.Output != nil {
+			for _, message := range response.Output {
 				if message.ResponsesToolMessage != nil &&
 					message.ResponsesToolMessage.Name != nil &&
 					*message.ResponsesToolMessage.Name == expected.FunctionName {
@@ -364,7 +1081,7 @@ func validateSpecificToolCalls(response *schemas.BifrostResponse, expectedCalls 
 
 		if !found {
 			result.Passed = false
-			actualToolNames := extractToolCallNames(response)
+			actualToolNames := extractResponsesToolCallNames(response)
 			if len(actualToolNames) == 0 {
 				result.Errors = append(result.Errors,
 					fmt.Sprintf("Expected tool call '%s' not found (no tool calls present)", expected.FunctionName))
@@ -374,6 +1091,39 @@ func validateSpecificToolCalls(response *schemas.BifrostResponse, expectedCalls 
 						expected.FunctionName, actualToolNames))
 			}
 		}
+	}
+}
+
+// =============================================================================
+// UTILITY FUNCTIONS
+// =============================================================================
+
+// truncateContentForError safely truncates content for error messages
+func truncateContentForError(content string, maxLength int) string {
+	content = strings.TrimSpace(content)
+	if len(content) <= maxLength {
+		return fmt.Sprintf("'%s'", content)
+	}
+	return fmt.Sprintf("'%s...' (truncated from %d chars)", content[:maxLength], len(content))
+}
+
+// getJSONType returns the JSON type of a value
+func getJSONType(value interface{}) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case float64, int, int64:
+		return "number"
+	case bool:
+		return "boolean"
+	case []interface{}:
+		return "array"
+	case map[string]interface{}:
+		return "object"
+	case nil:
+		return "null"
+	default:
+		return "unknown"
 	}
 }
 
@@ -469,85 +1219,6 @@ func validateSingleToolCall(arguments interface{}, expected ToolCallExpectation,
 	}
 }
 
-// validateTechnicalFields checks technical aspects of the response
-func validateTechnicalFields(t *testing.T, response *schemas.BifrostResponse, expectations ResponseExpectations, result *ValidationResult) {
-	// Check usage stats
-	if expectations.ShouldHaveUsageStats {
-		if response.Usage == nil {
-			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
-		} else {
-			// Validate usage makes sense
-			if response.Usage.TotalTokens < response.Usage.PromptTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than prompt tokens")
-			}
-			if response.Usage.TotalTokens < response.Usage.CompletionTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than completion tokens")
-			}
-		}
-	}
-
-	// Check timestamps
-	if expectations.ShouldHaveTimestamps {
-		if (response.ResponsesResponse == nil && response.Created == 0) || (response.ResponsesResponse != nil && response.ResponsesResponse.CreatedAt == 0) {
-			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
-		}
-	}
-
-	// Check model field
-	if expectations.ShouldHaveModel {
-		if strings.TrimSpace(response.Model) == "" {
-			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
-		}
-	}
-}
-
-// =============================================================================
-// UTILITY FUNCTIONS
-// =============================================================================
-
-// getJSONType returns the JSON type of a value
-func getJSONType(value interface{}) string {
-	switch value.(type) {
-	case string:
-		return "string"
-	case float64, int, int64:
-		return "number"
-	case bool:
-		return "boolean"
-	case []interface{}:
-		return "array"
-	case map[string]interface{}:
-		return "object"
-	case nil:
-		return "null"
-	default:
-		return "unknown"
-	}
-}
-
-// collectResponseMetrics collects metrics from the response for analysis
-func collectResponseMetrics(response *schemas.BifrostResponse, result *ValidationResult) {
-	result.MetricsCollected["choice_count"] = len(response.Choices)
-
-	if response.ResponsesResponse != nil {
-		result.MetricsCollected["choice_count"] = len(response.ResponsesResponse.Output)
-	}
-
-	result.MetricsCollected["has_usage"] = response.Usage != nil
-	result.MetricsCollected["has_model"] = response.Model != ""
-	result.MetricsCollected["has_timestamp"] = response.Created > 0
-
-	if response.Usage != nil {
-		result.MetricsCollected["total_tokens"] = response.Usage.TotalTokens
-		if response.Usage.ResponsesExtendedResponseUsage != nil {
-			result.MetricsCollected["input_tokens"] = response.Usage.ResponsesExtendedResponseUsage.InputTokens
-			result.MetricsCollected["output_tokens"] = response.Usage.ResponsesExtendedResponseUsage.OutputTokens
-		}
-		result.MetricsCollected["prompt_tokens"] = response.Usage.PromptTokens
-		result.MetricsCollected["completion_tokens"] = response.Usage.CompletionTokens
-	}
-}
-
 // logValidationResults logs the validation results
 func logValidationResults(t *testing.T, result ValidationResult, scenarioName string) {
 	if result.Passed {
@@ -565,116 +1236,6 @@ func logValidationResults(t *testing.T, result ValidationResult, scenarioName st
 			t.Logf("   Warning: %s", warning)
 		}
 	}
-}
-
-// validateProviderSpecific handles speech, transcription, and other provider-specific validations
-func validateProviderSpecific(t *testing.T, response *schemas.BifrostResponse, expectations ResponseExpectations, result *ValidationResult) {
-	if len(expectations.ProviderSpecific) == 0 {
-		return
-	}
-
-	// Check response type to determine validation path
-	responseType, hasResponseType := expectations.ProviderSpecific["response_type"].(string)
-	if !hasResponseType {
-		return
-	}
-
-	switch responseType {
-	case "speech_synthesis":
-		validateSpeechSynthesis(t, response, expectations, result)
-	case "transcription":
-		validateTranscription(t, response, expectations, result)
-	}
-}
-
-// validateSpeechSynthesis validates speech synthesis responses
-func validateSpeechSynthesis(t *testing.T, response *schemas.BifrostResponse, expectations ResponseExpectations, result *ValidationResult) {
-	// Check if response has speech data
-	if response.Speech == nil {
-		result.Passed = false
-		result.Errors = append(result.Errors, "Speech synthesis response missing Speech field")
-		return
-	}
-
-	// Check if audio data exists
-	shouldHaveAudio, _ := expectations.ProviderSpecific["should_have_audio"].(bool)
-	if shouldHaveAudio && response.Speech.Audio == nil {
-		result.Passed = false
-		result.Errors = append(result.Errors, "Speech synthesis response missing audio data")
-		return
-	}
-
-	// Check minimum audio bytes
-	if minBytes, ok := expectations.ProviderSpecific["min_audio_bytes"].(int); ok {
-		if response.Speech.Audio != nil {
-			actualSize := len(response.Speech.Audio)
-			if actualSize < minBytes {
-				result.Passed = false
-				result.Errors = append(result.Errors,
-					fmt.Sprintf("Audio data too small: got %d bytes, expected at least %d", actualSize, minBytes))
-			} else {
-				result.MetricsCollected["audio_bytes"] = actualSize
-			}
-		}
-	}
-
-	// Validate audio format if specified
-	if expectedFormat, ok := expectations.ProviderSpecific["expected_format"].(string); ok {
-		// This could be extended to validate actual audio format based on file headers
-		result.MetricsCollected["expected_audio_format"] = expectedFormat
-	}
-
-	result.MetricsCollected["speech_validation"] = "completed"
-}
-
-// validateTranscription validates transcription responses
-func validateTranscription(t *testing.T, response *schemas.BifrostResponse, expectations ResponseExpectations, result *ValidationResult) {
-	// Check if response has transcription data
-	if response.Transcribe == nil {
-		result.Passed = false
-		result.Errors = append(result.Errors, "Transcription response missing Transcribe field")
-		return
-	}
-
-	// Check if transcribed text exists
-	shouldHaveTranscription, _ := expectations.ProviderSpecific["should_have_transcription"].(bool)
-	if shouldHaveTranscription && response.Transcribe.Text == "" {
-		result.Passed = false
-		result.Errors = append(result.Errors, "Transcription response missing transcribed text")
-		return
-	}
-
-	// Check minimum transcription length
-	if minLength, ok := expectations.ProviderSpecific["min_transcription_length"].(int); ok {
-		actualLength := len(response.Transcribe.Text)
-		if actualLength < minLength {
-			result.Passed = false
-			result.Errors = append(result.Errors,
-				fmt.Sprintf("Transcribed text too short: got %d characters, expected at least %d", actualLength, minLength))
-		} else {
-			result.MetricsCollected["transcription_length"] = actualLength
-		}
-	}
-
-	// Check for common transcription failure indicators
-	transcribedText := strings.ToLower(response.Transcribe.Text)
-	for _, errorPhrase := range expectations.ShouldNotContainWords {
-		if strings.Contains(transcribedText, errorPhrase) {
-			result.Passed = false
-			result.Errors = append(result.Errors,
-				fmt.Sprintf("Transcribed text contains error indicator: '%s'", errorPhrase))
-		}
-	}
-
-	// Validate additional transcription fields if available
-	if response.Transcribe.Language != nil {
-		result.MetricsCollected["detected_language"] = *response.Transcribe.Language
-	}
-	if response.Transcribe.Duration != nil {
-		result.MetricsCollected["audio_duration"] = *response.Transcribe.Duration
-	}
-
-	result.MetricsCollected["transcription_validation"] = "completed"
 }
 
 // countLogicalChoicesInResponsesAPI counts logical choices in Responses API format

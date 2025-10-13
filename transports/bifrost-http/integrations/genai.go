@@ -30,21 +30,30 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
-				return &schemas.BifrostRequest{
-					ChatRequest: geminiReq.ToBifrostRequest(),
-				}, nil
+				if geminiReq.IsEmbedding {
+					return &schemas.BifrostRequest{
+						EmbeddingRequest: geminiReq.ToBifrostEmbeddingRequest(),
+					}, nil
+				} else {
+					return &schemas.BifrostRequest{
+						ChatRequest: geminiReq.ToBifrostChatRequest(),
+					}, nil
+				}
 			}
 			return nil, errors.New("invalid request type")
 		},
-		ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-			return gemini.ToGeminiGenerationResponse(resp), nil
+		EmbeddingResponseConverter: func(resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+			return gemini.ToGeminiEmbeddingResponse(resp), nil
+		},
+		ChatResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
+			return gemini.ToGeminiChatResponse(resp), nil
 		},
 		ErrorConverter: func(err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
-				return gemini.ToGeminiGenerationResponse(resp), nil
+			ChatStreamResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
+				return gemini.ToGeminiChatResponse(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return gemini.ToGeminiError(err)
@@ -57,9 +66,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 }
 
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.
-func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *GenAIRouter {
+func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *GenAIRouter {
 	return &GenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, CreateGenAIRouteConfigs("/genai")),
+		GenericRouter: NewGenericRouter(client, handlerStore, CreateGenAIRouteConfigs("/genai"), logger),
 	}
 }
 

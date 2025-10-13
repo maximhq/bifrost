@@ -106,16 +106,16 @@ type Log struct {
 	InputHistoryParsed        []schemas.ChatMessage                  `gorm:"-" json:"input_history,omitempty"`
 	OutputMessageParsed       *schemas.ChatMessage                   `gorm:"-" json:"output_message,omitempty"`
 	ResponsesOutputParsed     []schemas.ResponsesMessage             `gorm:"-" json:"responses_output,omitempty"`
-	EmbeddingOutputParsed     []schemas.BifrostEmbedding             `gorm:"-" json:"embedding_output,omitempty"`
+	EmbeddingOutputParsed     []schemas.EmbeddingData                `gorm:"-" json:"embedding_output,omitempty"`
 	ParamsParsed              interface{}                            `gorm:"-" json:"params,omitempty"`
 	ToolsParsed               []schemas.ChatTool                     `gorm:"-" json:"tools,omitempty"`
 	ToolCallsParsed           []schemas.ChatAssistantMessageToolCall `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
-	TokenUsageParsed          *schemas.LLMUsage                      `gorm:"-" json:"token_usage,omitempty"`
+	TokenUsageParsed          *schemas.BifrostLLMUsage               `gorm:"-" json:"token_usage,omitempty"`
 	ErrorDetailsParsed        *schemas.BifrostError                  `gorm:"-" json:"error_details,omitempty"`
 	SpeechInputParsed         *schemas.SpeechInput                   `gorm:"-" json:"speech_input,omitempty"`
 	TranscriptionInputParsed  *schemas.TranscriptionInput            `gorm:"-" json:"transcription_input,omitempty"`
-	SpeechOutputParsed        *schemas.BifrostSpeech                 `gorm:"-" json:"speech_output,omitempty"`
-	TranscriptionOutputParsed *schemas.BifrostTranscribe             `gorm:"-" json:"transcription_output,omitempty"`
+	SpeechOutputParsed        *schemas.BifrostSpeechResponse         `gorm:"-" json:"speech_output,omitempty"`
+	TranscriptionOutputParsed *schemas.BifrostTranscriptionResponse  `gorm:"-" json:"transcription_output,omitempty"`
 	CacheDebugParsed          *schemas.BifrostCacheDebug             `gorm:"-" json:"cache_debug,omitempty"`
 }
 
@@ -322,11 +322,6 @@ func (l *Log) DeserializeFields() error {
 		if err := json.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TokenUsageParsed = nil
-		} else {
-			if l.TokenUsageParsed.ResponsesExtendedResponseUsage != nil {
-				l.TokenUsageParsed.PromptTokens = l.TokenUsageParsed.ResponsesExtendedResponseUsage.InputTokens
-				l.TokenUsageParsed.CompletionTokens = l.TokenUsageParsed.ResponsesExtendedResponseUsage.OutputTokens
-			}
 		}
 	}
 

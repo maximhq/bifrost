@@ -586,9 +586,11 @@ func (p *MockerPlugin) findMatchingCompiledRule(req *schemas.BifrostRequest) *co
 
 // matchesConditionsFast checks if request matches rule conditions with optimized performance
 func (p *MockerPlugin) matchesConditionsFast(req *schemas.BifrostRequest, conditions *Conditions, compiledRegex *regexp.Regexp) bool {
+	provider, _, _ := req.GetRequestFields()
+
 	// Check providers - optimized string comparison
 	if len(conditions.Providers) > 0 {
-		providerStr := string(req.Provider)
+		providerStr := string(provider)
 		found := false
 		for _, provider := range conditions.Providers {
 			if providerStr == provider {
@@ -605,7 +607,7 @@ func (p *MockerPlugin) matchesConditionsFast(req *schemas.BifrostRequest, condit
 	if len(conditions.Models) > 0 {
 		found := false
 		for _, model := range conditions.Models {
-			if req.Model == model {
+			if model == model {
 				found = true
 				break
 			}
@@ -716,8 +718,10 @@ func (p *MockerPlugin) extractMessageContentFast(req *schemas.BifrostRequest) st
 
 // calculateRequestSizeFast calculates request size with minimal overhead
 func (p *MockerPlugin) calculateRequestSizeFast(req *schemas.BifrostRequest) int {
+	provider, model, _ := req.GetRequestFields()
+
 	// Approximate size calculation to avoid expensive JSON marshaling
-	size := len(req.Model) + len(string(req.Provider))
+	size := len(model) + len(string(provider))
 
 	// Add input size
 	if req.TextCompletionRequest != nil {
@@ -766,16 +770,16 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	}
 
 	// Apply defaults for token usage if not provided
-	var usage schemas.LLMUsage
+	var usage schemas.BifrostLLMUsage
 	if content.Usage != nil {
-		usage = schemas.LLMUsage{
+		usage = schemas.BifrostLLMUsage{
 			PromptTokens:     p.getOrDefault(content.Usage.PromptTokens, 10),
 			CompletionTokens: p.getOrDefault(content.Usage.CompletionTokens, 20),
 			TotalTokens:      p.getOrDefault(content.Usage.TotalTokens, content.Usage.PromptTokens+content.Usage.CompletionTokens),
 		}
 	} else {
 		// Default usage when none specified
-		usage = schemas.LLMUsage{
+		usage = schemas.BifrostLLMUsage{
 			PromptTokens:     10,
 			CompletionTokens: 20,
 			TotalTokens:      30,
@@ -792,34 +796,38 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 		finishReason = &static
 	}
 
+	provider, model, _ := req.GetRequestFields()
+
 	// Create mock response with proper structure
 	mockResponse := &schemas.BifrostResponse{
-		Model: req.Model,
-		Usage: &usage,
-		Choices: []schemas.BifrostChatResponseChoice{
-			{
-				Index: 0,
-				BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-					Message: &schemas.ChatMessage{
-						Role: schemas.ChatMessageRoleAssistant,
-						Content: &schemas.ChatMessageContent{
-							ContentStr: &message,
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: model,
+			Usage: &usage,
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{
+								ContentStr: &message,
+							},
 						},
 					},
+					FinishReason: finishReason,
 				},
-				FinishReason: finishReason,
 			},
-		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.ChatCompletionRequest,
-			Provider:       req.Provider,
-			ModelRequested: req.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionRequest,
+				Provider:       provider,
+				ModelRequested: model,
+			},
 		},
 	}
 
 	// Override model if specified
 	if content.Model != nil {
-		mockResponse.Model = *content.Model
+		mockResponse.ChatResponse.Model = *content.Model
 	}
 
 	// Only create raw response map if there are custom fields (avoid allocation)
@@ -833,7 +841,8 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 
 		// Add mock metadata
 		rawResponse["mock_rule"] = "success"
-		mockResponse.ExtraFields.RawResponse = rawResponse
+		extraFields := mockResponse.GetExtraFields()
+		extraFields.RawResponse = rawResponse
 	}
 
 	// Increment success response counter using atomic operation
@@ -942,6 +951,8 @@ func (p *MockerPlugin) calculateLatency(latency *Latency) time.Duration {
 
 // handleDefaultBehavior handles requests when no rules match
 func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+	provider, model, _ := req.GetRequestFields()
+
 	switch p.config.DefaultBehavior {
 	case DefaultBehaviorError:
 		return req, &schemas.PluginShortCircuit{
@@ -955,30 +966,32 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 		finishReason := "stop"
 		return req, &schemas.PluginShortCircuit{
 			Response: &schemas.BifrostResponse{
-				Model: req.Model,
-				Usage: &schemas.LLMUsage{
-					PromptTokens:     5,
-					CompletionTokens: 10,
-					TotalTokens:      15,
-				},
-				Choices: []schemas.BifrostChatResponseChoice{
-					{
-						Index: 0,
-						BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-							Message: &schemas.ChatMessage{
-								Role: schemas.ChatMessageRoleAssistant,
-								Content: &schemas.ChatMessageContent{
-									ContentStr: bifrost.Ptr("Mock plugin default response"),
+				ChatResponse: &schemas.BifrostChatResponse{
+					Model: model,
+					Usage: &schemas.BifrostLLMUsage{
+						PromptTokens:     5,
+						CompletionTokens: 10,
+						TotalTokens:      15,
+					},
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+								Message: &schemas.ChatMessage{
+									Role: schemas.ChatMessageRoleAssistant,
+									Content: &schemas.ChatMessageContent{
+										ContentStr: bifrost.Ptr("Mock plugin default response"),
+									},
 								},
 							},
+							FinishReason: &finishReason,
 						},
-						FinishReason: &finishReason,
 					},
-				},
-				ExtraFields: schemas.BifrostResponseExtraFields{
-					RequestType:    schemas.ChatCompletionRequest,
-					Provider:       req.Provider,
-					ModelRequested: req.Model,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ChatCompletionRequest,
+						Provider:       provider,
+						ModelRequested: model,
+					},
 				},
 			},
 		}, nil
@@ -998,6 +1011,8 @@ func (p *MockerPlugin) sortCompiledRulesByPriority() {
 
 // applyTemplate applies template variables with optimized string operations including faker support
 func (p *MockerPlugin) applyTemplate(template string, req *schemas.BifrostRequest) string {
+	provider, model, _ := req.GetRequestFields()
+
 	// Fast path: no template variables
 	if !strings.Contains(template, "{{") {
 		return template
@@ -1007,8 +1022,8 @@ func (p *MockerPlugin) applyTemplate(template string, req *schemas.BifrostReques
 
 	// Replace basic variables first
 	replacer := strings.NewReplacer(
-		"{{provider}}", string(req.Provider),
-		"{{model}}", req.Model,
+		"{{provider}}", string(provider),
+		"{{model}}", model,
 	)
 	result = replacer.Replace(result)
 

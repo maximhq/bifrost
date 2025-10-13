@@ -37,58 +37,56 @@ type AccumulatedData struct {
 	OutputMessages      []schemas.ResponsesMessage // For responses API
 	ToolCalls           []schemas.ChatAssistantMessageToolCall
 	ErrorDetails        *schemas.BifrostError
-	TokenUsage          *schemas.LLMUsage
+	TokenUsage          *schemas.BifrostLLMUsage
 	CacheDebug          *schemas.BifrostCacheDebug
 	Cost                *float64
-	Object              string
-	AudioOutput         *schemas.BifrostSpeech
-	TranscriptionOutput *schemas.BifrostTranscribe
+	AudioOutput         *schemas.BifrostSpeechResponse
+	TranscriptionOutput *schemas.BifrostTranscriptionResponse
 	FinishReason        *string
 }
 
 // AudioStreamChunk represents a single streaming chunk
 type AudioStreamChunk struct {
-	Timestamp          time.Time                  // When chunk was received
-	Delta              *schemas.BifrostSpeech     // The actual delta content
-	FinishReason       *string                    // If this is the final chunk
-	TokenUsage         *schemas.AudioLLMUsage     // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug // Semantic cache debug if available
-	Cost               *float64                   // Cost in dollars from pricing plugin
-	ErrorDetails       *schemas.BifrostError      // Error if any
+	Timestamp          time.Time                            // When chunk was received
+	Delta              *schemas.BifrostSpeechStreamResponse // The actual delta content
+	FinishReason       *string                              // If this is the final chunk
+	TokenUsage         *schemas.SpeechUsage                 // Token usage if available
+	SemanticCacheDebug *schemas.BifrostCacheDebug           // Semantic cache debug if available
+	Cost               *float64                             // Cost in dollars from pricing plugin
+	ErrorDetails       *schemas.BifrostError                // Error if any
 }
 
 // TranscriptionStreamChunk represents a single transcription streaming chunk
 type TranscriptionStreamChunk struct {
-	Timestamp          time.Time                                // When chunk was received
-	Delta              *schemas.BifrostTranscribeStreamResponse // The actual delta content
-	FinishReason       *string                                  // If this is the final chunk
-	TokenUsage         *schemas.LLMUsage                        // Token usage if available
-	TranscriptionUsage *schemas.TranscriptionUsage              // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug               // Semantic cache debug if available
-	Cost               *float64                                 // Cost in dollars from pricing plugin
-	ErrorDetails       *schemas.BifrostError                    // Error if any
+	Timestamp          time.Time                                   // When chunk was received
+	Delta              *schemas.BifrostTranscriptionStreamResponse // The actual delta content
+	FinishReason       *string                                     // If this is the final chunk
+	TokenUsage         *schemas.TranscriptionUsage                 // Token usage if available
+	SemanticCacheDebug *schemas.BifrostCacheDebug                  // Semantic cache debug if available
+	Cost               *float64                                    // Cost in dollars from pricing plugin
+	ErrorDetails       *schemas.BifrostError                       // Error if any
 }
 
 // ChatStreamChunk represents a single streaming chunk
 type ChatStreamChunk struct {
-	Timestamp          time.Time                   // When chunk was received
-	Delta              *schemas.BifrostStreamDelta // The actual delta content
-	FinishReason       *string                     // If this is the final chunk
-	TokenUsage         *schemas.LLMUsage           // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug  // Semantic cache debug if available
-	Cost               *float64                    // Cost in dollars from pricing plugin
-	ErrorDetails       *schemas.BifrostError       // Error if any
+	Timestamp          time.Time                              // When chunk was received
+	Delta              *schemas.ChatStreamResponseChoiceDelta // The actual delta content
+	FinishReason       *string                                // If this is the final chunk
+	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
+	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
+	Cost               *float64                               // Cost in dollars from pricing plugin
+	ErrorDetails       *schemas.BifrostError                  // Error if any
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk
 type ResponsesStreamChunk struct {
-	Timestamp          time.Time                        // When chunk was received
-	StreamResponse     *schemas.ResponsesStreamResponse // The actual stream response
-	FinishReason       *string                          // If this is the final chunk
-	TokenUsage         *schemas.LLMUsage                // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug       // Semantic cache debug if available
-	Cost               *float64                         // Cost in dollars from pricing plugin
-	ErrorDetails       *schemas.BifrostError            // Error if any
+	Timestamp          time.Time                               // When chunk was received
+	StreamResponse     *schemas.BifrostResponsesStreamResponse // The actual stream response
+	FinishReason       *string                                 // If this is the final chunk
+	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
+	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
+	Cost               *float64                                // Cost in dollars from pricing plugin
+	ErrorDetails       *schemas.BifrostError                   // Error if any
 }
 
 // StreamAccumulator manages accumulation of streaming chunks
@@ -101,7 +99,6 @@ type StreamAccumulator struct {
 	AudioStreamChunks         []*AudioStreamChunk
 	IsComplete                bool
 	FinalTimestamp            time.Time
-	Object                    string // Store object type once for the entire stream
 	mu                        sync.Mutex
 	Timestamp                 time.Time
 }
@@ -119,18 +116,53 @@ type ProcessedStreamResponse struct {
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse
 func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	resp := &schemas.BifrostResponse{}
-	resp.ID = p.RequestID
-	resp.Object = string(p.StreamType)
-	resp.Data = []schemas.BifrostEmbedding{}
-	resp.Speech = p.Data.AudioOutput
-	resp.Transcribe = p.Data.TranscriptionOutput
-	if p.Data.OutputMessage != nil {
-		choice := schemas.BifrostChatResponseChoice{
-			Index:        0,
-			FinishReason: p.Data.FinishReason,
+
+	switch p.StreamType {
+	case StreamTypeText:
+		text := ""
+		if p.Data.OutputMessage != nil && p.Data.OutputMessage.Content != nil && p.Data.OutputMessage.Content.ContentStr != nil {
+			text = *p.Data.OutputMessage.Content.ContentStr
 		}
+		textResp := &schemas.BifrostTextCompletionResponse{
+			ID:     p.RequestID,
+			Object: "text_completion",
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index:        0,
+					FinishReason: p.Data.FinishReason,
+					TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
+						Text: &text,
+					},
+				},
+			},
+			Usage: p.Data.TokenUsage,
+		}
+
+		resp.TextCompletionResponse = textResp
+		resp.TextCompletionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.TextCompletionRequest,
+			Provider:       p.Provider,
+			ModelRequested: p.Model,
+			Latency:        p.Data.Latency,
+		}
+	case StreamTypeChat:
+		chatResp := &schemas.BifrostChatResponse{
+			ID:     p.RequestID,
+			Object: "chat.completion",
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index:        0,
+					FinishReason: p.Data.FinishReason,
+				},
+			},
+			Usage: p.Data.TokenUsage,
+		}
+
+		// Get reference to the choice in the slice so we can modify it
+		choice := &chatResp.Choices[0]
+
 		if p.Data.OutputMessage.Content.ContentStr != nil {
-			choice.BifrostNonStreamResponseChoice = &schemas.BifrostNonStreamResponseChoice{
+			choice.ChatNonStreamResponseChoice = &schemas.ChatNonStreamResponseChoice{
 				Message: &schemas.ChatMessage{
 					Role: schemas.ChatMessageRoleAssistant,
 					Content: &schemas.ChatMessageContent{
@@ -140,40 +172,50 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			}
 		}
 		if p.Data.OutputMessage.ChatAssistantMessage != nil {
-			if choice.BifrostNonStreamResponseChoice == nil {
-				choice.BifrostNonStreamResponseChoice = &schemas.BifrostNonStreamResponseChoice{
+			if choice.ChatNonStreamResponseChoice == nil {
+				choice.ChatNonStreamResponseChoice = &schemas.ChatNonStreamResponseChoice{
 					Message: &schemas.ChatMessage{
 						Role:                 schemas.ChatMessageRoleAssistant,
 						ChatAssistantMessage: p.Data.OutputMessage.ChatAssistantMessage,
 					},
 				}
+			} else {
+				// If we already have a message, we need to add the ChatAssistantMessage to it
+				choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage = p.Data.OutputMessage.ChatAssistantMessage
 			}
 		}
-		resp.Choices = []schemas.BifrostChatResponseChoice{
-			choice,
+
+		resp.ChatResponse = chatResp
+		resp.ChatResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.ChatCompletionRequest,
+			Provider:       p.Provider,
+			ModelRequested: p.Model,
+			Latency:        p.Data.Latency,
 		}
-	}
-	// Handle responses output
-	if p.Data.OutputMessages != nil {
-		resp.ResponsesResponse = &schemas.ResponsesResponse{
-			CreatedAt: int(p.Data.StartTimestamp.Unix()),
-			Output:    p.Data.OutputMessages,
+	case StreamTypeAudio:
+		speechResp := p.Data.AudioOutput
+		if speechResp == nil {
+			speechResp = &schemas.BifrostSpeechResponse{}
 		}
-	}
-	resp.Model = p.Model
-	resp.Created = int(p.Data.StartTimestamp.Unix())
-	if p.Data.TokenUsage != nil {
-		resp.Usage = p.Data.TokenUsage
-	}
-	if p.Data.CacheDebug != nil {
-		resp.ExtraFields.CacheDebug = p.Data.CacheDebug
-	}
-	resp.ExtraFields = schemas.BifrostResponseExtraFields{
-		CacheDebug: p.Data.CacheDebug,
-		Provider:   p.Provider,
-	}
-	if p.Data.Latency != 0 {
-		resp.ExtraFields.Latency = p.Data.Latency
+		resp.SpeechResponse = speechResp
+		resp.SpeechResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.SpeechRequest,
+			Provider:       p.Provider,
+			ModelRequested: p.Model,
+			Latency:        p.Data.Latency,
+		}
+	case StreamTypeTranscription:
+		transcriptionResp := p.Data.TranscriptionOutput
+		if transcriptionResp == nil {
+			transcriptionResp = &schemas.BifrostTranscriptionResponse{}
+		}
+		resp.TranscriptionResponse = transcriptionResp
+		resp.TranscriptionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.TranscriptionRequest,
+			Provider:       p.Provider,
+			ModelRequested: p.Model,
+			Latency:        p.Data.Latency,
+		}
 	}
 	return resp
 }

@@ -194,38 +194,28 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 	return hasToolContent, tools
 }
 
-// ToBedrockResponsesResponse converts BedrockConverseResponse to BifrostResponse (Responses structure)
-func (bedrockResp *BedrockConverseResponse) ToResponsesBifrostResponse() (*schemas.BifrostResponse, error) {
-	if bedrockResp == nil {
+// ToBifrostResponsesResponse converts BedrockConverseResponse to BifrostResponsesResponse
+func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.BifrostResponsesResponse, error) {
+	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
 
-	bifrostResp := &schemas.BifrostResponse{
-		ID:     "", // Bedrock doesn't provide response ID
-		Model:  "", // Will be set by provider
-		Object: "response",
-		ResponsesResponse: &schemas.ResponsesResponse{
-			CreatedAt: int(time.Now().Unix()),
-		},
+	bifrostResp := &schemas.BifrostResponsesResponse{
+		CreatedAt: int(time.Now().Unix()),
 	}
 
 	// Convert usage information
-	usage := &schemas.LLMUsage{
-		ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{},
-	}
-
-	// Handle potential nil Usage field
-	if bedrockResp.Usage != nil {
-		usage.ResponsesExtendedResponseUsage.InputTokens = bedrockResp.Usage.InputTokens
-		usage.ResponsesExtendedResponseUsage.OutputTokens = bedrockResp.Usage.OutputTokens
-		usage.TotalTokens = bedrockResp.Usage.TotalTokens
+	usage := &schemas.ResponsesResponseUsage{
+		InputTokens:  response.Usage.InputTokens,
+		OutputTokens: response.Usage.OutputTokens,
+		TotalTokens:  response.Usage.TotalTokens,
 	}
 	bifrostResp.Usage = usage
 
 	// Convert output message to Responses format
-	if bedrockResp.Output != nil && bedrockResp.Output.Message != nil {
-		outputMessages := convertBedrockMessageToResponsesMessages(*bedrockResp.Output.Message)
-		bifrostResp.ResponsesResponse.Output = outputMessages
+	if response.Output != nil && response.Output.Message != nil {
+		outputMessages := convertBedrockMessageToResponsesMessages(*response.Output.Message)
+		bifrostResp.Output = outputMessages
 	}
 
 	return bifrostResp, nil
@@ -538,7 +528,7 @@ func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schem
 }
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
-func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	// event with metrics/usage is the last and with stop reason is the second last
 	switch {
 	case chunk.Role != nil:
@@ -554,13 +544,11 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 			},
 		}
 
-		return &schemas.BifrostResponse{
-			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0), // Assuming single output for now
-				Item:           item,
-			},
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(0), // Assuming single output for now
+			Item:           item,
 		}, nil, false
 
 	case chunk.Start != nil:
@@ -583,13 +571,11 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 				},
 			}
 
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-					Item:           item,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				Item:           item,
 			}, nil, false
 		} else {
 			// This is text content - create content part added event
@@ -598,14 +584,12 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 				Text: schemas.Ptr(""), // Empty initially
 			}
 
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-					ContentIndex:   &contentBlockIndex,
-					Part:           part,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				ContentIndex:   &contentBlockIndex,
+				Part:           part,
 			}, nil, false
 		}
 
@@ -618,14 +602,12 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 			// Handle text delta
 			text := *chunk.Delta.Text
 			if text != "" {
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
-						ContentIndex:   &contentBlockIndex,
-						Delta:          &text,
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   &contentBlockIndex,
+					Delta:          &text,
 				}, nil, false
 			}
 
@@ -634,26 +616,22 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 			toolUseDelta := chunk.Delta.ToolUse
 
 			if toolUseDelta.Input != "" {
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
-						ContentIndex:   &contentBlockIndex,
-						Delta:          &toolUseDelta.Input,
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   &contentBlockIndex,
+					Delta:          &toolUseDelta.Input,
 				}, nil, false
 			}
 		}
 
 	case chunk.StopReason != nil:
 		// Handle end of message - create output item done event
-		return &schemas.BifrostResponse{
-			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-			},
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
 		}, nil, false
 	}
 

@@ -1,5 +1,25 @@
 package schemas
 
+type BifrostTranscriptionRequest struct {
+	Provider  ModelProvider            `json:"provider"`
+	Model     string                   `json:"model"`
+	Input     *TranscriptionInput      `json:"input,omitempty"`
+	Params    *TranscriptionParameters `json:"params,omitempty"`
+	Fallbacks []Fallback               `json:"fallbacks,omitempty"`
+}
+
+type BifrostTranscriptionResponse struct {
+	Duration    *float64                   `json:"duration,omitempty"` // Duration in seconds
+	Language    *string                    `json:"language,omitempty"` // e.g., "english"
+	LogProbs    []TranscriptionLogProb     `json:"logprobs,omitempty"`
+	Segments    []TranscriptionSegment     `json:"segments,omitempty"`
+	Task        *string                    `json:"task,omitempty"` // e.g., "transcribe"
+	Text        string                     `json:"text"`
+	Usage       *TranscriptionUsage        `json:"usage,omitempty"`
+	Words       []TranscriptionWord        `json:"words,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 type TranscriptionInput struct {
 	File []byte `json:"file"`
 }
@@ -45,37 +65,32 @@ type TranscriptionSegment struct {
 
 // TranscriptionUsage represents usage information for transcription
 type TranscriptionUsage struct {
-	Type              string             `json:"type"` // "tokens" or "duration"
-	InputTokens       *int               `json:"input_tokens,omitempty"`
-	InputTokenDetails *AudioTokenDetails `json:"input_token_details,omitempty"`
-	OutputTokens      *int               `json:"output_tokens,omitempty"`
-	TotalTokens       *int               `json:"total_tokens,omitempty"`
-	Seconds           *int               `json:"seconds,omitempty"` // For duration-based usage
+	Type              string                               `json:"type"` // "tokens" or "duration"
+	InputTokens       *int                                 `json:"input_tokens,omitempty"`
+	InputTokenDetails *TranscriptionUsageInputTokenDetails `json:"input_token_details,omitempty"`
+	OutputTokens      *int                                 `json:"output_tokens,omitempty"`
+	TotalTokens       *int                                 `json:"total_tokens,omitempty"`
+	Seconds           *int                                 `json:"seconds,omitempty"` // For duration-based usage
 }
 
-// BifrostTranscribe represents transcription response data
-type BifrostTranscribe struct {
-	// Common fields for both streaming and non-streaming
-	Text     string                 `json:"text"`
-	LogProbs []TranscriptionLogProb `json:"logprobs,omitempty"`
-	Usage    *TranscriptionUsage    `json:"usage,omitempty"`
-
-	// Embedded structs for specific fields only
-	*BifrostTranscribeNonStreamResponse
-	*BifrostTranscribeStreamResponse
+type TranscriptionUsageInputTokenDetails struct {
+	TextTokens  int `json:"text_tokens"`
+	AudioTokens int `json:"audio_tokens"`
 }
 
-// BifrostTranscribeNonStreamResponse represents non-streaming specific fields only
-type BifrostTranscribeNonStreamResponse struct {
-	Task     *string                `json:"task,omitempty"`     // e.g., "transcribe"
-	Language *string                `json:"language,omitempty"` // e.g., "english"
-	Duration *float64               `json:"duration,omitempty"` // Duration in seconds
-	Words    []TranscriptionWord    `json:"words,omitempty"`
-	Segments []TranscriptionSegment `json:"segments,omitempty"`
-}
+type TranscriptionStreamResponseType string
 
-// BifrostTranscribeStreamResponse represents streaming specific fields only
-type BifrostTranscribeStreamResponse struct {
-	Type  *string `json:"type,omitempty"`  // "transcript.text.delta" or "transcript.text.done"
-	Delta *string `json:"delta,omitempty"` // For delta events
+const (
+	TranscriptionStreamResponseTypeDelta TranscriptionStreamResponseType = "transcript.text.delta"
+	TranscriptionStreamResponseTypeDone  TranscriptionStreamResponseType = "transcript.text.done"
+)
+
+// BifrostTranscriptionStreamResponse represents streaming specific fields only
+type BifrostTranscriptionStreamResponse struct {
+	Delta       *string                         `json:"delta,omitempty"` // For delta events
+	LogProbs    []TranscriptionLogProb          `json:"logprobs,omitempty"`
+	Text        string                          `json:"text"`
+	Type        TranscriptionStreamResponseType `json:"type"`
+	Usage       *TranscriptionUsage             `json:"usage,omitempty"`
+	ExtraFields BifrostResponseExtraFields      `json:"extra_fields"`
 }

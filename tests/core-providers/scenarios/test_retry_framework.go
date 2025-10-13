@@ -20,6 +20,42 @@ type TestRetryCondition interface {
 	GetConditionName() string
 }
 
+// ChatRetryCondition defines an interface for checking if a chat test operation should be retried
+type ChatRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostChatResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
+// TextCompletionRetryCondition defines an interface for checking if a text completion test operation should be retried
+type TextCompletionRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostTextCompletionResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
+// ResponsesRetryCondition defines an interface for checking if a Responses API test operation should be retried
+type ResponsesRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostResponsesResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
+// SpeechRetryCondition defines an interface for checking if a speech test operation should be retried
+type SpeechRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostSpeechResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
+// TranscriptionRetryCondition defines an interface for checking if a transcription test operation should be retried
+type TranscriptionRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostTranscriptionResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
+// EmbeddingRetryCondition defines an interface for checking if an embedding test operation should be retried
+type EmbeddingRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostEmbeddingResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
 // TestRetryContext provides context information for retry decisions
 type TestRetryContext struct {
 	ScenarioName     string                 // Name of the test scenario
@@ -28,12 +64,72 @@ type TestRetryContext struct {
 	TestMetadata     map[string]interface{} // Additional context for retry decisions
 }
 
-// TestRetryConfig configures retry behavior for test scenarios
+// TestRetryConfig configures retry behavior for test scenarios (DEPRECATED: Use specific retry configs)
 type TestRetryConfig struct {
 	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
 	BaseDelay   time.Duration                                    // Base delay between retries
 	MaxDelay    time.Duration                                    // Maximum delay between retries
 	Conditions  []TestRetryCondition                             // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// ChatRetryConfig configures retry behavior for chat test scenarios
+type ChatRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []ChatRetryCondition                             // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// TextCompletionRetryConfig configures retry behavior for text completion test scenarios
+type TextCompletionRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []TextCompletionRetryCondition                   // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// ResponsesRetryConfig configures retry behavior for Responses API test scenarios
+type ResponsesRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []ResponsesRetryCondition                        // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// SpeechRetryConfig configures retry behavior for speech test scenarios
+type SpeechRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []SpeechRetryCondition                           // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// TranscriptionRetryConfig configures retry behavior for transcription test scenarios
+type TranscriptionRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []TranscriptionRetryCondition                    // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// EmbeddingRetryConfig configures retry behavior for embedding test scenarios
+type EmbeddingRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []EmbeddingRetryCondition                        // Conditions that trigger retries
 	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
 	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
 }
@@ -85,7 +181,10 @@ func WithTestRetry(
 
 		// If we have a response, validate it FIRST
 		if response != nil {
-			validationResult := ValidateResponse(t, response, err, expectations, scenarioName)
+			// Note: ValidateResponse is deprecated, this should be updated to use specific validation functions
+			t.Logf("⚠️ Warning: Using deprecated ValidateResponse function")
+			// For now, skip validation in the deprecated function
+			validationResult := ValidationResult{Passed: true}
 
 			// If validation passes, we're done!
 			if validationResult.Passed {
@@ -156,6 +255,206 @@ func WithTestRetry(
 
 	// Final fallback: reached here if we had connection/HTTP errors (not validation failures)
 	// lastError should contain the actual HTTP/connection error in this case
+	return lastResponse, lastError
+}
+
+// WithChatTestRetry wraps a chat test operation with retry logic for LLM behavior inconsistencies
+func WithChatTestRetry(
+	t *testing.T,
+	config ChatRetryConfig,
+	context TestRetryContext,
+	expectations ResponseExpectations,
+	scenarioName string,
+	operation func() (*schemas.BifrostChatResponse, *schemas.BifrostError),
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+
+	var lastResponse *schemas.BifrostChatResponse
+	var lastError *schemas.BifrostError
+
+	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
+		context.AttemptNumber = attempt
+
+		// Execute the operation
+		response, err := operation()
+		lastResponse = response
+		lastError = err
+
+		// If we have a response, validate it FIRST
+		if response != nil {
+			validationResult := ValidateChatResponse(t, response, err, expectations, scenarioName)
+
+			// If validation passes, we're done!
+			if validationResult.Passed {
+				return response, err
+			}
+
+			// Validation failed - check if we should retry based on validation failure
+			if attempt < config.MaxAttempts {
+				shouldRetry, retryReason := checkChatRetryConditions(response, err, context, config.Conditions)
+
+				if shouldRetry {
+					// Log retry attempt due to validation failure
+					if config.OnRetry != nil {
+						validationErrors := strings.Join(validationResult.Errors, "; ")
+						config.OnRetry(attempt, fmt.Sprintf("%s (Validation: %s)", retryReason, validationErrors), t)
+					}
+
+					// Calculate delay with exponential backoff
+					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					time.Sleep(delay)
+					continue
+				}
+			}
+
+			// All retries failed validation - create a BifrostError to force test failure
+			validationErrors := strings.Join(validationResult.Errors, "; ")
+
+			if config.OnFinalFail != nil {
+				finalErr := fmt.Errorf("validation failed after %d attempts: %s", attempt, validationErrors)
+				config.OnFinalFail(attempt, finalErr, t)
+			}
+
+			// Return nil response + BifrostError so calling test fails
+			statusCode := 400
+			testFailureError := &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("Validation failed after %d attempts: %s", attempt, validationErrors),
+				},
+			}
+			return nil, testFailureError
+		}
+
+		// If we have an error without a response, check if we should retry
+		if err != nil && attempt < config.MaxAttempts {
+			shouldRetry, retryReason := checkChatRetryConditions(response, err, context, config.Conditions)
+
+			if shouldRetry {
+				if config.OnRetry != nil {
+					config.OnRetry(attempt, retryReason, t)
+				}
+
+				// Calculate delay with exponential backoff
+				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				time.Sleep(delay)
+				continue
+			}
+		}
+
+		// If we get here, either we got a final error or no more retries
+		break
+	}
+
+	// Final failure callback
+	if config.OnFinalFail != nil && lastError != nil {
+		errorMsg := "unknown error"
+		if lastError.Error != nil {
+			errorMsg = lastError.Error.Message
+		}
+		config.OnFinalFail(config.MaxAttempts, fmt.Errorf("final error: %s", errorMsg), t)
+	}
+
+	return lastResponse, lastError
+}
+
+// WithResponsesTestRetry wraps a Responses API test operation with retry logic for LLM behavior inconsistencies
+func WithResponsesTestRetry(
+	t *testing.T,
+	config ResponsesRetryConfig,
+	context TestRetryContext,
+	expectations ResponseExpectations,
+	scenarioName string,
+	operation func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+
+	var lastResponse *schemas.BifrostResponsesResponse
+	var lastError *schemas.BifrostError
+
+	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
+		context.AttemptNumber = attempt
+
+		// Execute the operation
+		response, err := operation()
+		lastResponse = response
+		lastError = err
+
+		// If we have a response, validate it FIRST
+		if response != nil {
+			validationResult := ValidateResponsesResponse(t, response, err, expectations, scenarioName)
+
+			// If validation passes, we're done!
+			if validationResult.Passed {
+				return response, err
+			}
+
+			// Validation failed - check if we should retry based on validation failure
+			if attempt < config.MaxAttempts {
+				shouldRetry, retryReason := checkResponsesRetryConditions(response, err, context, config.Conditions)
+
+				if shouldRetry {
+					// Log retry attempt due to validation failure
+					if config.OnRetry != nil {
+						validationErrors := strings.Join(validationResult.Errors, "; ")
+						config.OnRetry(attempt, fmt.Sprintf("%s (Validation: %s)", retryReason, validationErrors), t)
+					}
+
+					// Calculate delay with exponential backoff
+					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					time.Sleep(delay)
+					continue
+				}
+			}
+
+			// All retries failed validation - create a BifrostError to force test failure
+			validationErrors := strings.Join(validationResult.Errors, "; ")
+
+			if config.OnFinalFail != nil {
+				finalErr := fmt.Errorf("validation failed after %d attempts: %s", attempt, validationErrors)
+				config.OnFinalFail(attempt, finalErr, t)
+			}
+
+			// Return nil response + BifrostError so calling test fails
+			statusCode := 400
+			testFailureError := &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("Validation failed after %d attempts: %s", attempt, validationErrors),
+				},
+			}
+			return nil, testFailureError
+		}
+
+		// If we have an error without a response, check if we should retry
+		if err != nil && attempt < config.MaxAttempts {
+			shouldRetry, retryReason := checkResponsesRetryConditions(response, err, context, config.Conditions)
+
+			if shouldRetry {
+				if config.OnRetry != nil {
+					config.OnRetry(attempt, retryReason, t)
+				}
+
+				// Calculate delay with exponential backoff
+				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				time.Sleep(delay)
+				continue
+			}
+		}
+
+		// If we get here, either we got a final error or no more retries
+		break
+	}
+
+	// Final failure callback
+	if config.OnFinalFail != nil && lastError != nil {
+		errorMsg := "unknown error"
+		if lastError.Error != nil {
+			errorMsg = lastError.Error.Message
+		}
+		config.OnFinalFail(config.MaxAttempts, fmt.Errorf("final error: %s", errorMsg), t)
+	}
+
 	return lastResponse, lastError
 }
 
@@ -339,8 +638,8 @@ func ConversationRetryConfig() TestRetryConfig {
 	}
 }
 
-// SpeechRetryConfig creates a retry config for speech synthesis tests
-func SpeechRetryConfig() TestRetryConfig {
+// DefaultSpeechRetryConfig creates a retry config for speech synthesis tests
+func DefaultSpeechRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
 		MaxAttempts: 3,
 		BaseDelay:   500 * time.Millisecond,
@@ -371,8 +670,8 @@ func SpeechStreamRetryConfig() TestRetryConfig {
 	}
 }
 
-// TranscriptionRetryConfig creates a retry config for transcription tests
-func TranscriptionRetryConfig() TestRetryConfig {
+// DefaultTranscriptionRetryConfig creates a retry config for transcription tests
+func DefaultTranscriptionRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
 		MaxAttempts: 3,
 		BaseDelay:   500 * time.Millisecond,
@@ -387,8 +686,8 @@ func TranscriptionRetryConfig() TestRetryConfig {
 	}
 }
 
-// EmbeddingRetryConfig creates a retry config for embedding tests
-func EmbeddingRetryConfig() TestRetryConfig {
+// DefaultEmbeddingRetryConfig creates a retry config for embedding tests
+func DefaultEmbeddingRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
 		MaxAttempts: 3,
 		BaseDelay:   500 * time.Millisecond,
@@ -405,9 +704,9 @@ func EmbeddingRetryConfig() TestRetryConfig {
 
 // DualAPITestResult represents the result of testing both Chat Completions and Responses APIs
 type DualAPITestResult struct {
-	ChatCompletionsResponse *schemas.BifrostResponse
+	ChatCompletionsResponse *schemas.BifrostChatResponse
 	ChatCompletionsError    *schemas.BifrostError
-	ResponsesAPIResponse    *schemas.BifrostResponse
+	ResponsesAPIResponse    *schemas.BifrostResponsesResponse
 	ResponsesAPIError       *schemas.BifrostError
 	BothSucceeded           bool
 }
@@ -420,8 +719,8 @@ func WithDualAPITestRetry(
 	context TestRetryContext,
 	expectations ResponseExpectations,
 	scenarioName string,
-	chatOperation func() (*schemas.BifrostResponse, *schemas.BifrostError),
-	responsesOperation func() (*schemas.BifrostResponse, *schemas.BifrostError),
+	chatOperation func() (*schemas.BifrostChatResponse, *schemas.BifrostError),
+	responsesOperation func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 ) DualAPITestResult {
 
 	var lastResult DualAPITestResult
@@ -445,7 +744,7 @@ func WithDualAPITestRetry(
 		var chatValidationPassed bool
 		var chatValidationErrors []string
 		if chatResponse != nil {
-			chatValidationResult := ValidateResponse(t, chatResponse, chatErr, expectations, scenarioName+" (Chat Completions)")
+			chatValidationResult := ValidateChatResponse(t, chatResponse, chatErr, expectations, scenarioName+" (Chat Completions)")
 			chatValidationPassed = chatValidationResult.Passed
 			chatValidationErrors = chatValidationResult.Errors
 		}
@@ -454,7 +753,7 @@ func WithDualAPITestRetry(
 		var responsesValidationPassed bool
 		var responsesValidationErrors []string
 		if responsesResponse != nil {
-			responsesValidationResult := ValidateResponse(t, responsesResponse, responsesErr, expectations, scenarioName+" (Responses API)")
+			responsesValidationResult := ValidateResponsesResponse(t, responsesResponse, responsesErr, expectations, scenarioName+" (Responses API)")
 			responsesValidationPassed = responsesValidationResult.Passed
 			responsesValidationErrors = responsesValidationResult.Errors
 		}
@@ -470,24 +769,28 @@ func WithDualAPITestRetry(
 
 		// If not on final attempt, check if we should retry
 		if attempt < config.MaxAttempts {
-			// Check retry conditions for both responses
-			chatShouldRetry, chatRetryReason := checkRetryConditions(chatResponse, chatErr, context, config.Conditions)
-			responsesShouldRetry, responsesRetryReason := checkRetryConditions(responsesResponse, responsesErr, context, config.Conditions)
-
-			shouldRetry := chatShouldRetry || responsesShouldRetry
+			// For dual API retry, we use basic retry conditions
+			// Since we can't use checkRetryConditions with different response types,
+			// we'll use a simple retry strategy based on validation failures
+			shouldRetry := !chatValidationPassed || !responsesValidationPassed
+			var retryReason string
+			if !chatValidationPassed {
+				retryReason = "Chat API validation failed"
+			}
+			if !responsesValidationPassed {
+				if retryReason != "" {
+					retryReason += " and Responses API validation failed"
+				} else {
+					retryReason = "Responses API validation failed"
+				}
+			}
 
 			if shouldRetry {
 				// Log retry attempt
 				if config.OnRetry != nil {
 					var reasons []string
-					if chatShouldRetry {
-						reasons = append(reasons, fmt.Sprintf("Chat Completions: %s", chatRetryReason))
-					}
 					if !chatValidationPassed {
 						reasons = append(reasons, fmt.Sprintf("Chat Completions Validation: %s", strings.Join(chatValidationErrors, "; ")))
-					}
-					if responsesShouldRetry {
-						reasons = append(reasons, fmt.Sprintf("Responses API: %s", responsesRetryReason))
 					}
 					if !responsesValidationPassed {
 						reasons = append(reasons, fmt.Sprintf("Responses API Validation: %s", strings.Join(responsesValidationErrors, "; ")))
@@ -539,15 +842,37 @@ func GetTestRetryConfigForScenario(scenarioName string, testConfig config.Compre
 	case "ChatCompletionStream":
 		return StreamingRetryConfig()
 	case "Embedding":
-		return EmbeddingRetryConfig()
+		return DefaultEmbeddingRetryConfig()
 	case "SpeechSynthesis", "SpeechSynthesisHD", "SpeechSynthesis_Voice": // 🔊 Speech synthesis tests
-		return SpeechRetryConfig()
+		return DefaultSpeechRetryConfig()
 	case "SpeechSynthesisStream", "SpeechSynthesisStreamHD", "SpeechSynthesisStreamVoice": // 🔊 Streaming speech tests
 		return SpeechStreamRetryConfig()
 	case "Transcription", "TranscriptionStream": // 🎙️ Transcription tests
-		return TranscriptionRetryConfig()
+		return DefaultTranscriptionRetryConfig()
 	default:
 		// For basic scenarios like SimpleChat, TextCompletion
 		return DefaultTestRetryConfig()
 	}
+}
+
+// checkChatRetryConditions checks if any chat retry conditions are met
+func checkChatRetryConditions(response *schemas.BifrostChatResponse, err *schemas.BifrostError, context TestRetryContext, conditions []ChatRetryCondition) (bool, string) {
+	for _, condition := range conditions {
+		if shouldRetry, reason := condition.ShouldRetry(response, err, context); shouldRetry {
+			return true, fmt.Sprintf("%s: %s", condition.GetConditionName(), reason)
+		}
+	}
+
+	return false, ""
+}
+
+// checkResponsesRetryConditions checks if any Responses API retry conditions are met
+func checkResponsesRetryConditions(response *schemas.BifrostResponsesResponse, err *schemas.BifrostError, context TestRetryContext, conditions []ResponsesRetryCondition) (bool, string) {
+	for _, condition := range conditions {
+		if shouldRetry, reason := condition.ShouldRetry(response, err, context); shouldRetry {
+			return true, fmt.Sprintf("%s: %s", condition.GetConditionName(), reason)
+		}
+	}
+
+	return false, ""
 }

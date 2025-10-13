@@ -3,6 +3,8 @@ package semanticcache
 import (
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestEmbeddingRequestsCaching tests that embedding requests are properly cached using direct hash matching
@@ -29,12 +31,12 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.Data) == 0 {
+	if response1 == nil || len(response1.EmbeddingResponse.Data) == 0 {
 		t.Fatal("First embedding response is invalid")
 	}
 
 	t.Logf("First embedding request completed in %v", duration1)
-	t.Logf("Response contains %d embeddings", len(response1.Data))
+	t.Logf("Response contains %d embeddings", len(response1.EmbeddingResponse.Data))
 
 	// Wait for cache to be written
 	WaitForCache()
@@ -55,7 +57,7 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 	}
 
 	// Verify cache hit
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2}, "direct")
 
 	t.Logf("Second embedding request completed in %v", duration2)
 
@@ -65,8 +67,8 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 	}
 
 	// Responses should be identical
-	if len(response1.Data) != len(response2.Data) {
-		t.Errorf("Response lengths differ: %d vs %d", len(response1.Data), len(response2.Data))
+	if len(response1.EmbeddingResponse.Data) != len(response2.Data) {
+		t.Errorf("Response lengths differ: %d vs %d", len(response1.EmbeddingResponse.Data), len(response2.Data))
 	}
 
 	t.Log("✅ Embedding requests properly cached using direct hash matching")
@@ -155,7 +157,7 @@ func TestEmbeddingRequestsCacheExpiration(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2}, "direct")
 
 	t.Logf("Waiting for TTL expiration (%v)...", shortTTL)
 	time.Sleep(shortTTL + 1*time.Second) // Wait for TTL to expire

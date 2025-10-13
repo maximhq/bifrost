@@ -40,12 +40,11 @@ func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
-
-	if req.Provider == "" {
+	provider, model, _ := req.GetRequestFields()
+	if provider == "" {
 		return newBifrostErrorFromMsg("provider is required")
 	}
-
-	if req.Model == "" {
+	if model == "" {
 		return newBifrostErrorFromMsg("model is required")
 	}
 
@@ -83,7 +82,11 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	go func() {
 		defer close(ch)
 		ch <- &schemas.BifrostStream{
-			BifrostResponse: message,
+			BifrostTextCompletionResponse:      message.TextCompletionResponse,
+			BifrostChatResponse:                message.ChatResponse,
+			BifrostResponsesStreamResponse:     message.ResponsesStreamResponse,
+			BifrostSpeechStreamResponse:        message.SpeechStreamResponse,
+			BifrostTranscriptionStreamResponse: message.TranscriptionStreamResponse,
 		}
 	}()
 
@@ -141,10 +144,11 @@ func IsFinalChunk(ctx *context.Context) bool {
 	return false
 }
 
-// GetRequestFields extracts the request type, provider, and model from the result or error
-func GetRequestFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, model string) {
+// GetResponseFields extracts the request type, provider, and model from the result or error
+func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, model string) {
 	if result != nil {
-		return result.ExtraFields.RequestType, result.ExtraFields.Provider, result.ExtraFields.ModelRequested
+		extraFields := result.GetExtraFields()
+		return extraFields.RequestType, extraFields.Provider, extraFields.ModelRequested
 	}
 
 	return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested

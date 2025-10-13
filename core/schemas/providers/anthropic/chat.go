@@ -7,11 +7,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-var fnTypePtr = schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction))
-
 // ToBifrostRequest converts an Anthropic messages request to Bifrost format
-func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest {
-	provider, model := schemas.ParseModelString(r.Model, schemas.Anthropic)
+func (request *AnthropicMessageRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: provider,
@@ -21,17 +19,17 @@ func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 	messages := []schemas.ChatMessage{}
 
 	// Add system message if present
-	if r.System != nil {
-		if r.System.ContentStr != nil && *r.System.ContentStr != "" {
+	if request.System != nil {
+		if request.System.ContentStr != nil && *request.System.ContentStr != "" {
 			messages = append(messages, schemas.ChatMessage{
 				Role: schemas.ChatMessageRoleSystem,
 				Content: &schemas.ChatMessageContent{
-					ContentStr: r.System.ContentStr,
+					ContentStr: request.System.ContentStr,
 				},
 			})
-		} else if r.System.ContentBlocks != nil {
+		} else if request.System.ContentBlocks != nil {
 			contentBlocks := []schemas.ChatContentBlock{}
-			for _, block := range r.System.ContentBlocks {
+			for _, block := range request.System.ContentBlocks {
 				if block.Text != nil { // System messages will only have text content
 					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 						Type: schemas.ChatContentBlockTypeText,
@@ -49,7 +47,7 @@ func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 	}
 
 	// Convert messages
-	for _, msg := range r.Messages {
+	for _, msg := range request.Messages {
 		if msg.Content.ContentStr != nil {
 			// Simple text message
 			bifrostMsg := schemas.ChatMessage{
@@ -135,7 +133,7 @@ func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 					case AnthropicContentBlockTypeToolUse:
 						if content.ID != nil && content.Name != nil {
 							tc := schemas.ChatAssistantMessageToolCall{
-								Type: fnTypePtr,
+								Type: schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
 								ID:   content.ID,
 								Function: schemas.ChatAssistantMessageToolCallFunction{
 									Name:      content.Name,
@@ -169,34 +167,34 @@ func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 	bifrostReq.Input = messages
 
 	// Convert parameters
-	if r.MaxTokens > 0 || r.Temperature != nil || r.TopP != nil || r.TopK != nil || r.StopSequences != nil {
+	if request.MaxTokens > 0 || request.Temperature != nil || request.TopP != nil || request.TopK != nil || request.StopSequences != nil {
 		params := &schemas.ChatParameters{
 			ExtraParams: make(map[string]interface{}),
 		}
 
-		if r.MaxTokens > 0 {
-			params.MaxCompletionTokens = &r.MaxTokens
+		if request.MaxTokens > 0 {
+			params.MaxCompletionTokens = &request.MaxTokens
 		}
-		if r.Temperature != nil {
-			params.Temperature = r.Temperature
+		if request.Temperature != nil {
+			params.Temperature = request.Temperature
 		}
-		if r.TopP != nil {
-			params.TopP = r.TopP
+		if request.TopP != nil {
+			params.TopP = request.TopP
 		}
-		if r.TopK != nil {
-			params.ExtraParams["top_k"] = *r.TopK
+		if request.TopK != nil {
+			params.ExtraParams["top_k"] = *request.TopK
 		}
-		if r.StopSequences != nil {
-			params.Stop = r.StopSequences
+		if request.StopSequences != nil {
+			params.Stop = request.StopSequences
 		}
 
 		bifrostReq.Params = params
 	}
 
 	// Convert tools
-	if r.Tools != nil {
+	if request.Tools != nil {
 		tools := []schemas.ChatTool{}
-		for _, tool := range r.Tools {
+		for _, tool := range request.Tools {
 			// Convert input_schema to FunctionParameters
 			params := schemas.ToolFunctionParameters{
 				Type: "object",
@@ -223,23 +221,23 @@ func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 	}
 
 	// Convert tool choice
-	if r.ToolChoice != nil {
+	if request.ToolChoice != nil {
 		if bifrostReq.Params == nil {
 			bifrostReq.Params = &schemas.ChatParameters{}
 		}
 		toolChoice := &schemas.ChatToolChoice{
 			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
 				Type: func() schemas.ChatToolChoiceType {
-					if r.ToolChoice.Type == "tool" {
+					if request.ToolChoice.Type == "tool" {
 						return schemas.ChatToolChoiceTypeFunction
 					}
-					return schemas.ChatToolChoiceType(r.ToolChoice.Type)
+					return schemas.ChatToolChoiceType(request.ToolChoice.Type)
 				}(),
 			},
 		}
-		if r.ToolChoice.Type == "tool" && r.ToolChoice.Name != "" {
+		if request.ToolChoice.Type == "tool" && request.ToolChoice.Name != "" {
 			toolChoice.ChatToolChoiceStruct.Function = schemas.ChatToolChoiceFunction{
-				Name: r.ToolChoice.Name,
+				Name: request.ToolChoice.Name,
 			}
 		}
 		bifrostReq.Params.ToolChoice = toolChoice
@@ -249,13 +247,13 @@ func (r *AnthropicMessageRequest) ToBifrostRequest() *schemas.BifrostChatRequest
 }
 
 // ToBifrostResponse converts an Anthropic message response to Bifrost format
-func (response *AnthropicMessageResponse) ToBifrostResponse() *schemas.BifrostResponse {
+func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
 	if response == nil {
 		return nil
 	}
 
 	// Initialize Bifrost response
-	bifrostResponse := &schemas.BifrostResponse{
+	bifrostResponse := &schemas.BifrostChatResponse{
 		ID:    response.ID,
 		Model: response.Model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
@@ -331,9 +329,9 @@ func (response *AnthropicMessageResponse) ToBifrostResponse() *schemas.BifrostRe
 	}
 
 	// Create choice
-	choice := schemas.BifrostChatResponseChoice{
+	choice := schemas.BifrostResponseChoice{
 		Index: 0,
-		BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 			Message:    &message,
 			StopString: response.StopSequence,
 		},
@@ -346,11 +344,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponse() *schemas.BifrostRe
 		}(),
 	}
 
-	bifrostResponse.Choices = []schemas.BifrostChatResponseChoice{choice}
+	bifrostResponse.Choices = []schemas.BifrostResponseChoice{choice}
 
 	// Convert usage information
 	if response.Usage != nil {
-		bifrostResponse.Usage = &schemas.LLMUsage{
+		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
@@ -596,7 +594,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 }
 
 // ToAnthropicChatCompletionResponse converts a Bifrost response to Anthropic format
-func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *AnthropicMessageResponse {
+func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostChatResponse) *AnthropicMessageResponse {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -678,7 +676,7 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostResponse) *An
 }
 
 // ToBifrostChatCompletionStream converts an Anthropic stream event to a Bifrost Chat Completion Stream response
-func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
 		return nil, nil, false
@@ -690,13 +688,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 		// Emit tool-call metadata when starting a tool_use content block
 		if chunk.Index != nil && chunk.ContentBlock != nil && chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse {
 			// Create streaming response with tool call metadata
-			streamResponse := &schemas.BifrostResponse{
+			streamResponse := &schemas.BifrostChatResponse{
 				Object: "chat.completion.chunk",
-				Choices: []schemas.BifrostChatResponseChoice{
+				Choices: []schemas.BifrostResponseChoice{
 					{
 						Index: *chunk.Index,
-						BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-							Delta: &schemas.BifrostStreamDelta{
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{
 									{
 										Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
@@ -725,13 +723,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
 					// Create streaming response for this delta
-					streamResponse := &schemas.BifrostResponse{
+					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
-						Choices: []schemas.BifrostChatResponseChoice{
+						Choices: []schemas.BifrostResponseChoice{
 							{
 								Index: *chunk.Index,
-								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-									Delta: &schemas.BifrostStreamDelta{
+								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										Content: chunk.Delta.Text,
 									},
 								},
@@ -746,13 +744,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 				// Handle tool use streaming - accumulate partial JSON
 				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
 					// Create streaming response for tool input delta
-					streamResponse := &schemas.BifrostResponse{
+					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
-						Choices: []schemas.BifrostChatResponseChoice{
+						Choices: []schemas.BifrostResponseChoice{
 							{
 								Index: *chunk.Index,
-								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-									Delta: &schemas.BifrostStreamDelta{
+								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										ToolCalls: []schemas.ChatAssistantMessageToolCall{
 											{
 												Type: func() *string { s := "function"; return &s }(),
@@ -774,13 +772,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 				// Handle thinking content streaming
 				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
 					// Create streaming response for thinking delta
-					streamResponse := &schemas.BifrostResponse{
+					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
-						Choices: []schemas.BifrostChatResponseChoice{
+						Choices: []schemas.BifrostResponseChoice{
 							{
 								Index: *chunk.Index,
-								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-									Delta: &schemas.BifrostStreamDelta{
+								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										Thought: chunk.Delta.Thinking,
 									},
 								},
@@ -828,7 +826,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 }
 
 // ToAnthropicChatCompletionStreamResponse converts a Bifrost streaming response to Anthropic SSE string format
-func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostResponse) string {
+func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostChatResponse) string {
 	if bifrostResp == nil {
 		return ""
 	}
@@ -840,8 +838,8 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
 
 		// Handle streaming responses
-		if choice.BifrostStreamResponseChoice != nil {
-			delta := choice.BifrostStreamResponseChoice.Delta
+		if choice.ChatStreamResponseChoice != nil {
+			delta := choice.ChatStreamResponseChoice.Delta
 
 			// Handle text content deltas
 			if delta.Content != nil {
@@ -891,7 +889,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 				}
 			}
 
-		} else if choice.BifrostNonStreamResponseChoice != nil {
+		} else if choice.ChatNonStreamResponseChoice != nil {
 			// Handle non-streaming response converted to streaming format
 			streamResp.Type = "message_start"
 
@@ -899,16 +897,16 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostRespons
 			streamMessage := &AnthropicMessageResponse{
 				ID:    bifrostResp.ID,
 				Type:  "message",
-				Role:  string(choice.BifrostNonStreamResponseChoice.Message.Role),
+				Role:  string(choice.ChatNonStreamResponseChoice.Message.Role),
 				Model: bifrostResp.Model,
 			}
 
 			// Convert content
 			var content []AnthropicContentBlock
-			if choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr != nil {
+			if choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil {
 				content = append(content, AnthropicContentBlock{
 					Type: AnthropicContentBlockTypeText,
-					Text: choice.BifrostNonStreamResponseChoice.Message.Content.ContentStr,
+					Text: choice.ChatNonStreamResponseChoice.Message.Content.ContentStr,
 				})
 			}
 

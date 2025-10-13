@@ -62,39 +62,38 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 }
 
 // ToBifrostResponse converts a Cohere embedding response to Bifrost format
-func (cohereResp *CohereEmbeddingResponse) ToBifrostResponse() *schemas.BifrostResponse {
-	if cohereResp == nil {
+func (response *CohereEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
+	if response == nil {
 		return nil
 	}
 
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:     cohereResp.ID,
+	bifrostResponse := &schemas.BifrostEmbeddingResponse{
 		Object: "list",
 	}
 
 	// Convert embeddings data
-	if cohereResp.Embeddings != nil {
-		var bifrostEmbeddings []schemas.BifrostEmbedding
+	if response.Embeddings != nil {
+		var bifrostEmbeddings []schemas.EmbeddingData
 
 		// Handle different embedding types - prioritize float embeddings
-		if cohereResp.Embeddings.Float != nil {
-			for i, embedding := range cohereResp.Embeddings.Float {
-				bifrostEmbedding := schemas.BifrostEmbedding{
+		if response.Embeddings.Float != nil {
+			for i, embedding := range response.Embeddings.Float {
+				bifrostEmbedding := schemas.EmbeddingData{
 					Object: "embedding",
 					Index:  i,
-					Embedding: schemas.BifrostEmbeddingResponse{
+					Embedding: schemas.EmbeddingStruct{
 						EmbeddingArray: embedding,
 					},
 				}
 				bifrostEmbeddings = append(bifrostEmbeddings, bifrostEmbedding)
 			}
-		} else if cohereResp.Embeddings.Base64 != nil {
+		} else if response.Embeddings.Base64 != nil {
 			// Handle base64 embeddings as strings
-			for i, embedding := range cohereResp.Embeddings.Base64 {
-				bifrostEmbedding := schemas.BifrostEmbedding{
+			for i, embedding := range response.Embeddings.Base64 {
+				bifrostEmbedding := schemas.EmbeddingData{
 					Object: "embedding",
 					Index:  i,
-					Embedding: schemas.BifrostEmbeddingResponse{
+					Embedding: schemas.EmbeddingStruct{
 						EmbeddingStr: &embedding,
 					},
 				}
@@ -108,29 +107,16 @@ func (cohereResp *CohereEmbeddingResponse) ToBifrostResponse() *schemas.BifrostR
 	}
 
 	// Convert usage information
-	if cohereResp.Meta != nil {
-		if cohereResp.Meta.Tokens != nil {
-			bifrostResponse.Usage = &schemas.LLMUsage{}
-			if cohereResp.Meta.Tokens.InputTokens != nil {
-				bifrostResponse.Usage.PromptTokens = int(*cohereResp.Meta.Tokens.InputTokens)
+	if response.Meta != nil {
+		if response.Meta.Tokens != nil {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{}
+			if response.Meta.Tokens.InputTokens != nil {
+				bifrostResponse.Usage.PromptTokens = int(*response.Meta.Tokens.InputTokens)
 			}
-			if cohereResp.Meta.Tokens.OutputTokens != nil {
-				bifrostResponse.Usage.CompletionTokens = int(*cohereResp.Meta.Tokens.OutputTokens)
+			if response.Meta.Tokens.OutputTokens != nil {
+				bifrostResponse.Usage.CompletionTokens = int(*response.Meta.Tokens.OutputTokens)
 			}
 			bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
-		}
-
-		// Convert billed usage
-		if cohereResp.Meta.BilledUnits != nil {
-			if bifrostResponse.ExtraFields.BilledUsage == nil {
-				bifrostResponse.ExtraFields.BilledUsage = &schemas.BilledLLMUsage{}
-			}
-			if cohereResp.Meta.BilledUnits.InputTokens != nil {
-				bifrostResponse.ExtraFields.BilledUsage.PromptTokens = cohereResp.Meta.BilledUnits.InputTokens
-			}
-			if cohereResp.Meta.BilledUnits.OutputTokens != nil {
-				bifrostResponse.ExtraFields.BilledUsage.CompletionTokens = cohereResp.Meta.BilledUnits.OutputTokens
-			}
 		}
 	}
 

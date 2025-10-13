@@ -3,6 +3,8 @@ package semanticcache
 import (
 	"context"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestCrossCacheTypeAccessibility tests that entries cached one way are accessible another way
@@ -34,7 +36,7 @@ func TestCrossCacheTypeAccessibility(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should find direct match
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should find direct match
 
 	// Test 3: Retrieve with semantic-only cache type
 	ctx3 := CreateContextWithCacheKeyAndType("test-cross-cache-access", CacheTypeSemantic)
@@ -43,7 +45,7 @@ func TestCrossCacheTypeAccessibility(t *testing.T) {
 	if err3 != nil {
 		t.Fatalf("Third request failed: %v", err3)
 	}
-	AssertCacheHit(t, response3, "semantic") // Should find semantic match
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "semantic") // Should find semantic match
 
 	t.Log("✅ Entries cached with default behavior are accessible via both cache types")
 }
@@ -86,7 +88,7 @@ func TestCacheTypeIsolation(t *testing.T) {
 	if err3 != nil {
 		t.Fatalf("Third request failed: %v", err3)
 	}
-	AssertCacheHit(t, response3, "direct") // Should hit direct cache
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "direct") // Should hit direct cache
 
 	// Test 4: Default behavior (should find the direct cache)
 	ctx4 := CreateContextWithCacheKey("test-cache-isolation")
@@ -95,7 +97,7 @@ func TestCacheTypeIsolation(t *testing.T) {
 	if err4 != nil {
 		t.Fatalf("Fourth request failed: %v", err4)
 	}
-	AssertCacheHit(t, response4, "direct") // Should find existing direct cache
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}, "direct") // Should find existing direct cache
 
 	t.Log("✅ Cache type isolation works correctly")
 }
@@ -142,10 +144,10 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 
 	// Should find semantic match from step 1's cached entry (which has embeddings)
 	if response3.ExtraFields.CacheDebug != nil && response3.ExtraFields.CacheDebug.CacheHit {
-		AssertCacheHit(t, response3, "semantic")
+		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "semantic")
 		t.Log("✅ Semantic search found similar entry from step 1")
 	} else {
-		AssertNoCacheHit(t, response3)
+		AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 		t.Log("ℹ️  No semantic match found (threshold may be too high or semantic similarity low)")
 	}
 
@@ -162,10 +164,10 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 
 	// Should try direct first (miss), then semantic (might hit)
 	if response4.ExtraFields.CacheDebug != nil && response4.ExtraFields.CacheDebug.CacheHit {
-		AssertCacheHit(t, response4, "semantic")
+		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}, "semantic")
 		t.Log("✅ Default behavior found semantic fallback")
 	} else {
-		AssertNoCacheHit(t, response4)
+		AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4})
 		t.Log("ℹ️  No fallback match found")
 	}
 
@@ -187,7 +189,7 @@ func TestMultipleCacheEntriesPriority(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 	AssertNoCacheHit(t, response1)
-	originalContent := *response1.Choices[0].Message.Content.ContentStr
+	originalContent := *response1.ChatResponse.Choices[0].Message.Content.ContentStr
 
 	WaitForCache()
 
@@ -201,7 +203,7 @@ func TestMultipleCacheEntriesPriority(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should hit direct cache
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should hit direct cache
 	cachedContent := *response2.Choices[0].Message.Content.ContentStr
 
 	// Verify content is the same
@@ -216,7 +218,7 @@ func TestMultipleCacheEntriesPriority(t *testing.T) {
 	if err3 != nil {
 		t.Fatalf("Third request failed: %v", err3)
 	}
-	AssertCacheHit(t, response3, "direct") // Should find direct cache
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "direct") // Should find direct cache
 
 	// Test with semantic-only access
 	ctx3 := CreateContextWithCacheKeyAndType("test-cache-priority", CacheTypeSemantic)
@@ -225,7 +227,7 @@ func TestMultipleCacheEntriesPriority(t *testing.T) {
 	if err4 != nil {
 		t.Fatalf("Fourth request failed: %v", err4)
 	}
-	AssertCacheHit(t, response4, "semantic") // Should find semantic cache
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}, "semantic") // Should find semantic cache
 
 	t.Log("✅ Multiple cache entries accessible correctly")
 }
@@ -261,7 +263,7 @@ func TestCrossCacheTypeWithDifferentParameters(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should hit
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should hit
 
 	// Test different parameters - should miss
 	request3 := CreateBasicChatRequest(baseMessage, 0.5, 200) // Different temp and tokens
@@ -320,7 +322,7 @@ func TestCacheTypeErrorHandling(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should find cached entry from first request
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should find cached entry from first request
 
 	t.Log("✅ Cache type error handling works correctly")
 }

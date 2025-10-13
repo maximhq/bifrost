@@ -57,7 +57,7 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 		return vals, inputTokens, nil
 	} else if embedding.EmbeddingArray != nil {
 		return embedding.EmbeddingArray, inputTokens, nil
-	} else if embedding.Embedding2DArray != nil && len(embedding.Embedding2DArray) > 0 {
+	} else if len(embedding.Embedding2DArray) > 0 {
 		// Flatten 2D array into single embedding
 		var flattened []float32
 		for _, arr := range embedding.Embedding2DArray {
@@ -395,9 +395,9 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 	if bifrostErr != nil {
 		// Error case - mark as final chunk with error
 		chunk.FinishReason = bifrost.Ptr("error")
-	} else if res != nil && len(res.Choices) > 0 {
-		choice := res.Choices[0]
-		if choice.BifrostStreamResponseChoice != nil {
+	} else if res != nil && res.ChatResponse != nil && len(res.ChatResponse.Choices) > 0 {
+		choice := res.ChatResponse.Choices[0]
+		if choice.ChatStreamResponseChoice != nil {
 			chunk.FinishReason = choice.FinishReason
 		}
 	}

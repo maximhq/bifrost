@@ -31,7 +31,7 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+			TextResponseConverter: func(resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 				return anthropic.ToAnthropicTextCompletionResponse(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -47,19 +47,19 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					return &schemas.BifrostRequest{
-						ResponsesRequest: anthropicReq.ToResponsesBifrostRequest(),
+						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+			ResponsesResponseConverter: func(resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 				return anthropic.ToAnthropicResponsesResponse(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 			StreamConfig: &StreamConfig{
-				ResponseConverter: func(resp *schemas.BifrostResponse) (interface{}, error) {
+				ResponsesStreamResponseConverter: func(resp *schemas.BifrostResponsesStreamResponse) (interface{}, error) {
 					return anthropic.ToAnthropicResponsesStreamResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
@@ -71,8 +71,8 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 }
 
 // NewAnthropicRouter creates a new AnthropicRouter with the given bifrost client.
-func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *AnthropicRouter {
+func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *AnthropicRouter {
 	return &AnthropicRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, CreateAnthropicRouteConfigs("/anthropic")),
+		GenericRouter: NewGenericRouter(client, handlerStore, CreateAnthropicRouteConfigs("/anthropic"), logger),
 	}
 }

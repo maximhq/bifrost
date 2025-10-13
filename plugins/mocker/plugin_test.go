@@ -137,11 +137,11 @@ func TestMockerPlugin_DefaultMockRule(t *testing.T) {
 	if len(response.Choices) == 0 {
 		t.Fatal("Expected at least one choice")
 	}
-	if response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr == nil {
+	if response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr == nil {
 		t.Fatal("Expected content string")
 	}
-	if *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr != "This is a mock response from the Mocker plugin" {
-		t.Errorf("Expected default mock message, got: %s", *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr)
+	if *response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr != "This is a mock response from the Mocker plugin" {
+		t.Errorf("Expected default mock message, got: %s", *response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr)
 	}
 }
 
@@ -213,11 +213,11 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 	if len(response.Choices) == 0 {
 		t.Fatal("Expected at least one choice")
 	}
-	if response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr == nil {
+	if response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr == nil {
 		t.Fatal("Expected content string")
 	}
-	if *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr != "Custom OpenAI mock response" {
-		t.Errorf("Expected custom message, got: %s", *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr)
+	if *response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr != "Custom OpenAI mock response" {
+		t.Errorf("Expected custom message, got: %s", *response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr)
 	}
 	if response.Usage.TotalTokens != 40 {
 		t.Errorf("Expected 40 total tokens, got %d", response.Usage.TotalTokens)
@@ -355,12 +355,12 @@ func TestMockerPlugin_MessageTemplate(t *testing.T) {
 	if len(response.Choices) == 0 {
 		t.Fatal("Expected at least one choice")
 	}
-	if response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr == nil {
+	if response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr == nil {
 		t.Fatal("Expected content string")
 	}
 	expectedMessage := "Hello from anthropic using model claude-3"
-	if *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr != expectedMessage {
-		t.Errorf("Expected '%s', got: %s", expectedMessage, *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr)
+	if *response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr != expectedMessage {
+		t.Errorf("Expected '%s', got: %s", expectedMessage, *response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr)
 	}
 }
 

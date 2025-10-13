@@ -40,7 +40,7 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should be cached
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should be cached
 
 	// Test 2: Conversation with 3 messages (exceeds threshold, should NOT cache)
 	conversation2 := BuildConversationHistory("",
@@ -148,7 +148,7 @@ func TestConversationHistoryThresholdWithExcludeSystemPrompt(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct") // Should cache since 3 <= 3 after excluding system
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct") // Should cache since 3 <= 3 after excluding system
 
 	t.Log("✅ Conversation threshold respects ExcludeSystemPrompt setting")
 }
@@ -257,7 +257,7 @@ func TestExcludeSystemPromptBasic(t *testing.T) {
 		}
 	}
 	// Should hit cache because system prompts are excluded from cache key
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 
 	t.Log("✅ ExcludeSystemPrompt=true correctly ignores system prompts in cache keys")
 }
@@ -288,7 +288,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 
@@ -331,7 +331,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 		t.Fatalf("Fourth request failed: %v", err4)
 	}
 	// Should hit cache because system prompts are excluded from cache key
-	AssertCacheHit(t, response4, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}, "direct")
 
 	t.Log("✅ ExcludeSystemPrompt true vs false comparison works correctly")
 }
@@ -404,7 +404,7 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 		}
 	}
 	// Should hit cache because all system messages are excluded
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 
 	t.Log("✅ ExcludeSystemPrompt works with multiple system messages")
 }
@@ -448,7 +448,7 @@ func TestExcludeSystemPromptWithNoSystemMessages(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 
 	t.Log("✅ ExcludeSystemPrompt works correctly when no system messages present")
 }

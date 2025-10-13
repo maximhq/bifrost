@@ -40,27 +40,26 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 	return titanReq, nil
 }
 
-// ToBifrostResponse converts a Bedrock Titan embedding response to Bifrost format
-func (titanResp *BedrockTitanEmbeddingResponse) ToBifrostResponse(model string) *schemas.BifrostResponse {
-	if titanResp == nil {
+// ToBifrostEmbeddingResponse converts a Bedrock Titan embedding response to Bifrost format
+func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
+	if response == nil {
 		return nil
 	}
 
-	bifrostResponse := &schemas.BifrostResponse{
+	bifrostResponse := &schemas.BifrostEmbeddingResponse{
 		Object: "list",
-		Data: []schemas.BifrostEmbedding{
+		Data: []schemas.EmbeddingData{
 			{
 				Index:  0,
 				Object: "embedding",
-				Embedding: schemas.BifrostEmbeddingResponse{
-					Embedding2DArray: [][]float32{titanResp.Embedding},
+				Embedding: schemas.EmbeddingStruct{
+					EmbeddingArray: response.Embedding,
 				},
 			},
 		},
-		Model: model,
-		Usage: &schemas.LLMUsage{
-			PromptTokens: titanResp.InputTextTokenCount,
-			TotalTokens:  titanResp.InputTextTokenCount,
+		Usage: &schemas.BifrostLLMUsage{
+			PromptTokens: response.InputTextTokenCount,
+			TotalTokens:  response.InputTextTokenCount,
 		},
 	}
 

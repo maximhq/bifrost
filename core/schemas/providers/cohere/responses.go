@@ -80,38 +80,33 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 }
 
 // ToResponsesBifrostResponse converts CohereChatResponse to BifrostResponse (Responses structure)
-func (cohereResp *CohereChatResponse) ToResponsesBifrostResponse() *schemas.BifrostResponse {
-	if cohereResp == nil {
+func (response *CohereChatResponse) ToResponsesBifrostResponsesResponse() *schemas.BifrostResponsesResponse {
+	if response == nil {
 		return nil
 	}
 
-	bifrostResp := &schemas.BifrostResponse{
-		ID:     cohereResp.ID,
-		Object: "response",
-		ResponsesResponse: &schemas.ResponsesResponse{
-			CreatedAt: int(time.Now().Unix()), // Set current timestamp
-		},
+	bifrostResp := &schemas.BifrostResponsesResponse{
+		ID:        schemas.Ptr(response.ID),
+		CreatedAt: int(time.Now().Unix()), // Set current timestamp
 	}
 
 	// Convert usage information
-	if cohereResp.Usage != nil {
-		usage := &schemas.LLMUsage{
-			ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{},
+	if response.Usage != nil {
+		usage := &schemas.ResponsesResponseUsage{}
+
+		if response.Usage.Tokens != nil {
+			if response.Usage.Tokens.InputTokens != nil {
+				usage.InputTokens = int(*response.Usage.Tokens.InputTokens)
+			}
+			if response.Usage.Tokens.OutputTokens != nil {
+				usage.OutputTokens = int(*response.Usage.Tokens.OutputTokens)
+			}
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 
-		if cohereResp.Usage.Tokens != nil {
-			if cohereResp.Usage.Tokens.InputTokens != nil {
-				usage.ResponsesExtendedResponseUsage.InputTokens = int(*cohereResp.Usage.Tokens.InputTokens)
-			}
-			if cohereResp.Usage.Tokens.OutputTokens != nil {
-				usage.ResponsesExtendedResponseUsage.OutputTokens = int(*cohereResp.Usage.Tokens.OutputTokens)
-			}
-			usage.TotalTokens = usage.ResponsesExtendedResponseUsage.InputTokens + usage.ResponsesExtendedResponseUsage.OutputTokens
-		}
-
-		if cohereResp.Usage.CachedTokens != nil {
-			usage.ResponsesExtendedResponseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: int(*cohereResp.Usage.CachedTokens),
+		if response.Usage.CachedTokens != nil {
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+				CachedTokens: int(*response.Usage.CachedTokens),
 			}
 		}
 
@@ -119,9 +114,9 @@ func (cohereResp *CohereChatResponse) ToResponsesBifrostResponse() *schemas.Bifr
 	}
 
 	// Convert output message to Responses format
-	if cohereResp.Message != nil {
-		outputMessages := convertCohereMessageToResponsesOutput(*cohereResp.Message)
-		bifrostResp.ResponsesResponse.Output = outputMessages
+	if response.Message != nil {
+		outputMessages := convertCohereMessageToResponsesOutput(*response.Message)
+		bifrostResp.Output = outputMessages
 	}
 
 	return bifrostResp
@@ -429,7 +424,7 @@ func convertCohereContentBlockToBifrost(cohereBlock CohereContentBlock) schemas.
 	}
 }
 
-func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponse, *schemas.BifrostError, bool) {
+func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case StreamEventMessageStart:
 		messageType := schemas.ResponsesMessageTypeMessage
@@ -444,13 +439,11 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 			},
 		}
 
-		return &schemas.BifrostResponse{
-			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-				Item:           item,
-			},
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			Item:           item,
 		}, nil, false
 	case StreamEventContentStart:
 		// Content block start - create content part added event
@@ -475,14 +468,12 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 			}
 
 			if part != nil {
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
-						ContentIndex:   chunk.Index,
-						Part:           part,
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   chunk.Index,
+					Part:           part,
 				}, nil, false
 			}
 		}
@@ -490,14 +481,12 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 		if chunk.Index != nil && chunk.Delta != nil {
 			// Handle text content delta
 			if chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil && chunk.Delta.Message.Content.Text != nil && *chunk.Delta.Message.Content.Text != "" {
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
-						ContentIndex:   chunk.Index,
-						Delta:          chunk.Delta.Message.Content.Text,
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   chunk.Index,
+					Delta:          chunk.Delta.Message.Content.Text,
 				}, nil, false
 			}
 		}
@@ -505,26 +494,22 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 	case StreamEventContentEnd:
 		// Content block is complete
 		if chunk.Index != nil {
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-					ContentIndex:   chunk.Index,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				ContentIndex:   chunk.Index,
 			}, nil, false
 		}
 	case StreamEventToolPlanDelta:
 		if chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolPlan != nil && *chunk.Delta.Message.ToolPlan != "" {
 			// Tool plan delta - map to reasoning summary text delta
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-					ContentIndex:   schemas.Ptr(0), // Tool plan is typically at index 0
-					Delta:          chunk.Delta.Message.ToolPlan,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				ContentIndex:   schemas.Ptr(0), // Tool plan is typically at index 0
+				Delta:          chunk.Delta.Message.ToolPlan,
 			}, nil, false
 		}
 		return nil, nil, false
@@ -545,13 +530,11 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 					},
 				}
 
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
-						Item:           item,
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					Item:           item,
 				}, nil, false
 			}
 		}
@@ -561,14 +544,12 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 			// Tool call delta - handle function arguments streaming
 			toolCall := chunk.Delta.Message.ToolCalls
 			if toolCall.Function != nil {
-				return &schemas.BifrostResponse{
-					ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-						SequenceNumber: sequenceNumber,
-						ContentIndex:   chunk.Index,
-						OutputIndex:    schemas.Ptr(0),
-						Delta: schemas.Ptr(toolCall.Function.Arguments),
-					},
+				return &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+					SequenceNumber: sequenceNumber,
+					ContentIndex:   chunk.Index,
+					OutputIndex:    schemas.Ptr(0),
+					Delta:          schemas.Ptr(toolCall.Function.Arguments),
 				}, nil, false
 			}
 		}
@@ -576,13 +557,11 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 	case StreamEventToolCallEnd:
 		if chunk.Index != nil {
 			// Tool call end - indicate function call arguments are complete
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-					ContentIndex:   chunk.Index,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				ContentIndex:   chunk.Index,
 			}, nil, false
 		}
 		return nil, nil, false
@@ -622,64 +601,56 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 				}
 			}
 
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
-					SequenceNumber:  sequenceNumber,
-					OutputIndex:     schemas.Ptr(0),
-					ContentIndex:    schemas.Ptr(citation.ContentIndex),
-					Annotation:      annotation,
-					AnnotationIndex: chunk.Index,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				SequenceNumber:  sequenceNumber,
+				ContentIndex:    schemas.Ptr(citation.ContentIndex),
+				Annotation:      annotation,
+				OutputIndex:     schemas.Ptr(0),
+				AnnotationIndex: chunk.Index,
 			}, nil, false
 		}
 		return nil, nil, false
 	case StreamEventCitationEnd:
 		if chunk.Index != nil {
 			// Citation end - indicate annotation is complete
-			return &schemas.BifrostResponse{
-				ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-					Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
-					SequenceNumber:  sequenceNumber,
-					OutputIndex:     schemas.Ptr(0),
-					ContentIndex:    chunk.Index,
-					AnnotationIndex: chunk.Index,
-				},
+			return &schemas.BifrostResponsesStreamResponse{
+				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				SequenceNumber:  sequenceNumber,
+				ContentIndex:    chunk.Index,
+				OutputIndex:     schemas.Ptr(0),
+				AnnotationIndex: chunk.Index,
 			}, nil, false
 		}
 		return nil, nil, false
 	case StreamEventMessageEnd:
-		response := &schemas.BifrostResponse{
-			ResponsesStreamResponse: &schemas.ResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeCompleted,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-				Response:       &schemas.ResponsesStreamResponseStruct{}, // Initialize Response field
-			},
+		response := &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			Response:       &schemas.BifrostResponsesResponse{}, // Initialize Response field
 		}
 
 		if chunk.Delta != nil {
 			if chunk.Delta.Usage != nil {
-				usage := &schemas.ResponsesResponseUsage{
-					ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{},
-				}
+				usage := &schemas.ResponsesResponseUsage{}
 
 				if chunk.Delta.Usage.Tokens != nil {
 					if chunk.Delta.Usage.Tokens.InputTokens != nil {
-						usage.ResponsesExtendedResponseUsage.InputTokens = int(*chunk.Delta.Usage.Tokens.InputTokens)
+						usage.InputTokens = int(*chunk.Delta.Usage.Tokens.InputTokens)
 					}
 					if chunk.Delta.Usage.Tokens.OutputTokens != nil {
-						usage.ResponsesExtendedResponseUsage.OutputTokens = int(*chunk.Delta.Usage.Tokens.OutputTokens)
+						usage.OutputTokens = int(*chunk.Delta.Usage.Tokens.OutputTokens)
 					}
-					usage.TotalTokens = usage.ResponsesExtendedResponseUsage.InputTokens + usage.ResponsesExtendedResponseUsage.OutputTokens
+					usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 				}
 
 				if chunk.Delta.Usage.CachedTokens != nil {
-					usage.ResponsesExtendedResponseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+					usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
 						CachedTokens: int(*chunk.Delta.Usage.CachedTokens),
 					}
 				}
-				response.ResponsesStreamResponse.Response.Usage = usage
+				response.Response.Usage = usage
 			}
 		}
 

@@ -65,6 +65,39 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// safeGetRequestType safely obtains the request type from a BifrostStream chunk.
+// It checks multiple sources in order of preference:
+// 1. Response ExtraFields if any response is available
+// 2. BifrostError ExtraFields if error is available and not nil
+// 3. Falls back to "unknown" if no source is available
+func safeGetRequestType(chunk *schemas.BifrostStream) string {
+	if chunk == nil {
+		return "unknown"
+	}
+
+	// Try to get RequestType from response ExtraFields (preferred source)
+	switch {
+	case chunk.BifrostTextCompletionResponse != nil:
+		return string(chunk.BifrostTextCompletionResponse.ExtraFields.RequestType)
+	case chunk.BifrostChatResponse != nil:
+		return string(chunk.BifrostChatResponse.ExtraFields.RequestType)
+	case chunk.BifrostResponsesStreamResponse != nil:
+		return string(chunk.BifrostResponsesStreamResponse.ExtraFields.RequestType)
+	case chunk.BifrostSpeechStreamResponse != nil:
+		return string(chunk.BifrostSpeechStreamResponse.ExtraFields.RequestType)
+	case chunk.BifrostTranscriptionStreamResponse != nil:
+		return string(chunk.BifrostTranscriptionStreamResponse.ExtraFields.RequestType)
+	}
+
+	// Try to get RequestType from error ExtraFields (fallback)
+	if chunk.BifrostError != nil && chunk.BifrostError.ExtraFields.RequestType != "" {
+		return string(chunk.BifrostError.ExtraFields.RequestType)
+	}
+
+	// Final fallback
+	return "unknown"
+}
+
 // ExtensionRouter defines the interface that all integration routers must implement
 // to register their routes with the main HTTP router.
 type ExtensionRouter interface {
@@ -82,11 +115,27 @@ type RequestConverter func(req interface{}) (*schemas.BifrostRequest, error)
 
 // ResponseConverter is a function that converts Bifrost responses to integration-specific format.
 // It takes a BifrostResponse and returns the format expected by the specific integration.
-type ResponseConverter func(*schemas.BifrostResponse) (interface{}, error)
+type TextResponseConverter func(*schemas.BifrostTextCompletionResponse) (interface{}, error)
+
+type ChatResponseConverter func(*schemas.BifrostChatResponse) (interface{}, error)
+
+type ResponsesResponseConverter func(*schemas.BifrostResponsesResponse) (interface{}, error)
+
+type EmbeddingResponseConverter func(*schemas.BifrostEmbeddingResponse) (interface{}, error)
+
+type TranscriptionResponseConverter func(*schemas.BifrostTranscriptionResponse) (interface{}, error)
 
 // StreamResponseConverter is a function that converts Bifrost responses to integration-specific streaming format.
 // It takes a BifrostResponse and returns the streaming format expected by the specific integration.
-type StreamResponseConverter func(*schemas.BifrostResponse) (interface{}, error)
+type TextStreamResponseConverter func(*schemas.BifrostTextCompletionResponse) (interface{}, error)
+
+type ChatStreamResponseConverter func(*schemas.BifrostChatResponse) (interface{}, error)
+
+type ResponsesStreamResponseConverter func(*schemas.BifrostResponsesStreamResponse) (interface{}, error)
+
+type SpeechStreamResponseConverter func(*schemas.BifrostSpeechStreamResponse) (interface{}, error)
+
+type TranscriptionStreamResponseConverter func(*schemas.BifrostTranscriptionStreamResponse) (interface{}, error)
 
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
@@ -110,7 +159,7 @@ type PreRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}) error
 // PostRequestCallback is called after processing the request but before sending the response.
 // It can be used to modify the response or perform additional logging/metrics.
 // If it returns an error, an error response is sent instead of the success response.
-type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp *schemas.BifrostResponse) error
+type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error
 
 // StreamConfig defines streaming-specific configuration for an integration
 //
@@ -133,23 +182,31 @@ type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp *s
 //
 // Choose the appropriate return type based on your provider's SSE specification.
 type StreamConfig struct {
-	ResponseConverter StreamResponseConverter // Function to convert BifrostResponse to streaming format
-	ErrorConverter    StreamErrorConverter    // Function to convert BifrostError to streaming error format
+	TextStreamResponseConverter          TextStreamResponseConverter          // Function to convert BifrostTextCompletionResponse to streaming format
+	ChatStreamResponseConverter          ChatStreamResponseConverter          // Function to convert BifrostChatResponse to streaming format
+	ResponsesStreamResponseConverter     ResponsesStreamResponseConverter     // Function to convert BifrostResponsesResponse to streaming format
+	SpeechStreamResponseConverter        SpeechStreamResponseConverter        // Function to convert BifrostSpeechResponse to streaming format
+	TranscriptionStreamResponseConverter TranscriptionStreamResponseConverter // Function to convert BifrostTranscriptionResponse to streaming format
+	ErrorConverter                       StreamErrorConverter                 // Function to convert BifrostError to streaming error format
 }
 
 // RouteConfig defines the configuration for a single route in an integration.
 // It specifies the path, method, and handlers for request/response conversion.
 type RouteConfig struct {
-	Path                   string              // HTTP path pattern (e.g., "/openai/v1/chat/completions")
-	Method                 string              // HTTP method (POST, GET, PUT, DELETE)
-	GetRequestTypeInstance func() interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
-	RequestParser          RequestParser       // Optional: custom request parsing (e.g., multipart/form-data)
-	RequestConverter       RequestConverter    // Function to convert request to BifrostRequest (SHOULD NOT BE NIL)
-	ResponseConverter      ResponseConverter   // Function to convert BifrostResponse to integration format (SHOULD NOT BE NIL)
-	ErrorConverter         ErrorConverter      // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
-	StreamConfig           *StreamConfig       // Optional: Streaming configuration (if nil, streaming not supported)
-	PreCallback            PreRequestCallback  // Optional: called after parsing but before Bifrost processing
-	PostCallback           PostRequestCallback // Optional: called after request processing
+	Path                           string                         // HTTP path pattern (e.g., "/openai/v1/chat/completions")
+	Method                         string                         // HTTP method (POST, GET, PUT, DELETE)
+	GetRequestTypeInstance         func() interface{}             // Factory function to create request instance (SHOULD NOT BE NIL)
+	RequestParser                  RequestParser                  // Optional: custom request parsing (e.g., multipart/form-data)
+	RequestConverter               RequestConverter               // Function to convert request to BifrostRequest (SHOULD NOT BE NIL)
+	TextResponseConverter          TextResponseConverter          // Function to convert BifrostTextCompletionResponse to integration format (SHOULD NOT BE NIL)
+	ChatResponseConverter          ChatResponseConverter          // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
+	ResponsesResponseConverter     ResponsesResponseConverter     // Function to convert BifrostResponsesResponse to integration format (SHOULD NOT BE NIL)
+	EmbeddingResponseConverter     EmbeddingResponseConverter     // Function to convert BifrostEmbeddingResponse to integration format (SHOULD NOT BE NIL)
+	TranscriptionResponseConverter TranscriptionResponseConverter // Function to convert BifrostTranscriptionResponse to integration format (SHOULD NOT BE NIL)
+	ErrorConverter                 ErrorConverter                 // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
+	StreamConfig                   *StreamConfig                  // Optional: Streaming configuration (if nil, streaming not supported)
+	PreCallback                    PreRequestCallback             // Optional: called after parsing but before Bifrost processing
+	PostCallback                   PostRequestCallback            // Optional: called after request processing
 }
 
 // GenericRouter provides a reusable router implementation for all integrations.
@@ -159,15 +216,17 @@ type GenericRouter struct {
 	client       *bifrost.Bifrost // Bifrost client for executing requests
 	handlerStore lib.HandlerStore // Config provider for the router
 	routes       []RouteConfig    // List of route configurations
+	logger       schemas.Logger   // Logger for the router
 }
 
 // NewGenericRouter creates a new generic router with the given bifrost client and route configurations.
 // Each integration should create their own routes and pass them to this constructor.
-func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, routes []RouteConfig) *GenericRouter {
+func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, routes []RouteConfig, logger schemas.Logger) *GenericRouter {
 	return &GenericRouter{
 		client:       client,
 		handlerStore: handlerStore,
 		routes:       routes,
+		logger:       logger,
 	}
 }
 
@@ -177,25 +236,21 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...lib.Bifr
 	for _, route := range g.routes {
 		// Validate route configuration at startup to fail fast
 		if route.GetRequestTypeInstance == nil {
-			log.Println("[WARN] route configuration is invalid: GetRequestTypeInstance cannot be nil for route " + route.Path)
+			g.logger.Warn("route configuration is invalid: GetRequestTypeInstance cannot be nil for route " + route.Path)
 			continue
 		}
 		if route.RequestConverter == nil {
-			log.Println("[WARN] route configuration is invalid: RequestConverter cannot be nil for route " + route.Path)
-			continue
-		}
-		if route.ResponseConverter == nil {
-			log.Println("[WARN] route configuration is invalid: ResponseConverter cannot be nil for route " + route.Path)
+			g.logger.Warn("route configuration is invalid: RequestConverter cannot be nil for route " + route.Path)
 			continue
 		}
 		if route.ErrorConverter == nil {
-			log.Println("[WARN] route configuration is invalid: ErrorConverter cannot be nil for route " + route.Path)
+			g.logger.Warn("route configuration is invalid: ErrorConverter cannot be nil for route " + route.Path)
 			continue
 		}
 
 		// Test that GetRequestTypeInstance returns a valid instance
 		if testInstance := route.GetRequestTypeInstance(); testInstance == nil {
-			log.Println("[WARN] route configuration is invalid: GetRequestTypeInstance returned nil for route " + route.Path)
+			g.logger.Warn("route configuration is invalid: GetRequestTypeInstance returned nil for route " + route.Path)
 			continue
 		}
 
@@ -304,60 +359,145 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 // handleNonStreamingRequest handles regular (non-streaming) requests
 func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
-	var result *schemas.BifrostResponse
-	var bifrostErr *schemas.BifrostError
+	var response interface{}
+	var err error
 
-	// Handle different request types
-	if bifrostReq.TextCompletionRequest != nil {
-		result, bifrostErr = g.client.TextCompletionRequest(*bifrostCtx, bifrostReq.TextCompletionRequest)
-	} else if bifrostReq.ChatRequest != nil {
-		result, bifrostErr = g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq.ChatRequest)
-	} else if bifrostReq.EmbeddingRequest != nil {
-		result, bifrostErr = g.client.EmbeddingRequest(*bifrostCtx, bifrostReq.EmbeddingRequest)
-	} else if bifrostReq.SpeechRequest != nil {
-		result, bifrostErr = g.client.SpeechRequest(*bifrostCtx, bifrostReq.SpeechRequest)
-	} else if bifrostReq.TranscriptionRequest != nil {
-		result, bifrostErr = g.client.TranscriptionRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
-	} else if bifrostReq.ResponsesRequest != nil {
-		result, bifrostErr = g.client.ResponsesRequest(*bifrostCtx, bifrostReq.ResponsesRequest)
-	}
-
-	// Handle errors
-	if bifrostErr != nil {
-		g.sendError(ctx, config.ErrorConverter, bifrostErr)
-		return
-	}
-
-	// Execute post-request callback if configured
-	// This is typically used for response modification or additional processing
-	if config.PostCallback != nil {
-		if err := config.PostCallback(ctx, req, result); err != nil {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+	switch {
+	case bifrostReq.TextCompletionRequest != nil:
+		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(*bifrostCtx, bifrostReq.TextCompletionRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, config.ErrorConverter, bifrostErr)
 			return
 		}
-	}
 
-	if result == nil {
-		g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, textCompletionResponse); err != nil {
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if textCompletionResponse == nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.TextResponseConverter(textCompletionResponse)
+	case bifrostReq.ChatRequest != nil:
+		chatResponse, bifrostErr := g.client.ChatCompletionRequest(*bifrostCtx, bifrostReq.ChatRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, chatResponse); err != nil {
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if chatResponse == nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ChatResponseConverter(chatResponse)
+	case bifrostReq.EmbeddingRequest != nil:
+		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(*bifrostCtx, bifrostReq.EmbeddingRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, embeddingResponse); err != nil {
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if embeddingResponse == nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.EmbeddingResponseConverter(embeddingResponse)
+	case bifrostReq.ResponsesRequest != nil:
+		responsesResponse, bifrostErr := g.client.ResponsesRequest(*bifrostCtx, bifrostReq.ResponsesRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, responsesResponse); err != nil {
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if responsesResponse == nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ResponsesResponseConverter(responsesResponse)
+	case bifrostReq.SpeechRequest != nil:
+		speechResponse, bifrostErr := g.client.SpeechRequest(*bifrostCtx, bifrostReq.SpeechRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+		ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
+		ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(speechResponse.Audio)))
+		ctx.Response.SetBody(speechResponse.Audio)
+		return
+	case bifrostReq.TranscriptionRequest != nil:
+		transcriptionResponse, bifrostErr := g.client.TranscriptionRequest(*bifrostCtx, bifrostReq.TranscriptionRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, transcriptionResponse); err != nil {
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if transcriptionResponse == nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.TranscriptionResponseConverter(transcriptionResponse)
+	default:
+		g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Invalid request type"))
 		return
 	}
 
-	// Convert Bifrost response to integration-specific format and send
-	response, err := config.ResponseConverter(result)
 	if err != nil {
 		g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to encode response"))
 		return
-	}
-
-	if result.Speech != nil {
-		responseBytes, ok := response.([]byte)
-		if ok {
-			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-			ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
-			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(responseBytes)))
-			ctx.Response.SetBody(responseBytes)
-			return
-		}
 	}
 
 	g.sendSuccess(ctx, config.ErrorConverter, response)
@@ -453,21 +593,17 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer w.Flush()
 
-		var requestType schemas.RequestType
+		includeEventType := false
 
 		// Process streaming responses
-		for response := range streamChan {
-			if response == nil {
+		for chunk := range streamChan {
+			if chunk == nil {
 				continue
 			}
 
-			// Extract request type from the first response for stream format detection
-			if requestType == "" {
-				if response.BifrostResponse != nil {
-					requestType = response.BifrostResponse.ExtraFields.RequestType
-				} else if response.BifrostError != nil {
-					requestType = response.BifrostError.ExtraFields.RequestType
-				}
+			if chunk.BifrostResponsesStreamResponse != nil ||
+				(chunk.BifrostError != nil && chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest) {
+				includeEventType = true
 			}
 
 			// Check for context cancellation
@@ -478,16 +614,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 			}
 
 			// Handle errors
-			if response.BifrostError != nil {
+			if chunk.BifrostError != nil {
 				var errorResponse interface{}
 				var errorJSON []byte
 				var err error
 
 				// Use stream error converter if available, otherwise fallback to regular error converter
 				if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
-					errorResponse = config.StreamConfig.ErrorConverter(response.BifrostError)
+					errorResponse = config.StreamConfig.ErrorConverter(chunk.BifrostError)
 				} else if config.ErrorConverter != nil {
-					errorResponse = config.ErrorConverter(response.BifrostError)
+					errorResponse = config.ErrorConverter(chunk.BifrostError)
 				} else {
 					// Default error response
 					errorResponse = map[string]interface{}{
@@ -535,19 +671,26 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 					return
 				}
 				return // End stream on error
-			}
-
-			// Handle successful responses
-			if response.BifrostResponse != nil {
+			} else {
+				// Handle successful responses
 				// Convert response to integration-specific streaming format
 				var convertedResponse interface{}
 				var err error
 
-				if config.StreamConfig.ResponseConverter != nil {
-					convertedResponse, err = config.StreamConfig.ResponseConverter(response.BifrostResponse)
-				} else {
-					// Fallback to regular response converter
-					convertedResponse, err = config.ResponseConverter(response.BifrostResponse)
+				switch {
+				case chunk.BifrostTextCompletionResponse != nil:
+					convertedResponse, err = config.StreamConfig.TextStreamResponseConverter(chunk.BifrostTextCompletionResponse)
+				case chunk.BifrostChatResponse != nil:
+					convertedResponse, err = config.StreamConfig.ChatStreamResponseConverter(chunk.BifrostChatResponse)
+				case chunk.BifrostResponsesStreamResponse != nil:
+					convertedResponse, err = config.StreamConfig.ResponsesStreamResponseConverter(chunk.BifrostResponsesStreamResponse)
+				case chunk.BifrostSpeechStreamResponse != nil:
+					convertedResponse, err = config.StreamConfig.SpeechStreamResponseConverter(chunk.BifrostSpeechStreamResponse)
+				case chunk.BifrostTranscriptionStreamResponse != nil:
+					convertedResponse, err = config.StreamConfig.TranscriptionStreamResponseConverter(chunk.BifrostTranscriptionStreamResponse)
+				default:
+					requestType := safeGetRequestType(chunk)
+					convertedResponse, err = nil, fmt.Errorf("no response converter found for request type: %s", requestType)
 				}
 
 				if err != nil {
@@ -566,11 +709,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 					}
 				} else {
 					// Handle different streaming formats based on request type
-					if requestType == schemas.ResponsesStreamRequest {
+					if includeEventType {
 						// OPENAI RESPONSES FORMAT: Use event: and data: lines for OpenAI responses API compatibility
 						eventType := ""
-						if response.BifrostResponse.ResponsesStreamResponse != nil {
-							eventType = string(response.BifrostResponse.ResponsesStreamResponse.Type)
+						if chunk.BifrostResponsesStreamResponse != nil {
+							eventType = string(chunk.BifrostResponsesStreamResponse.Type)
 						}
 
 						// Send event line if available
@@ -617,7 +760,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 		}
 
 		// Send [DONE] marker only for non-responses APIs (OpenAI responses API doesn't use [DONE])
-		if requestType != schemas.ResponsesStreamRequest {
+		if !includeEventType {
 			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 				log.Printf("Failed to write SSE done marker: %v", err)
 			}
@@ -718,6 +861,8 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 		return nil // No fallbacks to process
 	}
 
+	provider, _, _ := bifrostReq.GetRequestFields()
+
 	// Parse fallbacks from strings to Fallback structs
 	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
 	for _, fallbackStr := range fallbacks {
@@ -726,7 +871,7 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 		}
 
 		// Use ParseModelString to extract provider and model
-		provider, model := schemas.ParseModelString(fallbackStr, bifrostReq.Provider)
+		provider, model := schemas.ParseModelString(fallbackStr, provider)
 
 		parsedFallback := schemas.Fallback{
 			Provider: provider,
@@ -740,7 +885,7 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 	}
 
 	// Add fallbacks to the main BifrostRequest
-	bifrostReq.Fallbacks = parsedFallbacks
+	bifrostReq.SetFallbacks(parsedFallbacks)
 
 	// Also add fallbacks to the specific request type if it exists
 	switch bifrostReq.RequestType {

@@ -38,8 +38,6 @@ func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
 	data.ChatOutput = nil
 	data.ResponsesOutput = nil
 	data.ErrorDetails = nil
-	data.Model = ""
-	data.Object = ""
 	data.SpeechOutput = nil
 	data.TranscriptionOutput = nil
 	data.EmbeddingOutput = nil

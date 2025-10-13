@@ -35,12 +35,12 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
+	if response1 == nil || len(response1.ChatResponse.Choices) == 0 || response1.ChatResponse.Choices[0].Message.Content.ContentStr == nil {
 		t.Fatal("First response is invalid")
 	}
 
 	t.Logf("First request completed in %v", duration1)
-	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
+	t.Logf("Response: %s", *response1.ChatResponse.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written
 	WaitForCache()
@@ -68,7 +68,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	t.Logf("Response: %s", *response2.Choices[0].Message.Content.ContentStr)
 
 	// Verify cache hit
-	AssertCacheHit(t, response2, string(CacheTypeDirect))
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, string(CacheTypeDirect))
 
 	// Performance comparison
 	t.Logf("Performance Summary:")
@@ -88,7 +88,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	}
 
 	// Verify responses are identical (content should be the same)
-	content1 := *response1.Choices[0].Message.Content.ContentStr
+	content1 := *response1.ChatResponse.Choices[0].Message.Content.ContentStr
 	content2 := *response2.Choices[0].Message.Content.ContentStr
 
 	if content1 != content2 {
@@ -130,12 +130,12 @@ func TestSemanticSearch(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
+	if response1 == nil || len(response1.ChatResponse.Choices) == 0 || response1.ChatResponse.Choices[0].Message.Content.ContentStr == nil {
 		t.Fatal("First response is invalid")
 	}
 
 	t.Logf("First request completed in %v", duration1)
-	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
+	t.Logf("Response: %s", *response1.ChatResponse.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written (async PostHook needs time to complete)
 	WaitForCache()
@@ -244,7 +244,7 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 	}
 
 	// Should be a direct cache hit
-	AssertCacheHit(t, response2, string(CacheTypeDirect))
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, string(CacheTypeDirect))
 
 	// Test Case 2: Similar but different request (should use semantic search)
 	t.Log("\n=== Test Case 2: Semantically Similar Request ===")

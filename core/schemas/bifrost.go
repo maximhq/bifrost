@@ -13,28 +13,6 @@ const (
 
 type KeySelector func(ctx *context.Context, keys []Key, providerKey ModelProvider, model string) (Key, error)
 
-// BifrostRequest is the request struct for all bifrost requests.
-// only ONE of the following fields should be set:
-// - TextCompletionRequest
-// - ChatRequest
-// - ResponsesRequest
-// - EmbeddingRequest
-// - SpeechRequest
-// - TranscriptionRequest
-type BifrostRequest struct {
-	Provider    ModelProvider
-	Model       string
-	Fallbacks   []Fallback
-	RequestType RequestType
-
-	TextCompletionRequest *BifrostTextCompletionRequest
-	ChatRequest           *BifrostChatRequest
-	ResponsesRequest      *BifrostResponsesRequest
-	EmbeddingRequest      *BifrostEmbeddingRequest
-	SpeechRequest         *BifrostSpeechRequest
-	TranscriptionRequest  *BifrostTranscriptionRequest
-}
-
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
@@ -130,219 +108,138 @@ const (
 
 //* Request Structs
 
-// BifrostTextCompletionRequest is the request struct for text completion requests
-type BifrostTextCompletionRequest struct {
-	Provider  ModelProvider             `json:"provider"`
-	Model     string                    `json:"model"`
-	Input     *TextCompletionInput      `json:"input,omitempty"`
-	Params    *TextCompletionParameters `json:"params,omitempty"`
-	Fallbacks []Fallback                `json:"fallbacks,omitempty"`
-}
-
-// ToBifrostChatRequest converts a Bifrost text completion request to a Bifrost chat completion request
-// This method is discouraged to use, but is useful for litellm fallback flows
-func (r *BifrostTextCompletionRequest) ToBifrostChatRequest() *BifrostChatRequest {
-	if r == nil || r.Input == nil {
-		return nil
-	}
-	message := ChatMessage{Role: ChatMessageRoleUser}
-	if r.Input.PromptStr != nil {
-		message.Content = &ChatMessageContent{
-			ContentStr: r.Input.PromptStr,
-		}
-	} else if len(r.Input.PromptArray) > 0 {
-		blocks := make([]ChatContentBlock, 0, len(r.Input.PromptArray))
-		for _, prompt := range r.Input.PromptArray {
-			blocks = append(blocks, ChatContentBlock{
-				Type: ChatContentBlockTypeText,
-				Text: &prompt,
-			})
-		}
-		message.Content = &ChatMessageContent{
-			ContentBlocks: blocks,
-		}
-	}
-	params := ChatParameters{}
-	if r.Params != nil {
-		params.MaxCompletionTokens = r.Params.MaxTokens
-		params.Temperature = r.Params.Temperature
-		params.TopP = r.Params.TopP
-		params.Stop = r.Params.Stop
-		params.ExtraParams = r.Params.ExtraParams
-		params.StreamOptions = r.Params.StreamOptions
-		params.User = r.Params.User
-		params.FrequencyPenalty = r.Params.FrequencyPenalty
-		params.LogitBias = r.Params.LogitBias
-		params.PresencePenalty = r.Params.PresencePenalty
-		params.Seed = r.Params.Seed
-	}
-	return &BifrostChatRequest{
-		Provider:  r.Provider,
-		Model:     r.Model,
-		Fallbacks: r.Fallbacks,
-		Input:     []ChatMessage{message},
-		Params:    &params,
-	}
-}
-
-// BifrostChatRequest is the request struct for chat completion requests
-type BifrostChatRequest struct {
-	Provider  ModelProvider   `json:"provider"`
-	Model     string          `json:"model"`
-	Input     []ChatMessage   `json:"input,omitempty"`
-	Params    *ChatParameters `json:"params,omitempty"`
-	Fallbacks []Fallback      `json:"fallbacks,omitempty"`
-}
-
-type BifrostResponsesRequest struct {
-	Provider  ModelProvider        `json:"provider"`
-	Model     string               `json:"model"`
-	Input     []ResponsesMessage   `json:"input,omitempty"`
-	Params    *ResponsesParameters `json:"params,omitempty"`
-	Fallbacks []Fallback           `json:"fallbacks,omitempty"`
-}
-
-type BifrostEmbeddingRequest struct {
-	Provider  ModelProvider        `json:"provider"`
-	Model     string               `json:"model"`
-	Input     *EmbeddingInput      `json:"input,omitempty"`
-	Params    *EmbeddingParameters `json:"params,omitempty"`
-	Fallbacks []Fallback           `json:"fallbacks,omitempty"`
-}
-
-type BifrostSpeechRequest struct {
-	Provider  ModelProvider     `json:"provider"`
-	Model     string            `json:"model"`
-	Input     *SpeechInput      `json:"input,omitempty"`
-	Params    *SpeechParameters `json:"params,omitempty"`
-	Fallbacks []Fallback        `json:"fallbacks,omitempty"`
-}
-
-type BifrostTranscriptionRequest struct {
-	Provider  ModelProvider            `json:"provider"`
-	Model     string                   `json:"model"`
-	Input     *TranscriptionInput      `json:"input,omitempty"`
-	Params    *TranscriptionParameters `json:"params,omitempty"`
-	Fallbacks []Fallback               `json:"fallbacks,omitempty"`
-}
-
 // Fallback represents a fallback model to be used if the primary model is not available.
 type Fallback struct {
 	Provider ModelProvider `json:"provider"`
 	Model    string        `json:"model"`
 }
 
+// BifrostRequest is the request struct for all bifrost requests.
+// only ONE of the following fields should be set:
+// - TextCompletionRequest
+// - ChatRequest
+// - ResponsesRequest
+// - EmbeddingRequest
+// - SpeechRequest
+// - TranscriptionRequest
+// NOTE: Bifrost Request is submitted back to pool after every use so DO NOT keep references to this struct after use, especially in go routines.
+type BifrostRequest struct {
+	RequestType RequestType
+
+	TextCompletionRequest *BifrostTextCompletionRequest
+	ChatRequest           *BifrostChatRequest
+	ResponsesRequest      *BifrostResponsesRequest
+	EmbeddingRequest      *BifrostEmbeddingRequest
+	SpeechRequest         *BifrostSpeechRequest
+	TranscriptionRequest  *BifrostTranscriptionRequest
+}
+
+func (req *BifrostRequest) GetRequestFields() (provider ModelProvider, model string, fallbacks []Fallback) {
+	switch {
+	case req.TextCompletionRequest != nil:
+		return req.TextCompletionRequest.Provider, req.TextCompletionRequest.Model, req.TextCompletionRequest.Fallbacks
+	case req.ChatRequest != nil:
+		return req.ChatRequest.Provider, req.ChatRequest.Model, req.ChatRequest.Fallbacks
+	case req.ResponsesRequest != nil:
+		return req.ResponsesRequest.Provider, req.ResponsesRequest.Model, req.ResponsesRequest.Fallbacks
+	case req.EmbeddingRequest != nil:
+		return req.EmbeddingRequest.Provider, req.EmbeddingRequest.Model, req.EmbeddingRequest.Fallbacks
+	case req.SpeechRequest != nil:
+		return req.SpeechRequest.Provider, req.SpeechRequest.Model, req.SpeechRequest.Fallbacks
+	case req.TranscriptionRequest != nil:
+		return req.TranscriptionRequest.Provider, req.TranscriptionRequest.Model, req.TranscriptionRequest.Fallbacks
+	}
+
+	return "", "", nil
+}
+
+func (r *BifrostRequest) SetProvider(provider ModelProvider) {
+	switch {
+	case r.TextCompletionRequest != nil:
+		r.TextCompletionRequest.Provider = provider
+	case r.ChatRequest != nil:
+		r.ChatRequest.Provider = provider
+	case r.ResponsesRequest != nil:
+		r.ResponsesRequest.Provider = provider
+	case r.EmbeddingRequest != nil:
+		r.EmbeddingRequest.Provider = provider
+	case r.SpeechRequest != nil:
+		r.SpeechRequest.Provider = provider
+	case r.TranscriptionRequest != nil:
+		r.TranscriptionRequest.Provider = provider
+	}
+}
+
+func (r *BifrostRequest) SetModel(model string) {
+	switch {
+	case r.TextCompletionRequest != nil:
+		r.TextCompletionRequest.Model = model
+	case r.ChatRequest != nil:
+		r.ChatRequest.Model = model
+	case r.ResponsesRequest != nil:
+		r.ResponsesRequest.Model = model
+	case r.EmbeddingRequest != nil:
+		r.EmbeddingRequest.Model = model
+	case r.SpeechRequest != nil:
+		r.SpeechRequest.Model = model
+	case r.TranscriptionRequest != nil:
+		r.TranscriptionRequest.Model = model
+	}
+}
+
+func (r *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
+	switch {
+	case r.TextCompletionRequest != nil:
+		r.TextCompletionRequest.Fallbacks = fallbacks
+	case r.ChatRequest != nil:
+		r.ChatRequest.Fallbacks = fallbacks
+	case r.ResponsesRequest != nil:
+		r.ResponsesRequest.Fallbacks = fallbacks
+	case r.EmbeddingRequest != nil:
+		r.EmbeddingRequest.Fallbacks = fallbacks
+	case r.SpeechRequest != nil:
+		r.SpeechRequest.Fallbacks = fallbacks
+	case r.TranscriptionRequest != nil:
+		r.TranscriptionRequest.Fallbacks = fallbacks
+	}
+}
+
 //* Response Structs
 
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
-	ID                string                      `json:"id,omitempty"`
-	Object            string                      `json:"object,omitempty"` // text.completion, chat.completion, embedding, speech, transcribe
-	Choices           []BifrostChatResponseChoice `json:"choices,omitempty"`
-	Data              []BifrostEmbedding          `json:"data,omitempty"`       // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
-	Speech            *BifrostSpeech              `json:"speech,omitempty"`     // Maps to "speech" field in provider responses (e.g., OpenAI speech format)
-	Transcribe        *BifrostTranscribe          `json:"transcribe,omitempty"` // Maps to "transcribe" field in provider responses (e.g., OpenAI transcription format)
-	Model             string                      `json:"model,omitempty"`
-	Created           int                         `json:"created,omitempty"` // The Unix timestamp (in seconds).
-	ServiceTier       *string                     `json:"service_tier,omitempty"`
-	SystemFingerprint *string                     `json:"system_fingerprint,omitempty"`
-	Usage             *LLMUsage                   `json:"usage,omitempty"`
-	ExtraFields       BifrostResponseExtraFields  `json:"extra_fields"`
-
-	*ResponsesResponse
-	*ResponsesStreamResponse
+	TextCompletionResponse      *BifrostTextCompletionResponse
+	ChatResponse                *BifrostChatResponse
+	ResponsesResponse           *BifrostResponsesResponse
+	ResponsesStreamResponse     *BifrostResponsesStreamResponse
+	EmbeddingResponse           *BifrostEmbeddingResponse
+	SpeechResponse              *BifrostSpeechResponse
+	SpeechStreamResponse        *BifrostSpeechStreamResponse
+	TranscriptionResponse       *BifrostTranscriptionResponse
+	TranscriptionStreamResponse *BifrostTranscriptionStreamResponse
 }
 
-// ToTextCompletionResponse converts a Bifrost response to a Bifrost text completion response
-func (r *BifrostResponse) ToTextCompletionResponse() {
-	r.Object = "text_completion"
-	r.ExtraFields.RequestType = TextCompletionRequest
-	if len(r.Choices) == 0 {
-		return
+func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
+	switch {
+	case r.TextCompletionResponse != nil:
+		return &r.TextCompletionResponse.ExtraFields
+	case r.ChatResponse != nil:
+		return &r.ChatResponse.ExtraFields
+	case r.ResponsesResponse != nil:
+		return &r.ResponsesResponse.ExtraFields
+	case r.ResponsesStreamResponse != nil:
+		return &r.ResponsesStreamResponse.ExtraFields
+	case r.SpeechResponse != nil:
+		return &r.SpeechResponse.ExtraFields
+	case r.SpeechStreamResponse != nil:
+		return &r.SpeechStreamResponse.ExtraFields
+	case r.TranscriptionResponse != nil:
+		return &r.TranscriptionResponse.ExtraFields
+	case r.TranscriptionStreamResponse != nil:
+		return &r.TranscriptionStreamResponse.ExtraFields
 	}
-	choice := r.Choices[0]
-	if choice.BifrostStreamResponseChoice != nil && choice.BifrostStreamResponseChoice.Delta != nil {
-		r.Choices = []BifrostChatResponseChoice{
-			{
-				Index: 0,
-				BifrostTextCompletionResponseChoice: &BifrostTextCompletionResponseChoice{
-					Text: choice.Delta.Content,
-				},
-				FinishReason: choice.FinishReason,
-				LogProbs:     choice.LogProbs,
-			},
-		}
-	}
-	if choice.BifrostNonStreamResponseChoice != nil {
-		msg := choice.BifrostNonStreamResponseChoice.Message
-		var textContent *string
-		if msg != nil && msg.Content != nil && msg.Content.ContentStr != nil {
-			textContent = msg.Content.ContentStr
-		}
-		r.Choices = []BifrostChatResponseChoice{
-			{
-				Index: 0,
-				BifrostTextCompletionResponseChoice: &BifrostTextCompletionResponseChoice{
-					Text: textContent,
-				},
-				FinishReason: choice.FinishReason,
-				LogProbs:     choice.LogProbs,
-			},
-		}
-	}
-}
 
-// LLMUsage represents token usage information
-type LLMUsage struct {
-	PromptTokens     int `json:"prompt_tokens,omitempty"`
-	CompletionTokens int `json:"completion_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens"`
-
-	*ResponsesExtendedResponseUsage
-}
-
-type AudioLLMUsage struct {
-	InputTokens        int                `json:"input_tokens"`
-	InputTokensDetails *AudioTokenDetails `json:"input_tokens_details,omitempty"`
-	OutputTokens       int                `json:"output_tokens"`
-	TotalTokens        int                `json:"total_tokens"`
-}
-
-type AudioTokenDetails struct {
-	TextTokens  int `json:"text_tokens"`
-	AudioTokens int `json:"audio_tokens"`
-}
-
-// TokenDetails provides detailed information about token usage.
-// It is not provided by all model providers.
-type TokenDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
-	AudioTokens  int `json:"audio_tokens,omitempty"`
-}
-
-// CompletionTokensDetails provides detailed information about completion token usage.
-// It is not provided by all model providers.
-type CompletionTokensDetails struct {
-	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
-	AudioTokens              int `json:"audio_tokens,omitempty"`
-	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
-	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
-}
-
-// BilledLLMUsage represents the billing information for token usage.
-type BilledLLMUsage struct {
-	PromptTokens     *float64 `json:"prompt_tokens,omitempty"`
-	CompletionTokens *float64 `json:"completion_tokens,omitempty"`
-	SearchUnits      *float64 `json:"search_units,omitempty"`
-	Classifications  *float64 `json:"classifications,omitempty"`
-}
-
-// LogProbs represents the log probabilities for different aspects of a response.
-type LogProbs struct {
-	Content []ContentLogProb `json:"content,omitempty"`
-	Refusal []LogProb        `json:"refusal,omitempty"`
-
-	*TextCompletionLogProb
+	return &BifrostResponseExtraFields{}
 }
 
 // BifrostResponseExtraFields contains additional fields in a response.
@@ -350,8 +247,7 @@ type BifrostResponseExtraFields struct {
 	RequestType    RequestType        `json:"request_type"`
 	Provider       ModelProvider      `json:"provider"`
 	ModelRequested string             `json:"model_requested"`
-	Latency        int64              `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	BilledUsage    *BilledLLMUsage    `json:"billed_usage,omitempty"`
+	Latency        int64              `json:"latency"`     // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse    interface{}        `json:"raw_response,omitempty"`
 	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`
@@ -381,19 +277,28 @@ const (
 // BifrostStream represents a stream of responses from the Bifrost system.
 // Either BifrostResponse or BifrostError will be non-nil.
 type BifrostStream struct {
-	*BifrostResponse
+	*BifrostTextCompletionResponse
+	*BifrostChatResponse
+	*BifrostResponsesStreamResponse
+	*BifrostSpeechStreamResponse
+	*BifrostTranscriptionStreamResponse
 	*BifrostError
 }
 
 // MarshalJSON implements custom JSON marshaling for BifrostStream.
 // This ensures that only the non-nil embedded struct is marshaled,
-// preventing conflicts between BifrostResponse.ExtraFields and BifrostError.ExtraFields.
 func (bs BifrostStream) MarshalJSON() ([]byte, error) {
-	if bs.BifrostResponse != nil {
-		// Marshal the BifrostResponse with its ExtraFields
-		return sonic.Marshal(bs.BifrostResponse)
+	if bs.BifrostTextCompletionResponse != nil {
+		return sonic.Marshal(bs.BifrostTextCompletionResponse)
+	} else if bs.BifrostChatResponse != nil {
+		return sonic.Marshal(bs.BifrostChatResponse)
+	} else if bs.BifrostResponsesStreamResponse != nil {
+		return sonic.Marshal(bs.BifrostResponsesStreamResponse)
+	} else if bs.BifrostSpeechStreamResponse != nil {
+		return sonic.Marshal(bs.BifrostSpeechStreamResponse)
+	} else if bs.BifrostTranscriptionStreamResponse != nil {
+		return sonic.Marshal(bs.BifrostTranscriptionStreamResponse)
 	} else if bs.BifrostError != nil {
-		// Marshal the BifrostError with its ExtraFields
 		return sonic.Marshal(bs.BifrostError)
 	}
 	// Return empty object if both are nil (shouldn't happen in practice)

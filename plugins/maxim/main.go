@@ -244,6 +244,8 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		}
 	}
 
+	provider, model, _ := req.GetRequestFields()
+
 	// Determine request type and set appropriate tags
 	var messages []logging.CompletionRequest
 	var latestMessage string
@@ -254,7 +256,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	}
 
 	// Add model to tags
-	tags["model"] = req.Model
+	tags["model"] = model
 
 	modelParams := make(map[string]interface{})
 
@@ -392,8 +394,8 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 
 	generationConfig := logging.GenerationConfig{
 		Id:              generationID,
-		Model:           req.Model,
-		Provider:        string(req.Provider),
+		Model:           model,
+		Provider:        string(provider),
 		Tags:            &tags,
 		Messages:        messages,
 		ModelParameters: modelParams,

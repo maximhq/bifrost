@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestCacheTypeDirectOnly tests that CacheTypeKey set to "direct" only performs direct hash matching
@@ -34,7 +36,7 @@ func TestCacheTypeDirectOnly(t *testing.T) {
 	}
 
 	// Should be a cache hit from direct search
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 
 	t.Log("✅ CacheTypeKey=direct correctly performs only direct hash matching")
 }
@@ -76,11 +78,11 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	// This might be a cache hit if semantic similarity is high enough
 	// The test validates that semantic search is attempted
 	if response2.ExtraFields.CacheDebug != nil && response2.ExtraFields.CacheDebug.CacheHit {
-		AssertCacheHit(t, response2, "semantic")
+		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "semantic")
 		t.Log("✅ CacheTypeKey=semantic correctly found semantic match")
 	} else {
 		t.Log("ℹ️  No semantic match found (threshold may be too high for these similar phrases)")
-		AssertNoCacheHit(t, response2)
+		AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2})
 	}
 
 	t.Log("✅ CacheTypeKey=semantic correctly performs only semantic search")
@@ -116,7 +118,7 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 
 	// Test similar request (should potentially hit semantic cache)
 	similarRequest := CreateBasicChatRequest("What is artificial intelligence", 0.7, 50)
@@ -129,11 +131,11 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 
 	// May or may not be a cache hit depending on semantic similarity
 	if response3.ExtraFields.CacheDebug != nil && response3.ExtraFields.CacheDebug.CacheHit {
-		AssertCacheHit(t, response3, "semantic")
+		AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "semantic")
 		t.Log("✅ Default behavior correctly found semantic match")
 	} else {
 		t.Log("ℹ️  No semantic match found (normal for different wording)")
-		AssertNoCacheHit(t, response3)
+		AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 	}
 
 	t.Log("✅ Default behavior correctly attempts both direct and semantic search")
@@ -191,7 +193,7 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 			t.Fatalf("Second request failed: %v", err2)
 		}
 	}
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2}, "direct")
 
 	// Test with semantic-only cache type (should not find semantic match for embeddings)
 	ctx3 := CreateContextWithCacheKeyAndType("test-embedding-cache-type", CacheTypeSemantic)
@@ -201,7 +203,7 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 		t.Fatalf("Third request failed: %v", err3)
 	}
 	// Semantic search should be skipped for embedding requests
-	AssertNoCacheHit(t, response3)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response3})
 
 	t.Log("✅ CacheTypeKey works correctly with embedding requests")
 }
@@ -232,7 +234,7 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 	if err2 != nil {
 		t.Fatalf("Direct cache request failed: %v", err2)
 	}
-	AssertCacheHit(t, response2, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, "direct")
 
 	t.Logf("Direct cache lookup took: %v", duration2)
 
@@ -244,7 +246,7 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 	if err3 != nil {
 		t.Fatalf("Default cache request failed: %v", err3)
 	}
-	AssertCacheHit(t, response3, "direct")
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "direct")
 
 	t.Logf("Default cache lookup took: %v", duration3)
 

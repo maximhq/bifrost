@@ -45,12 +45,6 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, lat
 		updates["latency"] = float64(latency)
 	}
 	updates["status"] = data.Status
-	if data.Model != "" {
-		updates["model"] = data.Model
-	}
-	if data.Object != "" {
-		updates["object_type"] = data.Object // Note: using object_type for database column
-	}
 	// Handle JSON fields by setting them on a temporary entry and serializing
 	tempEntry := &logstore.Log{}
 	if data.ChatOutput != nil {
@@ -176,11 +170,6 @@ func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID st
 	// Update model if provided
 	if streamResponse.Data.Model != "" {
 		updates["model"] = streamResponse.Data.Model
-	}
-
-	// Update object type if provided
-	if streamResponse.Data.Object != "" {
-		updates["object_type"] = streamResponse.Data.Object // Note: using object_type for database column
 	}
 
 	// Update token usage if provided

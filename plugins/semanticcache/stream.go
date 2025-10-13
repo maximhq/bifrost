@@ -91,7 +91,31 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 			// Push nils to the end deterministically
 			return accumulator.Chunks[j].Response != nil
 		}
-		return accumulator.Chunks[i].Response.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.ExtraFields.ChunkIndex
+		if accumulator.Chunks[i].Response.TextCompletionResponse != nil {
+			return accumulator.Chunks[i].Response.TextCompletionResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.TextCompletionResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.ChatResponse != nil {
+			return accumulator.Chunks[i].Response.ChatResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.ChatResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.ResponsesResponse != nil {
+			return accumulator.Chunks[i].Response.ResponsesResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.ResponsesResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.ResponsesStreamResponse != nil {
+			return accumulator.Chunks[i].Response.ResponsesStreamResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.ResponsesStreamResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.SpeechResponse != nil {
+			return accumulator.Chunks[i].Response.SpeechResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.SpeechResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.SpeechStreamResponse != nil {
+			return accumulator.Chunks[i].Response.SpeechStreamResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.SpeechStreamResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.TranscriptionResponse != nil {
+			return accumulator.Chunks[i].Response.TranscriptionResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.TranscriptionResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.TranscriptionStreamResponse != nil {
+			return accumulator.Chunks[i].Response.TranscriptionStreamResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.TranscriptionStreamResponse.ExtraFields.ChunkIndex
+		}
+		return false
 	})
 
 	var streamResponses []string

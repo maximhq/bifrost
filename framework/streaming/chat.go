@@ -72,7 +72,6 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		TokenUsage:     nil,
 		CacheDebug:     nil,
 		Cost:           nil,
-		Object:         "",
 	}
 	// Build complete message from accumulated chunks
 	completeMessage := a.buildCompleteMessageFromChatStreamChunks(accumulator.ChatStreamChunks)
@@ -115,10 +114,6 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
-	// Update object field from accumulator (stored once for the entire stream)
-	if accumulator.Object != "" {
-		data.Object = accumulator.Object
-	}
 	return data, nil
 }
 
@@ -131,7 +126,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *context.Context, result 
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("request-id not found in context or is empty")
 	}
-	requestType, provider, model := bifrost.GetRequestFields(result, bifrostErr)
+	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 
 	streamType := StreamTypeChat
 	if requestType == schemas.TextCompletionStreamRequest {
@@ -144,42 +139,40 @@ func (a *Accumulator) processChatStreamingResponse(ctx *context.Context, result 
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
-	} else if result != nil {
+	} else if result != nil && result.ChatResponse != nil {
 		// Extract delta and other information
-		if len(result.Choices) > 0 {
-			choice := result.Choices[0]
-			if choice.BifrostStreamResponseChoice != nil {
-				// Create a deep copy of the Delta to avoid pointing to stack memory
-				deltaCopy := choice.BifrostStreamResponseChoice.Delta
-				chunk.Delta = deltaCopy
+		if len(result.ChatResponse.Choices) > 0 {
+			choice := result.ChatResponse.Choices[0]
+			if choice.ChatStreamResponseChoice != nil {
+				// Shallow-copy struct and deep-copy slices to avoid aliasing
+				copied := choice.ChatStreamResponseChoice.Delta
+				chunk.Delta = copied
 				chunk.FinishReason = choice.FinishReason
 			}
-			if choice.BifrostTextCompletionResponseChoice != nil {
-				deltaCopy := choice.BifrostTextCompletionResponseChoice.Text
-				chunk.Delta = &schemas.BifrostStreamDelta{
+			if choice.TextCompletionResponseChoice != nil {
+				deltaCopy := choice.TextCompletionResponseChoice.Text
+				chunk.Delta = &schemas.ChatStreamResponseChoiceDelta{
 					Content: deltaCopy,
 				}
 				chunk.FinishReason = choice.FinishReason
 			}
 		}
 		// Extract token usage
-		if result.Usage != nil && result.Usage.TotalTokens > 0 {
-			chunk.TokenUsage = result.Usage
+		if result.ChatResponse.Usage != nil && result.ChatResponse.Usage.TotalTokens > 0 {
+			chunk.TokenUsage = result.ChatResponse.Usage
 		}
 	}
 	// Add chunk to accumulator synchronously to maintain order
-	object := ""
-	if result != nil {
+	if result != nil && result.ChatResponse != nil {
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.ExtraFields.CacheDebug
+			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 		}
-		object = result.Object
 	}
-	if addErr := a.addChatStreamChunk(requestID, chunk, object, isFinalChunk); addErr != nil {
+	if addErr := a.addChatStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
 		return nil, fmt.Errorf("failed to add stream chunk for request %s: %w", requestID, addErr)
 	}
 	// If this is the final chunk, process accumulated chunks asynchronously
