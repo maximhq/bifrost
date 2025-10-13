@@ -22,7 +22,8 @@ func newSqliteLogStore(ctx context.Context, config *SQLiteConfig, logger schemas
 	if err != nil {
 		return nil, err
 	}
-	if err := db.WithContext(ctx).AutoMigrate(&Log{}); err != nil {
+	// Run migrations
+	if err := triggerMigrations(ctx, db); err != nil {
 		return nil, err
 	}
 	return &RDBLogStore{db: db, logger: logger}, nil

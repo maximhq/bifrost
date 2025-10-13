@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore/migrator"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"

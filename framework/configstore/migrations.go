@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/maximhq/bifrost/framework/configstore/migrator"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
 )
 
