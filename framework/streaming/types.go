@@ -14,6 +14,7 @@ const (
 	StreamTypeChat          StreamType = "chat.completion"
 	StreamTypeAudio         StreamType = "audio.speech"
 	StreamTypeTranscription StreamType = "audio.transcription"
+	StreamTypeResponses     StreamType = "response"
 )
 
 type StreamResponseType string
@@ -41,6 +42,7 @@ type AccumulatedData struct {
 	Object              string
 	AudioOutput         *schemas.BifrostSpeech
 	TranscriptionOutput *schemas.BifrostTranscribe
+	ResponsesOutput     *schemas.ResponsesResponse
 	FinishReason        *string
 }
 
@@ -78,6 +80,16 @@ type ChatStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError       // Error if any
 }
 
+// ResponsesStreamChunk represents a single responses streaming chunk
+type ResponsesStreamChunk struct {
+	Timestamp          time.Time                        // When chunk was received
+	Event              *schemas.ResponsesStreamResponse // The event payload from the provider
+	TokenUsage         *schemas.LLMUsage                // Token usage if available
+	SemanticCacheDebug *schemas.BifrostCacheDebug       // Semantic cache debug if available
+	Cost               *float64                         // Cost in dollars from pricing plugin
+	ErrorDetails       *schemas.BifrostError            // Error if any
+}
+
 // StreamAccumulator manages accumulation of streaming chunks
 type StreamAccumulator struct {
 	RequestID                 string
@@ -85,6 +97,7 @@ type StreamAccumulator struct {
 	ChatStreamChunks          []*ChatStreamChunk
 	TranscriptionStreamChunks []*TranscriptionStreamChunk
 	AudioStreamChunks         []*AudioStreamChunk
+	ResponsesStreamChunks     []*ResponsesStreamChunk
 	IsComplete                bool
 	FinalTimestamp            time.Time
 	Object                    string // Store object type once for the entire stream
@@ -110,6 +123,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	resp.Data = []schemas.BifrostEmbedding{}
 	resp.Speech = p.Data.AudioOutput
 	resp.Transcribe = p.Data.TranscriptionOutput
+	resp.ResponsesResponse = p.Data.ResponsesOutput
 	if p.Data.OutputMessage != nil {
 		choice := schemas.BifrostChatResponseChoice{
 			Index:        0,
@@ -150,6 +164,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	resp.ExtraFields = schemas.BifrostResponseExtraFields{
 		CacheDebug: p.Data.CacheDebug,
 		Provider:   p.Provider,
+	}
+	if p.StreamType == StreamTypeResponses {
+		resp.ExtraFields.RequestType = schemas.ResponsesRequest
 	}
 	if p.Data.Latency != 0 {
 		resp.ExtraFields.Latency = p.Data.Latency
