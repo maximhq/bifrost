@@ -339,12 +339,12 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		rm.Content = &ResponsesMessageContent{
 			ContentBlocks: []ResponsesMessageContentBlock{refusalBlock},
 		}
-	} else if cm.Content.ContentStr != nil {
+	} else if cm.Content != nil && cm.Content.ContentStr != nil {
 		// Convert regular string content
 		rm.Content = &ResponsesMessageContent{
 			ContentStr: cm.Content.ContentStr,
 		}
-	} else if cm.Content.ContentBlocks != nil {
+	} else if cm.Content != nil && cm.Content.ContentBlocks != nil {
 		// Convert content blocks
 		responseBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
 		for i, block := range cm.Content.ContentBlocks {

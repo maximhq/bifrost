@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -11,86 +12,89 @@ import (
 
 // buildCompleteMessageFromResponsesStreamChunks builds complete messages from accumulated responses stream chunks
 func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
-	var completeMessages []schemas.ResponsesMessage
-	messageMap := make(map[int]*schemas.ResponsesMessage) // Track messages by output index
+	var messages []schemas.ResponsesMessage
+
+	// Sort chunks by sequence number to ensure correct processing order
+	sort.Slice(chunks, func(i, j int) bool {
+		if chunks[i].StreamResponse == nil || chunks[j].StreamResponse == nil {
+			return false
+		}
+		return chunks[i].StreamResponse.SequenceNumber < chunks[j].StreamResponse.SequenceNumber
+	})
 
 	for _, chunk := range chunks {
 		if chunk.StreamResponse == nil {
 			continue
 		}
 
-		streamResp := chunk.StreamResponse
-
-		switch streamResp.Type {
+		resp := chunk.StreamResponse
+		switch resp.Type {
 		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-			if streamResp.OutputIndex != nil && streamResp.Item != nil {
-				// Create or update message at this output index
-				if messageMap[*streamResp.OutputIndex] == nil {
-					messageMap[*streamResp.OutputIndex] = &schemas.ResponsesMessage{}
-				}
-				// Copy the item data
-				messageMap[*streamResp.OutputIndex] = streamResp.Item
+			// Always append new items - this fixes multiple function calls issue
+			if resp.Item != nil {
+				messages = append(messages, *resp.Item)
 			}
 
 		case schemas.ResponsesStreamResponseTypeContentPartAdded:
-			if streamResp.OutputIndex != nil && streamResp.ContentIndex != nil && streamResp.Part != nil {
-				if messageMap[*streamResp.OutputIndex] == nil {
-					messageMap[*streamResp.OutputIndex] = &schemas.ResponsesMessage{
-						Content: &schemas.ResponsesMessageContent{},
-					}
+			// Add content part to the most recent message, create message if none exists
+			if resp.Part != nil {
+				if len(messages) == 0 {
+					messages = append(messages, createNewMessage())
 				}
-				// Add content part to the message
-				if messageMap[*streamResp.OutputIndex].Content == nil {
-					messageMap[*streamResp.OutputIndex].Content = &schemas.ResponsesMessageContent{}
+
+				lastMsg := &messages[len(messages)-1]
+				if lastMsg.Content == nil {
+					lastMsg.Content = &schemas.ResponsesMessageContent{}
 				}
-				if messageMap[*streamResp.OutputIndex].Content.ContentBlocks == nil {
-					messageMap[*streamResp.OutputIndex].Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, 0)
+				if lastMsg.Content.ContentBlocks == nil {
+					lastMsg.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, 0)
 				}
-				messageMap[*streamResp.OutputIndex].Content.ContentBlocks = append(
-					messageMap[*streamResp.OutputIndex].Content.ContentBlocks,
-					*streamResp.Part,
-				)
+				lastMsg.Content.ContentBlocks = append(lastMsg.Content.ContentBlocks, *resp.Part)
 			}
 
 		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
-			if streamResp.OutputIndex != nil && streamResp.ContentIndex != nil && streamResp.Delta != nil {
-				if messageMap[*streamResp.OutputIndex] == nil {
-					messageMap[*streamResp.OutputIndex] = &schemas.ResponsesMessage{
-						Content: &schemas.ResponsesMessageContent{},
-					}
-				}
-				// Append text delta to existing content
-				a.appendTextDeltaToResponsesMessage(messageMap[*streamResp.OutputIndex], *streamResp.Delta, *streamResp.ContentIndex)
+			if len(messages) == 0 {
+				messages = append(messages, createNewMessage())
+			}
+			// Append text delta to the most recent message
+			if resp.Delta != nil && resp.ContentIndex != nil && len(messages) > 0 {
+				a.appendTextDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Delta, *resp.ContentIndex)
 			}
 
 		case schemas.ResponsesStreamResponseTypeRefusalDelta:
-			if streamResp.OutputIndex != nil && streamResp.ContentIndex != nil && streamResp.Refusal != nil {
-				if messageMap[*streamResp.OutputIndex] == nil {
-					messageMap[*streamResp.OutputIndex] = &schemas.ResponsesMessage{
-						Content: &schemas.ResponsesMessageContent{},
-					}
-				}
-				a.appendRefusalDeltaToResponsesMessage(messageMap[*streamResp.OutputIndex], *streamResp.Refusal, *streamResp.ContentIndex)
+			if len(messages) == 0 {
+				messages = append(messages, createNewMessage())
+			}
+			// Append refusal delta to the most recent message
+			if resp.Refusal != nil && resp.ContentIndex != nil && len(messages) > 0 {
+				a.appendRefusalDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Refusal, *resp.ContentIndex)
 			}
 
 		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
-			if streamResp.OutputIndex != nil && streamResp.Delta != nil {
-				if messageMap[*streamResp.OutputIndex] == nil {
-					messageMap[*streamResp.OutputIndex] = &schemas.ResponsesMessage{}
-				}
-				a.appendFunctionArgumentsDeltaToResponsesMessage(messageMap[*streamResp.OutputIndex], *streamResp.Delta)
+			if len(messages) == 0 {
+				messages = append(messages, createNewMessage())
+			}
+			if resp.Item != nil {
+				messages = append(messages, *resp.Item)
+			}
+			// Append arguments to the most recent message
+			if resp.Delta != nil && len(messages) > 0 {
+				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Delta)
 			}
 		}
 	}
 
-	// Convert map to ordered slice
-	for i := 0; i < len(messageMap); i++ {
-		if msg, exists := messageMap[i]; exists {
-			completeMessages = append(completeMessages, *msg)
-		}
-	}
+	return messages
+}
 
-	return completeMessages
+func createNewMessage() schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: make([]schemas.ResponsesMessageContentBlock, 0),
+		},
+	}
 }
 
 // appendTextDeltaToResponsesMessage appends text delta to a responses message
@@ -272,6 +276,12 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 
 	_, provider, model := bifrost.GetRequestFields(result, bifrostErr)
 
+	accumulator := a.getOrCreateStreamAccumulator(requestID)
+	accumulator.mu.Lock()
+	startTimestamp := accumulator.StartTimestamp
+	endTimestamp := accumulator.FinalTimestamp
+	accumulator.mu.Unlock()
+
 	// For OpenAI provider, the last chunk already contains the whole accumulated response
 	// so just return it as is
 	if provider == "openai" {
@@ -285,8 +295,8 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 					RequestID:      requestID,
 					Status:         "success",
 					Stream:         true,
-					StartTimestamp: time.Now(), // You might want to track this better
-					EndTimestamp:   time.Now(),
+					StartTimestamp: startTimestamp,
+					EndTimestamp:   endTimestamp,
 					Latency:        result.ExtraFields.Latency,
 					ErrorDetails:   bifrostErr,
 					Object:         result.Object,
@@ -302,9 +312,11 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 					if result.ResponsesStreamResponse.Response.Usage != nil {
 						// Convert ResponsesResponseUsage to schemas.LLMUsage
 						data.TokenUsage = &schemas.LLMUsage{
-							PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
-							CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
-							TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+							ResponsesExtendedResponseUsage: &schemas.ResponsesExtendedResponseUsage{
+								InputTokens:  result.ResponsesStreamResponse.Response.Usage.InputTokens,
+								OutputTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
+							},
+							TotalTokens: result.ResponsesStreamResponse.Response.Usage.TotalTokens,
 						}
 					}
 				}

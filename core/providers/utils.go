@@ -592,9 +592,7 @@ func getResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.Pos
 			result.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 		} else if err != nil {
 			// Ensure downstream knows this is a Responses stream even on errors
-			if err.ExtraFields.RequestType == "" {
-				err.ExtraFields.RequestType = schemas.ResponsesStreamRequest
-			}
+			err.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 		}
 		return result, err
 	}

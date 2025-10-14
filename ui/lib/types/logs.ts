@@ -494,7 +494,10 @@ export interface ResponsesTool {
 // Reasoning parameters
 export interface ResponsesParametersReasoning {
 	effort?: "minimal" | "low" | "medium" | "high";
-	generate_summary?: string; // Deprecated
+	/**
+	 * @deprecated Use `summary` instead
+	 */
+	generate_summary?: string;
 	summary?: "auto" | "concise" | "detailed";
 }
 
