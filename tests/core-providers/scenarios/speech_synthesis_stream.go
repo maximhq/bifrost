@@ -98,9 +98,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				}
 
 				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					defer cancel()
-					return client.SpeechStreamRequest(streamCtx, request)
+					return client.SpeechStreamRequest(ctx, request)
 				})
 
 				// Enhanced validation for streaming speech synthesis
@@ -116,7 +114,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				var lastResponse *schemas.BifrostStream
 				var streamErrors []string
 
-				readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				defer cancel()
 
 				// Read streaming chunks with enhanced validation
@@ -171,7 +169,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 						lastResponse = response
 
-					case <-readCtx.Done():
+					case <-streamCtx.Done():
 						streamErrors = append(streamErrors, "Stream reading timed out")
 						goto streamComplete
 					}
@@ -262,9 +260,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 			}
 
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second) // Longer timeout for HD model
-				defer cancel()
-				return client.SpeechStreamRequest(streamCtx, request)
+				return client.SpeechStreamRequest(ctx, request)
 			})
 
 			RequireNoError(t, err, "HD streaming speech synthesis failed")
@@ -273,7 +269,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 			var chunkCount int
 			var streamErrors []string
 
-			readCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			defer cancel()
 
 			for {
@@ -308,7 +304,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 						t.Logf("⚠️ Unexpected HD model: %s", response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested)
 					}
 
-				case <-readCtx.Done():
+				case <-streamCtx.Done():
 					streamErrors = append(streamErrors, "HD stream reading timed out")
 					goto hdStreamComplete
 				}
@@ -367,9 +363,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					}
 
 					responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-						streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-						defer cancel()
-						return client.SpeechStreamRequest(streamCtx, request)
+						return client.SpeechStreamRequest(ctx, request)
 					})
 
 					RequireNoError(t, err, fmt.Sprintf("Streaming failed for voice %s", voice))
@@ -377,7 +371,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					var receivedData bool
 					var streamErrors []string
 
-					readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 					defer cancel()
 
 					for {
@@ -402,7 +396,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 								t.Logf("✅ Received data for voice %s: %d bytes", voice, len(response.BifrostSpeechStreamResponse.Audio))
 							}
 
-						case <-readCtx.Done():
+						case <-streamCtx.Done():
 							streamErrors = append(streamErrors, fmt.Sprintf("Stream timed out for voice %s", voice))
 							goto voiceStreamComplete
 						}

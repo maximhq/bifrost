@@ -132,17 +132,15 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				}
 
 				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					defer cancel()
-					return client.TranscriptionStreamRequest(streamCtx, streamRequest)
+					return client.TranscriptionStreamRequest(ctx, streamRequest)
 				})
 
 				RequireNoError(t, err, "Transcription stream initiation failed")
 				if responseChannel == nil {
 					t.Fatal("Response channel should not be nil")
 				}
-				
-				readCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+
+				streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 				defer cancel()
 
 				var fullTranscriptionText string
@@ -209,7 +207,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 
 						lastResponse = response
 
-					case <-readCtx.Done():
+					case <-streamCtx.Done():
 						streamErrors = append(streamErrors, "Stream reading timed out")
 						goto streamComplete
 					}
@@ -335,11 +333,8 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 				},
 			}
 
-
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				defer cancel()
-				return client.TranscriptionStreamRequest(streamCtx, request)
+				return client.TranscriptionStreamRequest(ctx, request)
 			})
 
 			RequireNoError(t, err, "JSON streaming failed")
@@ -347,7 +342,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			var receivedResponse bool
 			var streamErrors []string
 
-			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
 			for {
@@ -384,7 +379,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 						}
 					}
 
-				case <-readCtx.Done():
+				case <-streamCtx.Done():
 					streamErrors = append(streamErrors, "JSON stream reading timed out")
 					goto verboseStreamComplete
 				}
@@ -436,9 +431,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 					}
 
 					responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-						streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-						defer cancel()
-						return client.TranscriptionStreamRequest(streamCtx, request)
+						return client.TranscriptionStreamRequest(ctx, request)
 					})
 
 					RequireNoError(t, err, fmt.Sprintf("Streaming failed for language %s", lang))
@@ -446,7 +439,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 					var receivedData bool
 					var streamErrors []string
 
-					readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 					defer cancel()
 
 					for {
@@ -471,7 +464,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 								t.Logf("✅ Received transcription data for language %s", lang)
 							}
 
-						case <-readCtx.Done():
+						case <-streamCtx.Done():
 							streamErrors = append(streamErrors, fmt.Sprintf("Stream timed out for language %s", lang))
 							goto langStreamComplete
 						}
@@ -524,9 +517,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			}
 
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				defer cancel()
-				return client.TranscriptionStreamRequest(streamCtx, request)
+				return client.TranscriptionStreamRequest(ctx, request)
 			})
 
 			RequireNoError(t, err, "Custom prompt streaming failed")
@@ -535,7 +526,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			var streamErrors []string
 			var receivedText string
 
-			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
 			for {
@@ -562,7 +553,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 						t.Logf("✅ Custom prompt chunk %d: '%s'", chunkCount, chunkText)
 					}
 
-				case <-readCtx.Done():
+				case <-streamCtx.Done():
 					streamErrors = append(streamErrors, "Custom prompt stream reading timed out")
 					goto promptStreamComplete
 				}

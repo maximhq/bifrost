@@ -372,7 +372,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 
 		scanner := bufio.NewScanner(resp.Body)
 		// Increase buffer size to handle large chunks (especially for audio data)
-		buf := make([]byte, 0, 64*1024) // 64KB buffer
+		buf := make([]byte, 0, 256*1024) // 256KB buffer
 		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens
 		chunkIndex := -1
 		usage := &schemas.SpeechUsage{}
