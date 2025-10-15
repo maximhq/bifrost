@@ -780,8 +780,8 @@ func validateResponsesToolCalls(t *testing.T, response *schemas.BifrostResponses
 	// Count tool calls from Responses API
 	if response.Output != nil {
 		for _, output := range response.Output {
-			// Check if this is a function_call type message
-			if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeFunctionCall {
+			// Check if this message contains tool call data regardless of Type
+			if output.ResponsesToolMessage != nil {
 				totalToolCalls++
 			}
 		}

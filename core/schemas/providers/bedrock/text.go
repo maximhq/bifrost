@@ -64,6 +64,7 @@ func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() 
 	}
 
 	return &schemas.BifrostTextCompletionResponse{
+		Object: "text_completion",
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index: 0,
@@ -98,6 +99,7 @@ func (response *BedrockMistralTextResponse) ToBifrostTextCompletionResponse() *s
 	}
 
 	return &schemas.BifrostTextCompletionResponse{
+		Object:  "text_completion",
 		Choices: choices,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.TextCompletionRequest,

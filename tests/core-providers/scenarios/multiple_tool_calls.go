@@ -70,7 +70,7 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		expectations.ExpectedChoiceCount = 0 // to remove the check
 
 		// Create operations for both Chat Completions and Responses API
-		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -82,7 +82,7 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -119,8 +119,34 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		}
 
 		// Verify we got the expected tools using universal tool extraction
-		validateMultipleToolCalls := func(response *schemas.BifrostResponse, apiName string) {
-			toolCalls := ExtractToolCalls(response)
+		validateChatMultipleToolCalls := func(response *schemas.BifrostChatResponse, apiName string) {
+			toolCalls := ExtractChatToolCalls(response)
+			toolsFound := make(map[string]bool)
+			toolCallCount := len(toolCalls)
+
+			for _, toolCall := range toolCalls {
+				if toolCall.Name != "" {
+					toolsFound[toolCall.Name] = true
+					t.Logf("✅ %s found tool call: %s with args: %s", apiName, toolCall.Name, toolCall.Arguments)
+				}
+			}
+
+			// Validate that we got both expected tools
+			for _, expectedTool := range expectedTools {
+				if !toolsFound[expectedTool] {
+					t.Fatalf("%s API expected tool '%s' not found. Found tools: %v", apiName, expectedTool, getKeysFromMap(toolsFound))
+				}
+			}
+
+			if toolCallCount < 2 {
+				t.Fatalf("%s API expected at least 2 tool calls, got %d", apiName, toolCallCount)
+			}
+
+			t.Logf("✅ %s API successfully found %d tool calls: %v", apiName, toolCallCount, getKeysFromMap(toolsFound))
+		}
+
+		validateResponsesMultipleToolCalls := func(response *schemas.BifrostResponsesResponse, apiName string) {
+			toolCalls := ExtractResponsesToolCalls(response)
 			toolsFound := make(map[string]bool)
 			toolCallCount := len(toolCalls)
 
@@ -147,11 +173,11 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 
 		// Validate both API responses
 		if result.ChatCompletionsResponse != nil {
-			validateMultipleToolCalls(result.ChatCompletionsResponse, "Chat Completions")
+			validateChatMultipleToolCalls(result.ChatCompletionsResponse, "Chat Completions")
 		}
 
 		if result.ResponsesAPIResponse != nil {
-			validateMultipleToolCalls(result.ResponsesAPIResponse, "Responses")
+			validateResponsesMultipleToolCalls(result.ResponsesAPIResponse, "Responses")
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed MultipleToolCalls test!")

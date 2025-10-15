@@ -23,6 +23,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Chat completions endpoint
 	routes = append(routes, RouteConfig{
+		Type: RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/models/{model:*}",
 		Method: "POST",
 		GetRequestTypeInstance: func() interface{} {

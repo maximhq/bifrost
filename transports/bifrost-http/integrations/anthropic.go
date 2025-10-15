@@ -18,6 +18,7 @@ type AnthropicRouter struct {
 func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 	return []RouteConfig{
 		{
+			Type: RouteConfigTypeAnthropic,
 			Path:   pathPrefix + "/v1/complete",
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {

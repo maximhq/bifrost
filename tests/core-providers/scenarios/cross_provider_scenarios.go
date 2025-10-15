@@ -443,7 +443,7 @@ Respond with JSON:
 		return nil, fmt.Errorf("judge evaluation failed: %v", GetErrorMessage(err))
 	}
 
-	content := GetResultContent(response)
+	content := GetChatContent(response)
 	var result EvaluationResult
 
 	if err := parseJudgeResponse(content, &result); err != nil {
@@ -579,7 +579,7 @@ JSON response:
 		return nil, fmt.Errorf("failed to generate next message: %v", GetErrorMessage(err))
 	}
 
-	content := GetResultContent(response)
+	content := GetChatContent(response)
 	var followup GeneratedFollowup
 
 	if err := parseDriverResponse(content, &followup); err != nil {
@@ -688,19 +688,25 @@ func RunCrossProviderScenarioTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			t.Fatalf("❌ Step %d failed: %v", stepNum+1, GetErrorMessage(llmErr))
 		}
 
+		var responseContent string
 		// Add response to history
 		if useResponsesAPI && response.ResponsesResponse != nil {
 			// Convert Responses API output back to ChatMessages for history
 			assistantMessages := schemas.ToChatMessages(response.ResponsesResponse.Output)
 			conversationHistory = append(conversationHistory, assistantMessages...)
+			responseContent = GetResponsesContent(response.ResponsesResponse)
 		} else {
+			if response.ChatResponse != nil {
 			// Use Chat API choices
-			for _, choice := range response.Choices {
-				conversationHistory = append(conversationHistory, *choice.Message)
+				for _, choice := range response.ChatResponse.Choices {
+					if choice.Message != nil {
+						conversationHistory = append(conversationHistory, *choice.Message)
+					}
+				}
+				responseContent = GetChatContent(response.ChatResponse)
 			}
 		}
 
-		responseContent := GetResultContent(response)
 		t.Logf("🤖 %s: %s", provider.Provider, truncateString(responseContent, 120))
 
 		// Evaluate with judge
@@ -792,8 +798,8 @@ func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx 
 
 		t.Logf("Testing %s...", provider.Provider)
 
-		var response *schemas.BifrostResponse
 		var err *schemas.BifrostError
+		var content string
 
 		if useResponsesAPI {
 			// Use Responses API
@@ -808,7 +814,12 @@ func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx 
 					Temperature:     bifrost.Ptr(0.3),
 				},
 			}
-			response, err = client.ResponsesRequest(ctx, responsesReq)
+			responsesResponse, err := client.ResponsesRequest(ctx, responsesReq)
+			if err != nil {
+				t.Logf("❌ %s failed: %v", provider.Provider, GetErrorMessage(err))
+				continue
+			}
+			content = GetResponsesContent(responsesResponse)
 		} else {
 			// Use Chat Completions API
 			chatReq := &schemas.BifrostChatRequest{
@@ -822,7 +833,12 @@ func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx 
 					Temperature:         bifrost.Ptr(0.3),
 				},
 			}
-			response, err = client.ChatCompletionRequest(ctx, chatReq)
+			chatResponse, err := client.ChatCompletionRequest(ctx, chatReq)
+			if err != nil {
+				t.Logf("❌ %s failed: %v", provider.Provider, GetErrorMessage(err))
+				continue
+			}
+			content = GetChatContent(chatResponse)
 		}
 
 		if err != nil {
@@ -830,7 +846,6 @@ func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx 
 			continue
 		}
 
-		content := GetResultContent(response)
 		sentences := strings.Split(strings.TrimSpace(content), ".")
 
 		result := ConsistencyResult{
@@ -902,7 +917,11 @@ func executeStepWithProvider(t *testing.T, client *bifrost.Bifrost, ctx context.
 			request.Params.Tools = responsesTools
 		}
 
-		return client.ResponsesRequest(ctx, request)
+		responsesResponse, err := client.ResponsesRequest(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		return &schemas.BifrostResponse{ResponsesResponse: responsesResponse}, nil
 	} else {
 		// Use Chat Completions API
 		request := &schemas.BifrostChatRequest{
@@ -919,7 +938,11 @@ func executeStepWithProvider(t *testing.T, client *bifrost.Bifrost, ctx context.
 			request.Params.Tools = tools
 		}
 
-		return client.ChatCompletionRequest(ctx, request)
+		chatResponse, err := client.ChatCompletionRequest(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		return &schemas.BifrostResponse{ChatResponse: chatResponse}, nil
 	}
 }
 

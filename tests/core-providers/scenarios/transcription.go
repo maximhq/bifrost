@@ -75,7 +75,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 				ttsResponse, err := client.SpeechRequest(ctx, ttsRequest)
 				RequireNoError(t, err, "TTS generation failed for round-trip test")
-				if ttsResponse.Audio == nil || len(ttsResponse.Audio) == 0 {
+				if ttsResponse == nil || len(ttsResponse.Audio) == 0 {
 					t.Fatal("TTS returned invalid or empty audio for round-trip test")
 				}
 
@@ -105,21 +105,6 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						ResponseFormat: tc.responseFormat,
 					},
 					Fallbacks: testConfig.Fallbacks,
-				}
-
-				retryConfig := GetTestRetryConfigForScenario("Transcription_RoundTrip", testConfig)
-				retryContext := TestRetryContext{
-					ScenarioName: "Transcription_RoundTrip_" + tc.name,
-					ExpectedBehavior: map[string]interface{}{
-						"transcribe_audio": true,
-						"round_trip_test":  true,
-						"original_text":    tc.text,
-					},
-					TestMetadata: map[string]interface{}{
-						"provider":     testConfig.Provider,
-						"model":        testConfig.TranscriptionModel,
-						"audio_format": tc.format,
-					},
 				}
 
 				// Enhanced validation for transcription
@@ -187,10 +172,10 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 					response, err := client.TranscriptionRequest(ctx, request)
 					require.Nilf(t, err, "Custom transcription failed: %v", err)
-					require.NotNil(t, response.Transcribe)
-					assert.NotEmpty(t, response.Transcribe.Text)
+					require.NotNil(t, response, "Custom transcription returned nil response")
+					assert.NotEmpty(t, response.Text)
 
-					t.Logf("✅ Custom transcription successful: '%s' → '%s'", tc.text, response.Transcribe.Text)
+					t.Logf("✅ Custom transcription successful: '%s' → '%s'", tc.text, response.Text)
 				})
 			}
 		})
@@ -230,13 +215,12 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 					response, err := client.TranscriptionRequest(ctx, request)
 					require.Nilf(t, err, "Transcription failed for format %s: %v", format, err)
-					require.NotNil(t, response)
-					require.NotNil(t, response.Transcribe)
+					require.NotNil(t, response, "Transcription returned nil response for format %s", format)
 
 					// All formats should return some text
-					assert.NotEmpty(t, response.Transcribe.Text)
+					assert.NotEmpty(t, response.Text)
 
-					t.Logf("✅ Format %s successful: '%s'", format, response.Transcribe.Text)
+					t.Logf("✅ Format %s successful: '%s'", format, response.Text)
 				})
 			}
 		})
@@ -263,11 +247,10 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 			response, err := client.TranscriptionRequest(ctx, request)
 			require.Nilf(t, err, "Advanced transcription failed: %v", err)
-			require.NotNil(t, response)
-			require.NotNil(t, response.Transcribe)
-			assert.NotEmpty(t, response.Transcribe.Text)
+			require.NotNil(t, response, "Advanced transcription returned nil response")
+			assert.NotEmpty(t, response.Text)
 
-			t.Logf("✅ Advanced transcription successful: '%s'", response.Transcribe.Text)
+			t.Logf("✅ Advanced transcription successful: '%s'", response.Text)
 		})
 
 		t.Run("MultipleLanguages", func(t *testing.T) {
@@ -295,11 +278,9 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 					response, err := client.TranscriptionRequest(ctx, request)
 					require.Nilf(t, err, "Transcription failed for language %s: %v", lang, err)
-					require.NotNil(t, response)
-					require.NotNil(t, response.Transcribe)
-
-					assert.NotEmpty(t, response.Transcribe.Text)
-					t.Logf("✅ Language %s transcription successful: '%s'", lang, response.Transcribe.Text)
+					require.NotNil(t, response, "Transcription returned nil response for language %s", lang)
+					assert.NotEmpty(t, response.Text)
+					t.Logf("✅ Language %s transcription successful: '%s'", lang, response.Text)
 				})
 			}
 		})

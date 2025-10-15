@@ -447,11 +447,11 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 		}, nil, false
 	case StreamEventContentStart:
 		// Content block start - create content part added event
-		if chunk.Delta != nil && chunk.Index != nil && chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil {
+		if chunk.Delta != nil && chunk.Index != nil && chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil && chunk.Delta.Message.Content.CohereStreamContentObject != nil {
 			var contentType schemas.ResponsesMessageContentBlockType
 			var part *schemas.ResponsesMessageContentBlock
 
-			switch chunk.Delta.Message.Content.Type {
+			switch chunk.Delta.Message.Content.CohereStreamContentObject.Type {
 			case CohereContentBlockTypeText:
 				contentType = schemas.ResponsesOutputMessageContentTypeText
 				part = &schemas.ResponsesMessageContentBlock{
@@ -480,13 +480,13 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 	case StreamEventContentDelta:
 		if chunk.Index != nil && chunk.Delta != nil {
 			// Handle text content delta
-			if chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil && chunk.Delta.Message.Content.Text != nil && *chunk.Delta.Message.Content.Text != "" {
+			if chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil && chunk.Delta.Message.Content.CohereStreamContentObject != nil && chunk.Delta.Message.Content.CohereStreamContentObject.Text != nil && *chunk.Delta.Message.Content.CohereStreamContentObject.Text != "" {
 				return &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(0),
 					ContentIndex:   chunk.Index,
-					Delta:          chunk.Delta.Message.Content.Text,
+					Delta:          chunk.Delta.Message.Content.CohereStreamContentObject.Text,
 				}, nil, false
 			}
 		}
@@ -514,9 +514,9 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 		}
 		return nil, nil, false
 	case StreamEventToolCallStart:
-		if chunk.Index != nil && chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolCalls != nil {
+		if chunk.Index != nil && chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolCalls != nil && chunk.Delta.Message.ToolCalls.CohereToolCallObject != nil {
 			// Tool call start - create function call message
-			toolCall := chunk.Delta.Message.ToolCalls
+			toolCall := chunk.Delta.Message.ToolCalls.CohereToolCallObject
 			if toolCall.Function != nil && toolCall.Function.Name != nil {
 				messageType := schemas.ResponsesMessageTypeFunctionCall
 
@@ -540,9 +540,9 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 		}
 		return nil, nil, false
 	case StreamEventToolCallDelta:
-		if chunk.Index != nil && chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolCalls != nil {
+		if chunk.Index != nil && chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolCalls != nil && chunk.Delta.Message.ToolCalls.CohereToolCallObject != nil {
 			// Tool call delta - handle function arguments streaming
-			toolCall := chunk.Delta.Message.ToolCalls
+			toolCall := chunk.Delta.Message.ToolCalls.CohereToolCallObject
 			if toolCall.Function != nil {
 				return &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
@@ -568,7 +568,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 	case StreamEventCitationStart:
 		if chunk.Index != nil && chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.Citations != nil {
 			// Citation start - create annotation for the citation
-			citation := chunk.Delta.Message.Citations
+			citation := chunk.Delta.Message.Citations.CohereStreamCitationObject
 
 			// Map Cohere citation to ResponsesOutputMessageContentTextAnnotation
 			annotation := &schemas.ResponsesOutputMessageContentTextAnnotation{
@@ -615,7 +615,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 		if chunk.Index != nil {
 			// Citation end - indicate annotation is complete
 			return &schemas.BifrostResponsesStreamResponse{
-				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationDone,
 				SequenceNumber:  sequenceNumber,
 				ContentIndex:    chunk.Index,
 				OutputIndex:     schemas.Ptr(0),

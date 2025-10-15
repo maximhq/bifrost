@@ -432,7 +432,10 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 			params = append(params, kvStr("gen_ai.text.system_fingerprint", resp.TextCompletionResponse.SystemFingerprint))
 			outputMessages := []*AnyValue{}
 			for _, choice := range resp.TextCompletionResponse.Choices {
-				kvs := []*KeyValue{kvStr("role", string(choice.Message.Role))}
+				if choice.TextCompletionResponseChoice == nil {
+					continue
+				}
+				kvs := []*KeyValue{kvStr("role", string(schemas.ChatMessageRoleAssistant))}
 				if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
 					kvs = append(kvs, kvStr("content", *choice.TextCompletionResponseChoice.Text))
 				}
@@ -458,9 +461,28 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 			params = append(params, kvStr("gen_ai.chat.service_tier", resp.ChatResponse.ServiceTier))
 			outputMessages := []*AnyValue{}
 			for _, choice := range resp.ChatResponse.Choices {
-				kvs := []*KeyValue{kvStr("role", string(choice.Message.Role))}
-				if choice.Message.Content.ContentStr != nil {
-					kvs = append(kvs, kvStr("content", *choice.Message.Content.ContentStr))
+				var role string
+				if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil && choice.ChatNonStreamResponseChoice.Message.Role != "" {
+					role = string(choice.ChatNonStreamResponseChoice.Message.Role)
+				} else {
+					role = string(schemas.ChatMessageRoleAssistant)
+				}
+				kvs := []*KeyValue{kvStr("role", role)}
+
+				if choice.ChatNonStreamResponseChoice != nil &&
+					choice.ChatNonStreamResponseChoice.Message != nil &&
+					choice.ChatNonStreamResponseChoice.Message.Content != nil {
+					if choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil {
+						kvs = append(kvs, kvStr("content", *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr))
+					} else if choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks != nil {
+						blockText := ""
+						for _, block := range choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks {
+							if block.Text != nil {
+								blockText += *block.Text
+							}
+						}
+						kvs = append(kvs, kvStr("content", blockText))
+					}
 				}
 				outputMessages = append(outputMessages, listValue(kvs...))
 			}

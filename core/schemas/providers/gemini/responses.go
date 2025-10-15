@@ -64,16 +64,14 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	// Convert usage information
 	if response.UsageMetadata != nil {
 		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
-			TotalTokens:  int(response.UsageMetadata.TotalTokenCount),
-			InputTokens:  int(response.UsageMetadata.PromptTokenCount),
-			OutputTokens: int(response.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:        int(response.UsageMetadata.TotalTokenCount),
+			InputTokens:        int(response.UsageMetadata.PromptTokenCount),
+			OutputTokens:       int(response.UsageMetadata.CandidatesTokenCount),
+			InputTokensDetails: &schemas.ResponsesResponseInputTokens{},
 		}
 
 		// Handle cached tokens if present
 		if response.UsageMetadata.CachedContentTokenCount > 0 {
-			if bifrostResp.Usage.InputTokensDetails == nil {
-				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-			}
 			bifrostResp.Usage.InputTokensDetails.CachedTokens = int(response.UsageMetadata.CachedContentTokenCount)
 		}
 	}

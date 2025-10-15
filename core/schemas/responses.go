@@ -1682,6 +1682,7 @@ const (
 	ResponsesStreamResponseTypeCodeInterpreterCallCodeDone     ResponsesStreamResponseType = "response.code_interpreter_call_code.done"
 
 	ResponsesStreamResponseTypeOutputTextAnnotationAdded ResponsesStreamResponseType = "response.output_text.annotation.added"
+	ResponsesStreamResponseTypeOutputTextAnnotationDone  ResponsesStreamResponseType = "response.output_text.annotation.done"
 
 	ResponsesStreamResponseTypeQueued ResponsesStreamResponseType = "response.queued"
 

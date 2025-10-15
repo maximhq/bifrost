@@ -100,17 +100,13 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				lastResponse = response
 
 				// Basic validation of streaming response structure
-				if response.BifrostResponse != nil {
-					if response.BifrostResponse.ExtraFields.Provider != testConfig.Provider {
-						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.BifrostResponse.ExtraFields.Provider)
-					}
-					// Validate ResponsesStreamResponse is present
-					if response.BifrostResponse.ResponsesStreamResponse == nil {
-						t.Fatal("ResponsesStreamResponse should not be nil in responses streaming")
+				if response.BifrostResponsesStreamResponse != nil {
+					if response.BifrostResponsesStreamResponse.ExtraFields.Provider != testConfig.Provider {
+						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.BifrostResponsesStreamResponse.ExtraFields.Provider)
 					}
 
 					// Process the streaming response
-					streamResp := response.BifrostResponse.ResponsesStreamResponse
+					streamResp := response.BifrostResponsesStreamResponse
 
 					// Track event types
 					eventTypes[streamResp.Type]++
@@ -303,8 +299,8 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					}
 					responseCount++
 
-					if response.BifrostResponse != nil && response.BifrostResponse.ResponsesStreamResponse != nil {
-						streamResp := response.BifrostResponse.ResponsesStreamResponse
+					if response.BifrostResponsesStreamResponse != nil {
+						streamResp := response.BifrostResponsesStreamResponse
 
 						// Check for function call events
 						switch streamResp.Type {
@@ -412,8 +408,8 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					}
 					responseCount++
 
-					if response.BifrostResponse != nil && response.BifrostResponse.ResponsesStreamResponse != nil {
-						streamResp := response.BifrostResponse.ResponsesStreamResponse
+					if response.BifrostResponsesStreamResponse != nil {
+						streamResp := response.BifrostResponsesStreamResponse
 
 						// Check for reasoning-specific events
 						switch streamResp.Type {
@@ -507,35 +503,6 @@ func validateResponsesStreamingStructure(t *testing.T, eventTypes map[schemas.Re
 	}
 }
 
-// createConsolidatedResponsesResponse creates a consolidated response for validation
-func createConsolidatedResponsesResponse(finalContent string, lastResponse *schemas.BifrostStream, provider schemas.ModelProvider) *schemas.BifrostResponse {
-	consolidatedResponse := &schemas.BifrostResponse{
-		ResponsesResponse: &schemas.ResponsesResponse{
-			Output: []schemas.ResponsesMessage{
-				{
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{
-						ContentStr: &finalContent,
-					},
-				},
-			},
-		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: provider,
-		},
-	}
-
-	// Copy usage and other metadata from last response if available
-	if lastResponse != nil && lastResponse.BifrostResponse != nil {
-		consolidatedResponse.Usage = lastResponse.Usage
-		consolidatedResponse.Model = lastResponse.Model
-		consolidatedResponse.ID = lastResponse.ID
-		consolidatedResponse.Created = lastResponse.Created
-	}
-
-	return consolidatedResponse
-}
 
 // StreamingValidationResult represents the result of streaming validation
 type StreamingValidationResult struct {
@@ -602,15 +569,11 @@ func validateResponsesStreamingResponse(t *testing.T, eventTypes map[schemas.Res
 	if lastResponse == nil {
 		errors = append(errors, "Should have at least one streaming response")
 	} else {
-		if lastResponse.BifrostResponse == nil {
-			errors = append(errors, "Last streaming response should have BifrostResponse")
+		if lastResponse.BifrostResponsesStreamResponse == nil {
+			errors = append(errors, "Last streaming response should have BifrostResponsesStreamResponse")
 		} else {
-			if lastResponse.BifrostResponse.ResponsesStreamResponse == nil {
-				errors = append(errors, "Streaming response should have ResponsesStreamResponse")
-			}
-
-			if lastResponse.BifrostResponse.ExtraFields.Provider != testConfig.Provider {
-				errors = append(errors, fmt.Sprintf("Provider mismatch: expected %s, got %s", testConfig.Provider, lastResponse.BifrostResponse.ExtraFields.Provider))
+			if lastResponse.BifrostResponsesStreamResponse.ExtraFields.Provider != testConfig.Provider {
+				errors = append(errors, fmt.Sprintf("Provider mismatch: expected %s, got %s", testConfig.Provider, lastResponse.BifrostResponsesStreamResponse.ExtraFields.Provider))
 			}
 		}
 	}

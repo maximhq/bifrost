@@ -82,7 +82,8 @@ func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostTextC
 		return nil
 	}
 	return &schemas.BifrostTextCompletionResponse{
-		ID: response.ID,
+		ID:     response.ID,
+		Object: "text_completion",
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index: 0,

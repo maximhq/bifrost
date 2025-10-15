@@ -382,23 +382,23 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					}
 
 				case cohere.StreamEventContentDelta:
-					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.Content != nil && event.Delta.Message.Content.Text != nil {
+					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.Content != nil && event.Delta.Message.Content.CohereStreamContentObject != nil && event.Delta.Message.Content.CohereStreamContentObject.Text != nil {
 						// Try to cast content to CohereStreamContent
-						response.Choices[0].ChatStreamResponseChoice.Delta.Content = event.Delta.Message.Content.Text
+						response.Choices[0].ChatStreamResponseChoice.Delta.Content = event.Delta.Message.Content.CohereStreamContentObject.Text
 					}
 
 				case cohere.StreamEventToolPlanDelta:
 					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.ToolPlan != nil {
-						response.Choices[0].ChatStreamResponseChoice.Delta.Content = event.Delta.Message.ToolPlan
+						response.Choices[0].ChatStreamResponseChoice.Delta.Thought = event.Delta.Message.ToolPlan
 					}
 
 				case cohere.StreamEventContentStart:
 					// Content start event - just continue, actual content comes in content-delta
 
 				case cohere.StreamEventToolCallStart, cohere.StreamEventToolCallDelta:
-					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.ToolCalls != nil {
+					if event.Delta != nil && event.Delta.Message != nil && event.Delta.Message.ToolCalls != nil && event.Delta.Message.ToolCalls.CohereToolCallObject != nil {
 						// Handle single tool call object (tool-call-start/delta events)
-						cohereToolCall := event.Delta.Message.ToolCalls
+						cohereToolCall := event.Delta.Message.ToolCalls.CohereToolCallObject
 						toolCall := schemas.ChatAssistantMessageToolCall{}
 
 						if cohereToolCall.ID != nil {

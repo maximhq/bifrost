@@ -50,7 +50,11 @@ func RunTextCompletionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{"error", "failed", "invalid"}...) // Should not contain error terms
 
 		response, bifrostErr := WithTestRetry(t, retryConfig, retryContext, expectations, "TextCompletion", func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-			return client.TextCompletionRequest(ctx, request)
+			c, err := client.TextCompletionRequest(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			return &schemas.BifrostResponse{TextCompletionResponse: c}, nil
 		})
 
 		if bifrostErr != nil {

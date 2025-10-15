@@ -43,7 +43,6 @@ type Bifrost struct {
 	responseStreamPool  sync.Pool                        // Pool for response stream channels, initial pool size is set in Init
 	pluginPipelinePool  sync.Pool                        // Pool for PluginPipeline objects
 	bifrostRequestPool  sync.Pool                        // Pool for BifrostRequest objects
-	bifrostResponsePool sync.Pool                        // Pool for BifrostResponse objects
 	logger              schemas.Logger                   // logger instance, default logger is used if not provided
 	mcpManager          *MCPManager                      // MCP integration manager (nil if MCP not configured)
 	dropExcessRequests  atomic.Bool                      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
@@ -131,11 +130,6 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			return &schemas.BifrostRequest{}
 		},
 	}
-	bifrost.bifrostResponsePool = sync.Pool{
-		New: func() interface{} {
-			return &schemas.BifrostResponse{}
-		},
-	}
 	// Prewarm pools with multiple objects
 	for range config.InitialPoolSize {
 		// Create and put new objects directly into pools
@@ -148,7 +142,6 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			postHookErrors: make([]error, 0),
 		})
 		bifrost.bifrostRequestPool.Put(&schemas.BifrostRequest{})
-		bifrost.bifrostResponsePool.Put(&schemas.BifrostResponse{})
 	}
 
 	providerKeys, err := bifrost.account.GetConfiguredProviders()
@@ -1460,7 +1453,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 						continue
 					}
 
-					bifrostResponse := bifrost.bifrostResponsePool.Get().(*schemas.BifrostResponse)
+					bifrostResponse := &schemas.BifrostResponse{}
 					if streamMsg.BifrostTextCompletionResponse != nil {
 						bifrostResponse.TextCompletionResponse = streamMsg.BifrostTextCompletionResponse
 					}

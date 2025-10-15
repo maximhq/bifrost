@@ -101,6 +101,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/completions",
 	} {
 		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -139,6 +140,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/chat/completions",
 	} {
 		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -177,6 +179,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/responses",
 	} {
 		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -216,6 +219,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/embeddings",
 	} {
 		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -246,6 +250,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/audio/speech",
 	} {
 		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -281,6 +286,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/audio/transcriptions",
 	} {
 		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {

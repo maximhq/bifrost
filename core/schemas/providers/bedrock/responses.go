@@ -204,13 +204,14 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.
 		CreatedAt: int(time.Now().Unix()),
 	}
 
-	// Convert usage information
-	usage := &schemas.ResponsesResponseUsage{
-		InputTokens:  response.Usage.InputTokens,
-		OutputTokens: response.Usage.OutputTokens,
-		TotalTokens:  response.Usage.TotalTokens,
+	if response.Usage != nil {
+		// Convert usage information
+		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+			TotalTokens:  response.Usage.TotalTokens,
+		}
 	}
-	bifrostResp.Usage = usage
 
 	// Convert output message to Responses format
 	if response.Output != nil && response.Output.Message != nil {

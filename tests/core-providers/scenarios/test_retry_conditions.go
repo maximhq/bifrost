@@ -27,7 +27,7 @@ func (c *EmptyResponseCondition) ShouldRetry(response *schemas.BifrostResponse, 
 	}
 
 	// Check if chat completions response exists
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.TextCompletionResponse == nil && response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return true, "response has no chat completions or responses data"
 	}
 
@@ -80,7 +80,7 @@ func (c *MissingToolCallCondition) ShouldRetry(response *schemas.BifrostResponse
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -120,7 +120,7 @@ func (c *MalformedToolArgsCondition) ShouldRetry(response *schemas.BifrostRespon
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -148,7 +148,7 @@ func (c *MalformedToolArgsCondition) ShouldRetry(response *schemas.BifrostRespon
 				requiresArgs = expectArgs
 			}
 		}
-		
+
 		if requiresArgs && len(args) == 0 && toolCall.Name != "" {
 			return true, fmt.Sprintf("tool call %d (%s) has empty arguments but arguments are required", i, toolCall.Name)
 		}
@@ -173,7 +173,7 @@ func (c *WrongToolCalledCondition) ShouldRetry(response *schemas.BifrostResponse
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -229,7 +229,7 @@ func (c *PartialToolCallCondition) ShouldRetry(response *schemas.BifrostResponse
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -268,7 +268,7 @@ func (c *WrongToolSequenceCondition) ShouldRetry(response *schemas.BifrostRespon
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -324,7 +324,7 @@ func (c *ImageNotProcessedCondition) ShouldRetry(response *schemas.BifrostRespon
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -371,7 +371,7 @@ func (c *GenericResponseCondition) ShouldRetry(response *schemas.BifrostResponse
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.TextCompletionResponse == nil && response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -428,7 +428,7 @@ func (c *ContentValidationCondition) ShouldRetry(response *schemas.BifrostRespon
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.TextCompletionResponse == nil && response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
@@ -583,13 +583,13 @@ func (c *IncompleteStreamCondition) ShouldRetry(response *schemas.BifrostRespons
 	}
 
 	// Check both Chat Completions and Responses API formats
-	if response.Choices == nil && response.ResponsesResponse == nil {
+	if response.TextCompletionResponse == nil && response.ChatResponse == nil && response.ResponsesResponse == nil {
 		return false, ""
 	}
 
 	// For Chat Completions API, check finish reasons in choices
-	if response.Choices != nil {
-		for i, choice := range response.Choices {
+	if response.ChatResponse != nil {
+		for i, choice := range response.ChatResponse.Choices {
 			if choice.FinishReason == nil {
 				return true, fmt.Sprintf("choice %d has no finish reason (stream may be incomplete)", i)
 			}
@@ -599,7 +599,9 @@ func (c *IncompleteStreamCondition) ShouldRetry(response *schemas.BifrostRespons
 			if finishReason == "length" {
 				// This might be okay depending on context, but could indicate truncation
 				singleChoiceResponse := &schemas.BifrostResponse{
-					Choices: []schemas.BifrostChatResponseChoice{choice},
+					ChatResponse: &schemas.BifrostChatResponse{
+						Choices: []schemas.BifrostResponseChoice{choice},
+					},
 				}
 				choiceContent := GetResultContent(singleChoiceResponse)
 				if len(choiceContent) < 10 {
@@ -607,6 +609,29 @@ func (c *IncompleteStreamCondition) ShouldRetry(response *schemas.BifrostRespons
 				}
 			}
 		}
+	}
+
+	if response.TextCompletionResponse != nil {
+		for i, choice := range response.TextCompletionResponse.Choices {
+			if choice.FinishReason == nil {
+				return true, fmt.Sprintf("choice %d has no finish reason (stream may be incomplete)", i)
+			}
+
+			finishReason := string(*choice.FinishReason)
+			if finishReason == "length" {
+				// This might be okay depending on context, but could indicate truncation
+				singleChoiceResponse := &schemas.BifrostResponse{
+					TextCompletionResponse: &schemas.BifrostTextCompletionResponse{
+						Choices: []schemas.BifrostResponseChoice{choice},
+					},
+				}
+				choiceContent := GetResultContent(singleChoiceResponse)
+				if len(choiceContent) < 10 {
+					return true, fmt.Sprintf("choice %d finished due to length but content is very short", i)
+				}
+			}
+		}
+
 	}
 
 	// For Responses API, check completion status in output messages
@@ -649,18 +674,18 @@ func (c *EmptySpeechCondition) ShouldRetry(response *schemas.BifrostResponse, er
 	}
 
 	// Check if speech response exists
-	if response.Speech == nil {
+	if response.SpeechResponse == nil {
 		return true, "response has no speech data"
 	}
 
 	// Check if audio data exists and is not empty
-	if response.Speech.Audio == nil {
+	if response.SpeechResponse.Audio == nil {
 		return true, "response has no audio data"
 	}
 
 	// Check for unreasonably small audio files (likely errors)
-	if len(response.Speech.Audio) < 100 {
-		return true, fmt.Sprintf("audio data too small (%d bytes), likely an error", len(response.Speech.Audio))
+	if len(response.SpeechResponse.Audio) < 100 {
+		return true, fmt.Sprintf("audio data too small (%d bytes), likely an error", len(response.SpeechResponse.Audio))
 	}
 
 	return false, ""
@@ -689,17 +714,17 @@ func (c *EmptyTranscriptionCondition) ShouldRetry(response *schemas.BifrostRespo
 	}
 
 	// Check if transcription response exists
-	if response.Transcribe == nil {
+	if response.TranscriptionResponse == nil {
 		return true, "response has no transcription data"
 	}
 
 	// Check if text exists and is not empty
-	if response.Transcribe.Text == "" || strings.TrimSpace(response.Transcribe.Text) == "" {
+	if response.TranscriptionResponse.Text == "" || strings.TrimSpace(response.TranscriptionResponse.Text) == "" {
 		return true, "response has no transcription text"
 	}
 
 	// Check for unreasonably short transcriptions (likely errors)
-	text := strings.TrimSpace(response.Transcribe.Text)
+	text := strings.TrimSpace(response.TranscriptionResponse.Text)
 	if len(text) < 3 {
 		return true, fmt.Sprintf("transcription text too short (%d chars): '%s'", len(text), text)
 	}
@@ -724,13 +749,13 @@ func (c *EmptyEmbeddingCondition) ShouldRetry(response *schemas.BifrostResponse,
 	}
 
 	// Check if we have embedding data
-	if len(response.Data) == 0 {
+	if response.EmbeddingResponse == nil || len(response.EmbeddingResponse.Data) == 0 {
 		return true, "response has no embedding data"
 	}
 
 	// Check each embedding
-	for i, data := range response.Data {
-		vec, extractErr := getEmbeddingVector(data.Embedding)
+	for i, data := range response.EmbeddingResponse.Data {
+		vec, extractErr := getEmbeddingVector(data)
 		if extractErr != nil {
 			return true, fmt.Sprintf("embedding %d: failed to extract vector: %s", i, extractErr.Error())
 		}
@@ -766,7 +791,7 @@ type InvalidEmbeddingDimensionCondition struct {
 }
 
 func (c *InvalidEmbeddingDimensionCondition) ShouldRetry(response *schemas.BifrostResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string) {
-	if err != nil || response == nil || response.Data == nil || len(response.Data) == 0 {
+	if err != nil || response == nil || response.EmbeddingResponse == nil || len(response.EmbeddingResponse.Data) == 0 {
 		return false, ""
 	}
 
@@ -780,8 +805,8 @@ func (c *InvalidEmbeddingDimensionCondition) ShouldRetry(response *schemas.Bifro
 	var firstDimension int
 
 	// Check each embedding
-	for i, data := range response.Data {
-		vec, extractErr := getEmbeddingVector(data.Embedding)
+	for i, data := range response.EmbeddingResponse.Data {
+		vec, extractErr := getEmbeddingVector(data)
 		if extractErr != nil {
 			return false, "" // Let EmptyEmbeddingCondition handle this
 		}

@@ -54,7 +54,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		}
 
 		// Create operations for both APIs
-		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -68,7 +68,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -105,8 +105,8 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		}
 
 		// Extract tool calls from both APIs
-		chatToolCalls := ExtractToolCalls(result1.ChatCompletionsResponse)
-		responsesToolCalls := ExtractToolCalls(result1.ResponsesAPIResponse)
+		chatToolCalls := ExtractChatToolCalls(result1.ChatCompletionsResponse)
+		responsesToolCalls := ExtractResponsesToolCalls(result1.ResponsesAPIResponse)
 
 		if len(chatToolCalls) == 0 {
 			t.Fatal("Expected at least one tool call in Chat Completions API response for 'weather'")
@@ -138,8 +138,8 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 
 		// Build conversation history for Responses API
 		responsesConversationMessages := []schemas.ResponsesMessage{responsesUserMessage}
-		if result1.ResponsesAPIResponse.ResponsesResponse != nil {
-			for _, output := range result1.ResponsesAPIResponse.ResponsesResponse.Output {
+		if result1.ResponsesAPIResponse.Output != nil {
+			for _, output := range result1.ResponsesAPIResponse.Output {
 				responsesConversationMessages = append(responsesConversationMessages, output)
 			}
 		}
@@ -171,7 +171,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		expectations2.MinContentLength = 30                                            // Should be a substantial response
 
 		// Create operations for both APIs - Step 2
-		chatOperation2 := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation2 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -184,7 +184,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation2 := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation2 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -222,7 +222,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 
 		// Log results from both APIs
 		if result2.ChatCompletionsResponse != nil {
-			chatContent := GetResultContent(result2.ChatCompletionsResponse)
+			chatContent := GetChatContent(result2.ChatCompletionsResponse)
 			t.Logf("✅ Chat Completions API result: %s", chatContent)
 
 			// Additional validation for Chat Completions API
@@ -239,7 +239,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		}
 
 		if result2.ResponsesAPIResponse != nil {
-			responsesContent := GetResultContent(result2.ResponsesAPIResponse)
+			responsesContent := GetResponsesContent(result2.ResponsesAPIResponse)
 			t.Logf("✅ Responses API result: %s", responsesContent)
 
 			// Additional validation for Responses API

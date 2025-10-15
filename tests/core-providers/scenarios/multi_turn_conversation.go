@@ -49,6 +49,14 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				"step":     "introduction",
 			},
 		}
+		chatRetryConfig1 := ChatRetryConfig{
+			MaxAttempts: retryConfig1.MaxAttempts,
+			BaseDelay:   retryConfig1.BaseDelay,
+			MaxDelay:    retryConfig1.MaxDelay,
+			Conditions:  []ChatRetryCondition{}, // Add specific chat retry conditions as needed
+			OnRetry:     retryConfig1.OnRetry,
+			OnFinalFail: retryConfig1.OnFinalFail,
+		}
 
 		// Enhanced validation for first response
 		// Just check that it acknowledges Alice by name - being less strict about exact wording
@@ -56,7 +64,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		expectations1 = ModifyExpectationsForProvider(expectations1, testConfig.Provider)
 		expectations1.MinContentLength = 10
 
-		response1, bifrostErr := WithTestRetry(t, retryConfig1, retryContext1, expectations1, "MultiTurnConversation_Step1", func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		response1, bifrostErr := WithChatTestRetry(t, chatRetryConfig1, retryContext1, expectations1, "MultiTurnConversation_Step1", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			return client.ChatCompletionRequest(ctx, firstRequest)
 		})
 
@@ -64,7 +72,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			t.Fatalf("❌ MultiTurnConversation_Step1 request failed after retries: %v", GetErrorMessage(bifrostErr))
 		}
 
-		t.Logf("✅ First turn acknowledged: %s", GetResultContent(response1))
+		t.Logf("✅ First turn acknowledged: %s", GetChatContent(response1))
 
 		// Second message with conversation history - memory test
 		messages2 := []schemas.ChatMessage{
@@ -72,9 +80,11 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		}
 
 		// Add all choice messages from the first response
-		if response1.Choices != nil {
+		if response1 != nil {
 			for _, choice := range response1.Choices {
-				messages2 = append(messages2, *choice.Message)
+				if choice.Message != nil {
+					messages2 = append(messages2, *choice.Message)
+				}
 			}
 		}
 
@@ -106,6 +116,14 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				"context":  "name_recall",
 			},
 		}
+		chatRetryConfig2 := ChatRetryConfig{
+			MaxAttempts: retryConfig2.MaxAttempts,
+			BaseDelay:   retryConfig2.BaseDelay,
+			MaxDelay:    retryConfig2.MaxDelay,
+			Conditions:  []ChatRetryCondition{},
+			OnRetry:     retryConfig2.OnRetry,
+			OnFinalFail: retryConfig2.OnFinalFail,
+		}
 
 		// Enhanced validation for memory recall response
 		expectations2 := ConversationExpectations([]string{"alice"})
@@ -115,7 +133,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		expectations2.MaxContentLength = 200                                                     // Don't be overly verbose
 		expectations2.ShouldNotContainWords = []string{"don't know", "can't remember", "forgot"} // Memory failure indicators
 
-		response2, bifrostErr := WithTestRetry(t, retryConfig2, retryContext2, expectations2, "MultiTurnConversation_Step2", func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		response2, bifrostErr := WithChatTestRetry(t, chatRetryConfig2, retryContext2, expectations2, "MultiTurnConversation_Step2", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			return client.ChatCompletionRequest(ctx, secondRequest)
 		})
 
@@ -123,7 +141,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			t.Fatalf("MultiTurnConversation_Step2 request failed after retries: %v", GetErrorMessage(bifrostErr))
 		}
 
-		content := GetResultContent(response2)
+		content := GetChatContent(response2)
 
 		// Specific memory validation
 		contentLower := strings.ToLower(content)

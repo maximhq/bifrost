@@ -3,6 +3,8 @@ package cohere
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/bytedance/sonic"
 )
 
 // ==================== REQUEST TYPES ====================
@@ -336,7 +338,6 @@ const (
 	SourceTypeDocument CohereSourceType = "document"
 )
 
-
 // CohereCitation represents a citation in the response
 type CohereCitation struct {
 	Start        int                `json:"start"`             // Start position of cited text
@@ -349,10 +350,10 @@ type CohereCitation struct {
 
 // CohereSource represents a citation source
 type CohereSource struct {
-	Type       CohereSourceType       `json:"type"`                  // Source type ("tool" or "document")
-	ID         *string                `json:"id,omitempty"`          // Source ID (nullable)
-	ToolOutput *map[string]any 		  `json:"tool_output,omitempty"` // Tool output (for tool sources)
-	Document   *map[string]any        `json:"document,omitempty"`    // Document data (for document sources)
+	Type       CohereSourceType `json:"type"`                  // Source type ("tool" or "document")
+	ID         *string          `json:"id,omitempty"`          // Source ID (nullable)
+	ToolOutput *map[string]any  `json:"tool_output,omitempty"` // Tool output (for tool sources)
+	Document   *map[string]any  `json:"document,omitempty"`    // Document data (for document sources)
 }
 
 // ==================== STREAMING TYPES ====================
@@ -390,13 +391,123 @@ type CohereStreamDelta struct {
 	Usage        *CohereUsage         `json:"usage,omitempty"`
 }
 
+type CohereStreamToolCallStruct struct {
+	CohereToolCallObject *CohereToolCall
+	CohereToolCallArray  *[]CohereToolCall
+}
+
+// JSON marshaling for CohereStreamToolCall
+func (c *CohereStreamToolCallStruct) MarshalJSON() ([]byte, error) {
+	if c.CohereToolCallObject != nil {
+		return sonic.Marshal(c.CohereToolCallObject)
+	}
+	if c.CohereToolCallArray != nil {
+		return sonic.Marshal(c.CohereToolCallArray)
+	}
+	return sonic.Marshal(nil)
+}
+
+func (c *CohereStreamToolCallStruct) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	// Try to unmarshal as array first
+	var toolCallArray []CohereToolCall
+	if err := sonic.Unmarshal(data, &toolCallArray); err == nil {
+		c.CohereToolCallArray = &toolCallArray
+		return nil
+	}
+
+	// Try to unmarshal as single object
+	var toolCallObject CohereToolCall
+	if err := sonic.Unmarshal(data, &toolCallObject); err == nil {
+		c.CohereToolCallObject = &toolCallObject
+		return nil
+	}
+
+	return fmt.Errorf("tool_calls field is neither array nor object")
+}
+
+type CohereStreamContentStruct struct {
+	CohereStreamContentObject *CohereStreamContent
+	CohereStreamContentArray  *[]CohereStreamContent
+}
+
+func (c *CohereStreamContentStruct) MarshalJSON() ([]byte, error) {
+	if c.CohereStreamContentObject != nil {
+		return sonic.Marshal(c.CohereStreamContentObject)
+	}
+	if c.CohereStreamContentArray != nil {
+		return sonic.Marshal(c.CohereStreamContentArray)
+	}
+	return sonic.Marshal(nil)
+}
+
+func (c *CohereStreamContentStruct) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	// Try to unmarshal as array first
+	var contentArray []CohereStreamContent
+	if err := sonic.Unmarshal(data, &contentArray); err == nil {
+		c.CohereStreamContentArray = &contentArray
+		return nil
+	}
+
+	// Try to unmarshal as single object
+	var contentObject CohereStreamContent
+	if err := sonic.Unmarshal(data, &contentObject); err == nil {
+		c.CohereStreamContentObject = &contentObject
+		return nil
+	}
+
+	return fmt.Errorf("content field is neither array nor object")
+}
+
+type CohereStreamCitationStruct struct {
+	CohereStreamCitationObject *CohereCitation
+	CohereStreamCitationArray  *[]CohereCitation
+}
+
+func (c *CohereStreamCitationStruct) MarshalJSON() ([]byte, error) {
+	if c.CohereStreamCitationObject != nil {
+		return sonic.Marshal(c.CohereStreamCitationObject)
+	}
+	if c.CohereStreamCitationArray != nil {
+		return sonic.Marshal(c.CohereStreamCitationArray)
+	}
+	return sonic.Marshal(nil)
+}
+
+func (c *CohereStreamCitationStruct) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	// Try to unmarshal as array first
+	var citationArray []CohereCitation
+	if err := sonic.Unmarshal(data, &citationArray); err == nil {
+		c.CohereStreamCitationArray = &citationArray
+		return nil
+	}
+
+	// Try to unmarshal as single object
+	var citationObject CohereCitation
+	if err := sonic.Unmarshal(data, &citationObject); err == nil {
+		c.CohereStreamCitationObject = &citationObject
+		return nil
+	}
+
+	return fmt.Errorf("citations field is neither array nor object")
+}
+
+
 // CohereStreamMessage represents the message part of streaming deltas
 type CohereStreamMessage struct {
-	Role      *string              `json:"role,omitempty"`       // For message-start
-	Content   *CohereStreamContent `json:"content,omitempty"`    // For content events (object)
-	ToolPlan  *string              `json:"tool_plan,omitempty"`  // For tool-plan-delta
-	ToolCalls *CohereToolCall      `json:"tool_calls,omitempty"` // For tool-call events (flexible)
-	Citations *CohereCitation      `json:"citations,omitempty"`  // For citation events
+	Role      *string                    `json:"role,omitempty"`       // For message-start
+	Content   *CohereStreamContentStruct `json:"content,omitempty"`    // For content events (object)
+	ToolPlan  *string                    `json:"tool_plan,omitempty"`  // For tool-plan-delta
+	ToolCalls *CohereStreamToolCallStruct      `json:"tool_calls,omitempty"` // For tool-call events (flexible)
+	Citations *CohereStreamCitationStruct            `json:"citations,omitempty"`  // For citation events
 }
 
 // CohereStreamContent represents content in streaming events

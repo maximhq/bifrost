@@ -126,6 +126,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		textResp := &schemas.BifrostTextCompletionResponse{
 			ID:     p.RequestID,
 			Object: "text_completion",
+			Model:  p.Model,
 			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index:        0,
@@ -147,8 +148,10 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 	case StreamTypeChat:
 		chatResp := &schemas.BifrostChatResponse{
-			ID:     p.RequestID,
-			Object: "chat.completion",
+			ID:      p.RequestID,
+			Object:  "chat.completion",
+			Model:   p.Model,
+			Created: int(p.Data.StartTimestamp.Unix()),
 			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index:        0,

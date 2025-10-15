@@ -3,7 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
-
+	"time"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -260,6 +260,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 			RequestType: schemas.ChatCompletionRequest,
 			Provider:    schemas.Anthropic,
 		},
+		Created: int(time.Now().Unix()),
 	}
 
 	// Collect all content and tool calls into a single message
@@ -838,7 +839,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostChatRes
 		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
 
 		// Handle streaming responses
-		if choice.ChatStreamResponseChoice != nil {
+		if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
 			delta := choice.ChatStreamResponseChoice.Delta
 
 			// Handle text content deltas

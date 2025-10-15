@@ -55,7 +55,7 @@ func RunImageURLTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{"cannot see", "unable to view", "no image"}...) // Vision failure indicators
 
 		// Create operations for both Chat Completions and Responses API
-		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.VisionModel,
@@ -68,7 +68,7 @@ func RunImageURLTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.VisionModel,
@@ -106,38 +106,47 @@ func RunImageURLTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 		}
 
 		// Additional vision-specific validation using universal content extraction
-		validateImageProcessing := func(response *schemas.BifrostResponse, apiName string) {
-			content := GetResultContent(response)
-			lowerContent := strings.ToLower(content)
-			foundObjectIdentification := strings.Contains(lowerContent, "ant") || strings.Contains(lowerContent, "insect")
+		validateChatImageProcessing := func(response *schemas.BifrostChatResponse, apiName string) {
+			content := GetChatContent(response)
+			validateImageProcessingContent(t, content, apiName)
+		}
 
-			if foundObjectIdentification {
-				t.Logf("✅ %s vision model successfully identified the object in image: %s", apiName, content)
-			} else {
-				// Log warning but don't fail immediately - some models might describe differently
-				t.Logf("⚠️ %s vision model may not have explicitly identified 'ant' or 'insect': %s", apiName, content)
-
-				// Check for other possible valid descriptions
-				if strings.Contains(lowerContent, "small") ||
-					strings.Contains(lowerContent, "creature") ||
-					strings.Contains(lowerContent, "animal") ||
-					strings.Contains(lowerContent, "bug") {
-					t.Logf("✅ But %s model provided a reasonable description of the image", apiName)
-				} else {
-					t.Logf("❌ %s model may have failed to properly process the image", apiName)
-				}
-			}
+		validateResponsesImageProcessing := func(response *schemas.BifrostResponsesResponse, apiName string) {
+			content := GetResponsesContent(response)
+			validateImageProcessingContent(t, content, apiName)
 		}
 
 		// Validate both API responses
 		if result.ChatCompletionsResponse != nil {
-			validateImageProcessing(result.ChatCompletionsResponse, "Chat Completions")
+			validateChatImageProcessing(result.ChatCompletionsResponse, "Chat Completions")
 		}
 
 		if result.ResponsesAPIResponse != nil {
-			validateImageProcessing(result.ResponsesAPIResponse, "Responses")
+			validateResponsesImageProcessing(result.ResponsesAPIResponse, "Responses")
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed ImageURL test!")
 	})
+}
+
+func validateImageProcessingContent(t *testing.T, content string, apiName string) {
+	lowerContent := strings.ToLower(content)
+	foundObjectIdentification := strings.Contains(lowerContent, "ant") || strings.Contains(lowerContent, "insect")
+
+	if foundObjectIdentification {
+		t.Logf("✅ %s vision model successfully identified the object in image: %s", apiName, content)
+	} else {
+		// Log warning but don't fail immediately - some models might describe differently
+		t.Logf("⚠️ %s vision model may not have explicitly identified 'ant' or 'insect': %s", apiName, content)
+
+		// Check for other possible valid descriptions
+		if strings.Contains(lowerContent, "small") ||
+			strings.Contains(lowerContent, "creature") ||
+			strings.Contains(lowerContent, "animal") ||
+			strings.Contains(lowerContent, "bug") {
+			t.Logf("✅ But %s model provided a reasonable description of the image", apiName)
+		} else {
+			t.Logf("❌ %s model may have failed to properly process the image", apiName)
+		}
+	}
 }

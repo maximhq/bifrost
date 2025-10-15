@@ -146,10 +146,13 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	for _, choice := range response.Choices {
-		if choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
+		if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
 			for i, toolCall := range choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
 				if (toolCall.ID == nil || *toolCall.ID == "") && toolCall.Function.Name != nil && *toolCall.Function.Name != "" {
-					id := *toolCall.Function.Name
+					id := ""
+					if toolCall.Function.Name != nil {
+						id = *toolCall.Function.Name
+					}
 					(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls)[i].ID = &id
 				}
 			}

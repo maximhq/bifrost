@@ -901,10 +901,33 @@ func (br *BifrostChatResponse) ToBifrostResponsesStreamResponse() *BifrostRespon
 		SequenceNumber: br.ExtraFields.ChunkIndex,
 		ContentIndex:   Ptr(0),
 		OutputIndex:    &choice.Index,
+		ExtraFields:    br.ExtraFields,
 	}
 
 	// Handle different types of streaming content
 	switch {
+	case len(delta.ToolCalls) > 0:
+		// Tool call delta - handle function call arguments
+		toolCall := delta.ToolCalls[0] // Take first tool call
+
+		if toolCall.Function.Arguments != "" {
+			streamResp.Type = ResponsesStreamResponseTypeFunctionCallArgumentsDelta
+			streamResp.Arguments = &toolCall.Function.Arguments
+
+			// Set item for function call metadata if this is a new tool call
+			if toolCall.ID != nil || toolCall.Function.Name != nil {
+				messageType := ResponsesMessageTypeFunctionCall
+				streamResp.Item = &ResponsesMessage{
+					Type: &messageType,
+					Role: Ptr(ResponsesInputMessageRoleAssistant),
+					ResponsesToolMessage: &ResponsesToolMessage{
+						CallID: toolCall.ID,
+						Name:   toolCall.Function.Name,
+					},
+				}
+			}
+		}
+		
 	case delta.Role != nil:
 		// Role initialization - typically the first chunk
 		streamResp.Type = ResponsesStreamResponseTypeOutputItemAdded
@@ -933,28 +956,6 @@ func (br *BifrostChatResponse) ToBifrostResponsesStreamResponse() *BifrostRespon
 		// Refusal delta
 		streamResp.Type = ResponsesStreamResponseTypeRefusalDelta
 		streamResp.Refusal = delta.Refusal
-
-	case len(delta.ToolCalls) > 0:
-		// Tool call delta - handle function call arguments
-		toolCall := delta.ToolCalls[0] // Take first tool call
-
-		if toolCall.Function.Arguments != "" {
-			streamResp.Type = ResponsesStreamResponseTypeFunctionCallArgumentsDelta
-			streamResp.Arguments = &toolCall.Function.Arguments
-
-			// Set item for function call metadata if this is a new tool call
-			if toolCall.ID != nil || toolCall.Function.Name != nil {
-				messageType := ResponsesMessageTypeFunctionCall
-				streamResp.Item = &ResponsesMessage{
-					Type: &messageType,
-					Role: Ptr(ResponsesInputMessageRoleAssistant),
-					ResponsesToolMessage: &ResponsesToolMessage{
-						CallID: toolCall.ID,
-						Name:   toolCall.Function.Name,
-					},
-				}
-			}
-		}
 
 	default:
 		// Check if this is a completion chunk with finish_reason and/or usage
