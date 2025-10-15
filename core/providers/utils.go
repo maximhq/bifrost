@@ -599,6 +599,9 @@ func getResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.Pos
 		if result != nil {
 			if result.ChatResponse != nil {
 				result.ResponsesStreamResponse = result.ChatResponse.ToBifrostResponsesStreamResponse()
+				if result.ResponsesResponse == nil {
+					result.ResponsesResponse = &schemas.BifrostResponsesResponse{}
+				}
 				result.ResponsesResponse.ExtraFields = result.ResponsesStreamResponse.ExtraFields
 				result.ResponsesResponse.ExtraFields.RequestType = schemas.ResponsesRequest
 			}

@@ -95,39 +95,27 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				lastResponse = response
 
 				// Basic validation of streaming response structure
-				if response.BifrostResponse != nil {
-					if response.BifrostResponse.ExtraFields.Provider != testConfig.Provider {
-						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.BifrostResponse.ExtraFields.Provider)
+				if response.BifrostTextCompletionResponse != nil {
+					if response.BifrostTextCompletionResponse.ExtraFields.Provider != testConfig.Provider {
+						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.BifrostTextCompletionResponse.ExtraFields.Provider)
 					}
-					if response.ID == "" {
+					if response.BifrostTextCompletionResponse.ID == "" {
 						t.Logf("⚠️ Warning: Response ID is empty")
 					}
 
 					// Validate text completion response structure
-					if response.BifrostResponse.Choices == nil {
+					if response.BifrostTextCompletionResponse.Choices == nil {
 						t.Logf("⚠️ Warning: Choices should not be nil in text completion streaming")
 					}
 
 					// Process each choice in the response (similar to chat completion)
-					for _, choice := range response.Choices {
+					for _, choice := range response.BifrostTextCompletionResponse.Choices {
 						// For text completion, we expect either streaming deltas or text completion choices
-						if choice.BifrostStreamResponseChoice != nil {
-							// Get content from delta for text completion streaming
-							delta := choice.BifrostStreamResponseChoice.Delta
-							if delta != nil && delta.Content != nil {
-								fullContent.WriteString(*delta.Content)
-								t.Logf("✍️ Text delta: %s", *delta.Content)
-							}
-
-							// Check finish reason if present
-							if choice.FinishReason != nil {
-								t.Logf("🏁 Finish reason: %s", *choice.FinishReason)
-							}
-						} else if choice.BifrostTextCompletionResponseChoice != nil {
+						if choice.TextCompletionResponseChoice != nil {
 							// Handle direct text completion response choice (converted by providers)
-							if choice.BifrostTextCompletionResponseChoice.Text != nil {
-								fullContent.WriteString(*choice.BifrostTextCompletionResponseChoice.Text)
-								t.Logf("✍️ Text completion: %s", *choice.BifrostTextCompletionResponseChoice.Text)
+							if choice.TextCompletionResponseChoice.Text != nil {
+								fullContent.WriteString(*choice.TextCompletionResponseChoice.Text)
+								t.Logf("✍️ Text completion: %s", *choice.TextCompletionResponseChoice.Text)
 							}
 
 							// Check finish reason if present
@@ -167,7 +155,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		expectations.MaxContentLength = 2000                                                                  // Reasonable upper bound
 
 		// Validate the consolidated text completion streaming response
-		validationResult := ValidateResponse(t, consolidatedResponse, nil, expectations, "TextCompletionStream")
+		validationResult := ValidateTextCompletionResponse(t, consolidatedResponse, nil, expectations, "TextCompletionStream")
 
 		// Basic streaming validation
 		if responseCount == 0 {
@@ -265,12 +253,12 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 						responseCount++
 
 						// Extract content from choices
-						if response.BifrostResponse != nil {
-							for _, choice := range response.Choices {
-								if choice.BifrostStreamResponseChoice != nil {
-									delta := choice.BifrostStreamResponseChoice.Delta
-									if delta != nil && delta.Content != nil {
-										content.WriteString(*delta.Content)
+						if response.BifrostTextCompletionResponse != nil {
+							for _, choice := range response.BifrostTextCompletionResponse.Choices {
+								if choice.TextCompletionResponseChoice != nil {
+									delta := choice.TextCompletionResponseChoice.Text
+									if delta != nil {
+										content.WriteString(*delta)
 									}
 								}
 							}
@@ -399,13 +387,13 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 }
 
 // createConsolidatedTextCompletionResponse creates a consolidated response for validation
-func createConsolidatedTextCompletionResponse(finalContent string, lastResponse *schemas.BifrostStream, provider schemas.ModelProvider) *schemas.BifrostResponse {
-	consolidatedResponse := &schemas.BifrostResponse{
+func createConsolidatedTextCompletionResponse(finalContent string, lastResponse *schemas.BifrostStream, provider schemas.ModelProvider) *schemas.BifrostTextCompletionResponse {
+	consolidatedResponse := &schemas.BifrostTextCompletionResponse{
 		Object: "text_completion",
-		Choices: []schemas.BifrostChatResponseChoice{
+		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index: 0,
-				BifrostTextCompletionResponseChoice: &schemas.BifrostTextCompletionResponseChoice{
+				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
 					Text: &finalContent,
 				},
 			},
@@ -417,15 +405,14 @@ func createConsolidatedTextCompletionResponse(finalContent string, lastResponse 
 	}
 
 	// Copy usage and other metadata from last response if available
-	if lastResponse != nil && lastResponse.BifrostResponse != nil {
-		consolidatedResponse.Usage = lastResponse.Usage
-		consolidatedResponse.Model = lastResponse.Model
-		consolidatedResponse.ID = lastResponse.ID
-		consolidatedResponse.Created = lastResponse.Created
+	if lastResponse != nil && lastResponse.BifrostTextCompletionResponse != nil {
+		consolidatedResponse.Usage = lastResponse.BifrostTextCompletionResponse.Usage
+		consolidatedResponse.Model = lastResponse.BifrostTextCompletionResponse.Model
+		consolidatedResponse.ID = lastResponse.BifrostTextCompletionResponse.ID
 
 		// Copy finish reason from last choice if available
-		if len(lastResponse.Choices) > 0 && lastResponse.Choices[0].FinishReason != nil {
-			consolidatedResponse.Choices[0].FinishReason = lastResponse.Choices[0].FinishReason
+		if len(lastResponse.BifrostTextCompletionResponse.Choices) > 0 && lastResponse.BifrostTextCompletionResponse.Choices[0].FinishReason != nil {
+			consolidatedResponse.Choices[0].FinishReason = lastResponse.BifrostTextCompletionResponse.Choices[0].FinishReason
 		}
 	}
 

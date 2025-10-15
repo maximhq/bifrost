@@ -130,40 +130,49 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 		}
 
 		// Additional validation specific to automatic function calling using universal tool extraction
-		validateAutomaticToolCall := func(response *schemas.BifrostResponse, apiName string) {
-			toolCalls := ExtractToolCalls(response)
-			foundValidToolCall := false
+		validateChatAutomaticToolCall := func(response *schemas.BifrostChatResponse, apiName string) {
+			toolCalls := ExtractChatToolCalls(response)
+			validateAutomaticToolCall(t, toolCalls, apiName)
+		}
 
-			for _, toolCall := range toolCalls {
-				if toolCall.Name == string(SampleToolTypeTime) {
-					foundValidToolCall = true
-					t.Logf("✅ %s automatic function call: %s", apiName, toolCall.Arguments)
-
-					// Additional validation for timezone argument
-					lowerArgs := strings.ToLower(toolCall.Arguments)
-					if strings.Contains(lowerArgs, "utc") || strings.Contains(lowerArgs, "timezone") {
-						t.Logf("✅ %s tool call correctly includes timezone information", apiName)
-					} else {
-						t.Logf("⚠️ %s tool call may be missing timezone specification: %s", apiName, toolCall.Arguments)
-					}
-					break
-				}
-			}
-
-			if !foundValidToolCall {
-				t.Fatalf("Expected %s API to have automatic tool call for 'time'", apiName)
-			}
+		validateResponsesAutomaticToolCall := func(response *schemas.BifrostResponsesResponse, apiName string) {
+			toolCalls := ExtractResponsesToolCalls(response)
+			validateAutomaticToolCall(t, toolCalls, apiName)
 		}
 
 		// Validate both API responses
 		if result.ChatCompletionsResponse != nil {
-			validateAutomaticToolCall(result.ChatCompletionsResponse, "Chat Completions")
+			validateChatAutomaticToolCall(result.ChatCompletionsResponse, "Chat Completions")
 		}
 
 		if result.ResponsesAPIResponse != nil {
-			validateAutomaticToolCall(result.ResponsesAPIResponse, "Responses")
+			validateResponsesAutomaticToolCall(result.ResponsesAPIResponse, "Responses")
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed AutomaticFunctionCalling test!")
 	})
+}
+
+func validateAutomaticToolCall(t *testing.T, toolCalls []ToolCallInfo, apiName string) {
+	foundValidToolCall := false
+
+	for _, toolCall := range toolCalls {
+		if toolCall.Name == string(SampleToolTypeTime) {
+			foundValidToolCall = true
+			t.Logf("✅ %s automatic function call: %s", apiName, toolCall.Arguments)
+
+			// Additional validation for timezone argument
+			lowerArgs := strings.ToLower(toolCall.Arguments)
+			if strings.Contains(lowerArgs, "utc") || strings.Contains(lowerArgs, "timezone") {
+				t.Logf("✅ %s tool call correctly includes timezone information", apiName)
+			} else {
+				t.Logf("⚠️ %s tool call may be missing timezone specification: %s", apiName, toolCall.Arguments)
+			}
+			break
+		}
+	}
+
+	if !foundValidToolCall {
+		t.Fatalf("Expected %s API to have automatic tool call for 'time'", apiName)
+	}
 }

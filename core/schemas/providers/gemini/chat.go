@@ -212,12 +212,6 @@ func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostC
 		bifrostReq.Params.ExtraParams["cached_content"] = request.CachedContent
 	}
 
-	// Convert response modalities
-	if len(request.ResponseModalities) > 0 {
-		ensureExtraParams(bifrostReq)
-		bifrostReq.Params.ExtraParams["response_modalities"] = request.ResponseModalities
-	}
-
 	// Convert labels
 	if len(request.Labels) > 0 {
 		ensureExtraParams(bifrostReq)
@@ -310,11 +304,6 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest, respo
 			// Cached content
 			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
 				geminiReq.CachedContent = cachedContent
-			}
-
-			// Response modalities
-			if modalities, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["response_modalities"]); ok {
-				geminiReq.ResponseModalities = modalities
 			}
 
 			// Labels

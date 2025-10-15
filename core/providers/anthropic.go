@@ -436,6 +436,10 @@ func handleAnthropicChatCompletionStreaming(
 				continue
 			}
 
+			if event.Type == anthropic.AnthropicStreamEventTypeMessageStart && event.Message != nil && event.Message.ID != "" {
+				messageID = event.Message.ID
+			}
+
 			if event.Usage != nil {
 				usage = &schemas.BifrostLLMUsage{
 					PromptTokens:     event.Usage.InputTokens,
@@ -449,12 +453,12 @@ func handleAnthropicChatCompletionStreaming(
 			}
 			if event.Message != nil {
 				// Handle different event types
-				messageID = event.Message.ID
 				modelName = event.Message.Model
 			}
 
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream()
 			if response != nil {
+				response.ID = messageID
 				response.ExtraFields = schemas.BifrostResponseExtraFields{
 					RequestType:    schemas.ChatCompletionStreamRequest,
 					Provider:       providerType,

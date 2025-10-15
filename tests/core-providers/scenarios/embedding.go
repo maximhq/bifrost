@@ -67,22 +67,6 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			Fallbacks: testConfig.Fallbacks,
 		}
 
-		// Use embedding-specific retry configuration
-		retryConfig := EmbeddingRetryConfig()
-		retryContext := TestRetryContext{
-			ScenarioName: "Embedding",
-			ExpectedBehavior: map[string]interface{}{
-				"expected_embedding_count": len(testTexts),
-				"should_have_vectors":      true,
-				"expected_texts":           testTexts,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider":   testConfig.Provider,
-				"model":      testConfig.EmbeddingModel,
-				"text_count": len(testTexts),
-			},
-		}
-
 		// Enhanced embedding validation
 		expectations := EmbeddingExpectations(testTexts)
 		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
@@ -117,7 +101,7 @@ func validateEmbeddingSemantics(t *testing.T, response *schemas.BifrostEmbedding
 	}
 
 	for i := range response.Data {
-		vec, extractErr := getEmbeddingVector(response.Data[i].Embedding)
+		vec, extractErr := getEmbeddingVector(response.Data[i])
 		if extractErr != nil {
 			t.Fatalf("Failed to extract embedding vector for text '%s': %v", testTexts[i], extractErr)
 		}

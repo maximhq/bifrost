@@ -56,7 +56,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Create operations for both APIs
-		chatOperation1 := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation1 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -73,13 +73,17 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation1 := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation1 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
 				Input:    []schemas.ResponsesMessage{responsesUserMessage1},
 				Params: &schemas.ResponsesParameters{
 					Tools: []schemas.ResponsesTool{*responsesTool},
+					ToolChoice: &schemas.ResponsesToolChoice{
+						ResponsesToolChoiceStr: bifrost.Ptr(string(schemas.ResponsesToolChoiceTypeRequired)),
+					},
+					MaxOutputTokens: bifrost.Ptr(150),
 				},
 			}
 			return client.ResponsesRequest(ctx, responsesReq)
@@ -109,8 +113,8 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Fatalf("❌ CompleteEnd2End_Step1 dual API test failed: %v", errors)
 		}
 
-		t.Logf("✅ Chat Completions API first response: %s", GetResultContent(result1.ChatCompletionsResponse))
-		t.Logf("✅ Responses API first response: %s", GetResultContent(result1.ResponsesAPIResponse))
+		t.Logf("✅ Chat Completions API first response: %s", GetChatContent(result1.ChatCompletionsResponse))
+		t.Logf("✅ Responses API first response: %s", GetResponsesContent(result1.ResponsesAPIResponse))
 
 		// Build conversation histories for both APIs and extract tool calls if present
 		chatConversationHistory := []schemas.ChatMessage{chatUserMessage1}
@@ -124,15 +128,15 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Add all output messages to Responses API conversation history
-		if result1.ResponsesAPIResponse.ResponsesResponse != nil {
-			for _, output := range result1.ResponsesAPIResponse.ResponsesResponse.Output {
+		if result1.ResponsesAPIResponse != nil && result1.ResponsesAPIResponse.Output != nil {
+			for _, output := range result1.ResponsesAPIResponse.Output {
 				responsesConversationHistory = append(responsesConversationHistory, output)
 			}
 		}
 
 		// Extract tool calls from both APIs
-		chatToolCalls := ExtractToolCalls(result1.ChatCompletionsResponse)
-		responsesToolCalls := ExtractToolCalls(result1.ResponsesAPIResponse)
+		chatToolCalls := ExtractChatToolCalls(result1.ChatCompletionsResponse)
+		responsesToolCalls := ExtractResponsesToolCalls(result1.ResponsesAPIResponse)
 
 		// If tool calls were found, simulate the results for both APIs
 		if len(chatToolCalls) > 0 {
@@ -151,7 +155,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			responsesToolCall := responsesToolCalls[0]
 			t.Logf("✅ Responses API weather tool call: %s with args: %s", responsesToolCall.Name, responsesToolCall.Arguments)
 
-			toolResult := `{"temperature": "18", "unit": "celsius", "description": "Partly cloudy", "humidity": "70%"}`
+			toolResult := `{"temperature": "18", "unit": "celsius", "description": "cloudy", "humidity": "70%"}`
 			toolMessage := CreateToolResponsesMessage(toolResult, responsesToolCall.ID)
 			responsesConversationHistory = append(responsesConversationHistory, toolMessage)
 			t.Logf("✅ Added tool result to Responses API conversation history")
@@ -174,8 +178,8 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			chatFollowUpMessage = CreateImageChatMessage("Thanks! Now can you tell me what you see in this travel-related image? Please provide some travel advice about this destination.", TestImageURL2)
 			responsesFollowUpMessage = CreateImageResponsesMessage("Thanks! Now can you tell me what you see in this travel-related image? Please provide some travel advice about this destination.", TestImageURL2)
 		} else {
-			chatFollowUpMessage = CreateBasicChatMessage("Thanks! Now can you tell me about this travel location?")
-			responsesFollowUpMessage = CreateBasicResponsesMessage("Thanks! Now can you tell me about this travel location?")
+			chatFollowUpMessage = CreateBasicChatMessage("Thanks for the weather info! Given that it's cloudy in Paris, can you tell me more about this travel location?")
+			responsesFollowUpMessage = CreateBasicResponsesMessage("Thanks for the weather info! Given that it's cloudy in Paris, can you tell me more about this travel location?")
 		}
 
 		chatConversationHistory = append(chatConversationHistory, chatFollowUpMessage)
@@ -199,9 +203,11 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Prepare expected keywords to match expectations exactly
-		expectedKeywords := []string{"paris", "river"}
+		var expectedKeywords []string
 		if isVisionStep {
 			expectedKeywords = []string{"paris", "river"} // Must match VisionExpectations exactly
+		} else {
+			expectedKeywords = []string{"paris", "cloudy"} // Must match ConversationExpectations exactly
 		}
 
 		retryContext2 := TestRetryContext{
@@ -232,7 +238,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		} // Context loss indicators
 
 		// Create operations for both APIs - Step 2
-		chatOperation2 := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation2 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    model,
@@ -245,7 +251,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation2 := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation2 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    model,
@@ -283,7 +289,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Log and validate results from both APIs
 		if result2.ChatCompletionsResponse != nil {
-			chatFinalContent := GetResultContent(result2.ChatCompletionsResponse)
+			chatFinalContent := GetChatContent(result2.ChatCompletionsResponse)
 
 			// Additional validation for conversation context
 			if len(chatToolCalls) > 0 && strings.Contains(strings.ToLower(chatFinalContent), "weather") {
@@ -298,7 +304,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		if result2.ResponsesAPIResponse != nil {
-			responsesFinalContent := GetResultContent(result2.ResponsesAPIResponse)
+			responsesFinalContent := GetResponsesContent(result2.ResponsesAPIResponse)
 
 			// Additional validation for conversation context
 			if len(responsesToolCalls) > 0 && strings.Contains(strings.ToLower(responsesFinalContent), "weather") {

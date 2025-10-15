@@ -16,11 +16,6 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, responseMod
 		Model: bifrostReq.Model,
 	}
 
-	// Set response modalities for speech generation
-	if len(responseModalities) > 0 {
-		geminiReq.ResponseModalities = responseModalities
-	}
-
 	// Convert parameters to generation config
 	if len(responseModalities) > 0 {
 		var modalities []Modality
@@ -94,7 +89,7 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 				{
 					InlineData: &Blob{
 						Data:     bifrostResp.Audio,
-						MIMEType: "audio/wav", // Default audio MIME type
+						MIMEType: detectAudioMimeType(bifrostResp.Audio),
 					},
 				},
 			},

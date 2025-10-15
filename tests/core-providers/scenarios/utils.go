@@ -349,6 +349,7 @@ func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
 	}
 
 	for _, output := range response.Output {
+		// Check for regular content first
 		if output.Content != nil {
 			if output.Content.ContentStr != nil && *output.Content.ContentStr != "" {
 				return *output.Content.ContentStr
@@ -357,6 +358,25 @@ func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
 				for _, block := range output.Content.ContentBlocks {
 					if block.Text != nil {
 						builder.WriteString(*block.Text)
+					}
+				}
+				content := builder.String()
+				if content != "" {
+					return content
+				}
+			}
+		}
+
+		// Check for reasoning content in summary field
+		if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeReasoning {
+			if output.ResponsesReasoning != nil && output.ResponsesReasoning.Summary != nil {
+				var builder strings.Builder
+				for _, summaryBlock := range output.ResponsesReasoning.Summary {
+					if summaryBlock.Text != "" {
+						if builder.Len() > 0 {
+							builder.WriteString("\n\n")
+						}
+						builder.WriteString(summaryBlock.Text)
 					}
 				}
 				content := builder.String()
@@ -387,11 +407,7 @@ func ExtractChatToolCalls(response *schemas.BifrostChatResponse) []ToolCallInfo 
 				if toolCall.Function.Name != nil {
 					info.Name = *toolCall.Function.Name
 				}
-				if toolCall.Function.Arguments != nil {
-					if argStr, ok := toolCall.Function.Arguments.(string); ok {
-						info.Arguments = argStr
-					}
-				}
+				info.Arguments = toolCall.Function.Arguments
 				toolCalls = append(toolCalls, info)
 			}
 		}
@@ -409,15 +425,16 @@ func ExtractResponsesToolCalls(response *schemas.BifrostResponsesResponse) []Too
 	}
 
 	for _, output := range response.Output {
-		if output.ResponsesToolMessage != nil {
+		if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeFunctionCall && output.ResponsesToolMessage != nil {
 			info := ToolCallInfo{}
 			if output.ResponsesToolMessage.Name != nil {
 				info.Name = *output.ResponsesToolMessage.Name
 			}
 			if output.ResponsesToolMessage.Arguments != nil {
-				if argStr, ok := (*output.ResponsesToolMessage.Arguments).(string); ok {
-					info.Arguments = argStr
-				}
+				info.Arguments = *output.ResponsesToolMessage.Arguments
+			}
+			if output.ResponsesToolMessage.CallID != nil {
+				info.ID = *output.ResponsesToolMessage.CallID
 			}
 			toolCalls = append(toolCalls, info)
 		}
@@ -426,21 +443,50 @@ func ExtractResponsesToolCalls(response *schemas.BifrostResponsesResponse) []Too
 	return toolCalls
 }
 
-// getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
-func getEmbeddingVector(embedding schemas.BifrostEmbeddingResponse) ([]float32, error) {
-	if embedding.EmbeddingArray != nil {
-		return embedding.EmbeddingArray, nil
+func GetResultContent(response *schemas.BifrostResponse) string {
+	if response == nil {
+		return ""
 	}
 
-	if embedding.Embedding2DArray != nil {
+	if response.ChatResponse != nil {
+		return GetChatContent(response.ChatResponse)
+	} else if response.ResponsesResponse != nil {
+		return GetResponsesContent(response.ResponsesResponse)
+	} else if response.TextCompletionResponse != nil {
+		return GetTextCompletionContent(response.TextCompletionResponse)
+	}
+	return ""
+}
+
+func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
+	if response == nil {
+		return []ToolCallInfo{}
+	}
+
+	if response.ChatResponse != nil {
+		return ExtractChatToolCalls(response.ChatResponse)
+	} else if response.ResponsesResponse != nil {
+		return ExtractResponsesToolCalls(response.ResponsesResponse)
+	}
+	return []ToolCallInfo{}
+}
+
+// getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
+func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float32, error) {
+
+	if embedding.Embedding.EmbeddingArray != nil {
+		return embedding.Embedding.EmbeddingArray, nil
+	}
+
+	if embedding.Embedding.Embedding2DArray != nil {
 		// For 2D arrays, return the first vector
-		if len(embedding.Embedding2DArray) > 0 {
-			return embedding.Embedding2DArray[0], nil
+		if len(embedding.Embedding.Embedding2DArray) > 0 {
+			return embedding.Embedding.Embedding2DArray[0], nil
 		}
 		return nil, fmt.Errorf("2D embedding array is empty")
 	}
 
-	if embedding.EmbeddingStr != nil {
+	if embedding.Embedding.EmbeddingStr != nil {
 		return nil, fmt.Errorf("string embeddings not supported for vector extraction")
 	}
 
@@ -480,7 +526,7 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 	if err != nil {
 		t.Fatalf("TTS request failed: %v", err)
 	}
-	if resp == nil || resp.Speech == nil || len(resp.Speech.Audio) == 0 {
+	if resp == nil || resp.Audio == nil || len(resp.Audio) == 0 {
 		t.Fatalf("TTS response missing audio data")
 	}
 
@@ -490,7 +536,7 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 		t.Fatalf("failed to create temp audio file: %v", cerr)
 	}
 	tempPath := f.Name()
-	if _, werr := f.Write(resp.Speech.Audio); werr != nil {
+	if _, werr := f.Write(resp.Audio); werr != nil {
 		_ = f.Close()
 		t.Fatalf("failed to write temp audio file: %v", werr)
 	}
@@ -498,7 +544,7 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 
 	t.Cleanup(func() { _ = os.Remove(tempPath) })
 
-	return resp.Speech.Audio, tempPath
+	return resp.Audio, tempPath
 }
 
 func GetErrorMessage(err *schemas.BifrostError) string {

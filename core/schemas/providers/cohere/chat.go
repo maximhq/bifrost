@@ -1,6 +1,8 @@
 package cohere
 
 import (
+	"time"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -23,9 +25,9 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 		}
 
 		// Convert content
-		if msg.Content.ContentStr != nil {
+		if msg.Content != nil && msg.Content.ContentStr != nil {
 			cohereMsg.Content = NewStringContent(*msg.Content.ContentStr)
-		} else if msg.Content.ContentBlocks != nil {
+		} else if msg.Content != nil && msg.Content.ContentBlocks != nil {
 			var contentBlocks []CohereContentBlock
 			for _, block := range msg.Content.ContentBlocks {
 				if block.Text != nil {
@@ -197,6 +199,7 @@ func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChat
 				},
 			},
 		},
+		Created: int(time.Now().Unix()),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ChatCompletionRequest,
 			Provider:    schemas.Cohere,

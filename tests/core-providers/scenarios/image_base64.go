@@ -64,7 +64,7 @@ func RunImageBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 		}...) // Base64 processing failure indicators
 
 		// Create operations for both Chat Completions and Responses API
-		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.VisionModel,
@@ -77,7 +77,7 @@ func RunImageBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.VisionModel,
@@ -115,32 +115,41 @@ func RunImageBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 		}
 
 		// Additional validation for base64 lion image processing using universal content extraction
-		validateBase64ImageProcessing := func(response *schemas.BifrostResponse, apiName string) {
-			content := GetResultContent(response)
-			contentLower := strings.ToLower(content)
-			foundAnimal := strings.Contains(contentLower, "lion") || strings.Contains(contentLower, "animal") ||
-				strings.Contains(contentLower, "cat") || strings.Contains(contentLower, "feline")
+		validateChatBase64ImageProcessing := func(response *schemas.BifrostChatResponse, apiName string) {
+			content := GetChatContent(response)
+			validateBase64ImageContent(t, content, apiName)
+		}
 
-			if len(content) < 10 {
-				t.Logf("⚠️ %s response seems quite short for image description: %s", apiName, content)
-			} else if foundAnimal {
-				t.Logf("✅ %s vision model successfully identified animal in base64 image", apiName)
-			} else {
-				t.Logf("✅ %s vision model processed base64 image but may not have clearly identified the animal", apiName)
-			}
-
-			t.Logf("✅ %s lion base64 image processing completed: %s", apiName, content)
+		validateResponsesBase64ImageProcessing := func(response *schemas.BifrostResponsesResponse, apiName string) {
+			content := GetResponsesContent(response)
+			validateBase64ImageContent(t, content, apiName)
 		}
 
 		// Validate both API responses
 		if result.ChatCompletionsResponse != nil {
-			validateBase64ImageProcessing(result.ChatCompletionsResponse, "Chat Completions")
+			validateChatBase64ImageProcessing(result.ChatCompletionsResponse, "Chat Completions")
 		}
 
 		if result.ResponsesAPIResponse != nil {
-			validateBase64ImageProcessing(result.ResponsesAPIResponse, "Responses")
+			validateResponsesBase64ImageProcessing(result.ResponsesAPIResponse, "Responses")
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed ImageBase64 test!")
 	})
+}
+
+func validateBase64ImageContent(t *testing.T, content string, apiName string) {
+	lowerContent := strings.ToLower(content)
+	foundAnimal := strings.Contains(lowerContent, "lion") || strings.Contains(lowerContent, "animal") ||
+		strings.Contains(lowerContent, "cat") || strings.Contains(lowerContent, "feline")
+	
+	if len(content) < 10 {
+		t.Logf("⚠️ %s response seems quite short for image description: %s", apiName, content)
+	} else if foundAnimal {
+		t.Logf("✅ %s vision model successfully identified animal in base64 image", apiName)
+	} else {
+		t.Logf("✅ %s vision model processed base64 image but may not have clearly identified the animal", apiName)
+	}
+
+	t.Logf("✅ %s lion base64 image processing completed: %s", apiName, content)
 }

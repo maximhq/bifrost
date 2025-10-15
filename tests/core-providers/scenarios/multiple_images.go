@@ -79,6 +79,14 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 				"expected_keywords": []string{"different", "differences", "contrast", "unlike", "comparison", "compare", "both", "two"}, // 🎯 Comparison-specific terms
 			},
 		}
+		chatRetryConfig := ChatRetryConfig{
+			MaxAttempts: retryConfig.MaxAttempts,
+			BaseDelay:   retryConfig.BaseDelay,
+			MaxDelay:    retryConfig.MaxDelay,
+			Conditions:  []ChatRetryCondition{}, // Add specific chat retry conditions as needed
+			OnRetry:     retryConfig.OnRetry,
+			OnFinalFail: retryConfig.OnFinalFail,
+		}
 
 		// Enhanced validation for multiple image comparison (ant vs lion)
 		expectations := VisionExpectations([]string{"ant", "lion"}) // Basic expectation - should identify both as animals with differences
@@ -90,7 +98,7 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			"single image", "unable to view the second",
 		}...) // Failure to process multiple images indicators
 
-		response, bifrostError := WithTestRetry(t, retryConfig, retryContext, expectations, "MultipleImages", func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		response, bifrostError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "MultipleImages", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			return client.ChatCompletionRequest(ctx, request)
 		})
 
@@ -99,7 +107,7 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			t.Fatalf("❌ Multiple images request failed after retries: %v", GetErrorMessage(bifrostError))
 		}
 
-		content := GetResultContent(response)
+		content := GetChatContent(response)
 
 		// Additional validation for ant vs lion comparison
 		contentLower := strings.ToLower(content)

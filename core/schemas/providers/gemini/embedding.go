@@ -120,44 +120,42 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest() *schemas.Bif
 		Model:    model,
 	}
 
-	// Convert contents to embedding input
-	if len(request.Contents) > 0 {
-		// Extract text from all contents
-		var texts []string
-		for _, content := range request.Contents {
-			for _, part := range content.Parts {
+	if len(request.Requests) > 0 {
+		embeddingRequest := request.Requests[0]
+		if embeddingRequest.Content != nil {
+			var texts []string
+			for _, part := range embeddingRequest.Content.Parts {
 				if part != nil && part.Text != "" {
 					texts = append(texts, part.Text)
 				}
 			}
-		}
-
-		if len(texts) > 0 {
-			bifrostReq.Input = &schemas.EmbeddingInput{}
-			if len(texts) == 1 {
-				bifrostReq.Input.Text = &texts[0]
-			} else {
-				bifrostReq.Input.Texts = texts
+			if len(texts) > 0 {
+				bifrostReq.Input = &schemas.EmbeddingInput{}
+				if len(texts) == 1 {
+					bifrostReq.Input.Text = &texts[0]
+				} else {
+					bifrostReq.Input.Texts = texts
+				}
 			}
 		}
-	}
 
-	// Convert parameters
-	if request.OutputDimensionality != nil || request.TaskType != nil || request.Title != nil {
-		bifrostReq.Params = &schemas.EmbeddingParameters{}
+		// Convert parameters
+		if embeddingRequest.OutputDimensionality != nil || embeddingRequest.TaskType != nil || embeddingRequest.Title != nil {
+			bifrostReq.Params = &schemas.EmbeddingParameters{}
 
-		if request.OutputDimensionality != nil {
-			bifrostReq.Params.Dimensions = request.OutputDimensionality
-		}
-
-		// Handle extra parameters
-		if request.TaskType != nil || request.Title != nil {
-			bifrostReq.Params.ExtraParams = make(map[string]interface{})
-			if request.TaskType != nil {
-				bifrostReq.Params.ExtraParams["taskType"] = request.TaskType
+			if embeddingRequest.OutputDimensionality != nil {
+				bifrostReq.Params.Dimensions = embeddingRequest.OutputDimensionality
 			}
-			if request.Title != nil {
-				bifrostReq.Params.ExtraParams["title"] = request.Title
+
+			// Handle extra parameters
+			if embeddingRequest.TaskType != nil || embeddingRequest.Title != nil {
+				bifrostReq.Params.ExtraParams = make(map[string]interface{})
+				if embeddingRequest.TaskType != nil {
+					bifrostReq.Params.ExtraParams["taskType"] = embeddingRequest.TaskType
+				}
+				if embeddingRequest.Title != nil {
+					bifrostReq.Params.ExtraParams["title"] = embeddingRequest.Title
+				}
 			}
 		}
 	}

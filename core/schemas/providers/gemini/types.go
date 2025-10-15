@@ -52,24 +52,18 @@ const (
 )
 
 type GeminiGenerationRequest struct {
-	Model              string                   `json:"model,omitempty"`    // Model field for explicit model specification
-	Contents           []CustomContent          `json:"contents,omitempty"` // For chat completion requests
-	Requests           []GeminiEmbeddingRequest `json:"requests,omitempty"` // For batch embedding requests
-	SystemInstruction  *CustomContent           `json:"systemInstruction,omitempty"`
-	GenerationConfig   GenerationConfig         `json:"generationConfig,omitempty"`
-	SafetySettings     []SafetySetting          `json:"safetySettings,omitempty"`
-	Tools              []Tool                   `json:"tools,omitempty"`
-	ToolConfig         ToolConfig               `json:"toolConfig,omitempty"`
-	Labels             map[string]string        `json:"labels,omitempty"`
-	CachedContent      string                   `json:"cachedContent,omitempty"`
-	ResponseModalities []string                 `json:"responseModalities,omitempty"`
-	Stream             bool                     `json:"-"` // Internal field to track streaming requests
-	IsEmbedding        bool                     `json:"-"` // Internal field to track if this is an embedding request
-
-	// Embedding-specific parameters
-	TaskType             *string `json:"taskType,omitempty"`
-	Title                *string `json:"title,omitempty"`
-	OutputDimensionality *int    `json:"outputDimensionality,omitempty"`
+	Model             string                   `json:"model,omitempty"`    // Model field for explicit model specification
+	Contents          []CustomContent          `json:"contents,omitempty"` // For chat completion requests
+	Requests          []GeminiEmbeddingRequest `json:"requests,omitempty"` // For batch embedding requests
+	SystemInstruction *CustomContent           `json:"systemInstruction,omitempty"`
+	GenerationConfig  GenerationConfig         `json:"generationConfig,omitempty"`
+	SafetySettings    []SafetySetting          `json:"safetySettings,omitempty"`
+	Tools             []Tool                   `json:"tools,omitempty"`
+	ToolConfig        ToolConfig               `json:"toolConfig,omitempty"`
+	Labels            map[string]string        `json:"labels,omitempty"`
+	CachedContent     string                   `json:"cachedContent,omitempty"`
+	Stream            bool                     `json:"-"` // Internal field to track streaming requests
+	IsEmbedding       bool                     `json:"-"` // Internal field to track if this is an embedding request
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

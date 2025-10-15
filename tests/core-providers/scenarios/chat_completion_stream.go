@@ -86,41 +86,41 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				lastResponse = response
 
 				// Basic validation of streaming response structure
-				if response.BifrostResponse != nil {
-					if response.BifrostResponse.ExtraFields.Provider != testConfig.Provider {
-						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.BifrostResponse.ExtraFields.Provider)
+				if response.BifrostChatResponse != nil {
+					if response.BifrostChatResponse.ExtraFields.Provider != testConfig.Provider {
+						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.BifrostChatResponse.ExtraFields.Provider)
 					}
-					if response.ID == "" {
+					if response.BifrostChatResponse.ID == "" {
 						t.Logf("⚠️ Warning: Response ID is empty")
 					}
-				}
 
-				// Process each choice in the response
-				for _, choice := range response.Choices {
-					// Validate that this is a stream response
-					if choice.BifrostStreamResponseChoice == nil {
-						t.Logf("⚠️ Warning: Stream response choice is nil for choice %d", choice.Index)
-						continue
-					}
-					if choice.BifrostNonStreamResponseChoice != nil {
-						t.Logf("⚠️ Warning: Non-stream response choice should be nil in streaming response")
-					}
-
-					// Get content from delta
-					if choice.BifrostStreamResponseChoice != nil {
-						delta := choice.BifrostStreamResponseChoice.Delta
-						if delta.Content != nil {
-							fullContent.WriteString(*delta.Content)
+					// Process each choice in the response
+					for _, choice := range response.BifrostChatResponse.Choices {
+						// Validate that this is a stream response
+						if choice.ChatStreamResponseChoice == nil {
+							t.Logf("⚠️ Warning: Stream response choice is nil for choice %d", choice.Index)
+							continue
+						}
+						if choice.ChatNonStreamResponseChoice != nil {
+							t.Logf("⚠️ Warning: Non-stream response choice should be nil in streaming response")
 						}
 
-						// Log role if present (usually in first chunk)
-						if delta.Role != nil {
-							t.Logf("🤖 Role: %s", *delta.Role)
-						}
+						// Get content from delta
+						if choice.ChatStreamResponseChoice != nil  && choice.ChatStreamResponseChoice.Delta != nil {
+							delta := choice.ChatStreamResponseChoice.Delta
+							if delta.Content != nil {
+								fullContent.WriteString(*delta.Content)
+							}
 
-						// Check finish reason if present
-						if choice.FinishReason != nil {
-							t.Logf("🏁 Finish reason: %s", *choice.FinishReason)
+							// Log role if present (usually in first chunk)
+							if delta.Role != nil {
+								t.Logf("🤖 Role: %s", *delta.Role)
+							}
+
+							// Check finish reason if present
+							if choice.FinishReason != nil {
+								t.Logf("🏁 Finish reason: %s", *choice.FinishReason)
+							}
 						}
 					}
 				}
@@ -142,11 +142,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		finalContent := strings.TrimSpace(fullContent.String())
 
 		// Create a consolidated response for validation
-		consolidatedResponse := &schemas.BifrostResponse{
-			Choices: []schemas.BifrostChatResponseChoice{
+		consolidatedResponse := &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index: 0,
-					BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 						Message: &schemas.ChatMessage{
 							Role: schemas.ChatMessageRoleAssistant,
 							Content: &schemas.ChatMessageContent{
@@ -162,15 +162,15 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 		// Copy usage and other metadata from last response if available
-		if lastResponse != nil && lastResponse.BifrostResponse != nil {
-			consolidatedResponse.Usage = lastResponse.Usage
-			consolidatedResponse.Model = lastResponse.Model
-			consolidatedResponse.ID = lastResponse.ID
-			consolidatedResponse.Created = lastResponse.Created
+		if lastResponse != nil && lastResponse.BifrostChatResponse != nil {
+			consolidatedResponse.Usage = lastResponse.BifrostChatResponse.Usage
+			consolidatedResponse.Model = lastResponse.BifrostChatResponse.Model
+			consolidatedResponse.ID = lastResponse.BifrostChatResponse.ID
+			consolidatedResponse.Created = lastResponse.BifrostChatResponse.Created
 
 			// Copy finish reason from last choice if available
-			if len(lastResponse.Choices) > 0 && lastResponse.Choices[0].FinishReason != nil {
-				consolidatedResponse.Choices[0].FinishReason = lastResponse.Choices[0].FinishReason
+			if len(lastResponse.BifrostChatResponse.Choices) > 0 && lastResponse.BifrostChatResponse.Choices[0].FinishReason != nil {
+				consolidatedResponse.Choices[0].FinishReason = lastResponse.BifrostChatResponse.Choices[0].FinishReason
 			}
 		}
 
@@ -182,7 +182,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		expectations.MaxContentLength = 2000                                                                  // Reasonable upper bound
 
 		// Validate the consolidated streaming response
-		validationResult := ValidateResponse(t, consolidatedResponse, nil, expectations, "ChatCompletionStream")
+		validationResult := ValidateChatResponse(t, consolidatedResponse, nil, expectations, "ChatCompletionStream")
 
 		// Basic streaming validation
 		if responseCount == 0 {
@@ -248,15 +248,15 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 						goto toolStreamComplete
 					}
 
-					if response == nil {
+					if response == nil || response.BifrostChatResponse == nil {
 						t.Fatal("Streaming response should not be nil")
 					}
 					responseCount++
 
-					if response.Choices != nil {
-						for _, choice := range response.Choices {
-							if choice.BifrostStreamResponseChoice != nil {
-								delta := choice.BifrostStreamResponseChoice.Delta
+					if response.BifrostChatResponse.Choices != nil {
+						for _, choice := range response.BifrostChatResponse.Choices {
+							if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+								delta := choice.ChatStreamResponseChoice.Delta
 
 								// Check for tool calls in delta
 								if len(delta.ToolCalls) > 0 {

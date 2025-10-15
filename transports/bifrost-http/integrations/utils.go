@@ -190,9 +190,18 @@ type StreamConfig struct {
 	ErrorConverter                       StreamErrorConverter                 // Function to convert BifrostError to streaming error format
 }
 
+type RouteConfigType string
+
+const (
+	RouteConfigTypeOpenAI RouteConfigType = "openai"
+	RouteConfigTypeAnthropic RouteConfigType = "anthropic"
+	RouteConfigTypeGenAI RouteConfigType = "genai"
+)
+
 // RouteConfig defines the configuration for a single route in an integration.
 // It specifies the path, method, and handlers for request/response conversion.
 type RouteConfig struct {
+	Type                           RouteConfigType                         // Type of the route (e.g., "chat", "text", "embedding", "responses", "speech", "transcription")
 	Path                           string                         // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                         string                         // HTTP method (POST, GET, PUT, DELETE)
 	GetRequestTypeInstance         func() interface{}             // Factory function to create request instance (SHOULD NOT BE NIL)
@@ -760,7 +769,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 		}
 
 		// Send [DONE] marker only for non-responses APIs (OpenAI responses API doesn't use [DONE])
-		if !includeEventType {
+		if !includeEventType && config.Type != RouteConfigTypeGenAI {
 			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 				log.Printf("Failed to write SSE done marker: %v", err)
 			}

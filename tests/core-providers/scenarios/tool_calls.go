@@ -56,7 +56,7 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		}
 
 		// Create operations for both Chat Completions and Responses API
-		chatOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -70,7 +70,7 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation := func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -107,38 +107,47 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		}
 
 		// Verify location argument mentions New York using universal tool extraction
-		validateLocationInToolCalls := func(response *schemas.BifrostResponse, apiName string) {
-			toolCalls := ExtractToolCalls(response)
-			locationFound := false
+		validateLocationInChatToolCalls := func(response *schemas.BifrostChatResponse, apiName string) {
+			toolCalls := ExtractChatToolCalls(response)
+			validateLocationInToolCalls(t, toolCalls, apiName)
+		}
 
-			for _, toolCall := range toolCalls {
-				if toolCall.Name == string(SampleToolTypeWeather) {
-					var args map[string]interface{}
-					if json.Unmarshal([]byte(toolCall.Arguments), &args) == nil {
-						if location, exists := args["location"].(string); exists {
-							lowerLocation := strings.ToLower(location)
-							if strings.Contains(lowerLocation, "new york") || strings.Contains(lowerLocation, "nyc") {
-								locationFound = true
-								t.Logf("✅ %s tool call has correct location: %s", apiName, location)
-								break
-							}
-						}
-					}
-				}
-			}
-
-			require.True(t, locationFound, "%s API tool call should specify New York as the location", apiName)
+		validateLocationInResponsesToolCalls := func(response *schemas.BifrostResponsesResponse, apiName string) {
+			toolCalls := ExtractResponsesToolCalls(response)
+			validateLocationInToolCalls(t, toolCalls, apiName)
 		}
 
 		// Validate both API responses
 		if result.ChatCompletionsResponse != nil {
-			validateLocationInToolCalls(result.ChatCompletionsResponse, "Chat Completions")
+			validateLocationInChatToolCalls(result.ChatCompletionsResponse, "Chat Completions")
 		}
 
 		if result.ResponsesAPIResponse != nil {
-			validateLocationInToolCalls(result.ResponsesAPIResponse, "Responses")
+			validateLocationInResponsesToolCalls(result.ResponsesAPIResponse, "Responses")
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed ToolCalls test!")
 	})
+}
+
+func validateLocationInToolCalls(t *testing.T, toolCalls []ToolCallInfo, apiName string) {
+	locationFound := false
+
+	for _, toolCall := range toolCalls {
+		if toolCall.Name == string(SampleToolTypeWeather) {
+			var args map[string]interface{}
+			if json.Unmarshal([]byte(toolCall.Arguments), &args) == nil {
+				if location, exists := args["location"].(string); exists {
+					lowerLocation := strings.ToLower(location)
+					if strings.Contains(lowerLocation, "new york") || strings.Contains(lowerLocation, "nyc") {
+						locationFound = true
+						t.Logf("✅ %s tool call has correct location: %s", apiName, location)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	require.True(t, locationFound, "%s API tool call should specify New York as the location", apiName)
 }

@@ -79,14 +79,14 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 
 				ttsResponse, err := client.SpeechRequest(ctx, ttsRequest)
 				RequireNoError(t, err, "TTS generation failed for stream round-trip test")
-				if ttsResponse.Speech == nil || ttsResponse.Speech.Audio == nil || len(ttsResponse.Speech.Audio) == 0 {
+				if ttsResponse == nil || len(ttsResponse.Audio) == 0 {
 					t.Fatal("TTS returned invalid or empty audio for stream round-trip test")
 				}
 
 				// Save temp audio file
 				tempDir := os.TempDir()
 				audioFileName := filepath.Join(tempDir, "stream_roundtrip_"+tc.name+"."+tc.format)
-				writeErr := os.WriteFile(audioFileName, ttsResponse.Speech.Audio, 0644)
+				writeErr := os.WriteFile(audioFileName, ttsResponse.Audio, 0644)
 				if writeErr != nil {
 					t.Fatalf("Failed to save temp audio file: %v", writeErr)
 				}
@@ -96,14 +96,14 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 					os.Remove(audioFileName)
 				})
 
-				t.Logf("🔄 Generated TTS audio for stream round-trip: %s (%d bytes)", audioFileName, len(ttsResponse.Speech.Audio))
+				t.Logf("🔄 Generated TTS audio for stream round-trip: %s (%d bytes)", audioFileName, len(ttsResponse.Audio))
 
 				// Step 2: Test streaming transcription
 				streamRequest := &schemas.BifrostTranscriptionRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.TranscriptionModel,
 					Input: &schemas.TranscriptionInput{
-						File: ttsResponse.Speech.Audio,
+						File: ttsResponse.Audio,
 					},
 					Params: &schemas.TranscriptionParameters{
 						Language:       bifrost.Ptr("en"),
@@ -132,22 +132,23 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				}
 
 				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					return client.TranscriptionStreamRequest(ctx, streamRequest)
+					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					defer cancel()
+					return client.TranscriptionStreamRequest(streamCtx, streamRequest)
 				})
 
 				RequireNoError(t, err, "Transcription stream initiation failed")
 				if responseChannel == nil {
 					t.Fatal("Response channel should not be nil")
 				}
+				
+				readCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
 
 				var fullTranscriptionText string
 				var chunkCount int
 				var lastResponse *schemas.BifrostStream
 				var streamErrors []string
-
-				// Create a timeout context for the stream reading
-				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				defer cancel()
 
 				// Read streaming chunks with enhanced validation
 				for {
@@ -169,26 +170,25 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 							continue
 						}
 
-						if response.BifrostResponse == nil {
-							streamErrors = append(streamErrors, "Stream response missing BifrostResponse")
+						if response.BifrostTranscriptionStreamResponse == nil {
+							streamErrors = append(streamErrors, "Stream response missing transcription stream payload")
 							continue
 						}
 
-						if response.BifrostResponse.Transcribe == nil {
-							streamErrors = append(streamErrors, "Stream response missing Transcribe data")
+						if response.BifrostTranscriptionStreamResponse.Text == "" && response.BifrostTranscriptionStreamResponse.Delta == nil {
+							streamErrors = append(streamErrors, "Stream response missing transcription data")
 							continue
 						}
 
 						// Collect transcription chunks
-						transcribeData := response.BifrostResponse.Transcribe
+						transcribeData := response.BifrostTranscriptionStreamResponse
 						if transcribeData.Text != "" {
 							chunkText := transcribeData.Text
 
 							// Handle delta vs complete text chunks
-							if transcribeData.BifrostTranscribeStreamResponse != nil &&
-								transcribeData.BifrostTranscribeStreamResponse.Delta != nil {
+							if transcribeData.Delta != nil {
 								// This is a delta chunk
-								deltaText := *transcribeData.BifrostTranscribeStreamResponse.Delta
+								deltaText := *transcribeData.Delta
 								fullTranscriptionText += deltaText
 								t.Logf("✅ Received transcription delta chunk %d: '%s'", chunkCount+1, deltaText)
 							} else {
@@ -199,17 +199,17 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 							chunkCount++
 
 							// Validate chunk structure
-							if response.BifrostResponse.Object != "" && response.BifrostResponse.Object != "audio.transcription.chunk" {
-								t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostResponse.Object)
+							if response.BifrostTranscriptionStreamResponse.Type != schemas.TranscriptionStreamResponseTypeDelta {
+								t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostTranscriptionStreamResponse.Type)
 							}
-							if response.BifrostResponse.Model != "" && response.BifrostResponse.Model != testConfig.TranscriptionModel {
-								t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostResponse.Model)
+							if response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != testConfig.TranscriptionModel {
+								t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested)
 							}
 						}
 
 						lastResponse = response
 
-					case <-streamCtx.Done():
+					case <-readCtx.Done():
 						streamErrors = append(streamErrors, "Stream reading timed out")
 						goto streamComplete
 					}
@@ -335,15 +335,19 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 				},
 			}
 
+
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.TranscriptionStreamRequest(ctx, request)
+				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				return client.TranscriptionStreamRequest(streamCtx, request)
 			})
 
 			RequireNoError(t, err, "JSON streaming failed")
 
 			var receivedResponse bool
 			var streamErrors []string
-			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
 			for {
@@ -363,15 +367,15 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 						continue
 					}
 
-					if response.BifrostResponse != nil && response.BifrostResponse.Transcribe != nil {
+					if response.BifrostTranscriptionStreamResponse != nil {
 						receivedResponse = true
 
 						// Check for JSON streaming specific fields
-						transcribeData := response.BifrostResponse.Transcribe
-						if transcribeData.BifrostTranscribeStreamResponse != nil {
-							t.Logf("✅ Stream type: %v", transcribeData.BifrostTranscribeStreamResponse.Type)
-							if transcribeData.BifrostTranscribeStreamResponse.Delta != nil {
-								t.Logf("✅ Delta: %s", *transcribeData.BifrostTranscribeStreamResponse.Delta)
+						transcribeData := response.BifrostTranscriptionStreamResponse
+						if transcribeData.Type != "" {
+							t.Logf("✅ Stream type: %v", transcribeData.Type)
+							if transcribeData.Delta != nil {
+								t.Logf("✅ Delta: %s", *transcribeData.Delta)
 							}
 						}
 
@@ -380,7 +384,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 						}
 					}
 
-				case <-streamCtx.Done():
+				case <-readCtx.Done():
 					streamErrors = append(streamErrors, "JSON stream reading timed out")
 					goto verboseStreamComplete
 				}
@@ -432,14 +436,17 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 					}
 
 					responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-						return client.TranscriptionStreamRequest(ctx, request)
+						streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+						defer cancel()
+						return client.TranscriptionStreamRequest(streamCtx, request)
 					})
 
 					RequireNoError(t, err, fmt.Sprintf("Streaming failed for language %s", lang))
 
 					var receivedData bool
 					var streamErrors []string
-					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+					readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 					defer cancel()
 
 					for {
@@ -459,12 +466,12 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 								continue
 							}
 
-							if response.BifrostResponse != nil && response.BifrostResponse.Transcribe != nil {
+							if response.BifrostTranscriptionStreamResponse != nil {
 								receivedData = true
 								t.Logf("✅ Received transcription data for language %s", lang)
 							}
 
-						case <-streamCtx.Done():
+						case <-readCtx.Done():
 							streamErrors = append(streamErrors, fmt.Sprintf("Stream timed out for language %s", lang))
 							goto langStreamComplete
 						}
@@ -517,7 +524,9 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			}
 
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.TranscriptionStreamRequest(ctx, request)
+				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				return client.TranscriptionStreamRequest(streamCtx, request)
 			})
 
 			RequireNoError(t, err, "Custom prompt streaming failed")
@@ -525,7 +534,8 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			var chunkCount int
 			var streamErrors []string
 			var receivedText string
-			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
 			for {
@@ -545,14 +555,14 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 						continue
 					}
 
-					if response.BifrostResponse != nil && response.BifrostResponse.Transcribe != nil && response.BifrostResponse.Transcribe.Text != "" {
+					if response.BifrostTranscriptionStreamResponse != nil && response.BifrostTranscriptionStreamResponse.Text != "" {
 						chunkCount++
-						chunkText := response.BifrostResponse.Transcribe.Text
+						chunkText := response.BifrostTranscriptionStreamResponse.Text
 						receivedText += chunkText
 						t.Logf("✅ Custom prompt chunk %d: '%s'", chunkCount, chunkText)
 					}
 
-				case <-streamCtx.Done():
+				case <-readCtx.Done():
 					streamErrors = append(streamErrors, "Custom prompt stream reading timed out")
 					goto promptStreamComplete
 				}
