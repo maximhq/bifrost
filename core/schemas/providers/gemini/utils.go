@@ -72,10 +72,7 @@ func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Sche
 	}
 
 	if len(schema.Properties) > 0 {
-		params.Properties = make(map[string]interface{})
-		for k, v := range schema.Properties {
-			params.Properties[k] = v
-		}
+		params.Properties = schemas.Ptr(convertSchemaToMap(schema))
 	}
 
 	if len(schema.Enum) > 0 {
@@ -83,6 +80,21 @@ func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Sche
 	}
 
 	return params
+}
+
+func convertSchemaToMap(schema *Schema) map[string]interface{} {
+	// Convert map[string]*Schema to map[string]interface{} using JSON marshaling
+	data, err := sonic.Marshal(schema.Properties)
+	if err != nil {
+		return make(map[string]interface{})
+	}
+
+	var properties map[string]interface{}
+	if err := sonic.Unmarshal(data, &properties); err != nil {
+		return make(map[string]interface{})
+	}
+
+	return properties
 }
 
 // isImageMimeType checks if a MIME type represents an image format
@@ -241,11 +253,11 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 		schema.Required = params.Required
 	}
 
-	if len(params.Properties) > 0 {
+	if params.Properties != nil && len(*params.Properties) > 0 {
 		schema.Properties = make(map[string]*Schema)
 		// Note: This is a simplified conversion. In practice, you'd need to
 		// recursively convert nested schemas
-		for k, v := range params.Properties {
+		for k, v := range *params.Properties {
 			// Convert interface{} to Schema - this would need more sophisticated logic
 			if propMap, ok := v.(map[string]interface{}); ok {
 				propSchema := &Schema{}

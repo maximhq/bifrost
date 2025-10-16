@@ -245,7 +245,6 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ErrorDetailsParsed != nil {
-		l.ErrorDetailsParsed.Error.Error = nil
 		if data, err := json.Marshal(l.ErrorDetailsParsed); err != nil {
 			return err
 		} else {

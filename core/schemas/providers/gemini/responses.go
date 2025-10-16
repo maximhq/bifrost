@@ -418,7 +418,7 @@ func convertFunctionParametersToGeminiSchema(params schemas.ToolFunctionParamete
 
 	if params.Properties != nil {
 		schema.Properties = make(map[string]*Schema)
-		for key, prop := range params.Properties {
+		for key, prop := range *params.Properties {
 			propSchema := convertPropertyToGeminiSchema(prop)
 			schema.Properties[key] = propSchema
 		}

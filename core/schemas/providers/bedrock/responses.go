@@ -151,7 +151,7 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 							ResponsesToolFunction: &schemas.ResponsesToolFunction{
 								Parameters: &schemas.ToolFunctionParameters{
 									Type:       "object",
-									Properties: make(map[string]interface{}),
+									Properties: &map[string]interface{}{},
 								},
 							},
 						}
@@ -169,7 +169,7 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 			if schemaObject == nil {
 				schemaObject = &schemas.ToolFunctionParameters{
 					Type:       "object",
-					Properties: make(map[string]interface{}),
+					Properties: &map[string]interface{}{},
 				}
 			}
 

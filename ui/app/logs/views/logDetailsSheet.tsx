@@ -323,6 +323,19 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 								</div>
 							</>
 						)}
+					{log.error_details?.error.error && (
+						<>
+							<div className="mt-4 w-full text-left text-sm font-medium">Error Details</div>
+							<div className="w-full rounded-sm border">
+								<div className="border-b px-6 py-2 text-sm font-medium">Details</div>
+								<div className="px-6 py-2 font-mono text-xs whitespace-pre-wrap break-words">
+									{typeof log.error_details?.error.error === "string"
+										? (log.error_details.error.error)
+										: JSON.stringify(log.error_details?.error.error, null, 2)}
+								</div>
+							</div>
+						</>
+					)}
 					</>
 				)}
 			</SheetContent>

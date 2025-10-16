@@ -804,7 +804,7 @@ func (m *MCPManager) convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.Ch
 			Description: Ptr(mcpTool.Description),
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       mcpTool.InputSchema.Type,
-				Properties: mcpTool.InputSchema.Properties,
+				Properties: Ptr(mcpTool.InputSchema.Properties),
 				Required:   mcpTool.InputSchema.Required,
 			},
 		},

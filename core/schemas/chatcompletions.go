@@ -206,7 +206,7 @@ type ToolFunctionParameters struct {
 	Type                 string                 `json:"type"`                           // Type of the parameters
 	Description          *string                `json:"description,omitempty"`          // Description of the parameters
 	Required             []string               `json:"required,omitempty"`             // Required parameter names
-	Properties           map[string]interface{} `json:"properties,omitempty"`           // Parameter properties
+	Properties           *map[string]interface{} `json:"properties,omitempty"`           // Parameter properties
 	Enum                 []string               `json:"enum,omitempty"`                 // Enum values for the parameters
 	AdditionalProperties *bool                  `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 }

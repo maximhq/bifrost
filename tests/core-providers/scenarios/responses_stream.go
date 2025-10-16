@@ -246,7 +246,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				ResponsesToolFunction: &schemas.ResponsesToolFunction{
 					Parameters: &schemas.ToolFunctionParameters{
 						Type: "object",
-						Properties: map[string]interface{}{
+						Properties: &map[string]interface{}{
 							"location": map[string]interface{}{
 								"type":        "string",
 								"description": "The city and state, e.g. San Francisco, CA",

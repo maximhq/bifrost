@@ -3,6 +3,8 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 
 	"github.com/bytedance/sonic"
 )
@@ -334,9 +336,48 @@ type ErrorField struct {
 	Type    *string     `json:"type,omitempty"`
 	Code    *string     `json:"code,omitempty"`
 	Message string      `json:"message"`
-	Error   error       `json:"error,omitempty"`
+	Error   error       `json:"-"`
 	Param   interface{} `json:"param,omitempty"`
 	EventID *string     `json:"event_id,omitempty"`
+}
+
+// MarshalJSON implements custom JSON marshaling for ErrorField.
+// It converts the Error field (error interface) to a string.
+func (e *ErrorField) MarshalJSON() ([]byte, error) {
+	type Alias ErrorField
+	aux := &struct {
+		Error *string `json:"error,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(e),
+	}
+
+	if e.Error != nil {
+		errStr := e.Error.Error()
+		aux.Error = &errStr
+	}
+
+	return json.Marshal(aux)
+}
+
+func (e *ErrorField) UnmarshalJSON(data []byte) error {
+	type Alias ErrorField
+	aux := &struct {
+		Error *string `json:"error,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(e),
+	}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if aux.Error != nil {
+		e.Error = errors.New(*aux.Error)
+	}
+
+	return nil
 }
 
 // BifrostErrorExtraFields contains additional fields in an error response.

@@ -121,6 +121,20 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.Anthropic, provider.customProviderConfig)
 }
 
+// parseStreamAnthropicError parses Anthropic streaming error responses.
+func parseStreamAnthropicError(resp *http.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
+	statusCode := resp.StatusCode
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var errorResp anthropic.AnthropicError
+	if err := sonic.Unmarshal(body, &errorResp); err != nil {
+		return newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerType)
+	}
+
+	return newProviderAPIError(errorResp.Error.Message, nil, statusCode, providerType, &errorResp.Error.Type, nil)
+}
+
 // completeRequest sends a request to Anthropic's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
@@ -378,9 +392,7 @@ func handleAnthropicChatCompletionStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, newProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerType, resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, providerType, nil, nil)
+		return nil, parseStreamAnthropicError(resp, providerType)
 	}
 
 	// Create response channel
@@ -628,9 +640,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, newProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", provider.GetProviderKey(), resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, provider.GetProviderKey(), nil, nil)
+		return nil, parseStreamAnthropicError(resp, provider.GetProviderKey())
 	}
 
 	// Create response channel

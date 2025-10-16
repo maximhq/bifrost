@@ -86,7 +86,7 @@ var sampleToolDescriptions = map[SampleToolType]string{
 var WeatherToolFunction = &schemas.ChatToolFunction{
 	Parameters: &schemas.ToolFunctionParameters{
 		Type: "object",
-		Properties: map[string]interface{}{
+		Properties: &map[string]interface{}{
 			"location": map[string]interface{}{
 				"type":        "string",
 				"description": "The city and state, e.g. San Francisco, CA",
@@ -103,7 +103,7 @@ var WeatherToolFunction = &schemas.ChatToolFunction{
 var CalculatorToolFunction = &schemas.ChatToolFunction{
 	Parameters: &schemas.ToolFunctionParameters{
 		Type: "object",
-		Properties: map[string]interface{}{
+		Properties: &map[string]interface{}{
 			"expression": map[string]interface{}{
 				"type":        "string",
 				"description": "The mathematical expression to evaluate, e.g. '2 + 3' or '10 * 5'",
@@ -116,7 +116,7 @@ var CalculatorToolFunction = &schemas.ChatToolFunction{
 var TimeToolFunction = &schemas.ChatToolFunction{
 	Parameters: &schemas.ToolFunctionParameters{
 		Type: "object",
-		Properties: map[string]interface{}{
+		Properties: &map[string]interface{}{
 			"timezone": map[string]interface{}{
 				"type":        "string",
 				"description": "The timezone identifier, e.g. 'America/New_York' or 'UTC'",
