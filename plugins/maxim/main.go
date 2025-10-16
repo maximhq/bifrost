@@ -289,28 +289,31 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	if traceID == "" {
 		// If traceID is not set, create a new trace
 		traceID = uuid.New().String()
-		name := fmt.Sprintf("bifrost_%s", requestType)
-		if traceName != "" {
-			name = traceName
-		}
-
-		traceConfig := logging.TraceConfig{
-			Id:   traceID,
-			Name: maxim.StrPtr(name),
-			Tags: &tags,
-		}
-
-		if sessionID != "" {
-			traceConfig.SessionId = &sessionID
-		}
-
-		// Create trace in the effective log repository
-		logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-		if err == nil {
-			trace := logger.Trace(&traceConfig)
-			trace.SetInput(latestMessage)
-		}
 	}
+
+	name := fmt.Sprintf("bifrost_%s", requestType)
+	if traceName != "" {
+		name = traceName
+	}
+
+	traceConfig := logging.TraceConfig{
+		Id:   traceID,
+		Name: maxim.StrPtr(name),
+		Tags: &tags,
+	}
+
+	if sessionID != "" {
+		traceConfig.SessionId = &sessionID
+	}
+
+	// Create trace in the effective log repository
+	logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
+	if err != nil {
+		return req, nil, fmt.Errorf("failed to create trace: %w", err)
+	}
+
+	trace := logger.Trace(&traceConfig)
+	trace.SetInput(latestMessage)
 
 	// Convert ModelParameters to map[string]interface{}
 	modelParams := make(map[string]interface{})
@@ -338,10 +341,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	}
 
 	// Add generation to the effective log repository
-	logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-	if err == nil {
-		logger.AddGenerationToTrace(traceID, &generationConfig)
-	}
+	logger.AddGenerationToTrace(traceID, &generationConfig)
 
 	if ctx != nil {
 		if _, ok := (*ctx).Value(TraceIDKey).(string); !ok {
