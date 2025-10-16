@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="8" failures="0" errors="0" time="22.617215">
+	<testsuite tests="8" failures="0" time="22.617000" name="github.com/maximhq/bifrost/tests/core-providers" timestamp="2025-10-27T23:49:43-07:00">
+		<properties>
+			<property name="go.version" value="go1.25.1 darwin/arm64"></property>
+		</properties>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3" time="10.610000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/Transcription" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/TranscriptionAdvanced" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/TranscriptionStreamAdvanced" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3" time="11.750000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/TranscriptionStream" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests" time="10.610000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI" time="22.370000"></testcase>
+	</testsuite>
+</testsuites>

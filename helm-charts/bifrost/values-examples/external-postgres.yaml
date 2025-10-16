@@ -1,0 +1,36 @@
+# Configuration: External PostgreSQL (not deployed by Helm)
+# Usage: helm install bifrost ./bifrost -f values-examples/external-postgres.yaml
+
+# Storage configuration
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# Use external PostgreSQL
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "your-postgres-host.example.com"
+    port: 5432
+    user: bifrost
+    password: "your-secure-password"
+    database: bifrost
+    sslMode: require
+
+# No vector store
+vectorStore:
+  enabled: false
+  type: none
+
+# Bifrost configuration
+bifrost:
+  encryptionKey: "your-encryption-key-here"
+  client:
+    enableLogging: true
+  providers: {}
+    # Add your provider keys here
+

@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>core-openai.xml</title>
+    <style type="text/css">/*! normalize.css v3.0.2 | MIT License | git.io/normalize */pre,textarea{overflow:auto}img,legend{border:0}h1,h2,h3{letter-spacing:-.1rem}html{font-family:sans-serif;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%}body{margin:0}article,aside,details,figcaption,figure,footer,header,hgroup,main,menu,nav,section,summary{display:block}audio,canvas,progress,video{display:inline-block;vertical-align:baseline}audio:not([controls]){display:none;height:0}[hidden],template{display:none}a{background-color:transparent;color:#1EAEDB}a:active,a:hover{outline:0}abbr[title]{border-bottom:1px dotted}b,optgroup,strong{font-weight:700}dfn{font-style:italic}h1{margin:.67em 0}mark{background:#ff0;color:#000}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sup{top:-.5em}sub{bottom:-.25em}svg:not(:root){overflow:hidden}figure{margin:1em 40px}hr{-moz-box-sizing:content-box;box-sizing:content-box;height:0}code,kbd,pre,samp{font-family:monospace,monospace;font-size:1em}button,input,optgroup,select,textarea{color:inherit;font:inherit;margin:0}body,h6{line-height:1.6}button{overflow:visible}button,select{text-transform:none}button,html input[type=button],input[type=reset],input[type=submit]{-webkit-appearance:button;cursor:pointer}button[disabled],html input[disabled]{cursor:default}button::-moz-focus-inner,input::-moz-focus-inner{border:0;padding:0}input{line-height:normal}input[type=checkbox],input[type=radio]{box-sizing:border-box;padding:0}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{height:auto}input[type=search]{-moz-box-sizing:content-box;-webkit-box-sizing:content-box}input[type=search]::-webkit-search-cancel-button,input[type=search]::-webkit-search-decoration{-webkit-appearance:none}fieldset{border:1px solid silver;margin:0 2px}legend{padding:0}table{border-collapse:collapse;border-spacing:0}.container{position:relative;width:100%;max-width:960px;margin:0 auto;padding:0 20px;box-sizing:border-box}h1,h2,h3,h4,h5,h6,ol,p,ul{margin-top:0}.column,.columns{width:100%;float:left;box-sizing:border-box}@media (min-width:400px){.container{width:85%;padding:0}}html{font-size:62.5%}body{font-size:1.5em;font-weight:400;font-family:Raleway,HelveticaNeue,"Helvetica Neue",Helvetica,Arial,sans-serif;color:#222}h1,h2,h3,h4,h5,h6{margin-bottom:2rem;font-weight:300}h1{font-size:4rem;line-height:1.2}h2{font-size:3.6rem;line-height:1.25}h3{font-size:3rem;line-height:1.3}h4{font-size:2.4rem;line-height:1.35;letter-spacing:-.08rem}h5{font-size:1.8rem;line-height:1.5;letter-spacing:-.05rem}h6{font-size:1.5rem;letter-spacing:0}@media (min-width:550px){.container{width:80%}.column,.columns{margin-left:4%}.column:first-child,.columns:first-child{margin-left:0}.one.column,.one.columns{width:4.66666666667%}.two.columns{width:13.3333333333%}.three.columns{width:22%}.four.columns{width:30.6666666667%}.five.columns{width:39.3333333333%}.six.columns{width:48%}.seven.columns{width:56.6666666667%}.eight.columns{width:65.3333333333%}.nine.columns{width:74%}.ten.columns{width:82.6666666667%}.eleven.columns{width:91.3333333333%}.twelve.columns{width:100%;margin-left:0}.one-third.column{width:30.6666666667%}.two-thirds.column{width:65.3333333333%}.one-half.column{width:48%}.offset-by-one.column,.offset-by-one.columns{margin-left:8.66666666667%}.offset-by-two.column,.offset-by-two.columns{margin-left:17.3333333333%}.offset-by-three.column,.offset-by-three.columns{margin-left:26%}.offset-by-four.column,.offset-by-four.columns{margin-left:34.6666666667%}.offset-by-five.column,.offset-by-five.columns{margin-left:43.3333333333%}.offset-by-six.column,.offset-by-six.columns{margin-left:52%}.offset-by-seven.column,.offset-by-seven.columns{margin-left:60.6666666667%}.offset-by-eight.column,.offset-by-eight.columns{margin-left:69.3333333333%}.offset-by-nine.column,.offset-by-nine.columns{margin-left:78%}.offset-by-ten.column,.offset-by-ten.columns{margin-left:86.6666666667%}.offset-by-eleven.column,.offset-by-eleven.columns{margin-left:95.3333333333%}.offset-by-one-third.column,.offset-by-one-third.columns{margin-left:34.6666666667%}.offset-by-two-thirds.column,.offset-by-two-thirds.columns{margin-left:69.3333333333%}.offset-by-one-half.column,.offset-by-one-half.columns{margin-left:52%}h1{font-size:5rem}h2{font-size:4.2rem}h3{font-size:3.6rem}h4{font-size:3rem}h5{font-size:2.4rem}h6{font-size:1.5rem}}a:hover{color:#0FA0CE}.button,button,input[type=button],input[type=reset],input[type=submit]{display:inline-block;height:38px;padding:0 30px;color:#555;text-align:center;font-size:11px;font-weight:600;line-height:38px;letter-spacing:.1rem;text-transform:uppercase;text-decoration:none;white-space:nowrap;background-color:transparent;border-radius:4px;border:1px solid #bbb;cursor:pointer;box-sizing:border-box}.button:focus,.button:hover,button:focus,button:hover,input[type=button]:focus,input[type=button]:hover,input[type=reset]:focus,input[type=reset]:hover,input[type=submit]:focus,input[type=submit]:hover{color:#333;border-color:#888;outline:0}.button.button-primary,button.button-primary,input[type=button].button-primary,input[type=reset].button-primary,input[type=submit].button-primary{color:#FFF;background-color:#33C3F0;border-color:#33C3F0}.button.button-primary:focus,.button.button-primary:hover,button.button-primary:focus,button.button-primary:hover,input[type=button].button-primary:focus,input[type=button].button-primary:hover,input[type=reset].button-primary:focus,input[type=reset].button-primary:hover,input[type=submit].button-primary:focus,input[type=submit].button-primary:hover{color:#FFF;background-color:#1EAEDB;border-color:#1EAEDB}input[type=email],input[type=text],input[type=tel],input[type=url],input[type=password],input[type=number],input[type=search],select,textarea{height:38px;padding:6px 10px;background-color:#fff;border:1px solid #D1D1D1;border-radius:4px;box-shadow:none;box-sizing:border-box}input[type=email],input[type=text],input[type=tel],input[type=url],input[type=password],input[type=number],input[type=search],textarea{-webkit-appearance:none;-moz-appearance:none;appearance:none}textarea{min-height:65px;padding-top:6px;padding-bottom:6px}input[type=email]:focus,input[type=text]:focus,input[type=tel]:focus,input[type=url]:focus,input[type=password]:focus,input[type=number]:focus,input[type=search]:focus,select:focus,textarea:focus{border:1px solid #33C3F0;outline:0}label,legend{display:block;margin-bottom:.5rem;font-weight:600}fieldset{padding:0;border-width:0}input[type=checkbox],input[type=radio]{display:inline}label>.label-body{display:inline-block;margin-left:.5rem;font-weight:400}ul{list-style:circle inside}ol{list-style:decimal inside}ol,ul{padding-left:0}ol ol,ol ul,ul ol,ul ul{margin:1.5rem 0 1.5rem 3rem;font-size:90%}.button,button,li{margin-bottom:1rem}code{padding:.2rem .5rem;margin:0 .2rem;font-size:90%;white-space:nowrap;background:#F1F1F1;border:1px solid #E1E1E1;border-radius:4px}pre>code{display:block;padding:1rem 1.5rem;white-space:pre}td,th{padding:12px 15px;text-align:left;border-bottom:1px solid #E1E1E1}td:first-child,th:first-child{padding-left:0}td:last-child,th:last-child{padding-right:0}fieldset,input,select,textarea{margin-bottom:1.5rem}blockquote,dl,figure,form,ol,p,pre,table,ul{margin-bottom:2.5rem}.u-full-width{width:100%;box-sizing:border-box}.u-max-full-width{max-width:100%;box-sizing:border-box}.u-pull-right{float:right}.u-pull-left{float:left}hr{margin-top:3rem;margin-bottom:3.5rem;border-width:0;border-top:1px solid #E1E1E1}.container:after,.row:after,.u-cf{content:"";display:table;clear:both}</style>
+
+    <style type="text/css">.junit_info,h1{text-align:center}.suite--failure{color:#FFF;background-color:#FF1717;border-color:#FF1717}.suite--failure:focus,.suite--failure:hover{color:#FFF;background-color:#ED1515;border-color:#ED1515}.suite--passed{color:#FFF;background-color:#0CAB37;border-color:#0CAB37}.suite--passed:focus,.suite--passed:hover{color:#FFF;background-color:#0B9C32;border-color:#0B9C32}.test--error,.test--failure{color:#FFF;background-color:#E50000;border-color:#E50000}.test--error:focus,.test--error:hover,.test--failure:focus,.test--failure:hover{color:#FFF;background-color:#C00;border-color:#C00}.test--passed{color:#FFF;background-color:#0DBD3D;border-color:#0DBD3D}.test--passed:focus,.test--passed:hover{color:#FFF;background-color:#0BA635;border-color:#0BA635}.test--skipped{color:#FFF;background-color:#C3D6E3;border-color:#C3D6E3}.test--skipped:focus,.test--skipped:hover{color:#FFF;background-color:#BDCFDB;border-color:#BDCFDB}.properties__title{color:#FFF;background-color:#B6B4BA;border-color:#B6B4BA}.properties__title:focus,.properties__title:hover{color:#FFF;background-color:#A7A6AB;border-color:#A7A6AB}.option,.properties,.suite__properties,.test{width:96%;margin-left:2%;margin-right:2%;margin-bottom:10px}.options__cta,.properties__list,.test__message,.test__messages{margin-top:-10px;border:1px solid #bbb;border-radius:0 0 4px 4px;padding:10px}.properties__list td,.properties__list th{padding-left:10px}.properties__title,.test__name{margin-bottom:0;border-radius:4px 4px 0 0}.test__message--multiple{padding:5px;border-radius:4px;border:1px solid #bbb;margin-bottom:4px}.test--passed,.test--skipped{border-radius:4px}.suite__name{margin:0 0 5px;border-radius:4px 4px 0 0}.suite__contents{margin:-10px 0 5px;border-radius:0 0 4px 4px;border:1px solid #bbb;padding:10px 5px 5px}.flat{border-radius:4px 4px 0 0}.round{border-radius:4px}.label{margin-right:10px}.contracted,.hidden,.no_visible_tests,.not_in_search{display:none}.options_container{margin:0 .5em}.container__suites{margin:0 1em}.container__suites,.options{overflow:scroll}::-webkit-scrollbar{width:12px}::-webkit-scrollbar-thumb{border-radius:4px;-webkit-box-shadow:inset 30px 30px 30px #1EAEDB}.options_container__toggle{margin:0}.option__container,.options{border:1px solid #bbb;border-radius:0 0 4px 4px;padding:5px}.option{margin-bottom:1em}.option__title,.search button{margin-bottom:0}.search button{border-radius:4px 4px 0 0}.search input{margin-top:-1px;border-radius:0 0 4px 4px}.options__icon--colapsed{padding:0}</style>
+</head>
+
+<body>
+    <h1 class="u-full-width">core-openai.xml</h1>
+    <div class="junit_info"><button id="junit_info_suite_count" class="suite--count">
+    <span>suite:</span>
+    <span id="junit_info_suite_count_count">1</span><span>/1</span>
+</button>
+<button id="junit_info_suite_failure" class="suite--failure">
+    <span>failure:</span>
+    <span id="junit_info_suite_failure_count">1</span><span>/1</span>
+</button>
+</div>
+    <div class="junit_info">
+<button id="junit_info_test_count" class="test--count">
+    <span>test:</span>
+    <span id="junit_info_test_count_count">77</span><span>/77</span>
+</button>
+<button id="junit_info_test_failure" class="test--failure">
+    <span>failure:</span>
+    <span id="junit_info_test_failure_count">24</span><span>/24</span>
+</button>
+
+<button id="junit_info_test_passed" class="test--passed">
+    <span>passed:</span>
+    <span id="junit_info_test_passed_count">53</span><span>/53</span>
+</button>
+</div>
+    <div>
+        <div id="options_container" class="container__options column one"><svg style="display: none">
+    <symbol id="options__icon" width="36" height="38">
+        <rect x="0" y="8" rx="2" ry="2" width="25" height="5" style="fill:#fff"></rect>
+        <rect x="0" y="15" rx="2" ry="2" width="25" height="5" style="fill:#fff"></rect>
+        <rect x="0" y="22" rx="2" ry="2" width="25" height="5" style="fill:#fff"></rect>
+    </symbol>
+</svg>
+<button id="optionsCollapsed" title="advanced search" class="options_container button-primary options_container__toggle" onclick="showOptions()">
+    <svg width="25" height="38">
+        <use xlink:href="#options__icon"></use>
+    </svg>
+</button>
+<div id="optionsExpanded" class="options_container" style="display: none">
+    <button class="flat button-primary u-full-width options_container__toggle" onclick="hideOptions()">
+        <svg class="u-pull-left" width="36" height="38">
+            <use xlink:href="#options__icon"></use>
+        </svg>
+        <span>SEARCH</span></button>
+    <div id="options" class="options">
+        <div class="option">
+            <button class="option__title u-full-width button-primary flat" onclick="toggleContraction(this.parentElement)">SUITES</button>
+            <div class="option__container">
+                <button class="button-primary u-full-width" onclick="hidePassingSuites(this)">HIDE PASSING</button>
+                <button class="button-primary u-full-width" id="contractSuits" onclick="contractSuites(this)">EXPAND ALL</button>
+                <div class="search">
+                    <button class="u-full-width" disabled="disabled">SEARCH</button>
+                    <input class="u-full-width" type="text" oninput="searchSuites(this.value)" placeholder="suite names"/>
+                </div>
+            </div>
+        </div>
+        <div class="option">
+            <button class="option__title u-full-width button-primary flat" onclick="toggleContraction(this.parentElement)">TESTS</button>
+            <div class="option__container">
+                <button class="button-primary u-full-width" onclick="hidePassingTests(this)">HIDE PASSING</button>
+                <button class="button-primary u-full-width" onclick="hideTests(this)">HIDE ALL</button>
+                <button class="button-primary u-full-width" onclick="contractTests(this)">CONTRACT ALL</button>
+                <div class="search">
+                    <button class="u-full-width" disabled="disabled">SEARCH</button>
+                    <input class="u-full-width" type="text" oninput="searchTests(this.value)" placeholder="test names and messages"/>
+                </div>
+            </div>
+        </div>
+        <div class="option">
+            <button class="option__title u-full-width button-primary flat" onclick="toggleContraction(this.parentElement)">PROPERTIES</button>
+            <div class="option__container">
+                <button class="button-primary u-full-width" onclick="hideProperties(this)">HIDE ALL</button>
+                <button class="button-primary u-full-width" onclick="contractProperties(this)">CONTRACT ALL</button>
+                <div class="search">
+                    <button class="u-full-width" disabled="disabled">SEARCH</button>
+                    <input class="u-full-width" type="text" oninput="searchProperties(this.value)" placeholder="propety keys and values"/>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+        <div id="suites_container" class="u-pull-right columns eleven container__suites"><div class="suite" id="suite_lAQRC">
+    <button class="suite--failure u-full-width round" onclick="toggleContraction(this.parentElement)" onload="setContracted()">
+        <span class="suite__name u-pull-left">github.com/maximhq/bifrost/tests/core-providers</span>
+        <span class="label u-pull-right">tests: 77</span>
+<span class="label u-pull-right">failures: 24</span>
+<span class="label u-pull-right">time: 128.590000</span>
+<span class="label u-pull-right">timestamp: 2025-10-28T08:05:48-07:00</span>
+    </button>
+    <div class="suite__contents">
+        <div id="properties_r8KzV" class="properties">
+    <button class="properties__title u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">Properties</span>
+    </button>
+    <table class="properties__list u-full-width">
+        <thead>
+            <th>NAME</th>
+            <th>VALUE</th>
+        </thead>
+        <tbody>
+            <tr id="property_MkrZw">
+    <td><b>go.version</b></td>
+    <td>go1.25.1 darwin&#x2F;arm64</td>
+</tr>
+        </tbody>
+    </table>
+</div>
+
+        <div class="test" id="test_ZZjBb">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_olEIH" class="test__message">=== RUN   TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation
+=== PAUSE TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation
+=== CONT  TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation
+    utils.go:527: TTS request failed: &{<nil> <nil> false <nil> 0x140000ea500 <nil> <nil> {openai gpt-4o-mini-tts speech}}
+                --- FAIL: TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation (0.00s)
+</nil></nil></nil></nil></nil></div>
+</div>
+
+<div class="test" id="test_tvDZk">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_A4jx8" class="test__message">=== RUN   TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms
+=== PAUSE TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms
+=== CONT  TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"No fallbacks configured, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"No fallbacks configured, we should not try fallbacks"}
+    utils.go:527: TTS request failed: &{<nil> <nil> false <nil> 0x1400017c370 <nil> <nil> {openai gpt-4o-mini-tts speech}}
+                --- FAIL: TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms (0.00s)
+</nil></nil></nil></nil></nil></div>
+</div>
+
+<div class="test" id="test_1qDmU">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_j380r" class="test__message">=== RUN   TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests
+            --- FAIL: TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_QfxST">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_IXodD" class="test__message">=== RUN   TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3
+=== PAUSE TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3
+=== CONT  TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Check if we should try 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Trying fallback provider openai with model whisper-1"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Check if we should try 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Trying fallback provider openai with model whisper-1"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Check if we should try 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Trying fallback provider openai with model whisper-1"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}
+{"level":"warn","time":"2025-10-28T08:06:13-07:00","message":"Fallback provider openai failed: failed to make HTTP request to provider API"}
+{"level":"warn","time":"2025-10-28T08:06:13-07:00","message":"Fallback provider openai failed: failed to make HTTP request to provider API"}
+    error_parser.go:392: TTS generation failed for round-trip test, but got:
+        ❓ Unknown: Unknown Error
+        Message: Make HTTP request to provider API
+        Details:
+          • Provider: openai
+          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\r\n\r\n". Buffer size=5, contents: "0\r\n\r\n"
+        Suggestions:
+          💡 Check the provider's documentation for more details
+          💡 Consider enabling debug logging for more information
+            --- FAIL: TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3 (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_il3wE">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_kWumo" class="test__message">=== RUN   TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3
+=== PAUSE TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3
+=== CONT  TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}
+    error_parser.go:392: TTS generation failed for round-trip test, but got:
+        ❓ Unknown: Unknown Error
+        Message: Make HTTP request to provider API
+        Details:
+          • Provider: openai
+          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\r\n\r\n". Buffer size=5, contents: "0\r\n\r\n"
+        Suggestions:
+          💡 Check the provider's documentation for more details
+          💡 Consider enabling debug logging for more information
+{"level":"debug","time":"2025-10-28T08:06:14-07:00","message":"error from openai provider: {\n  \"error\": {\n    \"message\": \"Invalid URL (POST /v1/audio/speech)\",\n    \"type\": \"invalid_request_error\",\n    \"param\": null,\n    \"code\": null\n  }\n}"}
+{"level":"warn","time":"2025-10-28T08:06:14-07:00","message":"Fallback provider openai failed: Invalid URL (POST /v1/audio/speech)"}
+            --- FAIL: TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3 (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_IGU9j">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3</span>
+        <span class="label u-pull-right">time: 0.480000</span>
+    </button>
+    <div id="message_Meioh" class="test__message">=== RUN   TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3
+=== PAUSE TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3
+=== CONT  TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3
+    error_parser.go:392: TTS generation failed for round-trip test, but got:
+        ❓ Unknown: Unknown Error
+        Message: Make HTTP request to provider API
+        Details:
+          • Provider: openai
+          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\r\n\r\n". Buffer size=5, contents: "0\r\n\r\n"
+        Suggestions:
+          💡 Check the provider's documentation for more details
+          💡 Consider enabling debug logging for more information
+            --- FAIL: TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3 (0.48s)
+</div>
+</div>
+
+<div class="test" id="test_cURkB">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Transcription</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_a0kQO" class="test__message">=== RUN   TestOpenAI/OpenAITests/Transcription
+        --- FAIL: TestOpenAI/OpenAITests/Transcription (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_nP2Da">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming</span>
+        <span class="label u-pull-right">time: 9.480000</span>
+    </button>
+    <div id="message_bWOuJ" class="test__message">=== RUN   TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming
+=== PAUSE TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming
+=== CONT  TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming
+{"level":"debug","time":"2025-10-28T08:06:40-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:40-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:06:40-07:00","message":"attempting speech request for provider openai"}
+    error_parser.go:392: Custom prompt streaming failed, but got:
+        🌉 Bifrost: Bifrost Internal Error
+        Message: Make HTTP request to provider API
+        Details:
+          • Provider: openai
+          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\r\n\r\n". Buffer size=5, contents: "0\r\n\r\n"
+        Suggestions:
+          💡 Check the provider's documentation for more details
+          💡 Consider enabling debug logging for more information
+            --- FAIL: TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming (9.48s)
+</div>
+</div>
+
+<div class="test" id="test_vCA9D">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStreamAdvanced</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_IFz8K" class="test__message">=== RUN   TestOpenAI/OpenAITests/TranscriptionStreamAdvanced
+        --- FAIL: TestOpenAI/OpenAITests/TranscriptionStreamAdvanced (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_tRCJp">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3</span>
+        <span class="label u-pull-right">time: 3.510000</span>
+    </button>
+    <div id="message_h0cnm" class="test__message">=== RUN   TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3
+=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3
+=== CONT  TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3
+{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+    speech_synthesis.go:93: ❌ SpeechSynthesis_TechnicalText_Tertiary_MP3 request failed:  : failed to make HTTP request to provider API
+{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"attempting chat_completion request for provider openai"}
+            --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3 (3.51s)
+</div>
+</div>
+
+<div class="test" id="test_h9GIm">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3</span>
+        <span class="label u-pull-right">time: 2.890000</span>
+    </button>
+    <div id="message_hQV9b" class="test__message">=== RUN   TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3
+=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3
+=== CONT  TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3
+{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"attempting transcription_stream request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Primary provider openai with model gpt-4o returned error: failed to make HTTP request to provider API"}
+{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Check if we should try 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Trying fallback provider openai with model gpt-4o"}
+    speech_synthesis.go:93: ❌ SpeechSynthesis_MediumText_Secondary_MP3 request failed:  : failed to make HTTP request to provider API
+            --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3 (2.89s)
+</div>
+</div>
+
+<div class="test" id="test_TLxVk">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesis</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_KKPOA" class="test__message">=== RUN   TestOpenAI/OpenAITests/SpeechSynthesis
+=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesis
+=== CONT  TestOpenAI/OpenAITests/SpeechSynthesis
+        --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesis (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_JdlqD">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question</span>
+        <span class="label u-pull-right">time: 3.750000</span>
+    </button>
+    <div id="message_q8sl6" class="test__message">=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question
+=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question
+=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question
+{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"request speech for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"attempting responses request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"No primary error, we should not try fallbacks"}
+    error_parser.go:392: Text completion stream with varied prompts failed, but got:
+        🌉 Bifrost: Bifrost Internal Error
+        Message: Make HTTP request to provider API
+        Details:
+          • Provider: openai
+          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\r\n\r\n". Buffer size=5, contents: "0\r\n\r\n"
+        Suggestions:
+          💡 Check the provider's documentation for more details
+          💡 Consider enabling debug logging for more information
+            --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question (3.75s)
+</div>
+</div>
+
+<div class="test" id="test_su0vU">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_PdfN8" class="test__message">=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts
+=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts
+=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts
+        --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_qEEP0">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity</span>
+        <span class="label u-pull-right">time: 3.220000</span>
+    </button>
+    <div id="message_8Olcr" class="test__message">=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity
+=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity
+=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity
+{"level":"debug","time":"2025-10-28T08:07:17-07:00","message":"Primary provider openai with model gpt-4o and 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:18-07:00","message":"request speech for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:18-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:18-07:00","message":"attempting text_completion_stream request for provider openai"}
+    error_parser.go:392: Text completion stream with parameters failed, but got:
+        🌉 Bifrost: Bifrost Internal Error
+        Message: Make HTTP request to provider API
+        Details:
+          • Provider: openai
+          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\r\n\r\n". Buffer size=5, contents: "0\r\n\r\n"
+        Suggestions:
+          💡 Check the provider's documentation for more details
+          💡 Consider enabling debug logging for more information
+{"level":"debug","time":"2025-10-28T08:07:20-07:00","message":"request speech for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:20-07:00","message":"attempting speech request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:20-07:00","message":"No primary error, we should not try fallbacks"}
+            --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity (3.22s)
+</div>
+</div>
+
+<div class="test" id="test_ffmsJ">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamParameters</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_sfs8F" class="test__message">=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamParameters
+=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamParameters
+=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamParameters
+        --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamParameters (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_eKFRg">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary</span>
+        <span class="label u-pull-right">time: 5.210000</span>
+    </button>
+    <div id="message_eer1p" class="test__message">=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary
+=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary
+=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"request text_completion_stream for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"attempting text_completion_stream request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"No primary error, we should not try fallbacks"}
+    speech_synthesis.go:255: ❌ SpeechSynthesis_Voice_secondary request failed:  : failed to make HTTP request to provider API
+{"level":"debug","time":"2025-10-28T08:07:24-07:00","message":"attempting transcription_stream request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:24-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}
+{"level":"debug","time":"2025-10-28T08:07:24-07:00","message":"No fallbacks configured, we should not try fallbacks"}
+                --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary (5.21s)
+</div>
+</div>
+
+<div class="test" id="test_MrdnY">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary</span>
+        <span class="label u-pull-right">time: 5.100000</span>
+    </button>
+    <div id="message_ulYFh" class="test__message">=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary
+=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary
+=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"request text_completion_stream for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"attempting text_completion_stream request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"No primary error, we should not try fallbacks"}
+    speech_synthesis.go:255: ❌ SpeechSynthesis_Voice_tertiary request failed:  : failed to make HTTP request to provider API
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"request chat_completion for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"Successfully used fallback provider openai with model gpt-4o"}
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"Primary provider openai with model gpt-4o and 0 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"attempting responses request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"request chat_completion for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"Primary provider openai with model gpt-4o and 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"attempting responses request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:27-07:00","message":"request transcription_stream for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:27-07:00","message":"No primary error, we should not try fallbacks"}
+                --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary (5.10s)
+</div>
+</div>
+
+<div class="test" id="test_jrVbC">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_m6n2x" class="test__message">=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions
+=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions
+=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions
+            --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_CTczy">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisAdvanced</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_WGSUV" class="test__message">=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced
+=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced
+=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced
+        --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_6BnSw">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3</span>
+        <span class="label u-pull-right">time: 8.100000</span>
+    </button>
+    <div id="message_v9xDL" class="test__message">=== RUN   TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3
+=== PAUSE TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3
+=== CONT  TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3
+{"level":"debug","time":"2025-10-28T08:07:05-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}
+{"level":"debug","time":"2025-10-28T08:07:06-07:00","message":"request responses for provider openai completed"}
+{"level":"debug","time":"2025-10-28T08:07:06-07:00","message":"attempting responses request for provider openai"}
+{"level":"debug","time":"2025-10-28T08:07:06-07:00","message":"No primary error, we should not try fallbacks"}
+    error_parser.go:392: TTS generation failed for stream round-trip test, but got:
+        ❓ Unknown: Unknown Error
+        Message: Make HTTP request to provider API
+        Details:
+          • Provider: openai
+          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\r\n\r\n". Buffer size=5, contents: "0\r\n\r\n"
+        Suggestions:
+          💡 Check the provider's documentation for more details
+          💡 Consider enabling debug logging for more information
+            --- FAIL: TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3 (8.10s)
+</div>
+</div>
+
+<div class="test" id="test_oSorr">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStream</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    <div id="message_m538s" class="test__message">=== RUN   TestOpenAI/OpenAITests/TranscriptionStream
+=== PAUSE TestOpenAI/OpenAITests/TranscriptionStream
+=== CONT  TestOpenAI/OpenAITests/TranscriptionStream
+        --- FAIL: TestOpenAI/OpenAITests/TranscriptionStream (0.00s)
+</div>
+</div>
+
+<div class="test" id="test_7hXqN">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests</span>
+        <span class="label u-pull-right">time: 61.020000</span>
+    </button>
+    <div id="message_CTzql" class="test__message">=== RUN   TestOpenAI/OpenAITests
+    tests.go:24: 🚀 Running comprehensive tests for provider: openai
+    tests.go:95: 
+        ================================================================================
+    tests.go:96: COMPREHENSIVE TEST SUMMARY FOR PROVIDER: OPENAI
+    tests.go:97: ================================================================================
+    tests.go:102: ✅ SUPPORTED:   TextCompletion            ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   SimpleChat                ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   CompletionStream          ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   MultiTurnConversation     ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   ToolCalls                 ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   MultipleToolCalls         ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   End2EndToolCalling        ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   AutomaticFunctionCall     ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   ImageURL                  ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   ImageBase64               ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   MultipleImages            ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   CompleteEnd2End           ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   SpeechSynthesis           ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   SpeechSynthesisStream     ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   Transcription             ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   TranscriptionStream       ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   Embedding                 ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   Reasoning                 ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   ListModels                ✅ Configured to run
+    tests.go:109: --------------------------------------------------------------------------------
+    tests.go:110: CONFIGURATION SUMMARY:
+    tests.go:111:   ✅ Supported Tests:   19
+    tests.go:112:   ❌ Unsupported Tests: 0
+    tests.go:113:   📊 Total Test Types:  19
+    tests.go:114: 
+    tests.go:115: ℹ️  NOTE: Actual PASS/FAIL results are shown in the individual test output above.
+    tests.go:116: ℹ️  Look for individual test results like 'PASS: TestOpenAI/SimpleChat' or 'FAIL: TestOpenAI/ToolCalls'
+    tests.go:117: ================================================================================
+    --- FAIL: TestOpenAI/OpenAITests (61.02s)
+</div>
+</div>
+
+<div class="test" id="test_wZtjW">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI</span>
+        <span class="label u-pull-right">time: 128.289000</span>
+    </button>
+    <div id="message_QX5p3" class="test__message">=== RUN   TestOpenAI
+{"level":"warn","time":"2025-10-28T08:05:48-07:00","message":"failed to prepare provider ollama: failed to create provider for the given key: base_url is required for ollama provider"}
+{"level":"warn","time":"2025-10-28T08:05:48-07:00","message":"failed to prepare provider sgl: failed to create provider for the given key: base_url is required for sgl provider"}
+--- FAIL: TestOpenAI (128.29s)
+</div>
+</div>
+
+<div class="test" id="test_mrMMD">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_alloy</span>
+        <span class="label u-pull-right">time: 1.640000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_1laZ7">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_nova</span>
+        <span class="label u-pull-right">time: 1.660000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_Jm0RO">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_shimmer</span>
+        <span class="label u-pull-right">time: 1.720000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_gpaUt">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo</span>
+        <span class="label u-pull-right">time: 2.790000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_NO7Yv">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_onyx</span>
+        <span class="label u-pull-right">time: 2.970000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_217Vh">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_fable</span>
+        <span class="label u-pull-right">time: 12.000000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_J0OWJ">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_s6NUm">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming</span>
+        <span class="label u-pull-right">time: 24.800000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_qKj6Y">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_s5low">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionAdvanced/AllResponseFormats/Format_json</span>
+        <span class="label u-pull-right">time: 1.360000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_d7rGQ">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionAdvanced/AllResponseFormats/Format_verbose_json</span>
+        <span class="label u-pull-right">time: 2.960000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_hDotp">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionAdvanced/AllResponseFormats</span>
+        <span class="label u-pull-right">time: 3.980000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_KPloF">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionAdvanced/MultipleLanguages/Language_en</span>
+        <span class="label u-pull-right">time: 1.840000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_IWEV5">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionAdvanced/MultipleLanguages</span>
+        <span class="label u-pull-right">time: 4.460000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_lN0Jz">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionAdvanced/WithCustomParameters</span>
+        <span class="label u-pull-right">time: 13.000000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_L0Igt">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionAdvanced</span>
+        <span class="label u-pull-right">time: 13.250000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_QYeQY">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/MultipleLanguages_Streaming/StreamLang_en</span>
+        <span class="label u-pull-right">time: 1.770000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_u0PxS">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/MultipleLanguages_Streaming</span>
+        <span class="label u-pull-right">time: 3.840000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_cCvxT">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/JSONStreaming</span>
+        <span class="label u-pull-right">time: 6.800000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_K5NTv">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Embedding</span>
+        <span class="label u-pull-right">time: 0.320000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_WNlQy">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletion</span>
+        <span class="label u-pull-right">time: 0.400000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_MNcxv">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ListModelsPagination</span>
+        <span class="label u-pull-right">time: 0.780000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_p7P8A">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ResponsesStreamWithTools</span>
+        <span class="label u-pull-right">time: 2.760000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_stN4K">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ToolCalls</span>
+        <span class="label u-pull-right">time: 6.320000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_1nBsP">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ResponsesStream</span>
+        <span class="label u-pull-right">time: 7.050000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_0PRix">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/AutomaticFunctionCalling</span>
+        <span class="label u-pull-right">time: 8.860000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_oWmqo">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ResponsesStreamWithReasoning</span>
+        <span class="label u-pull-right">time: 8.880000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_yjMva">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/MultiTurnConversation</span>
+        <span class="label u-pull-right">time: 9.150000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_Lnuez">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/MultipleToolCalls</span>
+        <span class="label u-pull-right">time: 10.820000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_ttsit">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ListModels</span>
+        <span class="label u-pull-right">time: 0.480000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_bx4dH">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ChatCompletionStreamWithTools</span>
+        <span class="label u-pull-right">time: 4.920000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_jZAF6">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStream</span>
+        <span class="label u-pull-right">time: 6.990000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_QMlkj">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ImageBase64</span>
+        <span class="label u-pull-right">time: 15.170000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_qDgBz">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/End2EndToolCalling</span>
+        <span class="label u-pull-right">time: 17.500000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_ibCcS">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/Reasoning</span>
+        <span class="label u-pull-right">time: 18.920000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_DAbSs">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SimpleChat</span>
+        <span class="label u-pull-right">time: 15.390000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_G6XNW">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStream/ShortText_Streaming</span>
+        <span class="label u-pull-right">time: 7.430000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_Y9Wr3">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStream/MediumText_Echo_WAV</span>
+        <span class="label u-pull-right">time: 5.850000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_jPKNS">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStream/LongText_Streaming</span>
+        <span class="label u-pull-right">time: 6.570000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_zQeX1">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisStream</span>
+        <span class="label u-pull-right">time: 0.000000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_TCUO2">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ChatCompletionStream</span>
+        <span class="label u-pull-right">time: 16.920000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_c0qNK">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesis/BasicText_Primary_MP3</span>
+        <span class="label u-pull-right">time: 6.770000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_IX0sL">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/SimpleCompletion</span>
+        <span class="label u-pull-right">time: 4.040000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_Apfyg">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/CodeCompletion</span>
+        <span class="label u-pull-right">time: 4.370000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_M7LWj">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamParameters/Balanced</span>
+        <span class="label u-pull-right">time: 3.790000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_PLwy3">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TextCompletionStreamParameters/HighCreativity</span>
+        <span class="label u-pull-right">time: 3.840000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_BZxgC">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/LongText_HDModel</span>
+        <span class="label u-pull-right">time: 7.460000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_aMGJ0">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_primary</span>
+        <span class="label u-pull-right">time: 6.160000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_kV64z">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Basic_MP3</span>
+        <span class="label u-pull-right">time: 14.090000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_33ytf">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Medium_MP3</span>
+        <span class="label u-pull-right">time: 23.610000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_ysYDu">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/ImageURL</span>
+        <span class="label u-pull-right">time: 34.200000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_Q50SJ">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/MultipleImages</span>
+        <span class="label u-pull-right">time: 44.790000</span>
+    </button>
+    
+</div>
+
+<div class="test" id="test_LEJdk">
+    <button class="test__name test--passed u-full-width" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestOpenAI/OpenAITests/CompleteEnd2End</span>
+        <span class="label u-pull-right">time: 66.870000</span>
+    </button>
+    
+</div>
+
+    </div>
+</div>
+</div>
+    </div>
+    <script type="text/javascript">function addClass(e,s){e&&(e.className=e.className+" "+s)}function removeClass(e,s){e&&(e.className=e.className.replace(" "+s,""))}function replaceClass(e,s,t){e&&(e.className=e.className.replace(s,t))}function toggleContraction(e){var s=e.children[0],t=e.children[1];if(t){var n=t.className.indexOf("contracted")!==-1;n?(replaceClass(s,"round","flat"),removeClass(t,"contracted")):(replaceClass(s,"flat","round"),addClass(t,"contracted"))}}function createVisibleInfo(e){var s={suites:{},tests:{}};return Object.keys(e).filter(function(e){var s=document.getElementById(e);return null!==s}).forEach(function(e,t){var n=document.getElementById(e);if(n.className.indexOf("not_in_search")===-1&&n.className.indexOf("hidden")===-1&&n.className.indexOf("no_visible_tests")===-1){var i=n.children[0].className.split(" ")[0].split("--")[1];s.suites.hasOwnProperty(i)||(s.suites[i]=0),s.suites[i]+=1;var a=n.children[1].children;Object.keys(a).filter(function(e){return null!==document.getElementById(e)&&a[e].className.indexOf("test")!==-1&&a[e].className.indexOf("not_in_search")===-1&&a[e].className.indexOf("hidden")===-1}).forEach(function(e){var t=document.getElementById(e),n=t.children[0].className.split(" ")[1].split("--")[1];s.tests.hasOwnProperty(n)||(s.tests[n]=0),s.tests[n]+=1})}}),s}function updateInfo(){var e=document.getElementsByClassName("suite"),s=createVisibleInfo(e),t=document.getElementsByClassName("suite hidden"),n=document.getElementsByClassName("suite not_in_search"),i=document.getElementsByClassName("suite no_visible_tests");s.suites.count=e.length-t.length-n.length-i.length;document.getElementsByClassName("test"),document.getElementsByClassName("test hidden"),document.getElementsByClassName("test not_in_search");s.tests.count=0,Object.keys(s.tests).filter(function(e){return"count"!==e}).forEach(function(e){s.tests.count+=s.tests[e]}),Object.keys(junit_info.suites).forEach(function(e){s.suites.hasOwnProperty(e)?document.getElementById("junit_info_suite_"+e+"_count").innerHTML=s.suites[e]:document.getElementById("junit_info_suite_"+e+"_count").innerHTML=0}),Object.keys(junit_info.tests).forEach(function(e){s.tests.hasOwnProperty(e)?document.getElementById("junit_info_test_"+e+"_count").innerHTML=s.tests[e]:document.getElementById("junit_info_test_"+e+"_count").innerHTML=0})}function contractSuites(e){var s=e.innerHTML.indexOf("EXPAND")!==-1;e.innerHTML=s?"CONTRACT ALL":"EXPAND ALL",suites.forEach(function(e){var t=document.getElementById(e.id),n=t.children[0],i=t.children[1];s?(replaceClass(n,"round","flat"),removeClass(i,"contracted")):(replaceClass(n,"flat","round"),addClass(i,"contracted"))})}function setContracted(e){"contracted"===e?document.getElementById("contractSuits").innerHTML="EXPAND ALL":document.getElementById("contractSuits").innerHTML="CONTRACT ALL",console.log("Log this"+e)}function hidePassingSuites(e){var s=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=s?"HIDE PASSING":"SHOW PASSING",suites.forEach(function(e){var t=document.getElementById(e.id);s?removeClass(t,"hidden"):"passed"===e.type&&addClass(t,"hidden")}),updateInfo()}function globToRegex(e){var s,t,n,i,a=0,r=e.length||0;for(t="^";a<r;)if(n=e[a],a+=1,"*"===n)t+=".*";else if("?"===n)t+=".";else if("["===n){for(s=a,s<r&&"!"===e[s]&&(s+=1),s<r&&"]"===e[s]&&(s+=1);s<r&&"]"!==e[s];)s+=1;s>=r?t+="\\[":(i=e.slice(a,s).replace("\\","\\\\"),a=s+1,"!"===i[0]?i="^"+i.slice(1):"^"===i[0]&&(i="\\"+i),t=t+"["+i+"]")}else t+=escape(n);return t+"$"}function match(e,s){if(s=s.toUpperCase(),e=e.toUpperCase(),s.indexOf(e)!==-1)return!0;try{if(null!==s.match(new RegExp(e)))return!0}catch(t){}try{if(null!==s.match(new RegExp(globToRegex(e))))return!0}catch(t){}for(var n=-1,i=0;i<e.length;i++){var a=e[i];if(" "!=a&&(n=s.indexOf(a,n+1),n==-1))return!1}return!0}function searchSuites(e){e=e.toUpperCase(),suites.forEach(function(s){var t=document.getElementById(s.id);if(""===e)return void removeClass(t,"not_in_search");var n=match(e,s.name),i=t.className.indexOf("not_in_search")===-1;!n&&i&&addClass(t,"not_in_search"),n&&removeClass(t,"not_in_search")}),updateInfo()}function forEachTest(e){suites.forEach(function(s){s.testCases.forEach(e)})}function contractTests(e){var s=e.innerHTML.indexOf("EXPAND")!==-1;e.innerHTML=s?"CONTRACT ALL":"EXPAND ALL",forEachTest(function(e){var t=document.getElementById(e.id),n=t.children[0],i=t.children[1];s?(replaceClass(n,"round","flat"),removeClass(i,"contracted")):(replaceClass(n,"flat","round"),addClass(i,"contracted"))})}function hideTests(e){var s=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=s?"HIDE ALL":"SHOW ALL",forEachTest(function(e){var t=document.getElementById(e.id);s?removeClass(t,"hidden"):addClass(t,"hidden")}),updateInfo()}function hidePassingTests(e){var s=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=s?"HIDE PASSING":"SHOW PASSING",forEachTest(function(e){var t=document.getElementById(e.id);s?removeClass(t,"hidden"):"passed"===e.type&&addClass(t,"hidden")}),updateInfo()}function searchTests(e){e=e.toUpperCase(),forEachTest(function(s){var t=document.getElementById(s.id);if(""===e)return removeClass(t,"not_in_search"),void suites.forEach(function(e){var s=document.getElementById(e.id);s.className=s.className.replace(" no_visible_tests","")});var n=match(e,s.name);s.messages.values.forEach(function(s){var t=match(e,s.value);t&&(n=!0)});var i=t.className.indexOf("not_in_search")===-1;!n&&i&&addClass(t,"not_in_search"),n&&removeClass(t,"not_in_search")}),suites.forEach(function(e){var s=document.getElementById(e.id),t=s.children[1].children,n=Object.keys(t).filter(function(e){return null!==document.getElementById(e)&&(t[e].className.indexOf("not_in_search")!==-1||t[e].className.indexOf("properties")!==-1)}).length;t.length===n?s.className=s.className+" no_visible_tests":s.className=s.className.replace(" no_visible_tests","")}),updateInfo()}function contractProperties(e){var s=e.innerHTML.indexOf("EXPAND")!==-1;e.innerHTML=s?"CONTRACT ALL":"EXPAND ALL",suites.filter(function(e){return e.properties.values.length>0}).forEach(function(e){var t=document.getElementById(e.properties.id),n=t.children[0],i=t.children[1];s?(replaceClass(n,"round","flat"),removeClass(i,"contracted")):(replaceClass(n,"flat","round"),addClass(i,"contracted"))})}function hideProperties(e){var s=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=s?"HIDE ALL":"SHOW ALL",suites.filter(function(e){return e.properties.values.length>0}).forEach(function(e){var t=document.getElementById(e.properties.id);s?removeClass(t,"hidden"):addClass(t,"hidden")})}function searchProperties(e){e=e.toUpperCase(),suites.forEach(function(s){s.properties.values.forEach(function(s){var t=document.getElementById(s.id);if(""===e)return void removeClass(t,"not_in_search");var n=match(e,s.name)||match(e,s.value),i=t.className.indexOf("not_in_search")===-1;!n&&i&&addClass(t,"not_in_search"),n&&removeClass(t,"not_in_search")})})}function showOptions(){var e=document.getElementById("optionsCollapsed");e.style.display="none";var s=document.getElementById("optionsExpanded");s.style.display="block";var t=document.getElementById("options_container");t.className=t.className.replace("one","one-third");var n=document.getElementById("suites_container");n.className=n.className.replace("eleven ","two-thirds "),n.className=n.className.replace("columns ","column ")}function hideOptions(){var e=document.getElementById("optionsCollapsed");e.style.display="block";var s=document.getElementById("optionsExpanded");s.style.display="none";var t=document.getElementById("options_container");t.className=t.className.replace("one-third","one");var n=document.getElementById("suites_container");n.className=n.className.replace("two-thirds ","eleven "),n.className=n.className.replace("column ","columns ")}var junit_info={suites:{count:1,failure:1},tests:{count:77,failure:24,passed:53}},suites=[{name:"github.com/maximhq/bifrost/tests/core-providers",type:"failure",tests:"77",failures:"24",time:"128.590000",timestamp:"2025-10-28T08:05:48-07:00",testCases:[{name:"TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation\n=== PAUSE TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation\n=== CONT  TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation\n    utils.go:527: TTS request failed: &{<nil> <nil> false <nil> 0x140000ea500 <nil> <nil> {openai gpt-4o-mini-tts speech}}\n                --- FAIL: TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Numbers_And_Punctuation (0.00s)\n",id:"message_olEIH"}],id:"messages_2Jwca"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_ZZjBb"},{name:"TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms\n=== PAUSE TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms\n=== CONT  TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"No fallbacks configured, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"No fallbacks configured, we should not try fallbacks"}\n    utils.go:527: TTS request failed: &{<nil> <nil> false <nil> 0x1400017c370 <nil> <nil> {openai gpt-4o-mini-tts speech}}\n                --- FAIL: TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests/Technical_Terms (0.00s)\n',id:"message_A4jx8"}],id:"messages_kmUGS"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_tvDZk"},{name:"TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests\n            --- FAIL: TestOpenAI/OpenAITests/Transcription/AdditionalAudioTests (0.00s)\n",id:"message_j380r"}],id:"messages_5cvQU"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_1qDmU"},{name:"TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3\n=== PAUSE TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3\n=== CONT  TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Check if we should try 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Trying fallback provider openai with model whisper-1"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Check if we should try 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Trying fallback provider openai with model whisper-1"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Check if we should try 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Trying fallback provider openai with model whisper-1"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"attempting speech request for provider openai"}\n{"level":"warn","time":"2025-10-28T08:06:13-07:00","message":"Fallback provider openai failed: failed to make HTTP request to provider API"}\n{"level":"warn","time":"2025-10-28T08:06:13-07:00","message":"Fallback provider openai failed: failed to make HTTP request to provider API"}\n    error_parser.go:392: TTS generation failed for round-trip test, but got:\n        ❓ Unknown: Unknown Error\n        Message: Make HTTP request to provider API\n        Details:\n          • Provider: openai\n          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\\r\\n\\r\\n". Buffer size=5, contents: "0\\r\\n\\r\\n"\n        Suggestions:\n          💡 Check the provider\'s documentation for more details\n          💡 Consider enabling debug logging for more information\n            --- FAIL: TestOpenAI/OpenAITests/Transcription/RoundTrip_Medium_MP3 (0.00s)\n',id:"message_IXodD"}],id:"messages_cNNt7"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_QfxST"},{name:"TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3\n=== PAUSE TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3\n=== CONT  TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}\n    error_parser.go:392: TTS generation failed for round-trip test, but got:\n        ❓ Unknown: Unknown Error\n        Message: Make HTTP request to provider API\n        Details:\n          • Provider: openai\n          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\\r\\n\\r\\n". Buffer size=5, contents: "0\\r\\n\\r\\n"\n        Suggestions:\n          💡 Check the provider\'s documentation for more details\n          💡 Consider enabling debug logging for more information\n{"level":"debug","time":"2025-10-28T08:06:14-07:00","message":"error from openai provider: {\\n  \\"error\\": {\\n    \\"message\\": \\"Invalid URL (POST /v1/audio/speech)\\",\\n    \\"type\\": \\"invalid_request_error\\",\\n    \\"param\\": null,\\n    \\"code\\": null\\n  }\\n}"}\n{"level":"warn","time":"2025-10-28T08:06:14-07:00","message":"Fallback provider openai failed: Invalid URL (POST /v1/audio/speech)"}\n            --- FAIL: TestOpenAI/OpenAITests/Transcription/RoundTrip_Technical_MP3 (0.00s)\n',id:"message_kWumo"}],id:"messages_oCaBa"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_il3wE"},{name:"TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3\n=== PAUSE TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3\n=== CONT  TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3\n    error_parser.go:392: TTS generation failed for round-trip test, but got:\n        ❓ Unknown: Unknown Error\n        Message: Make HTTP request to provider API\n        Details:\n          • Provider: openai\n          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\\r\\n\\r\\n". Buffer size=5, contents: "0\\r\\n\\r\\n"\n        Suggestions:\n          💡 Check the provider\'s documentation for more details\n          💡 Consider enabling debug logging for more information\n            --- FAIL: TestOpenAI/OpenAITests/Transcription/RoundTrip_Basic_MP3 (0.48s)\n',id:"message_Meioh"}],id:"messages_Wz9zb"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.480000",id:"test_IGU9j"},{name:"TestOpenAI/OpenAITests/Transcription",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/Transcription\n        --- FAIL: TestOpenAI/OpenAITests/Transcription (0.00s)\n",id:"message_a0kQO"}],id:"messages_RqLBv"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_cURkB"},{name:"TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming\n=== PAUSE TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming\n=== CONT  TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming\n{"level":"debug","time":"2025-10-28T08:06:40-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:40-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:06:40-07:00","message":"attempting speech request for provider openai"}\n    error_parser.go:392: Custom prompt streaming failed, but got:\n        🌉 Bifrost: Bifrost Internal Error\n        Message: Make HTTP request to provider API\n        Details:\n          • Provider: openai\n          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\\r\\n\\r\\n". Buffer size=5, contents: "0\\r\\n\\r\\n"\n        Suggestions:\n          💡 Check the provider\'s documentation for more details\n          💡 Consider enabling debug logging for more information\n            --- FAIL: TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/WithCustomPrompt_Streaming (9.48s)\n',id:"message_bWOuJ"}],id:"messages_rV3QO"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"9.480000",id:"test_nP2Da"},{name:"TestOpenAI/OpenAITests/TranscriptionStreamAdvanced",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/TranscriptionStreamAdvanced\n        --- FAIL: TestOpenAI/OpenAITests/TranscriptionStreamAdvanced (0.00s)\n",id:"message_IFz8K"}],id:"messages_KSWFM"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_vCA9D"},{name:"TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3\n=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3\n=== CONT  TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3\n{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n    speech_synthesis.go:93: ❌ SpeechSynthesis_TechnicalText_Tertiary_MP3 request failed:  : failed to make HTTP request to provider API\n{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"attempting chat_completion request for provider openai"}\n            --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesis/TechnicalText_Tertiary_MP3 (3.51s)\n',id:"message_h0cnm"}],id:"messages_3aDLh"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"3.510000",id:"test_tRCJp"},{name:"TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3\n=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3\n=== CONT  TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3\n{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"attempting transcription_stream request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Primary provider openai with model gpt-4o returned error: failed to make HTTP request to provider API"}\n{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Check if we should try 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:13-07:00","message":"Trying fallback provider openai with model gpt-4o"}\n    speech_synthesis.go:93: ❌ SpeechSynthesis_MediumText_Secondary_MP3 request failed:  : failed to make HTTP request to provider API\n            --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesis/MediumText_Secondary_MP3 (2.89s)\n',id:"message_hQV9b"}],id:"messages_Fgavk"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"2.890000",id:"test_h9GIm"},{name:"TestOpenAI/OpenAITests/SpeechSynthesis",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/SpeechSynthesis\n=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesis\n=== CONT  TestOpenAI/OpenAITests/SpeechSynthesis\n        --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesis (0.00s)\n",id:"message_KKPOA"}],id:"messages_15COM"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_TLxVk"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question\n=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question\n=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question\n{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"request speech for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"attempting responses request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:16-07:00","message":"No primary error, we should not try fallbacks"}\n    error_parser.go:392: Text completion stream with varied prompts failed, but got:\n        🌉 Bifrost: Bifrost Internal Error\n        Message: Make HTTP request to provider API\n        Details:\n          • Provider: openai\n          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\\r\\n\\r\\n". Buffer size=5, contents: "0\\r\\n\\r\\n"\n        Suggestions:\n          💡 Check the provider\'s documentation for more details\n          💡 Consider enabling debug logging for more information\n            --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/Question (3.75s)\n',id:"message_q8sl6"}],id:"messages_crAge"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"3.750000",id:"test_JdlqD"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts\n=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts\n=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts\n        --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts (0.00s)\n",id:"message_PdfN8"}],id:"messages_OWVKK"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_su0vU"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity\n=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity\n=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity\n{"level":"debug","time":"2025-10-28T08:07:17-07:00","message":"Primary provider openai with model gpt-4o and 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:18-07:00","message":"request speech for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:18-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:18-07:00","message":"attempting text_completion_stream request for provider openai"}\n    error_parser.go:392: Text completion stream with parameters failed, but got:\n        🌉 Bifrost: Bifrost Internal Error\n        Message: Make HTTP request to provider API\n        Details:\n          • Provider: openai\n          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\\r\\n\\r\\n". Buffer size=5, contents: "0\\r\\n\\r\\n"\n        Suggestions:\n          💡 Check the provider\'s documentation for more details\n          💡 Consider enabling debug logging for more information\n{"level":"debug","time":"2025-10-28T08:07:20-07:00","message":"request speech for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:20-07:00","message":"attempting speech request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:20-07:00","message":"No primary error, we should not try fallbacks"}\n            --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamParameters/LowCreativity (3.22s)\n',id:"message_8Olcr"}],id:"messages_BbZDz"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"3.220000",id:"test_qEEP0"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamParameters",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/TextCompletionStreamParameters\n=== PAUSE TestOpenAI/OpenAITests/TextCompletionStreamParameters\n=== CONT  TestOpenAI/OpenAITests/TextCompletionStreamParameters\n        --- FAIL: TestOpenAI/OpenAITests/TextCompletionStreamParameters (0.00s)\n",id:"message_sfs8F"}],id:"messages_feV88"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_ffmsJ"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary\n=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary\n=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"request text_completion_stream for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"attempting text_completion_stream request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"No primary error, we should not try fallbacks"}\n    speech_synthesis.go:255: ❌ SpeechSynthesis_Voice_secondary request failed:  : failed to make HTTP request to provider API\n{"level":"debug","time":"2025-10-28T08:07:24-07:00","message":"attempting transcription_stream request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:24-07:00","message":"Primary provider openai with model gpt-4o-mini-tts returned error: failed to make HTTP request to provider API"}\n{"level":"debug","time":"2025-10-28T08:07:24-07:00","message":"No fallbacks configured, we should not try fallbacks"}\n                --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_secondary (5.21s)\n',id:"message_eer1p"}],id:"messages_QXw8r"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"5.210000",id:"test_eKFRg"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary\n=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary\n=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"request text_completion_stream for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"attempting text_completion_stream request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:19-07:00","message":"No primary error, we should not try fallbacks"}\n    speech_synthesis.go:255: ❌ SpeechSynthesis_Voice_tertiary request failed:  : failed to make HTTP request to provider API\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"request chat_completion for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"Successfully used fallback provider openai with model gpt-4o"}\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"Primary provider openai with model gpt-4o and 0 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"attempting responses request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"request chat_completion for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"Primary provider openai with model gpt-4o and 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:26-07:00","message":"attempting responses request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:27-07:00","message":"request transcription_stream for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:27-07:00","message":"No primary error, we should not try fallbacks"}\n                --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_tertiary (5.10s)\n',id:"message_ulYFh"}],id:"messages_7Uysb"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"5.100000",id:"test_MrdnY"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions\n=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions\n=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions\n            --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions (0.00s)\n",id:"message_m6n2x"}],id:"messages_n7H16"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_jrVbC"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisAdvanced",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/SpeechSynthesisAdvanced\n=== PAUSE TestOpenAI/OpenAITests/SpeechSynthesisAdvanced\n=== CONT  TestOpenAI/OpenAITests/SpeechSynthesisAdvanced\n        --- FAIL: TestOpenAI/OpenAITests/SpeechSynthesisAdvanced (0.00s)\n",id:"message_WGSUV"}],id:"messages_s1SH7"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",
+id:"test_CTczy"},{name:"TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3",messages:{values:[{value:'=== RUN   TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3\n=== PAUSE TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3\n=== CONT  TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3\n{"level":"debug","time":"2025-10-28T08:07:05-07:00","message":"Primary provider openai with model gpt-4o-mini-tts and 1 fallbacks"}\n{"level":"debug","time":"2025-10-28T08:07:06-07:00","message":"request responses for provider openai completed"}\n{"level":"debug","time":"2025-10-28T08:07:06-07:00","message":"attempting responses request for provider openai"}\n{"level":"debug","time":"2025-10-28T08:07:06-07:00","message":"No primary error, we should not try fallbacks"}\n    error_parser.go:392: TTS generation failed for stream round-trip test, but got:\n        ❓ Unknown: Unknown Error\n        Message: Make HTTP request to provider API\n        Details:\n          • Provider: openai\n          • Underlying error: error when reading response headers: cannot find whitespace in the first line of response "0\\r\\n\\r\\n". Buffer size=5, contents: "0\\r\\n\\r\\n"\n        Suggestions:\n          💡 Check the provider\'s documentation for more details\n          💡 Consider enabling debug logging for more information\n            --- FAIL: TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Technical_MP3 (8.10s)\n',id:"message_v9xDL"}],id:"messages_HvVUY"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"8.100000",id:"test_6BnSw"},{name:"TestOpenAI/OpenAITests/TranscriptionStream",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests/TranscriptionStream\n=== PAUSE TestOpenAI/OpenAITests/TranscriptionStream\n=== CONT  TestOpenAI/OpenAITests/TranscriptionStream\n        --- FAIL: TestOpenAI/OpenAITests/TranscriptionStream (0.00s)\n",id:"message_m538s"}],id:"messages_p5SGE"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_oSorr"},{name:"TestOpenAI/OpenAITests",messages:{values:[{value:"=== RUN   TestOpenAI/OpenAITests\n    tests.go:24: 🚀 Running comprehensive tests for provider: openai\n    tests.go:95: \n        ================================================================================\n    tests.go:96: COMPREHENSIVE TEST SUMMARY FOR PROVIDER: OPENAI\n    tests.go:97: ================================================================================\n    tests.go:102: ✅ SUPPORTED:   TextCompletion            ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   SimpleChat                ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   CompletionStream          ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   MultiTurnConversation     ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   ToolCalls                 ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   MultipleToolCalls         ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   End2EndToolCalling        ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   AutomaticFunctionCall     ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   ImageURL                  ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   ImageBase64               ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   MultipleImages            ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   CompleteEnd2End           ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   SpeechSynthesis           ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   SpeechSynthesisStream     ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   Transcription             ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   TranscriptionStream       ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   Embedding                 ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   Reasoning                 ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   ListModels                ✅ Configured to run\n    tests.go:109: --------------------------------------------------------------------------------\n    tests.go:110: CONFIGURATION SUMMARY:\n    tests.go:111:   ✅ Supported Tests:   19\n    tests.go:112:   ❌ Unsupported Tests: 0\n    tests.go:113:   📊 Total Test Types:  19\n    tests.go:114: \n    tests.go:115: ℹ️  NOTE: Actual PASS/FAIL results are shown in the individual test output above.\n    tests.go:116: ℹ️  Look for individual test results like 'PASS: TestOpenAI/SimpleChat' or 'FAIL: TestOpenAI/ToolCalls'\n    tests.go:117: ================================================================================\n    --- FAIL: TestOpenAI/OpenAITests (61.02s)\n",id:"message_CTzql"}],id:"messages_gwFMP"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"61.020000",id:"test_7hXqN"},{name:"TestOpenAI",messages:{values:[{value:'=== RUN   TestOpenAI\n{"level":"warn","time":"2025-10-28T08:05:48-07:00","message":"failed to prepare provider ollama: failed to create provider for the given key: base_url is required for ollama provider"}\n{"level":"warn","time":"2025-10-28T08:05:48-07:00","message":"failed to prepare provider sgl: failed to create provider for the given key: base_url is required for sgl provider"}\n--- FAIL: TestOpenAI (128.29s)\n',id:"message_QX5p3"}],id:"messages_2sS98"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"128.289000",id:"test_wZtjW"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_alloy",messages:{values:[],id:"messages_auIp4"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"1.640000",id:"test_mrMMD"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_nova",messages:{values:[],id:"messages_simmC"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"1.660000",id:"test_1laZ7"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_shimmer",messages:{values:[],id:"messages_Rq1Jd"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"1.720000",id:"test_Jm0RO"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo",messages:{values:[],id:"messages_IPDoE"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"2.790000",id:"test_gpaUt"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_onyx",messages:{values:[],id:"messages_axzrL"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"2.970000",id:"test_NO7Yv"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_fable",messages:{values:[],id:"messages_x29QF"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"12.000000",id:"test_217Vh"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming",messages:{values:[],id:"messages_GoBk4"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_J0OWJ"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming",messages:{values:[],id:"messages_mCcdn"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"24.800000",id:"test_s6NUm"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStreamAdvanced",messages:{values:[],id:"messages_elNB2"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_qKj6Y"},{name:"TestOpenAI/OpenAITests/TranscriptionAdvanced/AllResponseFormats/Format_json",messages:{values:[],id:"messages_Kps0T"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"1.360000",id:"test_s5low"},{name:"TestOpenAI/OpenAITests/TranscriptionAdvanced/AllResponseFormats/Format_verbose_json",messages:{values:[],id:"messages_RGbIA"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"2.960000",id:"test_d7rGQ"},{name:"TestOpenAI/OpenAITests/TranscriptionAdvanced/AllResponseFormats",messages:{values:[],id:"messages_O8PDl"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"3.980000",id:"test_hDotp"},{name:"TestOpenAI/OpenAITests/TranscriptionAdvanced/MultipleLanguages/Language_en",messages:{values:[],id:"messages_29UEs"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"1.840000",id:"test_KPloF"},{name:"TestOpenAI/OpenAITests/TranscriptionAdvanced/MultipleLanguages",messages:{values:[],id:"messages_dEO1h"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"4.460000",id:"test_IWEV5"},{name:"TestOpenAI/OpenAITests/TranscriptionAdvanced/WithCustomParameters",messages:{values:[],id:"messages_aFInI"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"13.000000",id:"test_lN0Jz"},{name:"TestOpenAI/OpenAITests/TranscriptionAdvanced",messages:{values:[],id:"messages_FVqyX"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"13.250000",id:"test_L0Igt"},{name:"TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/MultipleLanguages_Streaming/StreamLang_en",messages:{values:[],id:"messages_JpUc4"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"1.770000",id:"test_QYeQY"},{name:"TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/MultipleLanguages_Streaming",messages:{values:[],id:"messages_MuDJQ"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"3.840000",id:"test_u0PxS"},{name:"TestOpenAI/OpenAITests/TranscriptionStreamAdvanced/JSONStreaming",messages:{values:[],id:"messages_ivLp9"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"6.800000",id:"test_cCvxT"},{name:"TestOpenAI/OpenAITests/Embedding",messages:{values:[],id:"messages_97Igu"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.320000",id:"test_K5NTv"},{name:"TestOpenAI/OpenAITests/TextCompletion",messages:{values:[],id:"messages_3BIlX"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.400000",id:"test_WNlQy"},{name:"TestOpenAI/OpenAITests/ListModelsPagination",messages:{values:[],id:"messages_nnLeT"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.780000",id:"test_MNcxv"},{name:"TestOpenAI/OpenAITests/ResponsesStreamWithTools",messages:{values:[],id:"messages_UDbP5"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"2.760000",id:"test_p7P8A"},{name:"TestOpenAI/OpenAITests/ToolCalls",messages:{values:[],id:"messages_ydyHV"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"6.320000",id:"test_stN4K"},{name:"TestOpenAI/OpenAITests/ResponsesStream",messages:{values:[],id:"messages_QpEEy"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"7.050000",id:"test_1nBsP"},{name:"TestOpenAI/OpenAITests/AutomaticFunctionCalling",messages:{values:[],id:"messages_pLiRS"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"8.860000",id:"test_0PRix"},{name:"TestOpenAI/OpenAITests/ResponsesStreamWithReasoning",messages:{values:[],id:"messages_AeeYT"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"8.880000",id:"test_oWmqo"},{name:"TestOpenAI/OpenAITests/MultiTurnConversation",messages:{values:[],id:"messages_c3enk"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"9.150000",id:"test_yjMva"},{name:"TestOpenAI/OpenAITests/MultipleToolCalls",messages:{values:[],id:"messages_nUC94"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"10.820000",id:"test_Lnuez"},{name:"TestOpenAI/OpenAITests/ListModels",messages:{values:[],id:"messages_yyBsp"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.480000",id:"test_ttsit"},{name:"TestOpenAI/OpenAITests/ChatCompletionStreamWithTools",messages:{values:[],id:"messages_8JCa4"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"4.920000",id:"test_bx4dH"},{name:"TestOpenAI/OpenAITests/TextCompletionStream",messages:{values:[],id:"messages_NB7I6"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"6.990000",id:"test_jZAF6"},{name:"TestOpenAI/OpenAITests/ImageBase64",messages:{values:[],id:"messages_5Q9sr"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"15.170000",id:"test_QMlkj"},{name:"TestOpenAI/OpenAITests/End2EndToolCalling",messages:{values:[],id:"messages_Al2ZR"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"17.500000",id:"test_qDgBz"},{name:"TestOpenAI/OpenAITests/Reasoning",messages:{values:[],id:"messages_yqEXv"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"18.920000",id:"test_ibCcS"},{name:"TestOpenAI/OpenAITests/SimpleChat",messages:{values:[],id:"messages_gtEuc"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"15.390000",id:"test_DAbSs"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStream/ShortText_Streaming",messages:{values:[],id:"messages_ar1GH"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"7.430000",id:"test_G6XNW"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStream/MediumText_Echo_WAV",messages:{values:[],id:"messages_Kg3W1"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"5.850000",id:"test_Y9Wr3"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStream/LongText_Streaming",messages:{values:[],id:"messages_nF0XA"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"6.570000",id:"test_jPKNS"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisStream",messages:{values:[],id:"messages_GQe8i"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"0.000000",id:"test_zQeX1"},{name:"TestOpenAI/OpenAITests/ChatCompletionStream",messages:{values:[],id:"messages_nVQMo"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"16.920000",id:"test_TCUO2"},{name:"TestOpenAI/OpenAITests/SpeechSynthesis/BasicText_Primary_MP3",messages:{values:[],id:"messages_TMv7E"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"6.770000",id:"test_c0qNK"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/SimpleCompletion",messages:{values:[],id:"messages_T7wnh"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"4.040000",id:"test_IX0sL"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/CodeCompletion",messages:{values:[],id:"messages_7OFuw"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"4.370000",id:"test_Apfyg"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamParameters/Balanced",messages:{values:[],id:"messages_vhgqq"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"3.790000",id:"test_M7LWj"},{name:"TestOpenAI/OpenAITests/TextCompletionStreamParameters/HighCreativity",messages:{values:[],id:"messages_623y6"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"3.840000",id:"test_PLwy3"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/LongText_HDModel",messages:{values:[],id:"messages_SqMc9"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"7.460000",id:"test_BZxgC"},{name:"TestOpenAI/OpenAITests/SpeechSynthesisAdvanced/AllVoiceOptions/VoiceType_primary",messages:{values:[],id:"messages_3ln8L"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"6.160000",id:"test_aMGJ0"},{name:"TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Basic_MP3",messages:{values:[],id:"messages_zEXWM"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"14.090000",id:"test_kV64z"},{name:"TestOpenAI/OpenAITests/TranscriptionStream/StreamRoundTrip_Medium_MP3",messages:{values:[],id:"messages_gEzLV"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"23.610000",id:"test_33ytf"},{name:"TestOpenAI/OpenAITests/ImageURL",messages:{values:[],id:"messages_Pk2zg"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"34.200000",id:"test_ysYDu"},{name:"TestOpenAI/OpenAITests/MultipleImages",messages:{values:[],id:"messages_J9SSU"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"44.790000",id:"test_Q50SJ"},{name:"TestOpenAI/OpenAITests/CompleteEnd2End",messages:{values:[],id:"messages_Edy8b"},type:"passed",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"66.870000",id:"test_LEJdk"}],properties:{values:[{name:"go.version",value:"go1.25.1 darwin/arm64",id:"property_MkrZw"}],id:"properties_r8KzV"},id:"suite_lAQRC",contracted:""}],height=window.innerHeight||document.documentElement.clientHeight||document.getElementsByTagName("body")[0].clientHeight;document.getElementById("suites_container").style.height=height+"px",document.getElementById("options").style.height=height-76+"px",window.onresize=function(e){var s=window.innerHeight||document.documentElement.clientHeight||document.getElementsByTagName("body")[0].clientHeight;document.getElementById("suites_container").style.height=s+"px",document.getElementById("options").style.height=s-76+"px"};</script>
+</body>
+
+</html>

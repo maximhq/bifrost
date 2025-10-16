@@ -152,7 +152,7 @@ func (p *GovernancePlugin) GetName() string {
 }
 
 // TransportInterceptor intercepts requests before they are processed (governance decision point)
-func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+func (p *GovernancePlugin) TransportInterceptor(ctx *context.Context, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
 	var virtualKeyValue string
 	var err error
 

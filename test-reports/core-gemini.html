@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>core-gemini.xml</title>
+    <style type="text/css">/*! normalize.css v3.0.2 | MIT License | git.io/normalize */pre,textarea{overflow:auto}img,legend{border:0}h1,h2,h3{letter-spacing:-.1rem}html{font-family:sans-serif;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%}body{margin:0}article,aside,details,figcaption,figure,footer,header,hgroup,main,menu,nav,section,summary{display:block}audio,canvas,progress,video{display:inline-block;vertical-align:baseline}audio:not([controls]){display:none;height:0}[hidden],template{display:none}a{background-color:transparent;color:#1EAEDB}a:active,a:hover{outline:0}abbr[title]{border-bottom:1px dotted}b,optgroup,strong{font-weight:700}dfn{font-style:italic}h1{margin:.67em 0}mark{background:#ff0;color:#000}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sup{top:-.5em}sub{bottom:-.25em}svg:not(:root){overflow:hidden}figure{margin:1em 40px}hr{-moz-box-sizing:content-box;box-sizing:content-box;height:0}code,kbd,pre,samp{font-family:monospace,monospace;font-size:1em}button,input,optgroup,select,textarea{color:inherit;font:inherit;margin:0}body,h6{line-height:1.6}button{overflow:visible}button,select{text-transform:none}button,html input[type=button],input[type=reset],input[type=submit]{-webkit-appearance:button;cursor:pointer}button[disabled],html input[disabled]{cursor:default}button::-moz-focus-inner,input::-moz-focus-inner{border:0;padding:0}input{line-height:normal}input[type=checkbox],input[type=radio]{box-sizing:border-box;padding:0}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{height:auto}input[type=search]{-moz-box-sizing:content-box;-webkit-box-sizing:content-box}input[type=search]::-webkit-search-cancel-button,input[type=search]::-webkit-search-decoration{-webkit-appearance:none}fieldset{border:1px solid silver;margin:0 2px}legend{padding:0}table{border-collapse:collapse;border-spacing:0}.container{position:relative;width:100%;max-width:960px;margin:0 auto;padding:0 20px;box-sizing:border-box}h1,h2,h3,h4,h5,h6,ol,p,ul{margin-top:0}.column,.columns{width:100%;float:left;box-sizing:border-box}@media (min-width:400px){.container{width:85%;padding:0}}html{font-size:62.5%}body{font-size:1.5em;font-weight:400;font-family:Raleway,HelveticaNeue,"Helvetica Neue",Helvetica,Arial,sans-serif;color:#222}h1,h2,h3,h4,h5,h6{margin-bottom:2rem;font-weight:300}h1{font-size:4rem;line-height:1.2}h2{font-size:3.6rem;line-height:1.25}h3{font-size:3rem;line-height:1.3}h4{font-size:2.4rem;line-height:1.35;letter-spacing:-.08rem}h5{font-size:1.8rem;line-height:1.5;letter-spacing:-.05rem}h6{font-size:1.5rem;letter-spacing:0}@media (min-width:550px){.container{width:80%}.column,.columns{margin-left:4%}.column:first-child,.columns:first-child{margin-left:0}.one.column,.one.columns{width:4.66666666667%}.two.columns{width:13.3333333333%}.three.columns{width:22%}.four.columns{width:30.6666666667%}.five.columns{width:39.3333333333%}.six.columns{width:48%}.seven.columns{width:56.6666666667%}.eight.columns{width:65.3333333333%}.nine.columns{width:74%}.ten.columns{width:82.6666666667%}.eleven.columns{width:91.3333333333%}.twelve.columns{width:100%;margin-left:0}.one-third.column{width:30.6666666667%}.two-thirds.column{width:65.3333333333%}.one-half.column{width:48%}.offset-by-one.column,.offset-by-one.columns{margin-left:8.66666666667%}.offset-by-two.column,.offset-by-two.columns{margin-left:17.3333333333%}.offset-by-three.column,.offset-by-three.columns{margin-left:26%}.offset-by-four.column,.offset-by-four.columns{margin-left:34.6666666667%}.offset-by-five.column,.offset-by-five.columns{margin-left:43.3333333333%}.offset-by-six.column,.offset-by-six.columns{margin-left:52%}.offset-by-seven.column,.offset-by-seven.columns{margin-left:60.6666666667%}.offset-by-eight.column,.offset-by-eight.columns{margin-left:69.3333333333%}.offset-by-nine.column,.offset-by-nine.columns{margin-left:78%}.offset-by-ten.column,.offset-by-ten.columns{margin-left:86.6666666667%}.offset-by-eleven.column,.offset-by-eleven.columns{margin-left:95.3333333333%}.offset-by-one-third.column,.offset-by-one-third.columns{margin-left:34.6666666667%}.offset-by-two-thirds.column,.offset-by-two-thirds.columns{margin-left:69.3333333333%}.offset-by-one-half.column,.offset-by-one-half.columns{margin-left:52%}h1{font-size:5rem}h2{font-size:4.2rem}h3{font-size:3.6rem}h4{font-size:3rem}h5{font-size:2.4rem}h6{font-size:1.5rem}}a:hover{color:#0FA0CE}.button,button,input[type=button],input[type=reset],input[type=submit]{display:inline-block;height:38px;padding:0 30px;color:#555;text-align:center;font-size:11px;font-weight:600;line-height:38px;letter-spacing:.1rem;text-transform:uppercase;text-decoration:none;white-space:nowrap;background-color:transparent;border-radius:4px;border:1px solid #bbb;cursor:pointer;box-sizing:border-box}.button:focus,.button:hover,button:focus,button:hover,input[type=button]:focus,input[type=button]:hover,input[type=reset]:focus,input[type=reset]:hover,input[type=submit]:focus,input[type=submit]:hover{color:#333;border-color:#888;outline:0}.button.button-primary,button.button-primary,input[type=button].button-primary,input[type=reset].button-primary,input[type=submit].button-primary{color:#FFF;background-color:#33C3F0;border-color:#33C3F0}.button.button-primary:focus,.button.button-primary:hover,button.button-primary:focus,button.button-primary:hover,input[type=button].button-primary:focus,input[type=button].button-primary:hover,input[type=reset].button-primary:focus,input[type=reset].button-primary:hover,input[type=submit].button-primary:focus,input[type=submit].button-primary:hover{color:#FFF;background-color:#1EAEDB;border-color:#1EAEDB}input[type=email],input[type=text],input[type=tel],input[type=url],input[type=password],input[type=number],input[type=search],select,textarea{height:38px;padding:6px 10px;background-color:#fff;border:1px solid #D1D1D1;border-radius:4px;box-shadow:none;box-sizing:border-box}input[type=email],input[type=text],input[type=tel],input[type=url],input[type=password],input[type=number],input[type=search],textarea{-webkit-appearance:none;-moz-appearance:none;appearance:none}textarea{min-height:65px;padding-top:6px;padding-bottom:6px}input[type=email]:focus,input[type=text]:focus,input[type=tel]:focus,input[type=url]:focus,input[type=password]:focus,input[type=number]:focus,input[type=search]:focus,select:focus,textarea:focus{border:1px solid #33C3F0;outline:0}label,legend{display:block;margin-bottom:.5rem;font-weight:600}fieldset{padding:0;border-width:0}input[type=checkbox],input[type=radio]{display:inline}label>.label-body{display:inline-block;margin-left:.5rem;font-weight:400}ul{list-style:circle inside}ol{list-style:decimal inside}ol,ul{padding-left:0}ol ol,ol ul,ul ol,ul ul{margin:1.5rem 0 1.5rem 3rem;font-size:90%}.button,button,li{margin-bottom:1rem}code{padding:.2rem .5rem;margin:0 .2rem;font-size:90%;white-space:nowrap;background:#F1F1F1;border:1px solid #E1E1E1;border-radius:4px}pre>code{display:block;padding:1rem 1.5rem;white-space:pre}td,th{padding:12px 15px;text-align:left;border-bottom:1px solid #E1E1E1}td:first-child,th:first-child{padding-left:0}td:last-child,th:last-child{padding-right:0}fieldset,input,select,textarea{margin-bottom:1.5rem}blockquote,dl,figure,form,ol,p,pre,table,ul{margin-bottom:2.5rem}.u-full-width{width:100%;box-sizing:border-box}.u-max-full-width{max-width:100%;box-sizing:border-box}.u-pull-right{float:right}.u-pull-left{float:left}hr{margin-top:3rem;margin-bottom:3.5rem;border-width:0;border-top:1px solid #E1E1E1}.container:after,.row:after,.u-cf{content:"";display:table;clear:both}</style>
+
+    <style type="text/css">.junit_info,h1{text-align:center}.suite--failure{color:#FFF;background-color:#FF1717;border-color:#FF1717}.suite--failure:focus,.suite--failure:hover{color:#FFF;background-color:#ED1515;border-color:#ED1515}.suite--passed{color:#FFF;background-color:#0CAB37;border-color:#0CAB37}.suite--passed:focus,.suite--passed:hover{color:#FFF;background-color:#0B9C32;border-color:#0B9C32}.test--error,.test--failure{color:#FFF;background-color:#E50000;border-color:#E50000}.test--error:focus,.test--error:hover,.test--failure:focus,.test--failure:hover{color:#FFF;background-color:#C00;border-color:#C00}.test--passed{color:#FFF;background-color:#0DBD3D;border-color:#0DBD3D}.test--passed:focus,.test--passed:hover{color:#FFF;background-color:#0BA635;border-color:#0BA635}.test--skipped{color:#FFF;background-color:#C3D6E3;border-color:#C3D6E3}.test--skipped:focus,.test--skipped:hover{color:#FFF;background-color:#BDCFDB;border-color:#BDCFDB}.properties__title{color:#FFF;background-color:#B6B4BA;border-color:#B6B4BA}.properties__title:focus,.properties__title:hover{color:#FFF;background-color:#A7A6AB;border-color:#A7A6AB}.option,.properties,.suite__properties,.test{width:96%;margin-left:2%;margin-right:2%;margin-bottom:10px}.options__cta,.properties__list,.test__message,.test__messages{margin-top:-10px;border:1px solid #bbb;border-radius:0 0 4px 4px;padding:10px}.properties__list td,.properties__list th{padding-left:10px}.properties__title,.test__name{margin-bottom:0;border-radius:4px 4px 0 0}.test__message--multiple{padding:5px;border-radius:4px;border:1px solid #bbb;margin-bottom:4px}.test--passed,.test--skipped{border-radius:4px}.suite__name{margin:0 0 5px;border-radius:4px 4px 0 0}.suite__contents{margin:-10px 0 5px;border-radius:0 0 4px 4px;border:1px solid #bbb;padding:10px 5px 5px}.flat{border-radius:4px 4px 0 0}.round{border-radius:4px}.label{margin-right:10px}.contracted,.hidden,.no_visible_tests,.not_in_search{display:none}.options_container{margin:0 .5em}.container__suites{margin:0 1em}.container__suites,.options{overflow:scroll}::-webkit-scrollbar{width:12px}::-webkit-scrollbar-thumb{border-radius:4px;-webkit-box-shadow:inset 30px 30px 30px #1EAEDB}.options_container__toggle{margin:0}.option__container,.options{border:1px solid #bbb;border-radius:0 0 4px 4px;padding:5px}.option{margin-bottom:1em}.option__title,.search button{margin-bottom:0}.search button{border-radius:4px 4px 0 0}.search input{margin-top:-1px;border-radius:0 0 4px 4px}.options__icon--colapsed{padding:0}</style>
+</head>
+
+<body>
+    <h1 class="u-full-width">core-gemini.xml</h1>
+    <div class="junit_info"><button id="junit_info_suite_count" class="suite--count">
+    <span>suite:</span>
+    <span id="junit_info_suite_count_count">1</span><span>/1</span>
+</button>
+<button id="junit_info_suite_failure" class="suite--failure">
+    <span>failure:</span>
+    <span id="junit_info_suite_failure_count">1</span><span>/1</span>
+</button>
+</div>
+    <div class="junit_info">
+<button id="junit_info_test_count" class="test--count">
+    <span>test:</span>
+    <span id="junit_info_test_count_count">37</span><span>/37</span>
+</button>
+<button id="junit_info_test_failure" class="test--failure">
+    <span>failure:</span>
+    <span id="junit_info_test_failure_count">37</span><span>/37</span>
+</button>
+</div>
+    <div>
+        <div id="options_container" class="container__options column one"><svg style="display: none">
+    <symbol id="options__icon" width="36" height="38">
+        <rect x="0" y="8" rx="2" ry="2" width="25" height="5" style="fill:#fff"></rect>
+        <rect x="0" y="15" rx="2" ry="2" width="25" height="5" style="fill:#fff"></rect>
+        <rect x="0" y="22" rx="2" ry="2" width="25" height="5" style="fill:#fff"></rect>
+    </symbol>
+</svg>
+<button id="optionsCollapsed" title="advanced search" class="options_container button-primary options_container__toggle" onclick="showOptions()">
+    <svg width="25" height="38">
+        <use xlink:href="#options__icon"></use>
+    </svg>
+</button>
+<div id="optionsExpanded" class="options_container" style="display: none">
+    <button class="flat button-primary u-full-width options_container__toggle" onclick="hideOptions()">
+        <svg class="u-pull-left" width="36" height="38">
+            <use xlink:href="#options__icon"></use>
+        </svg>
+        <span>SEARCH</span></button>
+    <div id="options" class="options">
+        <div class="option">
+            <button class="option__title u-full-width button-primary flat" onclick="toggleContraction(this.parentElement)">SUITES</button>
+            <div class="option__container">
+                <button class="button-primary u-full-width" onclick="hidePassingSuites(this)">HIDE PASSING</button>
+                <button class="button-primary u-full-width" id="contractSuits" onclick="contractSuites(this)">EXPAND ALL</button>
+                <div class="search">
+                    <button class="u-full-width" disabled="disabled">SEARCH</button>
+                    <input class="u-full-width" type="text" oninput="searchSuites(this.value)" placeholder="suite names"/>
+                </div>
+            </div>
+        </div>
+        <div class="option">
+            <button class="option__title u-full-width button-primary flat" onclick="toggleContraction(this.parentElement)">TESTS</button>
+            <div class="option__container">
+                <button class="button-primary u-full-width" onclick="hidePassingTests(this)">HIDE PASSING</button>
+                <button class="button-primary u-full-width" onclick="hideTests(this)">HIDE ALL</button>
+                <button class="button-primary u-full-width" onclick="contractTests(this)">CONTRACT ALL</button>
+                <div class="search">
+                    <button class="u-full-width" disabled="disabled">SEARCH</button>
+                    <input class="u-full-width" type="text" oninput="searchTests(this.value)" placeholder="test names and messages"/>
+                </div>
+            </div>
+        </div>
+        <div class="option">
+            <button class="option__title u-full-width button-primary flat" onclick="toggleContraction(this.parentElement)">PROPERTIES</button>
+            <div class="option__container">
+                <button class="button-primary u-full-width" onclick="hideProperties(this)">HIDE ALL</button>
+                <button class="button-primary u-full-width" onclick="contractProperties(this)">CONTRACT ALL</button>
+                <div class="search">
+                    <button class="u-full-width" disabled="disabled">SEARCH</button>
+                    <input class="u-full-width" type="text" oninput="searchProperties(this.value)" placeholder="propety keys and values"/>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+        <div id="suites_container" class="u-pull-right columns eleven container__suites"><div class="suite" id="suite_0BmpI">
+    <button class="suite--failure u-full-width round" onclick="toggleContraction(this.parentElement)" onload="setContracted()">
+        <span class="suite__name u-pull-left">github.com/maximhq/bifrost/tests/core-providers</span>
+        <span class="label u-pull-right">tests: 37</span>
+<span class="label u-pull-right">failures: 37</span>
+<span class="label u-pull-right">time: 21.726000</span>
+<span class="label u-pull-right">timestamp: 2025-10-27T22:26:19-07:00</span>
+    </button>
+    <div class="suite__contents">
+        <div id="properties_FEnN2" class="properties">
+    <button class="properties__title u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">Properties</span>
+    </button>
+    <table class="properties__list u-full-width">
+        <thead>
+            <th>NAME</th>
+            <th>VALUE</th>
+        </thead>
+        <tbody>
+            <tr id="property_NkIJH">
+    <td><b>go.version</b></td>
+    <td>go1.25.1 darwin&#x2F;arm64</td>
+</tr>
+        </tbody>
+    </table>
+</div>
+
+        <div class="test" id="test_wqljD">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/Embedding</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_6KEQw" class="test__message">=== RUN   TestGemini/GeminiTests/Embedding
+=== PAUSE TestGemini/GeminiTests/Embedding
+=== CONT  TestGemini/GeminiTests/Embedding
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model text-embedding-004 and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting embedding request for provider gemini"}
+    response_validation.go:1286: ✅ Validation passed for Embedding
+    embedding.go:154: ✅ Semantic coherence validated:
+    embedding.go:155:    Similarity('Hello, world!' vs 'Hi, world!'): 0.937594
+    embedding.go:156:    Similarity('Hello, world!' vs 'Goodnight, moon!'): 0.466651
+    embedding.go:157:    Difference: 0.470943
+    embedding.go:160: 📊 Embedding metrics: 3 vectors, 768 dimensions each
+</div>
+</div>
+
+<div class="test" id="test_8jp4U">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/MultipleToolCalls</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_ApWBj" class="test__message">=== RUN   TestGemini/GeminiTests/MultipleToolCalls
+=== PAUSE TestGemini/GeminiTests/MultipleToolCalls
+=== CONT  TestGemini/GeminiTests/MultipleToolCalls
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+</div>
+</div>
+
+<div class="test" id="test_OYohu">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_C68X7" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced
+</div>
+</div>
+
+<div class="test" id="test_3w73n">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_wQBEg" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}
+    speech_synthesis_stream.go:431: ✅ Received data for voice achird: 230926 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achird
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_qB6ds">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_eNb4t" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_4hqz2">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_wDDHH" class="test__message">=== RUN   TestGemini/GeminiTests
+    tests.go:24: 🚀 Running comprehensive tests for provider: gemini
+    text_completion.go:17: ⏭️ Text completion not supported for provider gemini
+    text_completion_stream.go:19: Text completion stream not supported for provider gemini
+    image_url.go:18: Image URL not supported for provider gemini
+    multiple_images.go:18: Multiple images not supported for provider gemini
+    transcription.go:21: Transcription not supported for provider gemini
+    transcription.go:196: Transcription not supported for provider gemini
+    transcription_stream.go:21: Transcription streaming not supported for provider gemini
+    transcription_stream.go:302: Transcription streaming not supported for provider gemini
+    reasoning.go:17: ⏭️ Reasoning not supported for provider gemini
+    tests.go:95: 
+        ================================================================================
+    tests.go:96: COMPREHENSIVE TEST SUMMARY FOR PROVIDER: GEMINI
+    tests.go:97: ================================================================================
+    tests.go:105: ❌ UNSUPPORTED: TextCompletion            ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   SimpleChat                ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   CompletionStream          ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   MultiTurnConversation     ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   ToolCalls                 ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   MultipleToolCalls         ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   End2EndToolCalling        ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   AutomaticFunctionCall     ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: ImageURL                  ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   ImageBase64               ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: MultipleImages            ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   CompleteEnd2End           ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   SpeechSynthesis           ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   SpeechSynthesisStream     ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: Transcription             ❌ Not supported by provider
+    tests.go:105: ❌ UNSUPPORTED: TranscriptionStream       ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   Embedding                 ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: Reasoning                 ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   ListModels                ✅ Configured to run
+    tests.go:109: --------------------------------------------------------------------------------
+    tests.go:110: CONFIGURATION SUMMARY:
+    tests.go:111:   ✅ Supported Tests:   13
+    tests.go:112:   ❌ Unsupported Tests: 6
+    tests.go:113:   📊 Total Test Types:  19
+    tests.go:114: 
+    tests.go:115: ℹ️  NOTE: Actual PASS/FAIL results are shown in the individual test output above.
+    tests.go:116: ℹ️  Look for individual test results like 'PASS: TestOpenAI/SimpleChat' or 'FAIL: TestOpenAI/ToolCalls'
+    tests.go:117: ================================================================================
+</div>
+</div>
+
+<div class="test" id="test_NKNXf">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/CompleteEnd2End</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_wO5ia" class="test__message">=== RUN   TestGemini/GeminiTests/CompleteEnd2End
+=== PAUSE TestGemini/GeminiTests/CompleteEnd2End
+=== CONT  TestGemini/GeminiTests/CompleteEnd2End
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request embedding for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_0Fjra">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ListModelsPagination</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_bA0Gb" class="test__message">=== RUN   TestGemini/GeminiTests/ListModelsPagination
+=== PAUSE TestGemini/GeminiTests/ListModelsPagination
+=== CONT  TestGemini/GeminiTests/ListModelsPagination
+    list_models.go:125: ✅ Pagination working: returned 5 models (page size: 5)
+    list_models.go:130: ✅ Next page token available: Ciptb2RlbHMvZ2VtaW5pLTIuNS1mbGFzaC1saXRlLXByZXZpZXctMDYtMTc=
+    list_models.go:143: ✅ Successfully fetched next page with 5 models
+    list_models.go:150: ✅ Pages contain different models (first page: gemini/embedding-gecko-001, second page: gemini/gemini-2.5-pro-preview-05-06)
+    list_models.go:159: 🎉 List models pagination test completed!
+</div>
+</div>
+
+<div class="test" id="test_CHuCw">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_U1em6" class="test__message">=== RUN   TestGemini
+{"level":"warn","time":"2025-10-27T22:26:19-07:00","message":"failed to prepare provider ollama: failed to create provider for the given key: base_url is required for ollama provider"}
+{"level":"warn","time":"2025-10-27T22:26:19-07:00","message":"failed to prepare provider sgl: failed to create provider for the given key: base_url is required for sgl provider"}
+=== RUN   TestGemini/GeminiTests
+    tests.go:24: 🚀 Running comprehensive tests for provider: gemini
+    text_completion.go:17: ⏭️ Text completion not supported for provider gemini
+    text_completion_stream.go:19: Text completion stream not supported for provider gemini
+    image_url.go:18: Image URL not supported for provider gemini
+    multiple_images.go:18: Multiple images not supported for provider gemini
+    transcription.go:21: Transcription not supported for provider gemini
+    transcription.go:196: Transcription not supported for provider gemini
+    transcription_stream.go:21: Transcription streaming not supported for provider gemini
+    transcription_stream.go:302: Transcription streaming not supported for provider gemini
+    reasoning.go:17: ⏭️ Reasoning not supported for provider gemini
+    tests.go:95: 
+        ================================================================================
+    tests.go:96: COMPREHENSIVE TEST SUMMARY FOR PROVIDER: GEMINI
+    tests.go:97: ================================================================================
+    tests.go:105: ❌ UNSUPPORTED: TextCompletion            ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   SimpleChat                ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   CompletionStream          ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   MultiTurnConversation     ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   ToolCalls                 ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   MultipleToolCalls         ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   End2EndToolCalling        ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   AutomaticFunctionCall     ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: ImageURL                  ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   ImageBase64               ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: MultipleImages            ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   CompleteEnd2End           ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   SpeechSynthesis           ✅ Configured to run
+    tests.go:102: ✅ SUPPORTED:   SpeechSynthesisStream     ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: Transcription             ❌ Not supported by provider
+    tests.go:105: ❌ UNSUPPORTED: TranscriptionStream       ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   Embedding                 ✅ Configured to run
+    tests.go:105: ❌ UNSUPPORTED: Reasoning                 ❌ Not supported by provider
+    tests.go:102: ✅ SUPPORTED:   ListModels                ✅ Configured to run
+    tests.go:109: --------------------------------------------------------------------------------
+    tests.go:110: CONFIGURATION SUMMARY:
+    tests.go:111:   ✅ Supported Tests:   13
+    tests.go:112:   ❌ Unsupported Tests: 6
+    tests.go:113:   📊 Total Test Types:  19
+    tests.go:114: 
+    tests.go:115: ℹ️  NOTE: Actual PASS/FAIL results are shown in the individual test output above.
+    tests.go:116: ℹ️  Look for individual test results like 'PASS: TestOpenAI/SimpleChat' or 'FAIL: TestOpenAI/ToolCalls'
+    tests.go:117: ================================================================================
+=== RUN   TestGemini/GeminiTests/SimpleChat
+=== PAUSE TestGemini/GeminiTests/SimpleChat
+=== CONT  TestGemini/GeminiTests/SimpleChat
+    response_validation.go:1286: ✅ Validation passed for SimpleChat_Chat
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/ChatCompletionStream
+=== PAUSE TestGemini/GeminiTests/ChatCompletionStream
+=== CONT  TestGemini/GeminiTests/ChatCompletionStream
+=== RUN   TestGemini/GeminiTests/ChatCompletionStreamWithTools
+=== PAUSE TestGemini/GeminiTests/ChatCompletionStreamWithTools
+=== CONT  TestGemini/GeminiTests/ChatCompletionStreamWithTools
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}
+    chat_completion_stream.go:255: 🔧 Testing streaming with tool calls...
+    chat_completion_stream.go:303: Should receive at least one streaming response
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal SIGSEGV: segmentation violation code=0x2 addr=0x18 pc=0x1003d7b28]
+
+goroutine 296 [running]:
+bufio.(*Scanner).Scan(0x1400044cf18)
+	/opt/homebrew/Cellar/go/1.25.1/libexec/src/bufio/scan.go:219 +0x718
+github.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming.func1()
+	/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:714 +0x150
+created by github.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming in goroutine 120
+	/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:700 +0x814
+exit status 2
+=== RUN   TestGemini/GeminiTests/ResponsesStream
+=== PAUSE TestGemini/GeminiTests/ResponsesStream
+=== CONT  TestGemini/GeminiTests/ResponsesStream
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting responses_stream request for provider gemini"}
+=== RUN   TestGemini/GeminiTests/ResponsesStreamWithTools
+=== PAUSE TestGemini/GeminiTests/ResponsesStreamWithTools
+=== RUN   TestGemini/GeminiTests/MultiTurnConversation
+=== PAUSE TestGemini/GeminiTests/MultiTurnConversation
+=== CONT  TestGemini/GeminiTests/MultiTurnConversation
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+    response_validation.go:1286: ✅ Validation passed for MultiTurnConversation_Step1
+    multi_turn_conversation.go:80: ✅ First turn acknowledged: Hello Alice! It's nice to meet you. How can I help you today?
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/ToolCalls
+=== PAUSE TestGemini/GeminiTests/ToolCalls
+=== CONT  TestGemini/GeminiTests/ToolCalls
+=== RUN   TestGemini/GeminiTests/MultipleToolCalls
+=== PAUSE TestGemini/GeminiTests/MultipleToolCalls
+=== CONT  TestGemini/GeminiTests/MultipleToolCalls
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+=== RUN   TestGemini/GeminiTests/End2EndToolCalling
+=== PAUSE TestGemini/GeminiTests/End2EndToolCalling
+=== CONT  TestGemini/GeminiTests/End2EndToolCalling
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+=== RUN   TestGemini/GeminiTests/AutomaticFunctionCalling
+=== PAUSE TestGemini/GeminiTests/AutomaticFunctionCalling
+=== CONT  TestGemini/GeminiTests/AutomaticFunctionCalling
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+=== RUN   TestGemini/GeminiTests/ImageBase64
+=== PAUSE TestGemini/GeminiTests/ImageBase64
+=== CONT  TestGemini/GeminiTests/ImageBase64
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/CompleteEnd2End
+=== PAUSE TestGemini/GeminiTests/CompleteEnd2End
+=== CONT  TestGemini/GeminiTests/CompleteEnd2End
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request embedding for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/SpeechSynthesis
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis
+=== CONT  TestGemini/GeminiTests/SpeechSynthesis
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisAdvanced
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStream
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming
+    speech_synthesis_stream.go:242: Skipping LongText_HDModel_Streaming test
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar
+    speech_synthesis_stream.go:431: ✅ Received data for voice achernar: 217486 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achernar
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}
+    speech_synthesis_stream.go:431: ✅ Received data for voice achird: 230926 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achird
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib
+    speech_synthesis_stream.go:431: ✅ Received data for voice algenib: 275086 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: algenib
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon
+    speech_synthesis_stream.go:431: ✅ Received data for voice charon: 144526 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: charon
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina
+    speech_synthesis_stream.go:440: ❌ Should receive audio data for voice despina
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: despina
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome
+    speech_synthesis_stream.go:431: ✅ Received data for voice erinome: 142606 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: erinome
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}
+=== RUN   TestGemini/GeminiTests/Embedding
+=== PAUSE TestGemini/GeminiTests/Embedding
+=== CONT  TestGemini/GeminiTests/Embedding
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model text-embedding-004 and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting embedding request for provider gemini"}
+    response_validation.go:1286: ✅ Validation passed for Embedding
+    embedding.go:154: ✅ Semantic coherence validated:
+    embedding.go:155:    Similarity('Hello, world!' vs 'Hi, world!'): 0.937594
+    embedding.go:156:    Similarity('Hello, world!' vs 'Goodnight, moon!'): 0.466651
+    embedding.go:157:    Difference: 0.470943
+    embedding.go:160: 📊 Embedding metrics: 3 vectors, 768 dimensions each
+=== RUN   TestGemini/GeminiTests/ListModels
+=== PAUSE TestGemini/GeminiTests/ListModels
+=== CONT  TestGemini/GeminiTests/ListModels
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+    list_models.go:47: ✅ List models returned 66 models
+    list_models.go:59:    Model 1: ID=gemini/embedding-gecko-001
+    list_models.go:59:    Model 2: ID=gemini/gemini-2.5-pro-preview-03-25
+    list_models.go:59:    Model 3: ID=gemini/gemini-2.5-flash-preview-05-20
+    list_models.go:59:    Model 4: ID=gemini/gemini-2.5-flash
+    list_models.go:59:    Model 5: ID=gemini/gemini-2.5-flash-lite-preview-06-17
+    list_models.go:69: ✅ Validated 66 models with proper structure
+    list_models.go:86: ✅ Request latency: 129 ms
+    list_models.go:89: 🎉 List models test passed successfully!
+=== RUN   TestGemini/GeminiTests/ListModelsPagination
+=== PAUSE TestGemini/GeminiTests/ListModelsPagination
+=== CONT  TestGemini/GeminiTests/ListModelsPagination
+    list_models.go:125: ✅ Pagination working: returned 5 models (page size: 5)
+    list_models.go:130: ✅ Next page token available: Ciptb2RlbHMvZ2VtaW5pLTIuNS1mbGFzaC1saXRlLXByZXZpZXctMDYtMTc=
+    list_models.go:143: ✅ Successfully fetched next page with 5 models
+    list_models.go:150: ✅ Pages contain different models (first page: gemini/embedding-gecko-001, second page: gemini/gemini-2.5-pro-preview-05-06)
+    list_models.go:159: 🎉 List models pagination test completed!
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming
+=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV
+=== RUN   TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3
+=== RUN   TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3
+=== RUN   TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3
+</div>
+</div>
+
+<div class="test" id="test_8QLEt">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ResponsesStream</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_5IE4K" class="test__message">=== RUN   TestGemini/GeminiTests/ResponsesStream
+=== PAUSE TestGemini/GeminiTests/ResponsesStream
+=== CONT  TestGemini/GeminiTests/ResponsesStream
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting responses_stream request for provider gemini"}
+</div>
+</div>
+
+<div class="test" id="test_UV4FI">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_rOb0t" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon
+    speech_synthesis_stream.go:431: ✅ Received data for voice charon: 144526 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: charon
+</div>
+</div>
+
+<div class="test" id="test_9Nfej">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_HBmXQ" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina
+    speech_synthesis_stream.go:440: ❌ Should receive audio data for voice despina
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: despina
+</div>
+</div>
+
+<div class="test" id="test_O7ZuI">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_Xj7XV" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel
+</div>
+</div>
+
+<div class="test" id="test_3xi94">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SimpleChat</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_eVGls" class="test__message">=== RUN   TestGemini/GeminiTests/SimpleChat
+=== PAUSE TestGemini/GeminiTests/SimpleChat
+=== CONT  TestGemini/GeminiTests/SimpleChat
+    response_validation.go:1286: ✅ Validation passed for SimpleChat_Chat
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_aRpjU">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_f3mQt" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib
+    speech_synthesis_stream.go:431: ✅ Received data for voice algenib: 275086 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: algenib
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_1ObTB">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_n7Boh" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming
+</div>
+</div>
+
+<div class="test" id="test_jRKAt">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_cnnUs" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV
+</div>
+</div>
+
+<div class="test" id="test_ZIvk8">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ChatCompletionStream</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_l2QDp" class="test__message">=== RUN   TestGemini/GeminiTests/ChatCompletionStream
+=== PAUSE TestGemini/GeminiTests/ChatCompletionStream
+=== CONT  TestGemini/GeminiTests/ChatCompletionStream
+</div>
+</div>
+
+<div class="test" id="test_upahD">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesis</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_7LuUU" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesis
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis
+=== CONT  TestGemini/GeminiTests/SpeechSynthesis
+</div>
+</div>
+
+<div class="test" id="test_aPBKB">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_5KPRw" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming
+    speech_synthesis_stream.go:242: Skipping LongText_HDModel_Streaming test
+</div>
+</div>
+
+<div class="test" id="test_WaDVB">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_5FRmT" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming
+</div>
+</div>
+
+<div class="test" id="test_Mg9S5">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_y7DpH" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar
+    speech_synthesis_stream.go:431: ✅ Received data for voice achernar: 217486 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achernar
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_fNY9t">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ChatCompletionStreamWithTools</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_OkzoT" class="test__message">=== RUN   TestGemini/GeminiTests/ChatCompletionStreamWithTools
+=== PAUSE TestGemini/GeminiTests/ChatCompletionStreamWithTools
+=== CONT  TestGemini/GeminiTests/ChatCompletionStreamWithTools
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}
+    chat_completion_stream.go:255: 🔧 Testing streaming with tool calls...
+    chat_completion_stream.go:303: Should receive at least one streaming response
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal SIGSEGV: segmentation violation code=0x2 addr=0x18 pc=0x1003d7b28]
+
+goroutine 296 [running]:
+bufio.(*Scanner).Scan(0x1400044cf18)
+	/opt/homebrew/Cellar/go/1.25.1/libexec/src/bufio/scan.go:219 +0x718
+github.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming.func1()
+	/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:714 +0x150
+created by github.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming in goroutine 120
+	/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:700 +0x814
+exit status 2
+</div>
+</div>
+
+<div class="test" id="test_JlH3U">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/End2EndToolCalling</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_uhIt4" class="test__message">=== RUN   TestGemini/GeminiTests/End2EndToolCalling
+=== PAUSE TestGemini/GeminiTests/End2EndToolCalling
+=== CONT  TestGemini/GeminiTests/End2EndToolCalling
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+</div>
+</div>
+
+<div class="test" id="test_Eron7">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_8CWoK" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome
+    speech_synthesis_stream.go:431: ✅ Received data for voice erinome: 142606 bytes
+    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: erinome
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_zRqre">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_vSX67" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3
+</div>
+</div>
+
+<div class="test" id="test_Srf2x">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/MultiTurnConversation</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_B9Q5j" class="test__message">=== RUN   TestGemini/GeminiTests/MultiTurnConversation
+=== PAUSE TestGemini/GeminiTests/MultiTurnConversation
+=== CONT  TestGemini/GeminiTests/MultiTurnConversation
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+    response_validation.go:1286: ✅ Validation passed for MultiTurnConversation_Step1
+    multi_turn_conversation.go:80: ✅ First turn acknowledged: Hello Alice! It's nice to meet you. How can I help you today?
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion_stream for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_FzMNK">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/AutomaticFunctionCalling</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_GtzVr" class="test__message">=== RUN   TestGemini/GeminiTests/AutomaticFunctionCalling
+=== PAUSE TestGemini/GeminiTests/AutomaticFunctionCalling
+=== CONT  TestGemini/GeminiTests/AutomaticFunctionCalling
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_afJ7n">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ImageBase64</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_WqX3s" class="test__message">=== RUN   TestGemini/GeminiTests/ImageBase64
+=== PAUSE TestGemini/GeminiTests/ImageBase64
+=== CONT  TestGemini/GeminiTests/ImageBase64
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}
+{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}
+</div>
+</div>
+
+<div class="test" id="test_PbjQo">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisAdvanced</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_BJhGW" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisAdvanced
+</div>
+</div>
+
+<div class="test" id="test_DaZF4">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ListModels</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_eTley" class="test__message">=== RUN   TestGemini/GeminiTests/ListModels
+=== PAUSE TestGemini/GeminiTests/ListModels
+=== CONT  TestGemini/GeminiTests/ListModels
+{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}
+    list_models.go:47: ✅ List models returned 66 models
+    list_models.go:59:    Model 1: ID=gemini/embedding-gecko-001
+    list_models.go:59:    Model 2: ID=gemini/gemini-2.5-pro-preview-03-25
+    list_models.go:59:    Model 3: ID=gemini/gemini-2.5-flash-preview-05-20
+    list_models.go:59:    Model 4: ID=gemini/gemini-2.5-flash
+    list_models.go:59:    Model 5: ID=gemini/gemini-2.5-flash-lite-preview-06-17
+    list_models.go:69: ✅ Validated 66 models with proper structure
+    list_models.go:86: ✅ Request latency: 129 ms
+    list_models.go:89: 🎉 List models test passed successfully!
+</div>
+</div>
+
+<div class="test" id="test_JFi3H">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_7TJj3" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming
+</div>
+</div>
+
+<div class="test" id="test_stP3X">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_vCgQP" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3
+</div>
+</div>
+
+<div class="test" id="test_JLnPg">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ResponsesStreamWithTools</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_lKAHD" class="test__message">=== RUN   TestGemini/GeminiTests/ResponsesStreamWithTools
+=== PAUSE TestGemini/GeminiTests/ResponsesStreamWithTools
+</div>
+</div>
+
+<div class="test" id="test_QUte8">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/ToolCalls</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_U98Zd" class="test__message">=== RUN   TestGemini/GeminiTests/ToolCalls
+=== PAUSE TestGemini/GeminiTests/ToolCalls
+=== CONT  TestGemini/GeminiTests/ToolCalls
+</div>
+</div>
+
+<div class="test" id="test_QfhTH">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesisStream</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_HWw9V" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream
+=== CONT  TestGemini/GeminiTests/SpeechSynthesisStream
+</div>
+</div>
+
+<div class="test" id="test_g07q5">
+    <button class="test__name test--failure u-full-width flat" onclick="toggleContraction(this.parentElement)">
+        <span class="u-pull-left">TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3</span>
+        <span class="label u-pull-right">time: -0.000000</span>
+    </button>
+    <div id="message_df52l" class="test__message">=== RUN   TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3
+=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3
+</div>
+</div>
+
+    </div>
+</div>
+</div>
+    </div>
+    <script type="text/javascript">function addClass(e,i){e&&(e.className=e.className+" "+i)}function removeClass(e,i){e&&(e.className=e.className.replace(" "+i,""))}function replaceClass(e,i,s){e&&(e.className=e.className.replace(i,s))}function toggleContraction(e){var i=e.children[0],s=e.children[1];if(s){var t=s.className.indexOf("contracted")!==-1;t?(replaceClass(i,"round","flat"),removeClass(s,"contracted")):(replaceClass(i,"flat","round"),addClass(s,"contracted"))}}function createVisibleInfo(e){var i={suites:{},tests:{}};return Object.keys(e).filter(function(e){var i=document.getElementById(e);return null!==i}).forEach(function(e,s){var t=document.getElementById(e);if(t.className.indexOf("not_in_search")===-1&&t.className.indexOf("hidden")===-1&&t.className.indexOf("no_visible_tests")===-1){var n=t.children[0].className.split(" ")[0].split("--")[1];i.suites.hasOwnProperty(n)||(i.suites[n]=0),i.suites[n]+=1;var m=t.children[1].children;Object.keys(m).filter(function(e){return null!==document.getElementById(e)&&m[e].className.indexOf("test")!==-1&&m[e].className.indexOf("not_in_search")===-1&&m[e].className.indexOf("hidden")===-1}).forEach(function(e){var s=document.getElementById(e),t=s.children[0].className.split(" ")[1].split("--")[1];i.tests.hasOwnProperty(t)||(i.tests[t]=0),i.tests[t]+=1})}}),i}function updateInfo(){var e=document.getElementsByClassName("suite"),i=createVisibleInfo(e),s=document.getElementsByClassName("suite hidden"),t=document.getElementsByClassName("suite not_in_search"),n=document.getElementsByClassName("suite no_visible_tests");i.suites.count=e.length-s.length-t.length-n.length;document.getElementsByClassName("test"),document.getElementsByClassName("test hidden"),document.getElementsByClassName("test not_in_search");i.tests.count=0,Object.keys(i.tests).filter(function(e){return"count"!==e}).forEach(function(e){i.tests.count+=i.tests[e]}),Object.keys(junit_info.suites).forEach(function(e){i.suites.hasOwnProperty(e)?document.getElementById("junit_info_suite_"+e+"_count").innerHTML=i.suites[e]:document.getElementById("junit_info_suite_"+e+"_count").innerHTML=0}),Object.keys(junit_info.tests).forEach(function(e){i.tests.hasOwnProperty(e)?document.getElementById("junit_info_test_"+e+"_count").innerHTML=i.tests[e]:document.getElementById("junit_info_test_"+e+"_count").innerHTML=0})}function contractSuites(e){var i=e.innerHTML.indexOf("EXPAND")!==-1;e.innerHTML=i?"CONTRACT ALL":"EXPAND ALL",suites.forEach(function(e){var s=document.getElementById(e.id),t=s.children[0],n=s.children[1];i?(replaceClass(t,"round","flat"),removeClass(n,"contracted")):(replaceClass(t,"flat","round"),addClass(n,"contracted"))})}function setContracted(e){"contracted"===e?document.getElementById("contractSuits").innerHTML="EXPAND ALL":document.getElementById("contractSuits").innerHTML="CONTRACT ALL",console.log("Log this"+e)}function hidePassingSuites(e){var i=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=i?"HIDE PASSING":"SHOW PASSING",suites.forEach(function(e){var s=document.getElementById(e.id);i?removeClass(s,"hidden"):"passed"===e.type&&addClass(s,"hidden")}),updateInfo()}function globToRegex(e){var i,s,t,n,m=0,a=e.length||0;for(s="^";m<a;)if(t=e[m],m+=1,"*"===t)s+=".*";else if("?"===t)s+=".";else if("["===t){for(i=m,i<a&&"!"===e[i]&&(i+=1),i<a&&"]"===e[i]&&(i+=1);i<a&&"]"!==e[i];)i+=1;i>=a?s+="\\[":(n=e.slice(m,i).replace("\\","\\\\"),m=i+1,"!"===n[0]?n="^"+n.slice(1):"^"===n[0]&&(n="\\"+n),s=s+"["+n+"]")}else s+=escape(t);return s+"$"}function match(e,i){if(i=i.toUpperCase(),e=e.toUpperCase(),i.indexOf(e)!==-1)return!0;try{if(null!==i.match(new RegExp(e)))return!0}catch(s){}try{if(null!==i.match(new RegExp(globToRegex(e))))return!0}catch(s){}for(var t=-1,n=0;n<e.length;n++){var m=e[n];if(" "!=m&&(t=i.indexOf(m,t+1),t==-1))return!1}return!0}function searchSuites(e){e=e.toUpperCase(),suites.forEach(function(i){var s=document.getElementById(i.id);if(""===e)return void removeClass(s,"not_in_search");var t=match(e,i.name),n=s.className.indexOf("not_in_search")===-1;!t&&n&&addClass(s,"not_in_search"),t&&removeClass(s,"not_in_search")}),updateInfo()}function forEachTest(e){suites.forEach(function(i){i.testCases.forEach(e)})}function contractTests(e){var i=e.innerHTML.indexOf("EXPAND")!==-1;e.innerHTML=i?"CONTRACT ALL":"EXPAND ALL",forEachTest(function(e){var s=document.getElementById(e.id),t=s.children[0],n=s.children[1];i?(replaceClass(t,"round","flat"),removeClass(n,"contracted")):(replaceClass(t,"flat","round"),addClass(n,"contracted"))})}function hideTests(e){var i=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=i?"HIDE ALL":"SHOW ALL",forEachTest(function(e){var s=document.getElementById(e.id);i?removeClass(s,"hidden"):addClass(s,"hidden")}),updateInfo()}function hidePassingTests(e){var i=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=i?"HIDE PASSING":"SHOW PASSING",forEachTest(function(e){var s=document.getElementById(e.id);i?removeClass(s,"hidden"):"passed"===e.type&&addClass(s,"hidden")}),updateInfo()}function searchTests(e){e=e.toUpperCase(),forEachTest(function(i){var s=document.getElementById(i.id);if(""===e)return removeClass(s,"not_in_search"),void suites.forEach(function(e){var i=document.getElementById(e.id);i.className=i.className.replace(" no_visible_tests","")});var t=match(e,i.name);i.messages.values.forEach(function(i){var s=match(e,i.value);s&&(t=!0)});var n=s.className.indexOf("not_in_search")===-1;!t&&n&&addClass(s,"not_in_search"),t&&removeClass(s,"not_in_search")}),suites.forEach(function(e){var i=document.getElementById(e.id),s=i.children[1].children,t=Object.keys(s).filter(function(e){return null!==document.getElementById(e)&&(s[e].className.indexOf("not_in_search")!==-1||s[e].className.indexOf("properties")!==-1)}).length;s.length===t?i.className=i.className+" no_visible_tests":i.className=i.className.replace(" no_visible_tests","")}),updateInfo()}function contractProperties(e){var i=e.innerHTML.indexOf("EXPAND")!==-1;e.innerHTML=i?"CONTRACT ALL":"EXPAND ALL",suites.filter(function(e){return e.properties.values.length>0}).forEach(function(e){var s=document.getElementById(e.properties.id),t=s.children[0],n=s.children[1];i?(replaceClass(t,"round","flat"),removeClass(n,"contracted")):(replaceClass(t,"flat","round"),addClass(n,"contracted"))})}function hideProperties(e){var i=e.innerHTML.indexOf("SHOW")!==-1;e.innerHTML=i?"HIDE ALL":"SHOW ALL",suites.filter(function(e){return e.properties.values.length>0}).forEach(function(e){var s=document.getElementById(e.properties.id);i?removeClass(s,"hidden"):addClass(s,"hidden")})}function searchProperties(e){e=e.toUpperCase(),suites.forEach(function(i){i.properties.values.forEach(function(i){var s=document.getElementById(i.id);if(""===e)return void removeClass(s,"not_in_search");var t=match(e,i.name)||match(e,i.value),n=s.className.indexOf("not_in_search")===-1;!t&&n&&addClass(s,"not_in_search"),t&&removeClass(s,"not_in_search")})})}function showOptions(){var e=document.getElementById("optionsCollapsed");e.style.display="none";var i=document.getElementById("optionsExpanded");i.style.display="block";var s=document.getElementById("options_container");s.className=s.className.replace("one","one-third");var t=document.getElementById("suites_container");t.className=t.className.replace("eleven ","two-thirds "),t.className=t.className.replace("columns ","column ")}function hideOptions(){var e=document.getElementById("optionsCollapsed");e.style.display="block";var i=document.getElementById("optionsExpanded");i.style.display="none";var s=document.getElementById("options_container");s.className=s.className.replace("one-third","one");var t=document.getElementById("suites_container");t.className=t.className.replace("two-thirds ","eleven "),t.className=t.className.replace("column ","columns ")}var junit_info={suites:{count:1,failure:1},tests:{count:37,failure:37}},suites=[{name:"github.com/maximhq/bifrost/tests/core-providers",type:"failure",tests:"37",failures:"37",time:"21.726000",timestamp:"2025-10-27T22:26:19-07:00",testCases:[{name:"TestGemini/GeminiTests/Embedding",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/Embedding\n=== PAUSE TestGemini/GeminiTests/Embedding\n=== CONT  TestGemini/GeminiTests/Embedding\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model text-embedding-004 and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting embedding request for provider gemini"}\n    response_validation.go:1286: ✅ Validation passed for Embedding\n    embedding.go:154: ✅ Semantic coherence validated:\n    embedding.go:155:    Similarity(\'Hello, world!\' vs \'Hi, world!\'): 0.937594\n    embedding.go:156:    Similarity(\'Hello, world!\' vs \'Goodnight, moon!\'): 0.466651\n    embedding.go:157:    Difference: 0.470943\n    embedding.go:160: 📊 Embedding metrics: 3 vectors, 768 dimensions each\n',id:"message_6KEQw"}],id:"messages_qsJX4"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_wqljD"},{name:"TestGemini/GeminiTests/MultipleToolCalls",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/MultipleToolCalls\n=== PAUSE TestGemini/GeminiTests/MultipleToolCalls\n=== CONT  TestGemini/GeminiTests/MultipleToolCalls\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n',id:"message_ApWBj"}],id:"messages_GZCeC"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_8jp4U"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced\n",id:"message_C68X7"}],id:"messages_aUxSs"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_OYohu"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}\n    speech_synthesis_stream.go:431: ✅ Received data for voice achird: 230926 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achird\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_wQBEg"}],id:"messages_YwLW4"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_3w73n"},{name:"TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n',id:"message_eNb4t"}],id:"messages_fpxMr"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_qB6ds"},{name:"TestGemini/GeminiTests",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests\n    tests.go:24: 🚀 Running comprehensive tests for provider: gemini\n    text_completion.go:17: ⏭️ Text completion not supported for provider gemini\n    text_completion_stream.go:19: Text completion stream not supported for provider gemini\n    image_url.go:18: Image URL not supported for provider gemini\n    multiple_images.go:18: Multiple images not supported for provider gemini\n    transcription.go:21: Transcription not supported for provider gemini\n    transcription.go:196: Transcription not supported for provider gemini\n    transcription_stream.go:21: Transcription streaming not supported for provider gemini\n    transcription_stream.go:302: Transcription streaming not supported for provider gemini\n    reasoning.go:17: ⏭️ Reasoning not supported for provider gemini\n    tests.go:95: \n        ================================================================================\n    tests.go:96: COMPREHENSIVE TEST SUMMARY FOR PROVIDER: GEMINI\n    tests.go:97: ================================================================================\n    tests.go:105: ❌ UNSUPPORTED: TextCompletion            ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   SimpleChat                ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   CompletionStream          ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   MultiTurnConversation     ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   ToolCalls                 ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   MultipleToolCalls         ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   End2EndToolCalling        ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   AutomaticFunctionCall     ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: ImageURL                  ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   ImageBase64               ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: MultipleImages            ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   CompleteEnd2End           ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   SpeechSynthesis           ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   SpeechSynthesisStream     ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: Transcription             ❌ Not supported by provider\n    tests.go:105: ❌ UNSUPPORTED: TranscriptionStream       ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   Embedding                 ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: Reasoning                 ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   ListModels                ✅ Configured to run\n    tests.go:109: --------------------------------------------------------------------------------\n    tests.go:110: CONFIGURATION SUMMARY:\n    tests.go:111:   ✅ Supported Tests:   13\n    tests.go:112:   ❌ Unsupported Tests: 6\n    tests.go:113:   📊 Total Test Types:  19\n    tests.go:114: \n    tests.go:115: ℹ️  NOTE: Actual PASS/FAIL results are shown in the individual test output above.\n    tests.go:116: ℹ️  Look for individual test results like 'PASS: TestOpenAI/SimpleChat' or 'FAIL: TestOpenAI/ToolCalls'\n    tests.go:117: ================================================================================\n",id:"message_wDDHH"}],id:"messages_gwGZZ"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_4hqz2"},{name:"TestGemini/GeminiTests/CompleteEnd2End",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/CompleteEnd2End\n=== PAUSE TestGemini/GeminiTests/CompleteEnd2End\n=== CONT  TestGemini/GeminiTests/CompleteEnd2End\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request embedding for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_wO5ia"}],id:"messages_Z8hiO"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_NKNXf"},{name:"TestGemini/GeminiTests/ListModelsPagination",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/ListModelsPagination\n=== PAUSE TestGemini/GeminiTests/ListModelsPagination\n=== CONT  TestGemini/GeminiTests/ListModelsPagination\n    list_models.go:125: ✅ Pagination working: returned 5 models (page size: 5)\n    list_models.go:130: ✅ Next page token available: Ciptb2RlbHMvZ2VtaW5pLTIuNS1mbGFzaC1saXRlLXByZXZpZXctMDYtMTc=\n    list_models.go:143: ✅ Successfully fetched next page with 5 models\n    list_models.go:150: ✅ Pages contain different models (first page: gemini/embedding-gecko-001, second page: gemini/gemini-2.5-pro-preview-05-06)\n    list_models.go:159: 🎉 List models pagination test completed!\n",id:"message_bA0Gb"}],id:"messages_IzCy5"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_0Fjra"},{name:"TestGemini",messages:{values:[{value:'=== RUN   TestGemini\n{"level":"warn","time":"2025-10-27T22:26:19-07:00","message":"failed to prepare provider ollama: failed to create provider for the given key: base_url is required for ollama provider"}\n{"level":"warn","time":"2025-10-27T22:26:19-07:00","message":"failed to prepare provider sgl: failed to create provider for the given key: base_url is required for sgl provider"}\n=== RUN   TestGemini/GeminiTests\n    tests.go:24: 🚀 Running comprehensive tests for provider: gemini\n    text_completion.go:17: ⏭️ Text completion not supported for provider gemini\n    text_completion_stream.go:19: Text completion stream not supported for provider gemini\n    image_url.go:18: Image URL not supported for provider gemini\n    multiple_images.go:18: Multiple images not supported for provider gemini\n    transcription.go:21: Transcription not supported for provider gemini\n    transcription.go:196: Transcription not supported for provider gemini\n    transcription_stream.go:21: Transcription streaming not supported for provider gemini\n    transcription_stream.go:302: Transcription streaming not supported for provider gemini\n    reasoning.go:17: ⏭️ Reasoning not supported for provider gemini\n    tests.go:95: \n        ================================================================================\n    tests.go:96: COMPREHENSIVE TEST SUMMARY FOR PROVIDER: GEMINI\n    tests.go:97: ================================================================================\n    tests.go:105: ❌ UNSUPPORTED: TextCompletion            ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   SimpleChat                ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   CompletionStream          ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   MultiTurnConversation     ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   ToolCalls                 ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   MultipleToolCalls         ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   End2EndToolCalling        ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   AutomaticFunctionCall     ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: ImageURL                  ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   ImageBase64               ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: MultipleImages            ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   CompleteEnd2End           ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   SpeechSynthesis           ✅ Configured to run\n    tests.go:102: ✅ SUPPORTED:   SpeechSynthesisStream     ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: Transcription             ❌ Not supported by provider\n    tests.go:105: ❌ UNSUPPORTED: TranscriptionStream       ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   Embedding                 ✅ Configured to run\n    tests.go:105: ❌ UNSUPPORTED: Reasoning                 ❌ Not supported by provider\n    tests.go:102: ✅ SUPPORTED:   ListModels                ✅ Configured to run\n    tests.go:109: --------------------------------------------------------------------------------\n    tests.go:110: CONFIGURATION SUMMARY:\n    tests.go:111:   ✅ Supported Tests:   13\n    tests.go:112:   ❌ Unsupported Tests: 6\n    tests.go:113:   📊 Total Test Types:  19\n    tests.go:114: \n    tests.go:115: ℹ️  NOTE: Actual PASS/FAIL results are shown in the individual test output above.\n    tests.go:116: ℹ️  Look for individual test results like \'PASS: TestOpenAI/SimpleChat\' or \'FAIL: TestOpenAI/ToolCalls\'\n    tests.go:117: ================================================================================\n=== RUN   TestGemini/GeminiTests/SimpleChat\n=== PAUSE TestGemini/GeminiTests/SimpleChat\n=== CONT  TestGemini/GeminiTests/SimpleChat\n    response_validation.go:1286: ✅ Validation passed for SimpleChat_Chat\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/ChatCompletionStream\n=== PAUSE TestGemini/GeminiTests/ChatCompletionStream\n=== CONT  TestGemini/GeminiTests/ChatCompletionStream\n=== RUN   TestGemini/GeminiTests/ChatCompletionStreamWithTools\n=== PAUSE TestGemini/GeminiTests/ChatCompletionStreamWithTools\n=== CONT  TestGemini/GeminiTests/ChatCompletionStreamWithTools\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}\n    chat_completion_stream.go:255: 🔧 Testing streaming with tool calls...\n    chat_completion_stream.go:303: Should receive at least one streaming response\npanic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x2 addr=0x18 pc=0x1003d7b28]\n\ngoroutine 296 [running]:\nbufio.(*Scanner).Scan(0x1400044cf18)\n\t/opt/homebrew/Cellar/go/1.25.1/libexec/src/bufio/scan.go:219 +0x718\ngithub.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming.func1()\n\t/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:714 +0x150\ncreated by github.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming in goroutine 120\n\t/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:700 +0x814\nexit status 2\n=== RUN   TestGemini/GeminiTests/ResponsesStream\n=== PAUSE TestGemini/GeminiTests/ResponsesStream\n=== CONT  TestGemini/GeminiTests/ResponsesStream\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting responses_stream request for provider gemini"}\n=== RUN   TestGemini/GeminiTests/ResponsesStreamWithTools\n=== PAUSE TestGemini/GeminiTests/ResponsesStreamWithTools\n=== RUN   TestGemini/GeminiTests/MultiTurnConversation\n=== PAUSE TestGemini/GeminiTests/MultiTurnConversation\n=== CONT  TestGemini/GeminiTests/MultiTurnConversation\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n    response_validation.go:1286: ✅ Validation passed for MultiTurnConversation_Step1\n    multi_turn_conversation.go:80: ✅ First turn acknowledged: Hello Alice! It\'s nice to meet you. How can I help you today?\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/ToolCalls\n=== PAUSE TestGemini/GeminiTests/ToolCalls\n=== CONT  TestGemini/GeminiTests/ToolCalls\n=== RUN   TestGemini/GeminiTests/MultipleToolCalls\n=== PAUSE TestGemini/GeminiTests/MultipleToolCalls\n=== CONT  TestGemini/GeminiTests/MultipleToolCalls\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n=== RUN   TestGemini/GeminiTests/End2EndToolCalling\n=== PAUSE TestGemini/GeminiTests/End2EndToolCalling\n=== CONT  TestGemini/GeminiTests/End2EndToolCalling\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n=== RUN   TestGemini/GeminiTests/AutomaticFunctionCalling\n=== PAUSE TestGemini/GeminiTests/AutomaticFunctionCalling\n=== CONT  TestGemini/GeminiTests/AutomaticFunctionCalling\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n=== RUN   TestGemini/GeminiTests/ImageBase64\n=== PAUSE TestGemini/GeminiTests/ImageBase64\n=== CONT  TestGemini/GeminiTests/ImageBase64\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/CompleteEnd2End\n=== PAUSE TestGemini/GeminiTests/CompleteEnd2End\n=== CONT  TestGemini/GeminiTests/CompleteEnd2End\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request embedding for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/SpeechSynthesis\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis\n=== CONT  TestGemini/GeminiTests/SpeechSynthesis\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisAdvanced\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStream\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming\n    speech_synthesis_stream.go:242: Skipping LongText_HDModel_Streaming test\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar\n    speech_synthesis_stream.go:431: ✅ Received data for voice achernar: 217486 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achernar\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achird\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:19-07:00","message":"attempting speech_stream request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}\n    speech_synthesis_stream.go:431: ✅ Received data for voice achird: 230926 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achird\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib\n    speech_synthesis_stream.go:431: ✅ Received data for voice algenib: 275086 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: algenib\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon\n    speech_synthesis_stream.go:431: ✅ Received data for voice charon: 144526 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: charon\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina\n    speech_synthesis_stream.go:440: ❌ Should receive audio data for voice despina\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: despina\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome\n    speech_synthesis_stream.go:431: ✅ Received data for voice erinome: 142606 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: erinome\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}\n=== RUN   TestGemini/GeminiTests/Embedding\n=== PAUSE TestGemini/GeminiTests/Embedding\n=== CONT  TestGemini/GeminiTests/Embedding\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model text-embedding-004 and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting embedding request for provider gemini"}\n    response_validation.go:1286: ✅ Validation passed for Embedding\n    embedding.go:154: ✅ Semantic coherence validated:\n    embedding.go:155:    Similarity(\'Hello, world!\' vs \'Hi, world!\'): 0.937594\n    embedding.go:156:    Similarity(\'Hello, world!\' vs \'Goodnight, moon!\'): 0.466651\n    embedding.go:157:    Difference: 0.470943\n    embedding.go:160: 📊 Embedding metrics: 3 vectors, 768 dimensions each\n=== RUN   TestGemini/GeminiTests/ListModels\n=== PAUSE TestGemini/GeminiTests/ListModels\n=== CONT  TestGemini/GeminiTests/ListModels\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n    list_models.go:47: ✅ List models returned 66 models\n    list_models.go:59:    Model 1: ID=gemini/embedding-gecko-001\n    list_models.go:59:    Model 2: ID=gemini/gemini-2.5-pro-preview-03-25\n    list_models.go:59:    Model 3: ID=gemini/gemini-2.5-flash-preview-05-20\n    list_models.go:59:    Model 4: ID=gemini/gemini-2.5-flash\n    list_models.go:59:    Model 5: ID=gemini/gemini-2.5-flash-lite-preview-06-17\n    list_models.go:69: ✅ Validated 66 models with proper structure\n    list_models.go:86: ✅ Request latency: 129 ms\n    list_models.go:89: 🎉 List models test passed successfully!\n=== RUN   TestGemini/GeminiTests/ListModelsPagination\n=== PAUSE TestGemini/GeminiTests/ListModelsPagination\n=== CONT  TestGemini/GeminiTests/ListModelsPagination\n    list_models.go:125: ✅ Pagination working: returned 5 models (page size: 5)\n    list_models.go:130: ✅ Next page token available: Ciptb2RlbHMvZ2VtaW5pLTIuNS1mbGFzaC1saXRlLXByZXZpZXctMDYtMTc=\n    list_models.go:143: ✅ Successfully fetched next page with 5 models\n    list_models.go:150: ✅ Pages contain different models (first page: gemini/embedding-gecko-001, second page: gemini/gemini-2.5-pro-preview-05-06)\n    list_models.go:159: 🎉 List models pagination test completed!\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/AllVoiceOptions\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming\n=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV\n=== RUN   TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3\n=== RUN   TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3\n=== RUN   TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3\n',
+id:"message_U1em6"}],id:"messages_QlFtW"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_CHuCw"},{name:"TestGemini/GeminiTests/ResponsesStream",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/ResponsesStream\n=== PAUSE TestGemini/GeminiTests/ResponsesStream\n=== CONT  TestGemini/GeminiTests/ResponsesStream\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting responses_stream request for provider gemini"}\n',id:"message_5IE4K"}],id:"messages_a2xmb"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_8QLEt"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_charon\n    speech_synthesis_stream.go:431: ✅ Received data for voice charon: 144526 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: charon\n",id:"message_rOb0t"}],id:"messages_pEWmB"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_UV4FI"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_despina\n    speech_synthesis_stream.go:440: ❌ Should receive audio data for voice despina\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: despina\n",id:"message_HBmXQ"}],id:"messages_C61rc"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_9Nfej"},{name:"TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced/LongText_HDModel\n",id:"message_Xj7XV"}],id:"messages_1Qv2e"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_O7ZuI"},{name:"TestGemini/GeminiTests/SimpleChat",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/SimpleChat\n=== PAUSE TestGemini/GeminiTests/SimpleChat\n=== CONT  TestGemini/GeminiTests/SimpleChat\n    response_validation.go:1286: ✅ Validation passed for SimpleChat_Chat\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_eVGls"}],id:"messages_qxxco"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_3xi94"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib\n    speech_synthesis_stream.go:431: ✅ Received data for voice algenib: 275086 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: algenib\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_f3mQt"}],id:"messages_KaIu8"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_aRpjU"},{name:"TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/ShortText_Streaming\n",id:"message_n7Boh"}],id:"messages_mxNHh"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_1ObTB"},{name:"TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/MediumText_Echo_WAV\n",id:"message_cnnUs"}],id:"messages_l7yRG"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_jRKAt"},{name:"TestGemini/GeminiTests/ChatCompletionStream",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/ChatCompletionStream\n=== PAUSE TestGemini/GeminiTests/ChatCompletionStream\n=== CONT  TestGemini/GeminiTests/ChatCompletionStream\n",id:"message_l2QDp"}],id:"messages_9zELQ"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_ZIvk8"},{name:"TestGemini/GeminiTests/SpeechSynthesis",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesis\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis\n=== CONT  TestGemini/GeminiTests/SpeechSynthesis\n",id:"message_7LuUU"}],id:"messages_ij60m"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_upahD"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/LongText_HDModel_Streaming\n    speech_synthesis_stream.go:242: Skipping LongText_HDModel_Streaming test\n",id:"message_5KPRw"}],id:"messages_07q4I"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_aPBKB"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming\n",id:"message_5FRmT"}],id:"messages_IRkUj"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_WaDVB"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_achernar\n    speech_synthesis_stream.go:431: ✅ Received data for voice achernar: 217486 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: achernar\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:23-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_y7DpH"}],id:"messages_RzbJn"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_Mg9S5"},{name:"TestGemini/GeminiTests/ChatCompletionStreamWithTools",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/ChatCompletionStreamWithTools\n=== PAUSE TestGemini/GeminiTests/ChatCompletionStreamWithTools\n=== CONT  TestGemini/GeminiTests/ChatCompletionStreamWithTools\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion_stream request for provider gemini"}\n    chat_completion_stream.go:255: 🔧 Testing streaming with tool calls...\n    chat_completion_stream.go:303: Should receive at least one streaming response\npanic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x2 addr=0x18 pc=0x1003d7b28]\n\ngoroutine 296 [running]:\nbufio.(*Scanner).Scan(0x1400044cf18)\n\t/opt/homebrew/Cellar/go/1.25.1/libexec/src/bufio/scan.go:219 +0x718\ngithub.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming.func1()\n\t/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:714 +0x150\ncreated by github.com/maximhq/bifrost/core/providers/openai.HandleOpenAIChatCompletionStreaming in goroutine 120\n\t/Users/akshay/Codebase/universe/bifrost/core/providers/openai/openai.go:700 +0x814\nexit status 2\n',id:"message_OkzoT"}],id:"messages_oG5gH"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_fNY9t"},{name:"TestGemini/GeminiTests/End2EndToolCalling",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/End2EndToolCalling\n=== PAUSE TestGemini/GeminiTests/End2EndToolCalling\n=== CONT  TestGemini/GeminiTests/End2EndToolCalling\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n',id:"message_uhIt4"}],id:"messages_Qe5gV"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_JlH3U"},{name:"TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_erinome\n    speech_synthesis_stream.go:431: ✅ Received data for voice erinome: 142606 bytes\n    speech_synthesis_stream.go:445: ✅ Streaming successful for voice: erinome\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"request speech_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:22-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_8CWoK"}],id:"messages_j6Vd8"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_Eron7"},{name:"TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/TechnicalText_Tertiary_MP3\n",id:"message_vSX67"}],id:"messages_04i2v"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_zRqre"},{name:"TestGemini/GeminiTests/MultiTurnConversation",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/MultiTurnConversation\n=== PAUSE TestGemini/GeminiTests/MultiTurnConversation\n=== CONT  TestGemini/GeminiTests/MultiTurnConversation\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n    response_validation.go:1286: ✅ Validation passed for MultiTurnConversation_Step1\n    multi_turn_conversation.go:80: ✅ First turn acknowledged: Hello Alice! It\'s nice to meet you. How can I help you today?\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"attempting responses request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion_stream for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_B9Q5j"}],id:"messages_4oQK5"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_Srf2x"},{name:"TestGemini/GeminiTests/AutomaticFunctionCalling",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/AutomaticFunctionCalling\n=== PAUSE TestGemini/GeminiTests/AutomaticFunctionCalling\n=== CONT  TestGemini/GeminiTests/AutomaticFunctionCalling\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n',id:"message_GtzVr"}],id:"messages_fPDZC"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_FzMNK"},{name:"TestGemini/GeminiTests/ImageBase64",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/ImageBase64\n=== PAUSE TestGemini/GeminiTests/ImageBase64\n=== CONT  TestGemini/GeminiTests/ImageBase64\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"Primary provider gemini with model gemini-2.0-flash and 0 fallbacks"}\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"request chat_completion for provider gemini completed"}\n{"level":"debug","time":"2025-10-27T22:26:41-07:00","message":"No primary error, we should not try fallbacks"}\n',id:"message_WqX3s"}],id:"messages_7XjVm"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_afJ7n"},{name:"TestGemini/GeminiTests/SpeechSynthesisAdvanced",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisAdvanced\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisAdvanced\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisAdvanced\n",id:"message_BJhGW"}],id:"messages_pyjCM"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_PbjQo"},{name:"TestGemini/GeminiTests/ListModels",messages:{values:[{value:'=== RUN   TestGemini/GeminiTests/ListModels\n=== PAUSE TestGemini/GeminiTests/ListModels\n=== CONT  TestGemini/GeminiTests/ListModels\n{"level":"debug","time":"2025-10-27T22:26:40-07:00","message":"attempting chat_completion request for provider gemini"}\n    list_models.go:47: ✅ List models returned 66 models\n    list_models.go:59:    Model 1: ID=gemini/embedding-gecko-001\n    list_models.go:59:    Model 2: ID=gemini/gemini-2.5-pro-preview-03-25\n    list_models.go:59:    Model 3: ID=gemini/gemini-2.5-flash-preview-05-20\n    list_models.go:59:    Model 4: ID=gemini/gemini-2.5-flash\n    list_models.go:59:    Model 5: ID=gemini/gemini-2.5-flash-lite-preview-06-17\n    list_models.go:69: ✅ Validated 66 models with proper structure\n    list_models.go:86: ✅ Request latency: 129 ms\n    list_models.go:89: 🎉 List models test passed successfully!\n',id:"message_eTley"}],id:"messages_cTs8C"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_DaZF4"},{name:"TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream/LongText_Streaming\n",id:"message_7TJj3"}],id:"messages_4Ba7V"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_JFi3H"},{name:"TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/BasicText_Primary_MP3\n",id:"message_vCgQP"}],id:"messages_JY6xX"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_stP3X"},{name:"TestGemini/GeminiTests/ResponsesStreamWithTools",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/ResponsesStreamWithTools\n=== PAUSE TestGemini/GeminiTests/ResponsesStreamWithTools\n",id:"message_lKAHD"}],id:"messages_WtVUy"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_JLnPg"},{name:"TestGemini/GeminiTests/ToolCalls",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/ToolCalls\n=== PAUSE TestGemini/GeminiTests/ToolCalls\n=== CONT  TestGemini/GeminiTests/ToolCalls\n",id:"message_U98Zd"}],id:"messages_FCvDV"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_QUte8"},{name:"TestGemini/GeminiTests/SpeechSynthesisStream",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesisStream\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesisStream\n=== CONT  TestGemini/GeminiTests/SpeechSynthesisStream\n",id:"message_HWw9V"}],id:"messages_Wm7QV"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_QfhTH"},{name:"TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3",messages:{values:[{value:"=== RUN   TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3\n=== PAUSE TestGemini/GeminiTests/SpeechSynthesis/MediumText_Secondary_MP3\n",id:"message_df52l"}],id:"messages_hpkOn"},type:"failure",classname:"github.com/maximhq/bifrost/tests/core-providers",time:"-0.000000",id:"test_g07q5"}],properties:{values:[{name:"go.version",value:"go1.25.1 darwin/arm64",id:"property_NkIJH"}],id:"properties_FEnN2"},id:"suite_0BmpI",contracted:""}],height=window.innerHeight||document.documentElement.clientHeight||document.getElementsByTagName("body")[0].clientHeight;document.getElementById("suites_container").style.height=height+"px",document.getElementById("options").style.height=height-76+"px",window.onresize=function(e){var i=window.innerHeight||document.documentElement.clientHeight||document.getElementsByTagName("body")[0].clientHeight;document.getElementById("suites_container").style.height=i+"px",document.getElementById("options").style.height=i-76+"px"};</script>
+</body>
+
+</html>

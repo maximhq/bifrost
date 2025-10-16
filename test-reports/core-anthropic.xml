@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="18" failures="0" errors="0" time="32.310834">
+	<testsuite tests="18" failures="0" time="32.310000" name="github.com/maximhq/bifrost/tests/core-providers" timestamp="2025-10-27T19:33:50-07:00">
+		<properties>
+			<property name="go.version" value="go1.25.1 darwin/arm64"></property>
+		</properties>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ListModelsPagination" time="0.370000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ResponsesStreamWithTools" time="3.800000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/SimpleChat" time="4.910000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/MultiTurnConversation" time="5.200000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ChatCompletionStreamWithTools" time="1.470000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/MultipleToolCalls" time="5.310000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ListModels" time="0.200000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ResponsesStream" time="5.700000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ToolCalls" time="6.270000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/MultipleImages" time="6.900000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ImageURL" time="7.100000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/End2EndToolCalling" time="10.280000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ImageBase64" time="10.720000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/ChatCompletionStream" time="5.950000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/AutomaticFunctionCalling" time="11.130000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests/CompleteEnd2End" time="26.890000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic/AnthropicTests" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestAnthropic" time="32.090000"></testcase>
+	</testsuite>
+</testsuites>
