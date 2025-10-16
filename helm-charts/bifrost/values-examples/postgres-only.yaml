@@ -1,0 +1,46 @@
+# Configuration: PostgreSQL for config and logs store
+# Usage: helm install bifrost ./bifrost -f values-examples/postgres-only.yaml
+
+# Storage configuration
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# Deploy PostgreSQL
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    password: bifrost_password
+    database: bifrost
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+
+# No vector store
+vectorStore:
+  enabled: false
+  type: none
+
+# Bifrost configuration
+bifrost:
+  client:
+    enableLogging: true
+  providers: {}
+    # Add your provider keys here
+    # openai:
+    #   keys:
+    #     - value: "sk-..."
+    #       weight: 1
+
