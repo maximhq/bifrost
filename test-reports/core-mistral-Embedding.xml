@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="3" failures="0" errors="0" time="0.607517">
+	<testsuite tests="3" failures="0" time="0.608000" name="github.com/maximhq/bifrost/tests/core-providers" timestamp="2025-10-27T22:29:26-07:00">
+		<properties>
+			<property name="go.version" value="go1.25.1 darwin/arm64"></property>
+		</properties>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestMistral/MistralTests/Embedding" time="0.390000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestMistral/MistralTests" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestMistral" time="0.390000"></testcase>
+	</testsuite>
+</testsuites>

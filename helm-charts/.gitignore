@@ -1,0 +1,17 @@
+# Helm chart gitignore
+
+# Generated values files
+my-values.yaml
+**/my-values.yaml
+
+# Helm dependencies
+charts/
+*.tgz
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+

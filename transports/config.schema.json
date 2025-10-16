@@ -384,6 +384,11 @@
           "config": {
             "type": "object",
             "description": "Configuration for the plugin"
+          },
+          "path": {
+            "type": "string",
+            "description": "Path to the plugin (optional, required for dynamic plugins)",
+            "optional": true
           }
         },
         "allOf": [

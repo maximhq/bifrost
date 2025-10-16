@@ -480,7 +480,7 @@ func (p *MockerPlugin) GetName() string {
 }
 
 // TransportInterceptor is not used for this plugin
-func (p *MockerPlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+func (p *MockerPlugin) TransportInterceptor(ctx *context.Context, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
 	return headers, body, nil
 }
 

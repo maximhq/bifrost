@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -389,6 +390,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						Name:    plugin.Name,
 						Enabled: plugin.Enabled,
 						Config:  plugin.Config,
+						Path:    plugin.Path,
 					}
 					if plugin.Name == semanticcache.PluginName {
 						if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
@@ -793,6 +795,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					Name:    plugin.Name,
 					Enabled: plugin.Enabled,
 					Config:  plugin.Config,
+					Path:    plugin.Path,
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
@@ -804,10 +807,21 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		}
 	}
 
-	// If plugins are not present in the store, we will use the config file
-	if len(config.PluginConfigs) == 0 && len(configData.Plugins) > 0 {
+	// First we are loading plugins from the db
+	if len(configData.Plugins) > 0 {
 		logger.Debug("no plugins found in store, processing from config file")
-		config.PluginConfigs = configData.Plugins
+		if len(config.PluginConfigs) == 0 {
+			config.PluginConfigs = configData.Plugins
+		} else {
+			// Here we will append new plugins to the config.PluginConfigs
+			for _, plugin := range configData.Plugins {
+				if !slices.ContainsFunc(config.PluginConfigs, func(p *schemas.PluginConfig) bool {
+					return p.Name == plugin.Name
+				}) {
+					config.PluginConfigs = append(config.PluginConfigs, plugin)
+				}
+			}
+		}
 
 		for i, plugin := range config.PluginConfigs {
 			if plugin.Name == semanticcache.PluginName {
@@ -831,6 +845,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					Name:    plugin.Name,
 					Enabled: plugin.Enabled,
 					Config:  pluginConfigCopy,
+					Path:    plugin.Path,
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {

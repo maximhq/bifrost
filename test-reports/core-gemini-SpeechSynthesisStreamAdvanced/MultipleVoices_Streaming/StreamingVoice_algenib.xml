@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="5" failures="0" errors="0" time="3.776925">
+	<testsuite tests="5" failures="0" time="3.777000" name="github.com/maximhq/bifrost/tests/core-providers" timestamp="2025-10-27T22:16:03-07:00">
+		<properties>
+			<property name="go.version" value="go1.25.1 darwin/arm64"></property>
+		</properties>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_algenib" time="3.520000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestGemini/GeminiTests/SpeechSynthesisStreamAdvanced" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestGemini/GeminiTests" time="3.530000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestGemini" time="3.530000"></testcase>
+	</testsuite>
+</testsuites>

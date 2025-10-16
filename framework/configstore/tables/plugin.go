@@ -13,6 +13,7 @@ type TablePlugin struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name       string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
 	Enabled    bool      `json:"enabled"`
+	Path       *string   `json:"path,omitempty"`
 	ConfigJSON string    `gorm:"type:text" json:"-"` // JSON serialized plugin.Config
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="4" failures="0" errors="0" time="1.544192">
+	<testsuite tests="4" failures="0" time="1.544000" name="github.com/maximhq/bifrost/tests/core-providers" timestamp="2025-10-27T23:46:06-07:00">
+		<properties>
+			<property name="go.version" value="go1.25.1 darwin/arm64"></property>
+		</properties>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts/SimpleCompletion" time="1.320000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests/TextCompletionStreamVariedPrompts" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI/OpenAITests" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestOpenAI" time="1.320000"></testcase>
+	</testsuite>
+</testsuites>

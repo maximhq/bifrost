@@ -50,7 +50,7 @@ type Plugin interface {
 	// It allows plugins to modify raw HTTP headers and body before transformation into BifrostRequest.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Returns modified headers, modified body, and any error that occurred during interception.
-	TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+	TransportInterceptor(ctx *context.Context, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.
@@ -73,7 +73,8 @@ type Plugin interface {
 // PluginConfig is the configuration for a plugin.
 // It contains the name of the plugin, whether it is enabled, and the configuration for the plugin.
 type PluginConfig struct {
-	Enabled bool   `json:"enabled"`
-	Name    string `json:"name"`
-	Config  any    `json:"config,omitempty"`
+	Enabled bool    `json:"enabled"`
+	Name    string  `json:"name"`
+	Path    *string `json:"path,omitempty"`
+	Config  any     `json:"config,omitempty"`
 }
