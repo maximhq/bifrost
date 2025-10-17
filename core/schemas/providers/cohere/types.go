@@ -500,14 +500,13 @@ func (c *CohereStreamCitationStruct) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("citations field is neither array nor object")
 }
 
-
 // CohereStreamMessage represents the message part of streaming deltas
 type CohereStreamMessage struct {
-	Role      *string                    `json:"role,omitempty"`       // For message-start
-	Content   *CohereStreamContentStruct `json:"content,omitempty"`    // For content events (object)
-	ToolPlan  *string                    `json:"tool_plan,omitempty"`  // For tool-plan-delta
-	ToolCalls *CohereStreamToolCallStruct      `json:"tool_calls,omitempty"` // For tool-call events (flexible)
-	Citations *CohereStreamCitationStruct            `json:"citations,omitempty"`  // For citation events
+	Role      *string                     `json:"role,omitempty"`       // For message-start
+	Content   *CohereStreamContentStruct  `json:"content,omitempty"`    // For content events (object)
+	ToolPlan  *string                     `json:"tool_plan,omitempty"`  // For tool-plan-delta
+	ToolCalls *CohereStreamToolCallStruct `json:"tool_calls,omitempty"` // For tool-call events (flexible)
+	Citations *CohereStreamCitationStruct `json:"citations,omitempty"`  // For citation events
 }
 
 // CohereStreamContent represents content in streaming events
@@ -523,4 +522,21 @@ type CohereError struct {
 	Type    string  `json:"type"`           // Error type
 	Message string  `json:"message"`        // Error message
 	Code    *string `json:"code,omitempty"` // Optional error code
+}
+
+// ==================== MODEL TYPES ====================
+type CohereModel struct {
+	Name             string   `json:"name"`
+	IsDeprecated     bool     `json:"is_deprecated"`
+	Endpoints        []string `json:"endpoints"`
+	Finetuned        bool     `json:"finetuned"`
+	ContextLength    int      `json:"context_length"`
+	TokenizerURL     string   `json:"tokenizer_url"`
+	DefaultEndpoints []string `json:"default_endpoints"`
+	Features         []string `json:"features"`
+}
+
+type CohereModelListResponse struct {
+	Models []CohereModel `json:"models"`
+	NextPageToken string `json:"next_page_token"`
 }

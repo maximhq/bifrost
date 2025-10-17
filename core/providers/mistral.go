@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/mistral"
 	"github.com/valyala/fasthttp"
 )
 
@@ -173,4 +175,67 @@ func (provider *MistralProvider) Transcription(ctx context.Context, key schemas.
 // TranscriptionStream is not supported by the Mistral provider.
 func (provider *MistralProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "mistral")
+}
+
+// ListModels performs a list models request to Mistral's API.
+func (provider *MistralProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	mistralResponse, rawResponse, latency, err := provider.handleMistralModelListRequest(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create final response
+	response := mistralResponse.ToBifrostListModelsResponse()
+
+	// Set ExtraFields
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+func (provider *MistralProvider) handleMistralModelListRequest(ctx context.Context, key schemas.Key) (*mistral.MistralModelListResponse, interface{}, time.Duration, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/models")
+	req.Header.SetMethod("GET")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
+
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, nil, latency, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, nil, latency, parseOpenAIError(resp)
+	}
+
+	// Parse Mistral's response
+	var mistralResponse mistral.MistralModelListResponse
+	if err := sonic.Unmarshal(resp.Body(), &mistralResponse); err != nil {
+		return nil, nil, latency, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Mistral)
+	}
+
+	var rawResponse interface{}
+	if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
+		return nil, nil, latency, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Mistral)
+	}
+
+	return &mistralResponse, rawResponse, latency, nil
 }

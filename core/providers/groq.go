@@ -220,3 +220,17 @@ func (provider *GroqProvider) Transcription(ctx context.Context, key schemas.Key
 func (provider *GroqProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "groq")
 }
+
+// ListModels performs a list models request to Groq's API.
+func (provider *GroqProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleOpenAIModelListRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+"/v1/models",
+		key,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Groq,
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}

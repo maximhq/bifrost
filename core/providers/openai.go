@@ -1777,6 +1777,75 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	return nil
 }
 
+func (provider *OpenAIProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	return handleOpenAIModelListRequest(ctx, provider.client, provider.networkConfig.BaseURL+"/v1/models", key, provider.networkConfig.ExtraHeaders, providerName, provider.sendBackRawResponse, provider.logger)
+
+}
+
+func handleOpenAIModelListRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod("GET")
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, parseOpenAIError(resp)
+	}
+
+	responseBody := resp.Body()
+
+	openaiResponse := &openai.OpenAIModelListResponse{}
+
+	// Use enhanced response handler with pre-allocated response
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, openaiResponse, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := openaiResponse.ToBifrostListModelsResponse()
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	return response, nil
+}
+
 // parseOpenAIError parses OpenAI error responses.
 func parseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp schemas.BifrostError

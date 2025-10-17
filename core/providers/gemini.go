@@ -916,3 +916,67 @@ func parseGeminiError(providerName schemas.ModelProvider, resp *fasthttp.Respons
 
 	return newBifrostOperationError(fmt.Sprintf("Gemini error: %v", errorResp), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
 }
+
+// ListModels performs a list models request to Gemini's API.
+func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	geminiResponse, rawResponse, latency, err := provider.handleGeminiModelListRequest(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	response := geminiResponse.ToBifrostListModelsResponse()
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+func (provider *GeminiProvider) handleGeminiModelListRequest(ctx context.Context, key schemas.Key) (*gemini.GeminiModelListResponse, interface{}, time.Duration, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/models")
+	req.Header.SetMethod("GET")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("x-goog-api-key", key.Value)
+
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, nil, latency, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, nil, latency, parseGeminiError(providerName, resp)
+	}
+
+	// Parse Gemini's response
+	var geminiResponse gemini.GeminiModelListResponse
+	if err := sonic.Unmarshal(resp.Body(), &geminiResponse); err != nil {
+		return nil, nil, latency, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+	}
+
+	var rawResponse interface{}
+	if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
+		return nil, nil, latency, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+	}
+
+	return &geminiResponse, rawResponse, latency, nil
+}

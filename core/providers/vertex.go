@@ -632,3 +632,8 @@ func (provider *VertexProvider) Transcription(ctx context.Context, key schemas.K
 func (provider *VertexProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "vertex")
 }
+
+// ListModels performs a list models request to Vertex's API.
+func (provider *VertexProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("list models", "vertex")
+}
