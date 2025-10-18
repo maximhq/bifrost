@@ -282,8 +282,8 @@ func CreateToolResponsesMessage(content string, toolCallID string) schemas.Respo
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{
 			CallID: bifrost.Ptr(toolCallID),
 			// Set ResponsesFunctionToolCallOutput for OpenAI's native Responses API
-			ResponsesFunctionToolCallOutput: &schemas.ResponsesFunctionToolCallOutput{
-				ResponsesFunctionToolCallOutputStr: bifrost.Ptr(content),
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesToolCallOutputStr: bifrost.Ptr(content),
 			},
 		},
 	}
