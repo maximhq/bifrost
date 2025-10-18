@@ -167,7 +167,7 @@ func (p *LoggerPlugin) GetName() string {
 }
 
 // TransportInterceptor is not used for this plugin
-func (p *LoggerPlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+func (p *LoggerPlugin) TransportInterceptor(ctx *context.Context, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
 	return headers, body, nil
 }
 
