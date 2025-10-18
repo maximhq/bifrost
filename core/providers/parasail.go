@@ -162,3 +162,8 @@ func (provider *ParasailProvider) Transcription(ctx context.Context, key schemas
 func (provider *ParasailProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "parasail")
 }
+
+// ListModels performs a list models request to Parasail's API.
+func (provider *ParasailProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("list models", "parasail")
+}

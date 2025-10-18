@@ -86,7 +86,13 @@ func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
-func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody interface{}, path string, key schemas.Key) ([]byte, time.Duration, *schemas.BifrostError) {
+// Parameters:
+//   - method: HTTP method (GET, POST, etc.)
+//   - requestBody: request body (can be nil for GET requests)
+//   - path: API path
+//   - key: Bedrock authentication key
+//   - useRuntimeEndpoint: if true, uses bedrock-runtime endpoint; if false, uses bedrock endpoint
+func (provider *BedrockProvider) completeRequest(ctx context.Context, method string, requestBody interface{}, path string, key schemas.Key, useRuntimeEndpoint bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
 
 	region := "us-east-1"
@@ -94,29 +100,48 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 		region = *config.Region
 	}
 
-	jsonBody, err := sonic.Marshal(requestBody)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+	var jsonBody []byte
+	var err error
+
+	// Marshal the request body if provided
+	if requestBody != nil {
+		jsonBody, err = sonic.Marshal(requestBody)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return nil, 0, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Type:    schemas.Ptr(schemas.RequestCancelled),
+						Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
+						Error:   err,
+					},
+				}
+			}
 			return nil, 0, &schemas.BifrostError{
-				IsBifrostError: false,
+				IsBifrostError: true,
 				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
+					Message: schemas.ErrProviderJSONMarshaling,
 					Error:   err,
 				},
 			}
 		}
-		return nil, 0, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
 	}
 
-	// Create the request with the JSON body
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewBuffer(jsonBody))
+	// Construct the URL based on endpoint type
+	var url string
+	if useRuntimeEndpoint {
+		url = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
+	} else {
+		url = fmt.Sprintf("https://bedrock.%s.amazonaws.com%s", region, path)
+	}
+
+	// Create the request
+	var req *http.Request
+	if requestBody != nil {
+		req, err = http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(jsonBody))
+	} else {
+		req, err = http.NewRequestWithContext(ctx, method, url, nil)
+	}
 	if err != nil {
 		return nil, 0, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -365,7 +390,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas
 	}
 
 	path := provider.getModelPath("invoke", request.Model, key)
-	body, latency, err := provider.completeRequest(ctx, requestBody, path, key)
+	body, latency, err := provider.completeRequest(ctx, "POST", requestBody, path, key, true)
 	if err != nil {
 		return nil, err
 	}
@@ -440,7 +465,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, key schemas
 	path := provider.getModelPath("converse", request.Model, key)
 
 	// Create the signed request
-	responseBody, latency, bifrostErr := provider.completeRequest(ctx, reqBody, path, key)
+	responseBody, latency, bifrostErr := provider.completeRequest(ctx, "POST", reqBody, path, key, true)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -631,7 +656,7 @@ func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key,
 	path := provider.getModelPath("converse", request.Model, key)
 
 	// Create the signed request
-	responseBody, latency, bifrostErr := provider.completeRequest(ctx, reqBody, path, key)
+	responseBody, latency, bifrostErr := provider.completeRequest(ctx, "POST", reqBody, path, key, true)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -839,7 +864,7 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key,
 			return nil, newBifrostOperationError("failed to convert Titan request", err, providerName)
 		}
 		path := provider.getModelPath("invoke", request.Model, key)
-		rawResponse, latency, bifrostError = provider.completeRequest(ctx, titanReq, path, key)
+		rawResponse, latency, bifrostError = provider.completeRequest(ctx, "POST", titanReq, path, key, true)
 
 	case "cohere":
 		cohereReq, err := bedrock.ToBedrockCohereEmbeddingRequest(request)
@@ -847,7 +872,7 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key,
 			return nil, newBifrostOperationError("failed to convert Cohere request", err, providerName)
 		}
 		path := provider.getModelPath("invoke", request.Model, key)
-		rawResponse, latency, bifrostError = provider.completeRequest(ctx, cohereReq, path, key)
+		rawResponse, latency, bifrostError = provider.completeRequest(ctx, "POST", cohereReq, path, key, true)
 
 	default:
 		return nil, newConfigurationError("unsupported embedding model type", providerName)
@@ -928,4 +953,43 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	}
 
 	return path
+}
+
+// ListModels performs a list models request to Bedrock's API.
+// It retrieves all foundation models available in Amazon Bedrock.
+func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	if key.BedrockKeyConfig == nil {
+		return nil, newConfigurationError("bedrock key config is not provided", providerName)
+	}
+
+	// List models endpoint uses the bedrock service (not bedrock-runtime)
+	responseBody, latency, err := provider.completeRequest(ctx, "GET", nil, "/foundation-models", key, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse Bedrock-specific response
+	bedrockResponse := &bedrock.BedrockModelListResponse{}
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, bedrockResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert to Bifrost response
+	response := bedrockResponse.ToBifrostListModelsResponse()
+	if response == nil {
+		return nil, newBifrostOperationError("failed to convert Bedrock model list response", nil, providerName)
+	}
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }

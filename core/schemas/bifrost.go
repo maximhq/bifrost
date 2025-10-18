@@ -90,6 +90,7 @@ const (
 	SpeechStreamRequest         RequestType = "speech_stream"
 	TranscriptionRequest        RequestType = "transcription"
 	TranscriptionStreamRequest  RequestType = "transcription_stream"
+	ListModelsRequest           RequestType = "list_models"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.

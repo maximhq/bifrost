@@ -33,21 +33,22 @@ type ChannelMessage struct {
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
 	ctx                 context.Context
-	account             schemas.Account                  // account interface
-	plugins             atomic.Pointer[[]schemas.Plugin] // list of plugins
-	requestQueues       sync.Map                         // provider request queues (thread-safe)
-	waitGroups          sync.Map                         // wait groups for each provider (thread-safe)
-	providerMutexes     sync.Map                         // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool  sync.Pool                        // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool sync.Pool                        // Pool for response channels, initial pool size is set in Init
-	errorChannelPool    sync.Pool                        // Pool for error channels, initial pool size is set in Init
-	responseStreamPool  sync.Pool                        // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool  sync.Pool                        // Pool for PluginPipeline objects
-	bifrostRequestPool  sync.Pool                        // Pool for BifrostRequest objects
-	logger              schemas.Logger                   // logger instance, default logger is used if not provided
-	mcpManager          *MCPManager                      // MCP integration manager (nil if MCP not configured)
-	dropExcessRequests  atomic.Bool                      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	keySelector         schemas.KeySelector              // Custom key selector function
+	account             schemas.Account                    // account interface
+	plugins             atomic.Pointer[[]schemas.Plugin]   // list of plugins
+	providers           atomic.Pointer[[]schemas.Provider] // list of providers
+	requestQueues       sync.Map                           // provider request queues (thread-safe)
+	waitGroups          sync.Map                           // wait groups for each provider (thread-safe)
+	providerMutexes     sync.Map                           // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool  sync.Pool                          // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool sync.Pool                          // Pool for response channels, initial pool size is set in Init
+	errorChannelPool    sync.Pool                          // Pool for error channels, initial pool size is set in Init
+	responseStreamPool  sync.Pool                          // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool  sync.Pool                          // Pool for PluginPipeline objects
+	bifrostRequestPool  sync.Pool                          // Pool for BifrostRequest objects
+	logger              schemas.Logger                     // logger instance, default logger is used if not provided
+	mcpManager          *MCPManager                        // MCP integration manager (nil if MCP not configured)
+	dropExcessRequests  atomic.Bool                        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	keySelector         schemas.KeySelector                // Custom key selector function
 }
 
 // PluginPipeline encapsulates the execution of plugin PreHooks and PostHooks, tracks how many plugins ran, and manages short-circuiting and error aggregation.
@@ -91,6 +92,10 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		keySelector:   config.KeySelector,
 	}
 	bifrost.plugins.Store(&config.Plugins)
+
+	// Initialize providers slice
+	bifrost.providers.Store(&[]schemas.Provider{})
+
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
 
 	if bifrost.keySelector == nil {
@@ -202,6 +207,62 @@ func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 }
 
 // PUBLIC API METHODS
+
+// ListModelsRequest sends a list models request to the specified provider.
+func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "list models request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for list models request",
+			},
+		}
+	}
+
+	request := &schemas.BifrostListModelsRequest{
+		Provider: req.Provider,
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for list models request",
+			},
+		}
+	}
+
+	// Get API key for the provider if required
+	key := schemas.Key{}
+	var err error
+	if providerRequiresKey(req.Provider) {
+		key, err = bifrost.selectKeyFromProviderForModel(&ctx, req.Provider, "", req.Provider)
+		if err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: err.Error(),
+					Error:   err,
+				},
+			}
+		}
+	}
+
+	response, bifrostErr := provider.ListModels(ctx, key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return response, nil
+}
 
 // TextCompletionRequest sends a text completion request to the specified provider.
 func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
@@ -1039,6 +1100,16 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 
 	waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
 	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
+	// Add provider to list of providers
+	loadedProviders := bifrost.providers.Load()
+	if loadedProviders == nil {
+		// Initialize if somehow nil
+		emptyProviders := make([]schemas.Provider, 0)
+		loadedProviders = &emptyProviders
+	}
+	currentProviders := *loadedProviders
+	updatedProviders := append(currentProviders, provider)
+	bifrost.providers.Store(&updatedProviders)
 
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		currentWaitGroup.Add(1)
@@ -1090,6 +1161,23 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 	queue := queueValue.(chan *ChannelMessage)
 
 	return queue, nil
+}
+
+// getProviderByKey retrieves a provider instance from the providers array by its provider key.
+// Returns the provider if found, or nil if no provider with the given key exists.
+func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) schemas.Provider {
+	providers := bifrost.providers.Load()
+	if providers == nil {
+		return nil
+	}
+
+	for _, provider := range *providers {
+		if provider.GetProviderKey() == providerKey {
+			return provider
+		}
+	}
+
+	return nil
 }
 
 // CORE INTERNAL LOGIC

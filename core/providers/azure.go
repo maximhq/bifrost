@@ -10,6 +10,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/azure"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
@@ -63,40 +64,57 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Azure's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
-func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody interface{}, path string, key schemas.Key, model string) ([]byte, time.Duration, *schemas.BifrostError) {
+// Parameters:
+//   - method: HTTP method (GET, POST, etc.)
+//   - requestBody: request body (can be nil for GET requests)
+//   - path: API path (e.g., "chat/completions", "models")
+//   - key: Azure authentication key
+//   - model: model name (can be empty for non-deployment endpoints)
+//   - useDeployment: whether to use deployment-based URL construction
+func (provider *AzureProvider) completeRequest(ctx context.Context, method string, requestBody interface{}, path string, key schemas.Key, model string, useDeployment bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	if key.AzureKeyConfig == nil {
 		return nil, 0, newConfigurationError("azure key config not set", schemas.Azure)
-	}
-
-	// Marshal the request body
-	jsonData, err := sonic.Marshal(requestBody)
-	if err != nil {
-		return nil, 0, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Azure)
 	}
 
 	if key.AzureKeyConfig.Endpoint == "" {
 		return nil, 0, newConfigurationError("endpoint not set", schemas.Azure)
 	}
 
-	url := key.AzureKeyConfig.Endpoint
+	var jsonData []byte
+	var err error
 
-	if key.AzureKeyConfig.Deployments != nil {
+	// Marshal the request body if provided
+	if requestBody != nil {
+		jsonData, err = sonic.Marshal(requestBody)
+		if err != nil {
+			return nil, 0, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Azure)
+		}
+	}
+
+	url := key.AzureKeyConfig.Endpoint
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr("2024-02-01")
+	}
+
+	// Construct URL based on whether deployment is required
+	if useDeployment {
+		if key.AzureKeyConfig.Deployments == nil {
+			return nil, 0, newConfigurationError("deployments not set", schemas.Azure)
+		}
+
 		deployment := key.AzureKeyConfig.Deployments[model]
 		if deployment == "" {
 			return nil, 0, newConfigurationError(fmt.Sprintf("deployment not found for model %s", model), schemas.Azure)
 		}
 
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.Ptr("2024-02-01")
-		}
-
 		url = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", url, deployment, path, *apiVersion)
 	} else {
-		return nil, 0, newConfigurationError("deployments not set", schemas.Azure)
+		// For non-deployment endpoints (like list models)
+		url = fmt.Sprintf("%s/openai/%s?api-version=%s", url, path, *apiVersion)
 	}
 
-	// Create the request with the JSON body
+	// Create the request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -106,8 +124,9 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(url)
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
+	req.Header.SetMethod(method)
+
+	// Set authentication
 	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
 		// Ensure api-key is not accidentally present (from extra headers, etc.)
@@ -116,7 +135,11 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 		req.Header.Set("api-key", key.Value)
 	}
 
-	req.SetBody(jsonData)
+	// Set body and content type for non-GET requests
+	if method != "GET" && requestBody != nil {
+		req.Header.SetContentType("application/json")
+		req.SetBody(jsonData)
+	}
 
 	// Send the request and measure latency
 	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
@@ -153,7 +176,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, key schemas.K
 		return nil, newBifrostOperationError("text completion input is not provided", nil, schemas.Azure)
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, reqBody, "completions", key, request.Model)
+	responseBody, latency, err := provider.completeRequest(ctx, "POST", reqBody, "completions", key, request.Model, true)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +267,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, key schemas.K
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, schemas.Azure)
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, reqBody, "chat/completions", key, request.Model)
+	responseBody, latency, err := provider.completeRequest(ctx, "POST", reqBody, "chat/completions", key, request.Model, true)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +391,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, key schemas.Key, r
 		return nil, newBifrostOperationError("embedding input is not provided", nil, schemas.Azure)
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, reqBody, "embeddings", key, request.Model)
+	responseBody, latency, err := provider.completeRequest(ctx, "POST", reqBody, "embeddings", key, request.Model, true)
 	if err != nil {
 		return nil, err
 	}
@@ -411,4 +434,37 @@ func (provider *AzureProvider) Transcription(ctx context.Context, key schemas.Ke
 // TranscriptionStream is not supported by the Azure provider.
 func (provider *AzureProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "azure")
+}
+
+// ListModels performs a list models request to Azure's API.
+// It retrieves all models accessible by the Azure OpenAI resource
+func (provider *AzureProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	// List models endpoint doesn't require a deployment, it's a resource-level operation
+	responseBody, latency, err := provider.completeRequest(ctx, "GET", nil, "models", key, "", false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse Azure-specific response
+	azureResponse := &azure.AzureModelListResponse{}
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, azureResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert to Bifrost response
+	response := azureResponse.ToBifrostListModelsResponse()
+	if response == nil {
+		return nil, newBifrostOperationError("failed to convert Azure model list response", nil, schemas.Azure)
+	}
+
+	response.ExtraFields.Provider = schemas.Azure
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }

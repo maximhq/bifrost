@@ -195,3 +195,8 @@ func (provider *SGLProvider) Transcription(ctx context.Context, key schemas.Key,
 func (provider *SGLProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "sgl")
 }
+
+// ListModels performs a list models request to SGL's API.
+func (provider *SGLProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return nil, newUnsupportedOperationError("list models", "sgl")
+}

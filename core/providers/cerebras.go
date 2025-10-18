@@ -179,3 +179,8 @@ func (provider *CerebrasProvider) Transcription(ctx context.Context, key schemas
 func (provider *CerebrasProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "cerebras")
 }
+
+// ListModels performs a list models request to Cerebras's API.
+func (provider *CerebrasProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleOpenAIModelListRequest(ctx, provider.client, provider.networkConfig.BaseURL+"/v1/models", key, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), provider.sendBackRawResponse, provider.logger)
+}

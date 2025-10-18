@@ -131,19 +131,19 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	// Convert Cohere v2 response to Bifrost response
-	reponse := cohereResponse.ToBifrostChatResponse()
+	response := cohereResponse.ToBifrostChatResponse()
 
-	reponse.Model = request.Model
-	reponse.ExtraFields.Provider = providerName
-	reponse.ExtraFields.ModelRequested = request.Model
-	reponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
-	reponse.ExtraFields.Latency = latency.Milliseconds()
+	response.Model = request.Model
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
-		reponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return reponse, nil
+	return response, nil
 }
 
 func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Context, reqBody *cohere.CohereChatRequest, key schemas.Key) (*cohere.CohereChatResponse, interface{}, time.Duration, *schemas.BifrostError) {
@@ -793,4 +793,90 @@ func (provider *CohereProvider) Transcription(ctx context.Context, key schemas.K
 // TranscriptionStream is not supported by the Cohere provider.
 func (provider *CohereProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "cohere")
+}
+
+// ListModels performs a list models request to Cohere's API.
+func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	cohereResponse, rawResponse, latency, err := provider.handleCohereModelListRequest(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert Cohere v2 response to Bifrost response
+	response := cohereResponse.ToBifrostListModelsResponse()
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+func (provider *CohereProvider) handleCohereModelListRequest(ctx context.Context, key schemas.Key) (*cohere.CohereModelListResponse, interface{}, time.Duration, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/models")
+	req.Header.SetMethod("GET")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
+
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, nil, latency, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+
+		var errorResp cohere.CohereError
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = errorResp.Message
+
+		return nil, nil, latency, bifrostErr
+	}
+
+	// Parse Cohere v2 response
+	var cohereResponse cohere.CohereModelListResponse
+	if err := sonic.Unmarshal(resp.Body(), &cohereResponse); err != nil {
+		return nil, nil, latency, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "error parsing Cohere v1 response",
+				Error:   err,
+			},
+		}
+	}
+
+	// Parse raw response for sendBackRawResponse
+	var rawResponse interface{}
+	if provider.sendBackRawResponse {
+		if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
+			return nil, nil, latency, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: "error parsing raw response",
+					Error:   err,
+				},
+			}
+		}
+	}
+
+	return &cohereResponse, rawResponse, latency, nil
 }
