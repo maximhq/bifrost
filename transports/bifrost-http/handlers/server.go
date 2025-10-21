@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,9 +55,12 @@ type BifrostHTTPServer struct {
 	LogLevel       string
 	LogOutputStyle string
 
-	Plugins []schemas.Plugin
-	Client  *bifrost.Bifrost
-	Config  *lib.Config
+	Plugins           []schemas.Plugin
+	pluginStatusMutex sync.RWMutex
+	pluginStatus      []schemas.PluginStatus
+
+	Client *bifrost.Bifrost
+	Config *lib.Config
 
 	Server           *fasthttp.Server
 	Router           *router.Router
@@ -265,17 +269,26 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 }
 
 // LoadPlugins loads the plugins for the server.
-func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
-	test, _:= sonic.Marshal(config.PluginConfigs)
-	logger.Debug("loading plugins from config %s", string(test))
+func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []schemas.PluginStatus, error) {
 	var err error
+	pluginStatus := []schemas.PluginStatus{}
 	plugins := []schemas.Plugin{}
 	// Initialize telemetry plugin
 	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, nil, config)
 	if err != nil {
 		logger.Error("failed to initialize telemetry plugin: %v", err)
+		pluginStatus = append(pluginStatus, schemas.PluginStatus{
+			Name:   telemetry.PluginName,
+			Status: schemas.PluginStatusError,
+			Logs:   []string{fmt.Sprintf("error initializing telemetry plugin %v", err)},
+		})
 	} else {
 		plugins = append(plugins, promPlugin)
+		pluginStatus = append(pluginStatus, schemas.PluginStatus{
+			Name:   telemetry.PluginName,
+			Status: schemas.PluginStatusActive,
+			Logs:   []string{"telemetry plugin initialized successfully"},
+		})
 	}
 	// Initializing logger plugin
 	var loggingPlugin *logging.LoggerPlugin
@@ -284,9 +297,25 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 		loggingPlugin, err = LoadPlugin[*logging.LoggerPlugin](ctx, logging.PluginName, nil, nil, config)
 		if err != nil {
 			logger.Error("failed to initialize logging plugin: %v", err)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   logging.PluginName,
+				Status: schemas.PluginStatusError,
+				Logs:   []string{fmt.Sprintf("error initializing logging plugin %v", err)},
+			})
 		} else {
 			plugins = append(plugins, loggingPlugin)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   logging.PluginName,
+				Status: schemas.PluginStatusActive,
+				Logs:   []string{"logging plugin initialized successfully"},
+			})
 		}
+	} else {
+		pluginStatus = append(pluginStatus, schemas.PluginStatus{
+			Name:   logging.PluginName,
+			Status: schemas.PluginStatusDisabled,
+			Logs:   []string{"logging plugin disabled"},
+		})
 	}
 	// Initializing governance plugin
 	var governancePlugin *governance.GovernancePlugin
@@ -297,26 +326,57 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 		}, config)
 		if err != nil {
 			logger.Error("failed to initialize governance plugin: %s", err.Error())
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   governance.PluginName,
+				Status: schemas.PluginStatusError,
+				Logs:   []string{fmt.Sprintf("error initializing governance plugin %v", err)},
+			})
 		} else {
 			plugins = append(plugins, governancePlugin)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   governance.PluginName,
+				Status: schemas.PluginStatusActive,
+				Logs:   []string{"governance plugin initialized successfully"},
+			})
 		}
+	} else {
+		pluginStatus = append(pluginStatus, schemas.PluginStatus{
+			Name:   governance.PluginName,
+			Status: schemas.PluginStatusDisabled,
+			Logs:   []string{"governance plugin disabled"},
+		})
 	}
 	for _, plugin := range config.PluginConfigs {
 		if !plugin.Enabled {
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   plugin.Name,
+				Status: schemas.PluginStatusDisabled,
+				Logs:   []string{fmt.Sprintf("plugin %s disabled", plugin.Name)},
+			})
 			continue
 		}
 		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Path, plugin.Config, config)
 		if err != nil {
 			logger.Error("failed to load plugin %s: %v", plugin.Name, err)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   plugin.Name,
+				Status: schemas.PluginStatusError,
+				Logs:   []string{fmt.Sprintf("error loading plugin %s: %v", plugin.Name, err)},
+			})
 		} else {
 			plugins = append(plugins, pluginInstance)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   plugin.Name,
+				Status: schemas.PluginStatusActive,
+				Logs:   []string{fmt.Sprintf("plugin %s initialized successfully", plugin.Name)},
+			})
 		}
 	}
 
 	// Atomically publish the plugin state
 	config.Plugins.Store(&plugins)
 
-	return plugins, nil
+	return plugins, pluginStatus, nil
 }
 
 // FindPluginByName retrieves a plugin by name and returns it as type T.
@@ -367,18 +427,50 @@ func (s *BifrostHTTPServer) UpdateDropExcessRequests(value bool) {
 	s.Client.UpdateDropExcessRequests(value)
 }
 
+// UpdatePluginStatus updates the status of a plugin
+func (s *BifrostHTTPServer) UpdatePluginStatus(name string, status string, logs []string) error {
+	s.pluginStatusMutex.Lock()
+	defer s.pluginStatusMutex.Unlock()
+	// Remove plugin status if already exists
+	for i, pluginStatus := range s.pluginStatus {
+		if pluginStatus.Name == name {
+			s.pluginStatus = append(s.pluginStatus[:i], s.pluginStatus[i+1:]...)
+			break
+		}
+	}
+	logsCopy := make([]string, len(logs))
+	copy(logsCopy, logs)
+	// Add new plugin status
+	s.pluginStatus = append(s.pluginStatus, schemas.PluginStatus{
+		Name:   name,
+		Status: status,
+		Logs:   logsCopy,
+	})
+	return nil
+}
+
+// GetPluginStatus returns the status of all plugins
+func (s *BifrostHTTPServer) GetPluginStatus() []schemas.PluginStatus {
+	s.pluginStatusMutex.RLock()
+	defer s.pluginStatusMutex.RUnlock()
+	result := make([]schemas.PluginStatus, len(s.pluginStatus))
+	copy(result, s.pluginStatus)
+	return result
+}
+
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
 	logger.Debug("reloading plugin %s", name)
 	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, path, pluginConfig, s.Config)
 	if err != nil {
+		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error loading plugin %s: %v", name, err)})
 		return err
 	}
 	if err := s.Client.ReloadPlugin(newPlugin); err != nil {
+		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", name, err)})
 		return err
 	}
-
 	// CAS retry loop (matching bifrost.go pattern)
 	for {
 		oldPlugins := s.Config.Plugins.Load()
@@ -429,7 +521,13 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 	if err := s.Client.RemovePlugin(name); err != nil {
 		return err
 	}
-
+	isDisabled := ctx.Value("isDisabled")
+	if isDisabled != nil && isDisabled.(bool) {
+		s.UpdatePluginStatus(name, schemas.PluginStatusDisabled, []string{fmt.Sprintf("plugin %s is disabled", name)})
+	} else {
+		// Removing plugin from plugin status
+		s.UpdatePluginStatus(name, schemas.PluginStatusDisabled, []string{fmt.Sprintf("plugin %s is removed", name)})
+	}
 	// CAS retry loop (matching bifrost.go pattern)
 	for {
 		oldPlugins := s.Config.Plugins.Load()
@@ -569,7 +667,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
-
+	s.pluginStatusMutex = sync.RWMutex{}
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
@@ -580,7 +678,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to load config %v", err)
 	}
 	// Load plugins
-	s.Plugins, err = LoadPlugins(ctx, s.Config)
+	s.pluginStatusMutex.Lock()
+	defer s.pluginStatusMutex.Unlock()
+	s.Plugins, s.pluginStatus, err = LoadPlugins(ctx, s.Config)
 	if err != nil {
 		return fmt.Errorf("failed to load plugins %v", err)
 	}

@@ -826,12 +826,12 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 
 // PLUGINS METHODS
 
-func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]tables.TablePlugin, error) {
-	var plugins []tables.TablePlugin
+func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error) {
+	var plugins []*tables.TablePlugin
 	if err := s.db.WithContext(ctx).Find(&plugins).Error; err != nil {
 		return nil, err
 	}
-	return plugins, nil
+	return plugins, nil	
 }
 
 func (s *RDBConfigStore) GetPlugin(ctx context.Context, name string) (*tables.TablePlugin, error) {
@@ -852,6 +852,12 @@ func (s *RDBConfigStore) CreatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		txDB = s.db
 	}
+	// Mark plugin as custom if path is not empty
+	if plugin.Path != nil && strings.TrimSpace(*plugin.Path) != "" {
+		plugin.IsCustom = true
+	}else{
+		plugin.IsCustom = false
+	}
 	return txDB.WithContext(ctx).Create(plugin).Error
 }
 
@@ -865,6 +871,13 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		txDB = s.db.Begin()
 		localTx = true
+	}
+
+	// Mark plugin as custom if path is not empty
+	if plugin.Path != nil && strings.TrimSpace(*plugin.Path) != "" {
+		plugin.IsCustom = true
+	}else{
+		plugin.IsCustom = false
 	}
 
 	if err := txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", plugin.Name).Error; err != nil {

@@ -57,7 +57,7 @@ type ConfigStore interface {
 	UpdateConfig(ctx context.Context, config *tables.TableConfig, tx ...*gorm.DB) error
 
 	// Plugins CRUD
-	GetPlugins(ctx context.Context) ([]tables.TablePlugin, error)
+	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
 	GetPlugin(ctx context.Context, name string) (*tables.TablePlugin, error)
 	CreatePlugin(ctx context.Context, plugin *tables.TablePlugin, tx ...*gorm.DB) error
 	UpdatePlugin(ctx context.Context, plugin *tables.TablePlugin, tx ...*gorm.DB) error

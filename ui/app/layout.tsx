@@ -38,7 +38,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 			<SidebarProvider>
 				<Sidebar />
 				<div className="dark:bg-card custom-scrollbar my-[1rem] h-[calc(100dvh-2rem)] w-full overflow-auto rounded-md border border-gray-200 bg-white dark:border-zinc-800">
-					<main className="custom-scrollbar relative mx-auto flex w-5xl flex-col px-4 py-12 2xl:w-7xl">
+					<main className="custom-scrollbar relative mx-auto flex flex-col p-4">
 						{bifrostConfig?.is_db_connected ? children : bifrostConfig ? <NotAvailableBanner /> : <FullPageLoader />}
 					</main>
 				</div>

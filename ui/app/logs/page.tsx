@@ -349,7 +349,7 @@ export default function LogsPage() {
 			) : showEmptyState ? (
 				<EmptyState isSocketConnected={isSocketConnected} error={error} />
 			) : (
-				<div className="space-y-6">
+				<div className="space-y-6 max-w-7xl	mx-auto">
 					<div className="space-y-6">
 						{/* Quick Stats */}
 						<div className="grid grid-cols-1 gap-4 md:grid-cols-5">

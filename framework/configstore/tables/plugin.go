@@ -17,6 +17,7 @@ type TablePlugin struct {
 	ConfigJSON string    `gorm:"type:text" json:"-"` // JSON serialized plugin.Config
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
+	IsCustom   bool      `gorm:"not null;default:false" json:"isCustom"`
 
 	// Virtual fields for runtime use (not stored in DB)
 	Config any `gorm:"-" json:"config,omitempty"`

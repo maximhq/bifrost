@@ -140,7 +140,7 @@ configs:
     content: |
       server:
         http_listen_port: 3200
-        grpc_listen_port: 3200
+        grpc_listen_port: 3201
         log_level: info
 
       distributor:

@@ -1,6 +1,6 @@
 import { configureStore } from "@reduxjs/toolkit";
 import { baseApi } from "./apis/baseApi";
-import { appReducer, guardrailReducer, pluginReducer, providerReducer } from "./slices";
+import { appReducer, pluginReducer, providerReducer } from "./slices";
 
 // Import enterprise types for TypeScript
 type EnterpriseState = {
@@ -42,9 +42,7 @@ export const store = configureStore({
 		// Provider state slice
 		provider: providerReducer,
 		// Plugin state slice
-		plugin: pluginReducer,
-		// Guardrail state slice
-		guardrail: guardrailReducer,
+		plugin: pluginReducer,				
 		// Enterprise reducers (if available)
 		...enterpriseReducers,
 	},

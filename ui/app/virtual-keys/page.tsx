@@ -3,10 +3,10 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import {
 	getErrorMessage,
+	useLazyGetCoreConfigQuery,
 	useLazyGetCustomersQuery,
 	useLazyGetTeamsQuery,
 	useLazyGetVirtualKeysQuery,
-	useLazyGetCoreConfigQuery,
 } from "@/lib/store";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -70,11 +70,13 @@ export default function VirtualKeysPage() {
 	}
 
 	return (
-		<VirtualKeysTable
-			virtualKeys={virtualKeysData?.virtual_keys || []}
-			teams={teamsData?.teams || []}
-			customers={customersData?.customers || []}
-			onRefresh={handleRefresh}
-		/>
+		<div className="mx-auto w-full max-w-7xl">
+			<VirtualKeysTable
+				virtualKeys={virtualKeysData?.virtual_keys || []}
+				teams={teamsData?.teams || []}
+				customers={customersData?.customers || []}
+				onRefresh={handleRefresh}
+			/>
+		</div>
 	);
 }

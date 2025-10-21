@@ -24,7 +24,7 @@ type ConfigManager interface {
 	ReloadClientConfigFromConfigStore() error
 	ReloadPricingManager() error
 	UpdateDropExcessRequests(value bool)
-	ReloadPlugin(ctx context.Context, name string, pluginConfig any) error
+	ReloadPlugin(ctx context.Context, name string,path *string, pluginConfig any) error
 }
 
 // ConfigHandler manages runtime configuration updates for Bifrost.

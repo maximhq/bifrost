@@ -26,7 +26,7 @@ export default function MCPServersPage() {
 	}
 
 	return (
-		<div>
+		<div className="mx-auto w-full max-w-7xl">
 			<MCPClientsTable mcpClients={mcpClients || []} />
 		</div>
 	);

@@ -120,6 +120,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 					name: SEMANTIC_CACHE_PLUGIN,
 					enabled: originalCacheEnabled,
 					config: cacheConfig,
+					path: "",
 				}).unwrap();
 			}
 			toast.success("Plugin configuration updated successfully");

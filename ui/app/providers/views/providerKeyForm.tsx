@@ -6,7 +6,7 @@ import { ModelProvider } from "@/lib/types/config";
 import { modelProviderKeySchema } from "@/lib/types/schemas";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
@@ -27,7 +27,7 @@ const providerKeyFormSchema = z.object({
 export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }: Props) {
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const isEditing = provider?.keys?.[keyIndex] !== undefined;
-	
+
 	const form = useForm({
 		resolver: zodResolver(providerKeyFormSchema),
 		mode: "onBlur",
@@ -50,6 +50,16 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 		}
 	}, [isEditing, form]);
 
+	const getTooltipContent = useCallback(() => {
+		if (!form.formState.isValid && form.formState.errors.root?.message) {
+			return form.formState.errors.root?.message;
+		}
+		if (!form.formState.isDirty) {
+			return "No changes made";
+		}
+		return null;
+	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty]);
+
 	const onSubmit = (value: any) => {
 		const keys = provider.keys ?? [];
 		const updatedKeys = [...keys.slice(0, keyIndex), value.key, ...keys.slice(keyIndex + 1)];
@@ -67,14 +77,13 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 				});
 			});
 	};
-
-
+	
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
 				<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
 
-				<div className="bg:white dark:bg-card pt-6">
+				<div className="bg-white dark:bg-card pt-6">
 					<div className="flex justify-end space-x-3">
 						<Button type="button" variant="outline" onClick={onCancel}>
 							Cancel
@@ -93,9 +102,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 										</Button>
 									</span>
 								</TooltipTrigger>
-								{!form.formState.isValid && (
-									<TooltipContent>{form.formState.errors.root?.message || "Please fill in required fields"}</TooltipContent>
-								)}
+								{getTooltipContent() && <TooltipContent>{getTooltipContent()}</TooltipContent>}
 							</Tooltip>
 						</TooltipProvider>
 					</div>
