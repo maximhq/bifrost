@@ -600,12 +600,17 @@ func migrationAddVirtualKeyMCPConfigsTable(ctx context.Context, db *gorm.DB) err
 // migrationAddPluginPathColumn adds the path column to the plugin table
 func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_plugin_path_column",
+		ID: "update_plugins_table_for_custom_plugins",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if !migrator.HasColumn(&tables.TablePlugin{}, "path") {
 				if err := migrator.AddColumn(&tables.TablePlugin{}, "path"); err != nil {
+					return err
+				}				
+			}
+			if !migrator.HasColumn(&tables.TablePlugin{}, "is_custom") {
+				if err := migrator.AddColumn(&tables.TablePlugin{}, "is_custom"); err != nil {
 					return err
 				}
 			}
@@ -615,6 +620,9 @@ func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if err := migrator.DropColumn(&tables.TablePlugin{}, "path"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&tables.TablePlugin{}, "is_custom"); err != nil {	
 				return err
 			}
 			return nil

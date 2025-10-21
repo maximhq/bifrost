@@ -371,6 +371,16 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore() error {
 	return nil
 }
 
+func (s *BifrostHTTPServer) GetPluginsWithStatus() ([]schemas.Plugin, error) {
+	for _, plugin := range s.Plugins {
+		pluginStatus := map[string]any{
+			Name: plugin.GetName(),
+			Status: "active",
+		}
+	}
+	return pluginStatus, nil
+}
+
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {

@@ -41,6 +41,7 @@ type CreatePluginRequest struct {
 	Name    string         `json:"name"`
 	Enabled bool           `json:"enabled"`
 	Config  map[string]any `json:"config"`
+	Path    *string        `json:"path"`
 }
 
 // UpdatePluginRequest is the request body for updating a plugin
@@ -66,6 +67,8 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugins", h.logger)
 		return
 	}
+
+	// Getting status of each plugin
 
 	SendJSON(ctx, map[string]any{
 		"plugins": plugins,
@@ -149,7 +152,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 
 	// We reload the plugin if its enabled
 	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, nil, request.Config); err != nil {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Path, request.Config); err != nil {
 			h.logger.Error("failed to load plugin: %v", err)
 			SendJSON(ctx, map[string]any{
 				"message": fmt.Sprintf("Plugin created successfully; but failed to load plugin with new config: %v", err),

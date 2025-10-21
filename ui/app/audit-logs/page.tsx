@@ -1,5 +1,7 @@
 import AuditLogsView from "@enterprise/components/audit-logs/auditLogsView";
 
 export default function AuditLogsPage() {
-	return <AuditLogsView />;
+	return <div className="mx-auto w-full max-w-7xl">
+		<AuditLogsView />
+	</div>;
 }
