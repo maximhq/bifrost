@@ -20,9 +20,6 @@ const nextConfig: NextConfig = {
 	env: {
 		NEXT_PUBLIC_IS_ENTERPRISE: haveEnterprise ? "true" : "false",
 	},
-	eslint: {
-		ignoreDuringBuilds: false,
-	},
 	webpack: (config) => {
 		config.resolve = config.resolve || {};
 		config.resolve.alias = config.resolve.alias || {};

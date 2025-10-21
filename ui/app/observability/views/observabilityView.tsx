@@ -4,14 +4,14 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { useTheme } from "next-themes";
+import Image from "next/image";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo } from "react";
 import DatadogView from "./plugins/datadogView";
 import MaximView from "./plugins/maximView";
 import NewrelicView from "./plugins/newRelicView";
 import OtelView from "./plugins/otelView";
-import Image from "next/image";
-import { useTheme } from "next-themes";
 
 type SupportedPlatform = {
 	id: string;
@@ -79,30 +79,28 @@ export default function ObservabilityView() {
 		if (!selectedPluginId) {
 			setSelectedPluginId(plugins.find((plugin) => plugin.name === supportedPlatforms[0].id)?.name ?? supportedPlatforms[0].id);
 		} else {
-			dispatch(
-				setSelectedPlugin(
-					plugins.find((plugin) => plugin.name === selectedPluginId) ?? {
-						name: selectedPluginId,
-						enabled: false,
-						config: undefined,
-					},
-				),
-			);
+			const plugin = plugins.find((plugin) => plugin.name === selectedPluginId) ?? {
+				name: selectedPluginId,
+				enabled: false,
+				config: {},
+				isCustom: false,
+				path: "",
+			};
+			dispatch(setSelectedPlugin(plugin));
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [plugins]);
 
 	useEffect(() => {
 		if (selectedPluginId) {
-			dispatch(
-				setSelectedPlugin(
-					plugins?.find((plugin) => plugin.name === selectedPluginId) ?? {
-						name: selectedPluginId,
-						enabled: false,
-						config: {},
-					},
-				),
-			);
+			const plugin = plugins?.find((plugin) => plugin.name === selectedPluginId) ?? {
+				name: selectedPluginId,
+				enabled: false,
+				config: {},
+				isCustom: false,
+				path: "",
+			};
+			dispatch(setSelectedPlugin(plugin));
 		} else {
 			setSelectedPluginId(supportedPlatforms[0].id);
 		}
@@ -127,7 +125,7 @@ export default function ObservabilityView() {
 									aria-disabled={tab.disabled ? true : undefined}
 									aria-current={selectedPlugin?.name === tab.id ? "page" : undefined}
 									className={cn(
-										"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
+										"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm max-h-[32px]",
 										tab.disabled ? "opacity-50" : "",
 										selectedPlugin?.name === tab.id
 											? "bg-secondary opacity-100 hover:opacity-100"
