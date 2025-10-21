@@ -146,6 +146,107 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 	t.Log("End-to-end test completed - check logs for JSON parsing behavior")
 }
 
+
+// TestJsonParserPluginMarkdown tests the JSON parser plugin with markdown format.
+// It tests how the plugin behaves when the response is in markdown format.
+//
+// Required environment variables:
+//   - OPENAI_API_KEY: Your OpenAI API key for the test request
+func TestJsonParserPluginMarkdown(t *testing.T) {
+	// Check if OpenAI API key is set
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY is not set, skipping end-to-end test")
+	}
+
+	// Initialize the JSON parser plugin for all requests
+	plugin, err := Init(PluginConfig{
+		Usage:           AllRequests,
+		CleanupInterval: 5 * time.Minute,
+		MaxAge:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Error initializing JSON parser plugin: %v", err)
+	}
+
+	account := BaseAccount{}
+
+	// Initialize Bifrost with the plugin
+	client, err := bifrost.Init(schemas.BifrostConfig{
+		Account: &account,
+		Plugins: []schemas.Plugin{plugin},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Cleanup()
+
+	// Make a test chat completion request with streaming enabled
+	// Request JSON output to test the parser
+	request := &schemas.BifrostRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: schemas.RequestInput{
+			ChatCompletionInput: &[]schemas.BifrostMessage{
+				{
+					Role: "user",
+					Content: schemas.MessageContent{
+						ContentStr: bifrost.Ptr("Return a JSON object with name, age, and city fields in markdown format. Example: ```json {\"name\": \"John\", \"age\": 30, \"city\": \"New York\"}```"),
+					},
+				},
+			},
+		},
+		Params: &schemas.ModelParameters{
+			ExtraParams: map[string]any{
+				"stream": true,
+			},
+		},
+	}
+
+	// Create context for the request
+	ctx := context.Background()
+
+	// Make the streaming request
+	responseChan, bifrostErr := client.ChatCompletionStreamRequest(ctx, request)
+
+	if bifrostErr != nil {
+		t.Fatalf("Error in Bifrost request: %v", bifrostErr)
+	}
+
+	// Process streaming responses
+	if responseChan != nil {
+		t.Logf("Streaming response channel received")
+
+		// Read from the channel to see the streaming responses
+		responseCount := 0
+
+		for streamResponse := range responseChan {
+			responseCount++
+
+			if streamResponse.BifrostError != nil {
+				t.Logf("Streaming response error: %v", streamResponse.BifrostError)
+			}
+
+			if streamResponse.BifrostResponse != nil {
+				for _, choice := range streamResponse.BifrostResponse.Choices {
+					if choice.BifrostStreamResponseChoice != nil && choice.BifrostStreamResponseChoice.Delta.Content != nil {
+						content := *choice.BifrostStreamResponseChoice.Delta.Content
+						if content != "" {
+							t.Logf("Chunk %d: %s", responseCount, content)
+						}
+					}
+				}
+			}
+		}
+
+		t.Logf("Stream completed after %d responses", responseCount)
+	} else {
+		t.Logf("No streaming response channel received")
+	}
+
+	t.Log("End-to-end test completed - check logs for JSON parsing behavior")
+}
+
 // TestJsonParserPluginPerRequest tests the per-request configuration of the JSON parser plugin.
 // It tests how the plugin behaves when enabled via context for specific requests.
 //
