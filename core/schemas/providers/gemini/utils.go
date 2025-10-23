@@ -357,18 +357,20 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []CustomCont
 		var parts []*CustomPart
 
 		// Handle content
-		if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
-			parts = append(parts, &CustomPart{
-				Text: *message.Content.ContentStr,
-			})
-		} else if message.Content.ContentBlocks != nil {
-			for _, block := range message.Content.ContentBlocks {
-				if block.Text != nil {
-					parts = append(parts, &CustomPart{
-						Text: *block.Text,
-					})
+		if message.Content != nil {
+			if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+				parts = append(parts, &CustomPart{
+					Text: *message.Content.ContentStr,
+				})
+			} else if message.Content.ContentBlocks != nil {
+				for _, block := range message.Content.ContentBlocks {
+					if block.Text != nil {
+						parts = append(parts, &CustomPart{
+							Text: *block.Text,
+						})
+					}
+					// Handle other content block types as needed
 				}
-				// Handle other content block types as needed
 			}
 		}
 
