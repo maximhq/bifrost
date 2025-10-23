@@ -315,8 +315,36 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest, respo
 		}
 	}
 
-	// Convert chat completion messages to Gemini format
-	geminiReq.Contents = convertBifrostMessagesToGemini(bifrostReq.Input)
+	var systemInstruction *CustomContent
+	var regularMessages []schemas.ChatMessage
+
+	for _, msg := range bifrostReq.Input {
+		if msg.Role == schemas.ChatMessageRoleSystem {
+			if systemInstruction == nil {
+				systemInstruction = &CustomContent{}
+			}
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					systemInstruction.Parts = append(systemInstruction.Parts, &CustomPart{
+						Text: *msg.Content.ContentStr,
+					})
+				} else if msg.Content.ContentBlocks != nil {
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil {
+							systemInstruction.Parts = append(systemInstruction.Parts, &CustomPart{
+								Text: *block.Text,
+							})
+						}
+					}
+				}
+			}
+		} else {
+			regularMessages = append(regularMessages, msg)
+		}
+	}
+
+	geminiReq.Contents = convertBifrostMessagesToGemini(regularMessages)
+	geminiReq.SystemInstruction = systemInstruction
 
 	return geminiReq
 }
@@ -337,41 +365,66 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Extract usage metadata
 	inputTokens, outputTokens, totalTokens := response.extractUsageMetadata()
 
-	// Process candidates to extract text content
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			var textContent string
+			var toolCalls []schemas.ChatAssistantMessageToolCall
 
-			// Extract text content from all parts
 			for _, part := range candidate.Content.Parts {
 				if part.Text != "" {
 					textContent += part.Text
 				}
+
+				if part.FunctionCall != nil {
+					jsonArgs, err := json.Marshal(part.FunctionCall.Args)
+					if err != nil {
+						jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
+					}
+					callID := part.FunctionCall.Name
+					if strings.TrimSpace(part.FunctionCall.ID) != "" {
+						callID = part.FunctionCall.ID
+					}
+					toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+						ID:   &callID,
+						Type: schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      &part.FunctionCall.Name,
+							Arguments: string(jsonArgs),
+						},
+					})
+				}
+			}
+
+			message := &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant,
 			}
 
 			if textContent != "" {
-				// Create choice from the candidate
-				choice := schemas.BifrostResponseChoice{
-					Index: 0,
-					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-						Message: &schemas.ChatMessage{
-							Role: schemas.ChatMessageRoleAssistant,
-							Content: &schemas.ChatMessageContent{
-								ContentStr: &textContent,
-							},
-						},
-					},
+				message.Content = &schemas.ChatMessageContent{
+					ContentStr: &textContent,
 				}
-
-				// Set finish reason if available
-				if candidate.FinishReason != "" {
-					finishReason := string(candidate.FinishReason)
-					choice.FinishReason = &finishReason
-				}
-
-				bifrostResp.Choices = []schemas.BifrostResponseChoice{choice}
 			}
+
+			if len(toolCalls) > 0 {
+				message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+					ToolCalls: toolCalls,
+				}
+			}
+
+			choice := schemas.BifrostResponseChoice{
+				Index: 0,
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: message,
+				},
+			}
+
+			if candidate.FinishReason != "" {
+				finishReason := string(candidate.FinishReason)
+				choice.FinishReason = &finishReason
+			}
+
+			bifrostResp.Choices = []schemas.BifrostResponseChoice{choice}
 		}
 	}
 

@@ -16,7 +16,6 @@ import (
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/gemini"
-	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
 
@@ -84,15 +83,13 @@ func (provider *GeminiProvider) TextCompletionStream(ctx context.Context, postHo
 
 // ChatCompletion performs a chat completion request to the Gemini API.
 func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	// Check if chat completion is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
-	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
-	reqBody := openai.ToOpenAIChatRequest(request)
+	reqBody := gemini.ToGeminiChatCompletionRequest(request, nil)
 	if reqBody == nil {
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
 	}
@@ -100,83 +97,18 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	jsonBody, err := sonic.Marshal(reqBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
-	}	
+	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/openai/chat/completions")
-	req.Header.SetMethod("POST")
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	geminiResponse, rawResponse, latency, bifrostErr := provider.completeRequest(ctx, request.Model, key, jsonBody, ":generateContent")
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		var errorResp []struct {
-			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-				Status  string `json:"status"`
-				Details []struct {
-					Type            string `json:"@type"`
-					FieldViolations []struct {
-						Description string `json:"description"`
-					} `json:"fieldViolations"`
-				} `json:"details"`
-			} `json:"error"`
-		}
-
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		errorMessage := ""
-		for _, error := range errorResp {
-			errorMessage += error.Error.Message + "\n"
-		}
-		bifrostErr.Error.Message = errorMessage
-		return nil, bifrostErr
-	}
-
-	responseBody := resp.Body()
-
-	// Pre-allocate response structs from pools
-	// response := acquireGeminiResponse()
-	// defer releaseGeminiResponse(response)
-	response := &schemas.BifrostChatResponse{}
-
-	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	for _, choice := range response.Choices {
-		if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
-			for i, toolCall := range choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
-				if (toolCall.ID == nil || *toolCall.ID == "") && toolCall.Function.Name != nil && *toolCall.Function.Name != "" {
-					id := ""
-					if toolCall.Function.Name != nil {
-						id = *toolCall.Function.Name
-					}
-					(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls)[i].ID = &id
-				}
-			}
-		}
-	}
+	response := geminiResponse.ToBifrostChatResponse()
 
 	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
@@ -186,29 +118,245 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	return response, nil
 }
 
-// ChatCompletionStream performs a streaming chat completion request to the Gemini API.
-// It supports real-time streaming of responses using Server-Sent Events (SSE).
-// Uses Gemini's OpenAI-compatible streaming format.
-// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	// Check if chat completion stream is allowed for this provider
 	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
-	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIChatCompletionStreaming(
-		ctx,
-		provider.streamClient,
-		provider.networkConfig.BaseURL+"/openai/chat/completions",
-		request,
-		map[string]string{"Authorization": "Bearer " + key.Value},
-		provider.networkConfig.ExtraHeaders,
-		provider.sendBackRawResponse,
-		provider.GetProviderKey(),
-		postHookRunner,
-		provider.logger,
-	)
+	providerName := provider.GetProviderKey()
+
+	reqBody := gemini.ToGeminiChatCompletionRequest(request, nil)
+	if reqBody == nil {
+		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
+	}
+
+	jsonBody, err := sonic.Marshal(reqBody)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
+	}
+
+	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", key.Value)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := provider.streamClient.Do(req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, parseStreamGeminiError(providerName, resp)
+	}
+
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	go func() {
+		defer close(responseChan)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
+		chunkIndex := -1
+		startTime := time.Now()
+		lastChunkTime := startTime
+		var usage *schemas.BifrostLLMUsage
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if line == "" {
+				continue
+			}
+
+			var jsonData string
+			if strings.HasPrefix(line, "data: ") {
+				jsonData = strings.TrimPrefix(line, "data: ")
+			} else {
+				jsonData = line
+			}
+
+			if strings.TrimSpace(jsonData) == "" {
+				continue
+			}
+
+			geminiResponse, err := processGeminiStreamChunk(jsonData)
+			if err != nil {
+				if strings.Contains(err.Error(), "gemini api error") {
+					bifrostErr := &schemas.BifrostError{
+						Type:           schemas.Ptr("gemini_api_error"),
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: err.Error(),
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ChatCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+					processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+					return
+				}
+				provider.logger.Warn(fmt.Sprintf("Failed to process chunk: %v", err))
+				continue
+			}
+
+			if len(geminiResponse.Candidates) > 0 && (geminiResponse.Candidates[0].FinishReason != "" || geminiResponse.UsageMetadata != nil) {
+				inputTokens, outputTokens, totalTokens := extractGeminiUsageMetadata(geminiResponse)
+				usage = &schemas.BifrostLLMUsage{
+					PromptTokens:     inputTokens,
+					CompletionTokens: outputTokens,
+					TotalTokens:      totalTokens,
+				}
+			}
+
+			if len(geminiResponse.Candidates) > 0 {
+				candidate := geminiResponse.Candidates[0]
+				if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
+					chunkIndex++
+
+					var content *string
+					var toolCalls []schemas.ChatAssistantMessageToolCall
+
+					for _, part := range candidate.Content.Parts {
+						if part.Text != "" {
+							if content == nil {
+								content = &part.Text
+							} else {
+								*content += part.Text
+							}
+						}
+
+						if part.FunctionCall != nil {
+							jsonArgs, err := sonic.Marshal(part.FunctionCall.Args)
+							if err != nil {
+								jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
+							}
+							callID := part.FunctionCall.Name
+							if strings.TrimSpace(part.FunctionCall.ID) != "" {
+								callID = part.FunctionCall.ID
+							}
+							toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+								ID:   schemas.Ptr(callID),
+								Type: schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
+								Function: schemas.ChatAssistantMessageToolCallFunction{
+									Name:      &part.FunctionCall.Name,
+									Arguments: string(jsonArgs),
+								},
+							})
+						}
+					}
+
+					if content != nil || len(toolCalls) > 0 {
+						response := &schemas.BifrostChatResponse{
+							Object: "chat.completion.chunk",
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									Index: 0,
+									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+										Delta: &schemas.ChatStreamResponseChoiceDelta{
+											Content:   content,
+											ToolCalls: toolCalls,
+										},
+									},
+									FinishReason: func() *string {
+										if candidate.FinishReason != "" {
+											fr := string(candidate.FinishReason)
+											return &fr
+										}
+										return nil
+									}(),
+								},
+							},
+							ExtraFields: schemas.BifrostResponseExtraFields{
+								RequestType:    schemas.ChatCompletionStreamRequest,
+								Provider:       providerName,
+								ModelRequested: request.Model,
+								ChunkIndex:     chunkIndex,
+								Latency:        time.Since(lastChunkTime).Milliseconds(),
+							},
+						}
+						lastChunkTime = time.Now()
+
+						if provider.sendBackRawResponse {
+							response.ExtraFields.RawResponse = jsonData
+						}
+
+						processAndSendResponse(ctx, postHookRunner, getBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+					}
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			processAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+		} else {
+			response := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Usage:  usage,
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{},
+						},
+						FinishReason: schemas.Ptr("stop"),
+					},
+				},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:    schemas.ChatCompletionStreamRequest,
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					ChunkIndex:     chunkIndex + 1,
+					Latency:        time.Since(startTime).Milliseconds(),
+				},
+			}
+
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+			handleStreamEndWithSuccess(ctx, getBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
+		}
+	}()
+
+	return responseChan, nil
 }
 
 // Responses performs a chat completion request to Anthropic's API.
