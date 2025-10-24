@@ -276,9 +276,9 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 	endTimestamp := accumulator.FinalTimestamp
 	accumulator.mu.Unlock()
 
-	// For OpenAI provider, the last chunk already contains the whole accumulated response
+	// For OpenAI-compatible providers, the last chunk already contains the whole accumulated response
 	// so just return it as is
-	if provider == "openai" {
+	if provider == schemas.OpenAI || provider == schemas.OpenRouter || provider == schemas.Azure {
 		isFinalChunk := bifrost.IsFinalChunk(ctx)
 		if isFinalChunk {
 			// For OpenAI, the final chunk contains the complete response

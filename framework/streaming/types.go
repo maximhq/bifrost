@@ -195,6 +195,22 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+	case StreamTypeResponses:
+		responsesResp := &schemas.BifrostResponsesResponse{}
+
+		if p.Data.OutputMessages != nil {
+			responsesResp.Output = p.Data.OutputMessages
+		}
+		if p.Data.TokenUsage != nil {
+			responsesResp.Usage = p.Data.TokenUsage.ToResponsesResponseUsage()
+		}
+		responsesResp.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.ResponsesRequest,
+			Provider:       p.Provider,
+			ModelRequested: p.Model,
+			Latency:        p.Data.Latency,
+		}
+		resp.ResponsesResponse = responsesResp
 	case StreamTypeAudio:
 		speechResp := p.Data.AudioOutput
 		if speechResp == nil {

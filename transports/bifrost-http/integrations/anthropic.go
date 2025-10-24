@@ -18,7 +18,7 @@ type AnthropicRouter struct {
 func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 	return []RouteConfig{
 		{
-			Type: RouteConfigTypeAnthropic,
+			Type:   RouteConfigTypeAnthropic,
 			Path:   pathPrefix + "/v1/complete",
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -27,7 +27,7 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 					return &schemas.BifrostRequest{
-						TextCompletionRequest: anthropicReq.ToBifrostRequest(),
+						TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")

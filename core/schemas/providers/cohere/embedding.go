@@ -61,7 +61,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 	return cohereReq
 }
 
-// ToBifrostResponse converts a Cohere embedding response to Bifrost format
+// ToBifrostEmbeddingResponse converts a Cohere embedding response to Bifrost format
 func (response *CohereEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
 	if response == nil {
 		return nil

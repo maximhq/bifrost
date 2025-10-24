@@ -211,7 +211,7 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 		if err != nil {
 			return zero, fmt.Errorf("failed to marshal maxim plugin config: %v", err)
 		}
-		plugin, err := maxim.Init(maximConfig)
+		plugin, err := maxim.Init(maximConfig, logger)
 		if err != nil {
 			return zero, err
 		}

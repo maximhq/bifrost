@@ -66,7 +66,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 	return vertexReq
 }
 
-// ToBifrostResponse converts a Vertex AI embedding response to Bifrost format
+// ToBifrostEmbeddingResponse converts a Vertex AI embedding response to Bifrost format
 func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
 	if response == nil || len(response.Predictions) == 0 {
 		return nil

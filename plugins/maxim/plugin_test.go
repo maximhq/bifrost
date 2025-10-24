@@ -29,10 +29,11 @@ func getPlugin() (schemas.Plugin, error) {
 		return nil, fmt.Errorf("MAXIM_API_KEY is not set, please set it in your environment variables")
 	}
 
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	plugin, err := Init(&Config{
 		APIKey:    os.Getenv("MAXIM_API_KEY"),
 		LogRepoID: os.Getenv("MAXIM_LOG_REPO_ID"),
-	})
+	}, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +195,7 @@ func TestLogRepoIDSelection(t *testing.T) {
 
 // TestPluginInitialization tests plugin initialization with different configs
 func TestPluginInitialization(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	tests := []struct {
 		name        string
 		config      Config
@@ -229,7 +231,7 @@ func TestPluginInitialization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Skip actual Maxim SDK initialization in tests
 			if tt.expectError {
-				_, err := Init(&tt.config)
+				_, err := Init(&tt.config, logger)
 				if err == nil {
 					t.Error("Expected error but got none")
 				}

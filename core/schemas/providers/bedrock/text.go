@@ -57,7 +57,7 @@ func ToBedrockTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionReq
 	return bedrockReq
 }
 
-// ToBifrostResponse converts a Bedrock Anthropic text response to Bifrost format
+// ToBifrostTextCompletionResponse converts a Bedrock Anthropic text response to Bifrost format
 func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() *schemas.BifrostTextCompletionResponse {
 	if response == nil {
 		return nil
@@ -81,7 +81,7 @@ func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() 
 	}
 }
 
-// ToBifrostResponse converts a Bedrock Mistral text response to Bifrost format
+// ToBifrostTextCompletionResponse converts a Bedrock Mistral text response to Bifrost format
 func (response *BedrockMistralTextResponse) ToBifrostTextCompletionResponse() *schemas.BifrostTextCompletionResponse {
 	if response == nil {
 		return nil
