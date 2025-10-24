@@ -40,7 +40,7 @@ func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Be
 	return bedrockReq, nil
 }
 
-// ToBifrostResponse converts a Bedrock Converse API response to Bifrost format
+// ToBifrostChatResponse converts a Bedrock Converse API response to Bifrost format
 func (response *BedrockConverseResponse) ToBifrostChatResponse() (*schemas.BifrostChatResponse, error) {
 	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")

@@ -8,16 +8,22 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/streaming"
 
 	"github.com/maximhq/maxim-go"
 	"github.com/maximhq/maxim-go/logging"
 )
 
 // PluginName is the canonical name for the maxim plugin.
-const PluginName = "maxim"
+const (
+	PluginName         string = "maxim"
+	PluginLoggerPrefix string = "[Maxim Plugin]"
+)
 
 // Config is the configuration for the maxim plugin.
 //   - APIKey: API key for Maxim SDK authentication
@@ -25,6 +31,24 @@ const PluginName = "maxim"
 type Config struct {
 	LogRepoID string `json:"log_repo_id,omitempty"` // Optional - can be empty
 	APIKey    string `json:"api_key"`
+}
+
+// Plugin implements the schemas.Plugin interface for Maxim's logger.
+// It provides request and response tracing functionality using Maxim logger,
+// allowing detailed tracking of requests and responses across different log repositories.
+//
+// Fields:
+//   - mx: The Maxim SDK instance for creating new loggers
+//   - defaultLogRepoId: Default log repository ID from config (optional)
+//   - loggers: Map of log repo ID to logger instances
+//   - loggerMutex: RW mutex for thread-safe access to loggers map
+type Plugin struct {
+	mx               *maxim.Maxim
+	defaultLogRepoID string
+	loggers          map[string]*logging.Logger
+	loggerMutex      *sync.RWMutex
+	accumulator      *streaming.Accumulator
+	logger           schemas.Logger
 }
 
 // Init initializes and returns a Plugin instance for Maxim's logger.
@@ -35,7 +59,7 @@ type Config struct {
 // Returns:
 //   - schemas.Plugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func Init(config *Config) (schemas.Plugin, error) {
+func Init(config *Config, logger schemas.Logger) (schemas.Plugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -51,6 +75,8 @@ func Init(config *Config) (schemas.Plugin, error) {
 		defaultLogRepoID: config.LogRepoID,
 		loggers:          make(map[string]*logging.Logger),
 		loggerMutex:      &sync.RWMutex{},
+		accumulator:      streaming.NewAccumulator(nil, logger),
+		logger:           logger,
 	}
 
 	// Initialize default logger if LogRepoId is provided
@@ -90,22 +116,6 @@ const (
 //
 // The plugin uses context values to maintain trace and generation IDs throughout the request lifecycle.
 // These IDs can be propagated from external systems through HTTP headers (x-bf-maxim-trace-id and x-bf-maxim-generation-id).
-
-// Plugin implements the schemas.Plugin interface for Maxim's logger.
-// It provides request and response tracing functionality using Maxim logger,
-// allowing detailed tracking of requests and responses across different log repositories.
-//
-// Fields:
-//   - mx: The Maxim SDK instance for creating new loggers
-//   - defaultLogRepoId: Default log repository ID from config (optional)
-//   - loggers: Map of log repo ID to logger instances
-//   - loggerMutex: RW mutex for thread-safe access to loggers map
-type Plugin struct {
-	mx               *maxim.Maxim
-	defaultLogRepoID string
-	loggers          map[string]*logging.Logger
-	loggerMutex      *sync.RWMutex
-}
 
 // GetName returns the name of the plugin.
 func (plugin *Plugin) GetName() string {
@@ -256,7 +266,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 	modelParams := make(map[string]interface{})
 
 	switch req.RequestType {
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		messages = append(messages, logging.CompletionRequest{
 			Role:    string(schemas.ChatMessageRoleUser),
 			Content: req.TextCompletionRequest.Input,
@@ -278,7 +288,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 				json.Unmarshal(jsonData, &modelParams)
 			}
 		}
-	case schemas.ChatCompletionRequest:
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		for _, message := range req.ChatRequest.Input {
 			messages = append(messages, logging.CompletionRequest{
 				Role:    string(message.Role),
@@ -312,7 +322,7 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 				json.Unmarshal(jsonData, &modelParams)
 			}
 		}
-	case schemas.ResponsesRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		for _, message := range req.ResponsesRequest.Input {
 			if message.Content != nil {
 				role := schemas.ChatMessageRoleUser
@@ -356,8 +366,6 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 			}
 		}
 	}
-
-	tags["action"] = string(req.RequestType)
 
 	if traceID == "" {
 		// If traceID is not set, create a new trace
@@ -412,6 +420,18 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 		*ctx = context.WithValue(*ctx, GenerationIDKey, generationID)
 	}
 
+	// Extract request ID from context
+	requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string)
+	if !ok || requestID == "" {
+		// Log error but don't fail the request
+		plugin.logger.Error("%s request id not found in context or is empty, please set schemas.BifrostContextKeyRequestID in ctx", PluginLoggerPrefix)
+		return req, nil, nil
+	}
+
+	if bifrost.IsStreamRequestType(req.RequestType) {
+		plugin.accumulator.CreateStreamAccumulator(requestID, time.Now())
+	}
+
 	return req, nil, nil
 }
 
@@ -428,51 +448,101 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 //
 // Parameters:
 //   - ctxRef: Pointer to the context.Context containing trace/generation IDs
-//   - res: The Bifrost response to be traced
+//   - result: The Bifrost response to be traced
 //   - bifrostErr: The BifrostError returned by the request, if any
 //
 // Returns:
 //   - *schemas.BifrostResponse: The original response, unmodified
 //   - *schemas.BifrostError: The original error, unmodified
 //   - error: Never returns an error as it handles missing IDs gracefully
-func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	if ctxRef == nil {
-		return res, bifrostErr, nil
-	}
-	ctx := *ctxRef
+func (plugin *Plugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Get effective log repo ID for this request
-	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctxRef)
+	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctx)
 	if effectiveLogRepoID == "" {
-		return res, bifrostErr, nil
+		return result, bifrostErr, nil
 	}
-	logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-	if err != nil {
-		return res, bifrostErr, nil
+
+	requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string)
+	if !ok || requestID == "" {
+		return result, bifrostErr, nil
 	}
-	generationID, ok := ctx.Value(GenerationIDKey).(string)
-	if ok {
-		if bifrostErr != nil {
-			genErr := logging.GenerationError{
-				Message: bifrostErr.Error.Message,
-				Code:    bifrostErr.Error.Code,
-				Type:    bifrostErr.Error.Type,
+
+	go func() {
+		requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
+
+		var streamResponse *streaming.ProcessedStreamResponse
+		var err error
+		if bifrost.IsStreamRequestType(requestType) {
+			streamResponse, err = plugin.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
+			if err != nil {
+				plugin.logger.Error("%s failed to process streaming response: %v", PluginLoggerPrefix, err)
+				return
 			}
-			logger.SetGenerationError(generationID, &genErr)
-		} else if res != nil {
-			logger.AddResultToGeneration(generationID, res)
+
+			// Return the result if it is a delta response
+			if streamResponse == nil || streamResponse.Type == streaming.StreamResponseTypeDelta {
+				return
+			}
 		}
-		logger.EndGeneration(generationID)
-	}
-	traceID, ok := ctx.Value(TraceIDKey).(string)
-	if ok {
-		logger.EndTrace(traceID)
-	}
-	// Flush only the effective logger that was used for this request
-	logger.Flush()
-	return res, bifrostErr, nil
+
+		logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
+		if err != nil {
+			return
+		}
+		generationID, ok := (*ctx).Value(GenerationIDKey).(string)
+		if ok {
+			if bifrostErr != nil {
+				genErr := logging.GenerationError{
+					Message: bifrostErr.Error.Message,
+					Code:    bifrostErr.Error.Code,
+					Type:    bifrostErr.Error.Type,
+				}
+				logger.SetGenerationError(generationID, &genErr)
+
+				if bifrost.IsStreamRequestType(requestType) {
+					plugin.accumulator.CleanupStreamAccumulator(requestID)
+				}
+			} else if result != nil {
+				switch requestType {
+				case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+					if streamResponse != nil {
+						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().TextCompletionResponse)
+					} else {
+						logger.AddResultToGeneration(generationID, result.TextCompletionResponse)
+					}
+				case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+					if streamResponse != nil {
+						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ChatResponse)
+					} else {
+						logger.AddResultToGeneration(generationID, result.ChatResponse)
+					}
+				case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+					if streamResponse != nil {
+						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
+					} else {
+						logger.AddResultToGeneration(generationID, result.ResponsesResponse)
+					}
+				}
+				if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
+					plugin.accumulator.CleanupStreamAccumulator(requestID)
+				}
+			}
+			logger.EndGeneration(generationID)
+		}
+		traceID, ok := (*ctx).Value(TraceIDKey).(string)
+		if ok {
+			logger.EndTrace(traceID)
+		}
+		// Flush only the effective logger that was used for this request
+		logger.Flush()
+	}()
+	return result, bifrostErr, nil
 }
 
 func (plugin *Plugin) Cleanup() error {
+	if plugin.accumulator != nil {
+		plugin.accumulator.Cleanup()
+	}
 	// Flush all loggers
 	plugin.loggerMutex.RLock()
 	for _, logger := range plugin.loggers {

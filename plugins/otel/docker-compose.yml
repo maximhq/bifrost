@@ -7,12 +7,12 @@ services:
       - source: otel-collector-config
         target: /etc/otelcol/config.yaml
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8888:8888"   # Collector /metrics
-      - "9464:9464"   # Prometheus scrape endpoint
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8888:8888" # Collector /metrics
+      - "9464:9464" # Prometheus scrape endpoint
       - "13133:13133" # Health check
-      - "1777:1777"   # pprof
+      - "1777:1777" # pprof
       - "55679:55679" # zpages
     restart: unless-stopped
     depends_on:
@@ -21,14 +21,14 @@ services:
   tempo:
     image: grafana/tempo:latest
     container_name: tempo
-    command: [ "-config.file=/etc/tempo.yaml" ]
+    command: ["-config.file=/etc/tempo.yaml"]
     configs:
       - source: tempo-config
         target: /etc/tempo.yaml
     ports:
-      - "3200:3200"   # tempo HTTP/gRPC API (multiplexed)
+      - "3200:3200" # tempo HTTP/gRPC API (multiplexed)
     expose:
-      - "4317"        # OTLP gRPC (internal)
+      - "4317" # OTLP gRPC (internal)
     volumes:
       - tempo-data:/var/tempo
     restart: unless-stopped

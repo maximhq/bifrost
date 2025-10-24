@@ -295,60 +295,60 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
-	// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
-	logMsg := p.getLogMessage()
-	logMsg.RequestID = requestID
 
-	if result != nil {
-		logMsg.Latency = result.GetExtraFields().Latency
-	} else {
-		logMsg.Latency = 0
-	}
+	go func() {
+		requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
+		// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
+		logMsg := p.getLogMessage()
+		logMsg.RequestID = requestID
+		defer p.putLogMessage(logMsg) // Return to pool when done
 
-	// If response is nil, and there is an error, we update log with error
-	if result == nil && bifrostErr != nil {
-		// If request type is streaming, then we trigger cleanup as well
-		if bifrost.IsStreamRequestType(requestType) {
-			p.accumulator.CleanupStreamAccumulator(requestID)
-		}
-		logMsg.Operation = LogOperationUpdate
-		logMsg.UpdateData = &UpdateLogData{
-			Status:       "error",
-			ErrorDetails: bifrostErr,
-		}
-		processingErr := retryOnNotFound(p.ctx, func() error {
-			return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Latency, logMsg.SemanticCacheDebug, logMsg.UpdateData)
-		})
-		if processingErr != nil {
-			p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
+		if result != nil {
+			logMsg.Latency = result.GetExtraFields().Latency
 		} else {
-			// Call callback immediately for both streaming and regular updates
-			// UI will handle debouncing if needed
-			p.mu.Lock()
-			if p.logCallback != nil {
-				if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
-					p.logCallback(updatedEntry)
-				}
-			}
-			p.mu.Unlock()
+			logMsg.Latency = 0
 		}
 
-		return result, bifrostErr, nil
-	}
-	if bifrost.IsStreamRequestType(requestType) {
-		p.logger.Debug("[logging] processing streaming response")
-		streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
-		if err != nil {
-			p.logger.Error("failed to process streaming response: %v", err)
-			return result, bifrostErr, err
+		// If response is nil, and there is an error, we update log with error
+		if result == nil && bifrostErr != nil {
+			// If request type is streaming, then we trigger cleanup as well
+			if bifrost.IsStreamRequestType(requestType) {
+				p.accumulator.CleanupStreamAccumulator(requestID)
+			}
+			logMsg.Operation = LogOperationUpdate
+			logMsg.UpdateData = &UpdateLogData{
+				Status:       "error",
+				ErrorDetails: bifrostErr,
+			}
+			processingErr := retryOnNotFound(p.ctx, func() error {
+				return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Latency, logMsg.SemanticCacheDebug, logMsg.UpdateData)
+			})
+			if processingErr != nil {
+				p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
+			} else {
+				// Call callback immediately for both streaming and regular updates
+				// UI will handle debouncing if needed
+				p.mu.Lock()
+				if p.logCallback != nil {
+					if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
+						p.logCallback(updatedEntry)
+					}
+				}
+				p.mu.Unlock()
+			}
+
+			return
 		}
-		if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
-			// Prepare final log data
-			logMsg.Operation = LogOperationStreamUpdate
-			logMsg.StreamResponse = streamResponse
-			go func() {
-				defer p.putLogMessage(logMsg) // Return to pool when done
+		if bifrost.IsStreamRequestType(requestType) {
+			p.logger.Debug("[logging] processing streaming response")
+
+			streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
+			if err != nil {
+				p.logger.Error("failed to process streaming response: %v", err)
+			} else if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
+				// Prepare final log data
+				logMsg.Operation = LogOperationStreamUpdate
+				logMsg.StreamResponse = streamResponse
 				processingErr := retryOnNotFound(p.ctx, func() error {
 					return p.updateStreamingLogEntry(p.ctx, logMsg.RequestID, logMsg.SemanticCacheDebug, logMsg.StreamResponse, streamResponse.Type == streaming.StreamResponseTypeFinal)
 				})
@@ -365,91 +365,89 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 					}
 					p.mu.Unlock()
 				}
-			}()
-		}
-	} else {
-		// Handle regular response
-		logMsg.Operation = LogOperationUpdate
-		// Prepare update data (latency will be calculated in background worker)
-		updateData := p.getUpdateLogData()
-		if bifrostErr != nil {
-			// Error case
-			updateData.Status = "error"
-			updateData.ErrorDetails = bifrostErr
-		} else if result != nil {
-			// Success case
-			updateData.Status = "success"
-			// Token usage
-			var usage *schemas.BifrostLLMUsage
-			switch {
-			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-				usage = result.TextCompletionResponse.Usage
-			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-				usage = result.ChatResponse.Usage
-			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-				usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
-			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-				usage = result.EmbeddingResponse.Usage
-			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
-				usage = &schemas.BifrostLLMUsage{}
-				if result.TranscriptionResponse.Usage.InputTokens != nil {
-					usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
-				}
-				if result.TranscriptionResponse.Usage.OutputTokens != nil {
-					usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
-				}
-				if result.TranscriptionResponse.Usage.TotalTokens != nil {
-					usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
-				} else {
-					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-				}
 			}
-			updateData.TokenUsage = usage
-			// Extract raw response
-			extraFields := result.GetExtraFields()
-			if extraFields.RawResponse != nil {
-				updateData.RawResponse = extraFields.RawResponse
-			}
-			if result.TextCompletionResponse != nil {
-				if len(result.TextCompletionResponse.Choices) > 0 {
-					choice := result.TextCompletionResponse.Choices[0]
-					if choice.TextCompletionResponseChoice != nil {
-						updateData.ChatOutput = &schemas.ChatMessage{
-							Role: schemas.ChatMessageRoleAssistant,
-							Content: &schemas.ChatMessageContent{
-								ContentStr: choice.TextCompletionResponseChoice.Text,
-							},
+		} else {
+			// Handle regular response
+			logMsg.Operation = LogOperationUpdate
+			// Prepare update data (latency will be calculated in background worker)
+			updateData := p.getUpdateLogData()
+			if bifrostErr != nil {
+				// Error case
+				updateData.Status = "error"
+				updateData.ErrorDetails = bifrostErr
+			} else if result != nil {
+				// Success case
+				updateData.Status = "success"
+				// Token usage
+				var usage *schemas.BifrostLLMUsage
+				switch {
+				case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+					usage = result.TextCompletionResponse.Usage
+				case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+					usage = result.ChatResponse.Usage
+				case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+					usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
+				case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+					usage = result.EmbeddingResponse.Usage
+				case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+					usage = &schemas.BifrostLLMUsage{}
+					if result.TranscriptionResponse.Usage.InputTokens != nil {
+						usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
+					}
+					if result.TranscriptionResponse.Usage.OutputTokens != nil {
+						usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
+					}
+					if result.TranscriptionResponse.Usage.TotalTokens != nil {
+						usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
+					} else {
+						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+					}
+				}
+				updateData.TokenUsage = usage
+				// Extract raw response
+				extraFields := result.GetExtraFields()
+				if extraFields.RawResponse != nil {
+					updateData.RawResponse = extraFields.RawResponse
+				}
+				if result.TextCompletionResponse != nil {
+					if len(result.TextCompletionResponse.Choices) > 0 {
+						choice := result.TextCompletionResponse.Choices[0]
+						if choice.TextCompletionResponseChoice != nil {
+							updateData.ChatOutput = &schemas.ChatMessage{
+								Role: schemas.ChatMessageRoleAssistant,
+								Content: &schemas.ChatMessageContent{
+									ContentStr: choice.TextCompletionResponseChoice.Text,
+								},
+							}
 						}
 					}
 				}
-			}
-			if result.ChatResponse != nil {
-				// Output message and tool calls
-				if len(result.ChatResponse.Choices) > 0 {
-					choice := result.ChatResponse.Choices[0]
-					// Check if this is a non-stream response choice
-					if choice.ChatNonStreamResponseChoice != nil {
-						updateData.ChatOutput = choice.ChatNonStreamResponseChoice.Message
+				if result.ChatResponse != nil {
+					// Output message and tool calls
+					if len(result.ChatResponse.Choices) > 0 {
+						choice := result.ChatResponse.Choices[0]
+						// Check if this is a non-stream response choice
+						if choice.ChatNonStreamResponseChoice != nil {
+							updateData.ChatOutput = choice.ChatNonStreamResponseChoice.Message
+						}
 					}
 				}
+				if result.ResponsesResponse != nil {
+					updateData.ResponsesOutput = result.ResponsesResponse.Output
+				}
+				if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
+					updateData.EmbeddingOutput = result.EmbeddingResponse.Data
+				}
+				// Handle speech and transcription outputs for NON-streaming responses
+				if result.SpeechResponse != nil {
+					updateData.SpeechOutput = result.SpeechResponse
+				}
+				if result.TranscriptionResponse != nil {
+					updateData.TranscriptionOutput = result.TranscriptionResponse
+				}
 			}
-			if result.ResponsesResponse != nil {
-				updateData.ResponsesOutput = result.ResponsesResponse.Output
-			}
-			if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
-				updateData.EmbeddingOutput = result.EmbeddingResponse.Data
-			}
-			// Handle speech and transcription outputs for NON-streaming responses
-			if result.SpeechResponse != nil {
-				updateData.SpeechOutput = result.SpeechResponse
-			}
-			if result.TranscriptionResponse != nil {
-				updateData.TranscriptionOutput = result.TranscriptionResponse
-			}
-		}
-		logMsg.UpdateData = updateData
-		go func() {
-			defer p.putLogMessage(logMsg) // Return to pool when done
+			logMsg.UpdateData = updateData
+
 			// Return pooled data structures to their respective pools
 			defer func() {
 				if logMsg.UpdateData != nil {
@@ -480,8 +478,8 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				}
 				p.mu.Unlock()
 			}
-		}()
-	}
+		}
+	}()
 	return result, bifrostErr, nil
 }
 

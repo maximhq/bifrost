@@ -247,7 +247,7 @@ func (request *AnthropicMessageRequest) ToBifrostChatRequest() *schemas.BifrostC
 	return bifrostReq
 }
 
-// ToBifrostResponse converts an Anthropic message response to Bifrost format
+// ToBifrostChatResponse converts an Anthropic message response to Bifrost format
 func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
 	if response == nil {
 		return nil

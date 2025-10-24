@@ -30,7 +30,7 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 					return &schemas.BifrostRequest{
-						TextCompletionRequest: anthropicReq.ToBifrostRequest(),
+						TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")

@@ -284,7 +284,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 		return nil, bifrostErr
 	}
 
-	bifrostResponse := response.ToBifrostResponse()
+	bifrostResponse := response.ToBifrostTextCompletionResponse()
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
