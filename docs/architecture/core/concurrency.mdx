@@ -268,29 +268,32 @@ The backpressure system protects Bifrost from being overwhelmed while maintainin
 ### **Thread-Safe Object Pools**
 
 ```mermaid
-graph TB
-    subgraph "sync.Pool Architecture"
-        GetObject[Get Object<br/>sync.Pool.Get()]
+graph TD
+    subgraph "sync.Pool Lifecycle"
+        direction LR
+        GetObject[Get Object<br/>sync.Pool.Get]
+        PoolCheck{Is Pool Empty?}
         NewObject[New Object<br/>Factory Function]
         UseObject[Use Object<br/>Application Logic]
         ResetObject[Reset Object<br/>Clear State]
-        ReturnObject[Return Object<br/>sync.Pool.Put()]
+        ReturnObject[Return Object<br/>sync.Pool.Put]
+
+        GetObject --> PoolCheck
+        PoolCheck -- Yes --> NewObject
+        PoolCheck -- No --> UseObject
+        NewObject --> UseObject
+        UseObject --> ResetObject
+        ResetObject --> ReturnObject
+        ReturnObject --> GetObject
     end
 
-    subgraph "GC Integration"
+    subgraph "GC Interaction"
+        direction TB
         GCRun[GC Runs]
-        PoolCleanup[Pool Cleanup<br/>Automatic]
-        Reallocation[Object Reallocation<br/>as Needed]
+        PoolCleanup[Pool Cleanup<br>Removes idle objects]
+        
+        GCRun --> PoolCleanup
     end
-
-    GetObject --> NewObject
-    NewObject --> UseObject
-    UseObject --> ResetObject
-    ResetObject --> ReturnObject
-    ReturnObject --> GetObject
-
-    GCRun --> PoolCleanup
-    PoolCleanup --> Reallocation
 ```
 
 **Thread-Safe Pool Architecture:**

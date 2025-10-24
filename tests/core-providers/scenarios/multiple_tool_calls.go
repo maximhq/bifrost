@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -27,6 +28,10 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 	}
 
 	t.Run("MultipleToolCalls", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		chatMessages := []schemas.ChatMessage{
 			CreateBasicChatMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both?"),
 		}
@@ -77,6 +82,7 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 				Params: &schemas.ChatParameters{
 					Tools: []schemas.ChatTool{*chatWeatherTool, *chatCalculatorTool},
 				},
+				Fallbacks: testConfig.Fallbacks,
 			}
 			chatReq.Input = chatMessages
 			return client.ChatCompletionRequest(ctx, chatReq)
@@ -89,6 +95,7 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 				Params: &schemas.ResponsesParameters{
 					Tools: []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
 				},
+				Fallbacks: testConfig.Fallbacks,
 			}
 			responsesReq.Input = responsesMessages
 			return client.ResponsesRequest(ctx, responsesReq)

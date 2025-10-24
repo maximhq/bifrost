@@ -63,14 +63,16 @@ curl --location 'http://localhost:8080/api/config' \
 --header 'Content-Type: application/json' \
 --method PUT \
 --data '{
+    "client_config": {
     "enable_logging": true,
-    "drop_excess_requests": false,
-    "initial_pool_size": 300,
-    "enable_governance": true,
-    "enforce_governance_header": false,
-    "allow_direct_keys": false,
-    "prometheus_labels": [],
-    "allowed_origins": []
+        "drop_excess_requests": false,
+        "initial_pool_size": 300,
+        "enable_governance": true,
+        "enforce_governance_header": false,
+        "allow_direct_keys": false,
+        "prometheus_labels": [],
+        "allowed_origins": []
+    }
 }'
 ```
 

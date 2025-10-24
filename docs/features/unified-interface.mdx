@@ -55,13 +55,16 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ```go
 // Same response structure regardless of provider
-type BifrostResponse struct {
-    ID      string                    `json:"id,omitempty"`
-    Object  string                    `json:"object,omitempty"`
-    Choices []BifrostResponseChoice   `json:"choices"`
-    Usage   *LLMUsage                `json:"usage,omitempty"`
-    Model   string                   `json:"model,omitempty"`
-    Created int64                    `json:"created,omitempty"`
+type BifrostChatResponse struct {
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created"`
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"`
+	ServiceTier       string                     `json:"service_tier"`
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // Works with any provider
@@ -84,20 +87,20 @@ The following table summarizes which operations are supported by each provider v
 
 | Provider | Text | Text (stream) | Chat | Chat (stream) | Responses | Responses (stream) | Embeddings | TTS | TTS (stream) | STT | STT (stream) |
 |----------|------|----------------|------|---------------|-----------|--------------------|------------|-----|-------------|-----|--------------|
-| Anthropic | Yes | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Azure OpenAI | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Bedrock | Yes | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Cerebras | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Cohere | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Gemini | No | No | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Groq | No | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Mistral | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Ollama | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| OpenAI | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenRouter | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Parasail | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| SGL | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Vertex AI | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Anthropic (`anthropic/<model>`) | Yes | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Azure OpenAI (`azure/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Bedrock (`bedrock/<model>`) | Yes | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Cerebras (`cerebras/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Cohere (`cohere/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Gemini (`gemini/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Groq (`groq/<model>`) | No | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Mistral (`mistral/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Ollama (`ollama/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| OpenAI (`openai/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| OpenRouter (`openrouter/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Parasail (`parasail/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| SGL (`sgl/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Vertex AI (`vertex/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
 
 Notes:
 - “Text” refers to the classic text completion interface (`/v1/completions`).

@@ -232,6 +232,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ResponsesResponse.ExtraFields
 	case r.ResponsesStreamResponse != nil:
 		return &r.ResponsesStreamResponse.ExtraFields
+	case r.EmbeddingResponse != nil:
+		return &r.EmbeddingResponse.ExtraFields
 	case r.SpeechResponse != nil:
 		return &r.SpeechResponse.ExtraFields
 	case r.SpeechStreamResponse != nil:

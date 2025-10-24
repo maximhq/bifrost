@@ -6,6 +6,7 @@ import (
 	"maps"
 	"math/rand"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -491,6 +492,17 @@ func (p *MockerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		return req, nil, nil
 	}
 
+	skipMocker, ok := (*ctx).Value(schemas.BifrostContextKey("skip-mocker")).(bool)
+	if ok && skipMocker {
+		return req, nil, nil
+	}
+
+	if req.RequestType != schemas.ChatCompletionRequest && req.RequestType != schemas.ResponsesRequest {
+		return req, nil, nil
+	}
+
+	startTime := time.Now()
+
 	// Track total request count using atomic operation (no lock needed)
 	atomic.AddInt64(&p.totalRequests, 1)
 
@@ -530,7 +542,7 @@ func (p *MockerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 
 	// Generate appropriate mock response based on type
 	if response.Type == ResponseTypeSuccess {
-		return p.generateSuccessShortCircuit(req, response)
+		return p.generateSuccessShortCircuit(req, response, startTime)
 	} else if response.Type == ResponseTypeError {
 		return p.generateErrorShortCircuit(req, response)
 	}
@@ -586,18 +598,12 @@ func (p *MockerPlugin) findMatchingCompiledRule(req *schemas.BifrostRequest) *co
 
 // matchesConditionsFast checks if request matches rule conditions with optimized performance
 func (p *MockerPlugin) matchesConditionsFast(req *schemas.BifrostRequest, conditions *Conditions, compiledRegex *regexp.Regexp) bool {
-	provider, _, _ := req.GetRequestFields()
+	provider, model, _ := req.GetRequestFields()
 
 	// Check providers - optimized string comparison
 	if len(conditions.Providers) > 0 {
 		providerStr := string(provider)
-		found := false
-		for _, provider := range conditions.Providers {
-			if providerStr == provider {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(conditions.Providers, providerStr)
 		if !found {
 			return false
 		}
@@ -606,8 +612,8 @@ func (p *MockerPlugin) matchesConditionsFast(req *schemas.BifrostRequest, condit
 	// Check models - direct string comparison
 	if len(conditions.Models) > 0 {
 		found := false
-		for _, model := range conditions.Models {
-			if model == model {
+		for _, conditionModel := range conditions.Models {
+			if model == conditionModel {
 				found = true
 				break
 			}
@@ -756,7 +762,7 @@ func (p *MockerPlugin) calculateRequestSizeFast(req *schemas.BifrostRequest) int
 }
 
 // generateSuccessShortCircuit creates a success response short-circuit with optimized allocations
-func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, response *Response) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, response *Response, startTime time.Time) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	if response.Content == nil {
 		return req, nil, nil
 	}
@@ -799,8 +805,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	provider, model, _ := req.GetRequestFields()
 
 	// Create mock response with proper structure
-	mockResponse := &schemas.BifrostResponse{
-		ChatResponse: &schemas.BifrostChatResponse{
+	mockResponse := &schemas.BifrostResponse{}
+
+	if req.RequestType == schemas.ChatCompletionRequest {
+		mockResponse.ChatResponse = &schemas.BifrostChatResponse{
 			Model: model,
 			Usage: &usage,
 			Choices: []schemas.BifrostResponseChoice{
@@ -821,8 +829,33 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				RequestType:    schemas.ChatCompletionRequest,
 				Provider:       provider,
 				ModelRequested: model,
+				Latency:        int64(time.Since(startTime).Milliseconds()),
 			},
-		},
+		}
+	} else if req.RequestType == schemas.ResponsesRequest {
+		mockResponse.ResponsesResponse = &schemas.BifrostResponsesResponse{
+			CreatedAt: int(time.Now().Unix()),
+			Output: []schemas.ResponsesMessage{
+				{
+					Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: &message,
+					},
+					Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+				},
+			},
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  usage.PromptTokens,
+				OutputTokens: usage.CompletionTokens,
+				TotalTokens:  usage.TotalTokens,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ResponsesRequest,
+				Provider:       provider,
+				ModelRequested: model,
+				Latency:        int64(time.Since(startTime).Milliseconds()),
+			},
+		}
 	}
 
 	// Override model if specified
@@ -859,6 +892,8 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 		return req, nil, nil
 	}
 
+	provider, model, _ := req.GetRequestFields()
+
 	errorContent := response.Error
 	allowFallbacks := response.AllowFallbacks
 
@@ -868,6 +903,11 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 			Message: errorContent.Message,
 		},
 		AllowFallbacks: allowFallbacks,
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			ModelRequested: model,
+		},
 	}
 
 	// Set error type

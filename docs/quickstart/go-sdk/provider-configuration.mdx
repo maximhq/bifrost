@@ -245,18 +245,23 @@ func (a *MyAccount) GetConfigForProvider(ctx *context.Context, provider schemas.
 When enabled, the raw provider response appears in `ExtraFields.RawResponse`:
 
 ```go
-type BifrostResponse struct {
-    Choices     []BifrostResponseChoice `json:"choices"`
-    Usage       *LLMUsage              `json:"usage,omitempty"`
-    ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+type BifrostChatResponse struct {
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier       string                     `json:"service_tier"`
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 type BifrostResponseExtraFields struct {
 	RequestType    RequestType        `json:"request_type"`
 	Provider       ModelProvider      `json:"provider"`
 	ModelRequested string             `json:"model_requested"`
-	Latency        *float64           `json:"latency,omitempty"`
-	BilledUsage    *BilledLLMUsage    `json:"billed_usage,omitempty"`
+	Latency        int64              `json:"latency"`     // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawResponse    interface{}        `json:"raw_response,omitempty"`
 	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`

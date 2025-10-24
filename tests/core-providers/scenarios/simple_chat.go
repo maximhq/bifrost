@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -18,6 +19,10 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 	}
 
 	t.Run("SimpleChat", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		chatMessages := []schemas.ChatMessage{
 			CreateBasicChatMessage("Hello! What's the capital of France?"),
 		}
@@ -74,6 +79,7 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 				Params: &schemas.ChatParameters{
 					MaxCompletionTokens: bifrost.Ptr(150),
 				},
+				Fallbacks: testConfig.Fallbacks,
 			}
 			response, err := client.ChatCompletionRequest(ctx, chatReq)
 			if err != nil {
@@ -101,6 +107,7 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 				Params: &schemas.ResponsesParameters{
 					MaxOutputTokens: bifrost.Ptr(150),
 				},
+				Fallbacks: testConfig.Fallbacks,
 			}
 			response, err := client.ResponsesRequest(ctx, responsesReq)
 			if err != nil {

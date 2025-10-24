@@ -7,8 +7,8 @@ toolchain go1.24.3
 require gorm.io/gorm v1.31.0
 
 require (
-	github.com/maximhq/bifrost/core v1.2.12
-	github.com/maximhq/bifrost/framework v1.1.14
+	github.com/maximhq/bifrost/core v1.2.13
+	github.com/maximhq/bifrost/framework v1.1.15
 )
 
 require (

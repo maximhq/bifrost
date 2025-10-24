@@ -387,11 +387,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
 				usage = result.ChatResponse.Usage
 			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-				usage = &schemas.BifrostLLMUsage{
-					PromptTokens:     result.ResponsesResponse.Usage.InputTokens,
-					CompletionTokens: result.ResponsesResponse.Usage.OutputTokens,
-					TotalTokens:      result.ResponsesResponse.Usage.TotalTokens,
-				}
+				usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
 			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 				usage = result.EmbeddingResponse.Usage
 			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:

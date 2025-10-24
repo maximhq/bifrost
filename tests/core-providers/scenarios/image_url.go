@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,6 +20,10 @@ func RunImageURLTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 	}
 
 	t.Run("ImageURL", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Create messages for both APIs using the isResponsesAPI flag
 		chatMessages := []schemas.ChatMessage{
 			CreateImageChatMessage("What do you see in this image?", TestImageURL),

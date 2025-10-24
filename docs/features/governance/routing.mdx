@@ -1,0 +1,266 @@
+---
+title: "Routing"
+description: "Direct requests to specific AI models, providers, and keys using Virtual Keys."
+icon: "arrow-progress"
+---
+
+## Overview
+
+Bifrost's routing capabilities offer granular control over how requests are directed to different AI models and providers. By configuring routing rules on a Virtual Key, you can enforce which providers and models are accessible, implement sophisticated load balancing strategies, create automatic fallbacks, and restrict access to specific provider API keys.
+
+This powerful feature enables key use cases like:
+
+- **Resilience & Failover**: Automatically fall back to a secondary provider if the primary one fails.
+- **Environment Separation**: Dedicate specific virtual keys to development, testing, and production environments with different provider and key access.
+- **Cost Management**: Route traffic to cheaper models or providers based on weights to optimize costs.
+- **Fine-grained Access Control**: Ensure that different teams or applications only use the models and API keys they are explicitly permitted to.
+
+## Provider/Model Restrictions
+
+Virtual Keys can be restricted to use only specific provider/models. When provider/model restrictions are configured, the VK can only access those designated provider/models, providing fine-grained control over which provider/models different users or applications can utilize.
+
+**How It Works:**
+- **No Restrictions** (default): VK can use any available provider/models based on global configuration
+- **With Restrictions**: VK limited to only the specified provider/models with weighted load balancing
+
+## Weighted Load Balancing
+
+When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider is assigned a weight, and requests are distributed proportionally.
+
+**Example Configuration:**
+```
+Virtual Key: vk-prod-main
+├── OpenAI 
+│   ├── Allowed Models: [gpt-4o, gpt-4o-mini]
+│   └── Weight: 0.2 (20% of traffic)
+└── Azure
+    ├── Allowed Models: [gpt-4o]
+    └── Weight: 0.8 (80% of traffic)
+```
+
+**Load Balancing Behavior:**
+- For `gpt-4o`: 80% Azure, 20% OpenAI (both providers support it)
+- For `gpt-4o-mini`: 100% OpenAI (only provider that supports it)
+
+**Usage:**
+To trigger weighted load balancing, send requests with just the model name:
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-prod-main" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+To bypass load balancing and target a specific provider:
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-prod-main" \
+  -d '{"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+<Note>This routing wont trigger when allowed models array is empty (all models allowed). You need to explicitly mention the models in allowed models array to trigger this routing.</Note>
+
+## Automatic Fallbacks
+
+When multiple providers are configured on a Virtual Key, Bifrost automatically creates fallback chains for resilience. This feature provides automatic failover without manual intervention.
+
+**How It Works:**
+- **Only activated when**: Your request has no existing `fallbacks` array in the request body
+- **Fallback creation**: Providers are sorted by weight (highest first) and added as fallbacks
+- **Respects existing fallbacks**: If you manually specify fallbacks, they are preserved
+
+**Example Request Flow:**
+1. Primary request goes to weighted-selected provider (e.g., Azure with 80% weight)
+2. If Azure fails, automatically retry with OpenAI
+3. Continue until success or all providers exhausted
+
+**Request with automatic fallbacks:**
+```bash
+# This request will get automatic fallbacks
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-prod-main" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+**Request with manual fallbacks (no automatic fallbacks added):**
+```bash
+# This request keeps your specified fallbacks
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-prod-main" \
+  -d '{
+    "model": "gpt-4o", 
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "fallbacks": ["anthropic/claude-3-sonnet-20240229"]
+  }'
+```
+
+## Setting Provider/Model Routing
+
+<Tabs group="provider-model-restrictions">
+<Tab title="Web UI">
+
+1. Go to **Virtual Keys**
+2. Create/Edit virtual key
+
+![Virtual Key Provider/Model Restrictions](../../media/ui-virtual-key-routing.png)
+
+3. In **Provider Configurations** section, add the provider you want to restrict the VK to
+4. Add the models you want to restrict the VK to, or leave it blank to allow all models for this provider
+5. Add the weight you want to give to this provider
+6. Click on the **Save** button
+</Tab>
+
+<Tab title="API">
+
+```bash
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider_configs": [
+      {
+        "provider": "openai",
+        "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+        "weight": 0.2
+      },
+      {
+        "provider": "azure",
+        "allowed_models": ["gpt-4o"],
+        "weight": 0.8
+      }
+    ]
+  }'
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-prod-main",
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+            "weight": 0.2
+          },
+          {
+            "provider": "azure",
+            "allowed_models": ["gpt-4o"],
+            "weight": 0.8
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+## API Key Restrictions
+
+Virtual Keys can be restricted to use only specific provider API keys. When key restrictions are configured, the VK can only access those designated keys, providing fine-grained control over which API keys different users or applications can utilize.
+
+**How It Works:**
+- **No Restrictions** (default): VK can use any available provider keys based on load balancing
+- **With Restrictions**: VK limited to only the specified key IDs, regardless of other available keys
+
+**Example Scenario:**
+```
+Available Provider Keys:
+├── key-prod-001 → sk-prod-key... (Production OpenAI key)
+├── key-dev-002  → sk-dev-key...  (Development OpenAI key)  
+└── key-test-003 → sk-test-key... (Testing OpenAI key)
+
+Virtual Key Restrictions:
+├── vk-prod-main
+│   ├── Allowed Models: [gpt-4o]
+│   └── Restricted Keys: [key-prod-001] ← ONLY production key
+├── vk-dev-main  
+│   ├── Allowed Models: [gpt-4o-mini]
+│   └── Restricted Keys: [key-dev-002, key-test-003] ← Dev + test keys
+└── vk-unrestricted
+    ├── Allowed Models: [all models]
+    └── Restricted Keys: [] ← Can use ANY available key
+```
+
+**Request Behavior:**
+```bash
+# Production VK - will ONLY use key-prod-001
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-prod-main" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+# Development VK - will load balance between key-dev-002 and key-test-003
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-dev-main" \
+  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+# VK with no key restrictions - can use any available OpenAI key
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-unrestricted" \
+  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+**Setting API Key Restrictions:**
+
+<Tabs group="api-key-restrictions">
+<Tab title="Web UI">
+
+1. Go to **Virtual Keys**
+2. Create/Edit virtual key
+
+![Virtual Key API Key Restrictions](../../media/ui-virtual-key-keys-filter.png)
+
+3. In **Allowed Keys** section, select the API key you want to restrict the VK to
+4. Click on the **Save** button
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key_ids": ["key-prod-001"]
+  }'
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-prod-main",
+        "keys": [
+          {
+            "key_id": "key-prod-001"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+**Use Cases:**
+- **Environment Separation** - Production VKs use production keys, dev VKs use dev keys
+- **Cost Control** - Different teams use keys with different billing accounts
+- **Access Control** - Restrict sensitive keys to specific VKs only
+- **Compliance** - Ensure certain workloads only use compliant/audited keys
+
+<Note>The models restrictions applied on the keys of individual providers will always be applied and will work together with the provider/model or api key restrictions set on the virtual key.</Note>

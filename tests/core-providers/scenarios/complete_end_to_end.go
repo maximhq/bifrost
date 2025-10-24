@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,6 +20,10 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	}
 
 	t.Run("CompleteEnd2End", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// =============================================================================
 		// STEP 1: Multi-step conversation with tools - Test both APIs in parallel
 		// =============================================================================
@@ -129,9 +134,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Add all output messages to Responses API conversation history
 		if result1.ResponsesAPIResponse != nil && result1.ResponsesAPIResponse.Output != nil {
-			for _, output := range result1.ResponsesAPIResponse.Output {
-				responsesConversationHistory = append(responsesConversationHistory, output)
-			}
+			responsesConversationHistory = append(responsesConversationHistory, result1.ResponsesAPIResponse.Output...)
 		}
 
 		// Extract tool calls from both APIs
@@ -164,7 +167,104 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// =============================================================================
-		// STEP 2: Continue with follow-up (multimodal if supported) - Test both APIs
+		// STEP 2: Send this tool call result to the model again
+		// =============================================================================
+
+		// Use retry framework for step 2 (processing tool results)
+		retryConfig2 := GetTestRetryConfigForScenario("CompleteEnd2End_ToolResult", testConfig)
+		retryContext2 := TestRetryContext{
+			ScenarioName: "CompleteEnd2End_Step2",
+			ExpectedBehavior: map[string]interface{}{
+				"process_tool_result":   true,
+				"acknowledge_weather":   true,
+				"continue_conversation": true,
+			},
+			TestMetadata: map[string]interface{}{
+				"provider":                      testConfig.Provider,
+				"model":                         testConfig.ChatModel,
+				"step":                          "process_tool_result",
+				"scenario":                      "complete_end_to_end",
+				"chat_conversation_length":      len(chatConversationHistory),
+				"responses_conversation_length": len(responsesConversationHistory),
+			},
+		}
+
+		// Enhanced validation for step 2 - should acknowledge tool results
+		expectations2 := ConversationExpectations([]string{"weather", "temperature"})
+		expectations2 = ModifyExpectationsForProvider(expectations2, testConfig.Provider)
+		expectations2.MinContentLength = 15  // Should provide meaningful response to tool result
+		expectations2.MaxContentLength = 500 // Reasonable upper bound for tool result processing
+		expectations2.ShouldNotContainWords = []string{
+			"cannot help", "don't understand", "no information",
+			"unable to process", "invalid tool result",
+		} // Should not indicate confusion about tool results
+
+		// Create operations for both APIs - Step 2 (processing tool results)
+		chatOperation2 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			chatReq := &schemas.BifrostChatRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    chatConversationHistory,
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(200),
+				},
+				Fallbacks: testConfig.Fallbacks,
+			}
+			return client.ChatCompletionRequest(ctx, chatReq)
+		}
+
+		responsesOperation2 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			responsesReq := &schemas.BifrostResponsesRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    responsesConversationHistory,
+				Params: &schemas.ResponsesParameters{
+					MaxOutputTokens: bifrost.Ptr(200),
+				},
+			}
+			return client.ResponsesRequest(ctx, responsesReq)
+		}
+
+		// Execute dual API test for Step 2 (processing tool results)
+		result2 := WithDualAPITestRetry(t,
+			retryConfig2,
+			retryContext2,
+			expectations2,
+			"CompleteEnd2End_Step2",
+			chatOperation2,
+			responsesOperation2)
+
+		// Validate both APIs succeeded
+		if !result2.BothSucceeded {
+			var errors []string
+			if result2.ChatCompletionsError != nil {
+				errors = append(errors, "Chat Completions: "+GetErrorMessage(result2.ChatCompletionsError))
+			}
+			if result2.ResponsesAPIError != nil {
+				errors = append(errors, "Responses API: "+GetErrorMessage(result2.ResponsesAPIError))
+			}
+			if len(errors) == 0 {
+				errors = append(errors, "One or both APIs failed validation (see logs above)")
+			}
+			t.Fatalf("❌ CompleteEnd2End_Step2 dual API test failed: %v", errors)
+		}
+
+		t.Logf("✅ Chat Completions API tool result response: %s", GetChatContent(result2.ChatCompletionsResponse))
+		t.Logf("✅ Responses API tool result response: %s", GetResponsesContent(result2.ResponsesAPIResponse))
+
+		// Add Step 2 responses to conversation histories for Step 3
+		if result2.ChatCompletionsResponse.Choices != nil {
+			for _, choice := range result2.ChatCompletionsResponse.Choices {
+				chatConversationHistory = append(chatConversationHistory, *choice.Message)
+			}
+		}
+
+		if result2.ResponsesAPIResponse != nil && result2.ResponsesAPIResponse.Output != nil {
+			responsesConversationHistory = append(responsesConversationHistory, result2.ResponsesAPIResponse.Output...)
+		}
+
+		// =============================================================================
+		// STEP 3: Continue with follow-up (multimodal if supported) - Test both APIs
 		// =============================================================================
 
 		// Determine if we're doing a vision step
@@ -191,15 +291,15 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Use appropriate retry config for final step
-		var retryConfig2 TestRetryConfig
-		var expectations2 ResponseExpectations
+		var retryConfig3 TestRetryConfig
+		var expectations3 ResponseExpectations
 
 		if isVisionStep {
-			retryConfig2 = GetTestRetryConfigForScenario("CompleteEnd2End_Vision", testConfig)
-			expectations2 = VisionExpectations([]string{"paris", "river"})
+			retryConfig3 = GetTestRetryConfigForScenario("CompleteEnd2End_Vision", testConfig)
+			expectations3 = VisionExpectations([]string{"paris", "river"})
 		} else {
-			retryConfig2 = GetTestRetryConfigForScenario("CompleteEnd2End_Chat", testConfig)
-			expectations2 = ConversationExpectations([]string{"paris", "cloudy"})
+			retryConfig3 = GetTestRetryConfigForScenario("CompleteEnd2End_Chat", testConfig)
+			expectations3 = ConversationExpectations([]string{"paris", "cloudy"})
 		}
 
 		// Prepare expected keywords to match expectations exactly
@@ -210,8 +310,8 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			expectedKeywords = []string{"paris", "cloudy"} // Must match ConversationExpectations exactly
 		}
 
-		retryContext2 := TestRetryContext{
-			ScenarioName: "CompleteEnd2End_Step2",
+		retryContext3 := TestRetryContext{
+			ScenarioName: "CompleteEnd2End_Step3",
 			ExpectedBehavior: map[string]interface{}{
 				"continue_conversation": true,
 				"acknowledge_context":   true,
@@ -229,16 +329,16 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Enhanced validation for final response
-		expectations2 = ModifyExpectationsForProvider(expectations2, testConfig.Provider)
-		expectations2.MinContentLength = 20  // Should provide some meaningful response
-		expectations2.MaxContentLength = 800 // End-to-end can be verbose
-		expectations2.ShouldNotContainWords = []string{
+		expectations3 = ModifyExpectationsForProvider(expectations3, testConfig.Provider)
+		expectations3.MinContentLength = 20  // Should provide some meaningful response
+		expectations3.MaxContentLength = 800 // End-to-end can be verbose
+		expectations3.ShouldNotContainWords = []string{
 			"cannot help", "don't understand", "confused",
 			"start over", "reset conversation",
 		} // Context loss indicators
 
-		// Create operations for both APIs - Step 2
-		chatOperation2 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		// Create operations for both APIs - Step 3
+		chatOperation3 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    model,
@@ -251,7 +351,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			return client.ChatCompletionRequest(ctx, chatReq)
 		}
 
-		responsesOperation2 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		responsesOperation3 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    model,
@@ -263,33 +363,33 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			return client.ResponsesRequest(ctx, responsesReq)
 		}
 
-		// Execute dual API test for Step 2
-		result2 := WithDualAPITestRetry(t,
-			retryConfig2,
-			retryContext2,
-			expectations2,
-			"CompleteEnd2End_Step2",
-			chatOperation2,
-			responsesOperation2)
+		// Execute dual API test for Step 3
+		result3 := WithDualAPITestRetry(t,
+			retryConfig3,
+			retryContext3,
+			expectations3,
+			"CompleteEnd2End_Step3",
+			chatOperation3,
+			responsesOperation3)
 
 		// Validate both APIs succeeded
-		if !result2.BothSucceeded {
+		if !result3.BothSucceeded {
 			var errors []string
-			if result2.ChatCompletionsError != nil {
-				errors = append(errors, "Chat Completions: "+GetErrorMessage(result2.ChatCompletionsError))
+			if result3.ChatCompletionsError != nil {
+				errors = append(errors, "Chat Completions: "+GetErrorMessage(result3.ChatCompletionsError))
 			}
-			if result2.ResponsesAPIError != nil {
-				errors = append(errors, "Responses API: "+GetErrorMessage(result2.ResponsesAPIError))
+			if result3.ResponsesAPIError != nil {
+				errors = append(errors, "Responses API: "+GetErrorMessage(result3.ResponsesAPIError))
 			}
 			if len(errors) == 0 {
 				errors = append(errors, "One or both APIs failed validation (see logs above)")
 			}
-			t.Fatalf("❌ CompleteEnd2End_Step2 dual API test failed: %v", errors)
+			t.Fatalf("❌ CompleteEnd2End_Step3 dual API test failed: %v", errors)
 		}
 
 		// Log and validate results from both APIs
-		if result2.ChatCompletionsResponse != nil {
-			chatFinalContent := GetChatContent(result2.ChatCompletionsResponse)
+		if result3.ChatCompletionsResponse != nil {
+			chatFinalContent := GetChatContent(result3.ChatCompletionsResponse)
 
 			// Additional validation for conversation context
 			if len(chatToolCalls) > 0 && strings.Contains(strings.ToLower(chatFinalContent), "weather") {
@@ -303,8 +403,8 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Logf("✅ Chat Completions API final result: %s", chatFinalContent)
 		}
 
-		if result2.ResponsesAPIResponse != nil {
-			responsesFinalContent := GetResponsesContent(result2.ResponsesAPIResponse)
+		if result3.ResponsesAPIResponse != nil {
+			responsesFinalContent := GetResponsesContent(result3.ResponsesAPIResponse)
 
 			// Additional validation for conversation context
 			if len(responsesToolCalls) > 0 && strings.Contains(strings.ToLower(responsesFinalContent), "weather") {

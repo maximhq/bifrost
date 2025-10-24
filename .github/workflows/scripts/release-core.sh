@@ -32,10 +32,14 @@ fi
 # Building core
 go mod download
 go build ./...
-go test ./...
 cd ..
 echo "✅ Core build validation successful"
 
+# Run core provider tests
+echo "🔧 Running core provider tests..."
+cd tests/core-providers
+go test -v ./...
+cd ../..
 
 # Capturing changelog
 CHANGELOG_BODY=$(cat core/changelog.md)

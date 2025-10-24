@@ -68,7 +68,9 @@ export default function SecurityView() {
 			const validation = validateOrigins(localConfig.allowed_origins);
 
 			if (!validation.isValid && localConfig.allowed_origins.length > 0) {
-				toast.error(`Invalid origins: ${validation.invalidOrigins.join(", ")}. Origins must be valid URLs like https://example.com`);
+				toast.error(
+					`Invalid origins: ${validation.invalidOrigins.join(", ")}. Origins must be valid URLs like https://example.com, wildcard patterns like https://*.example.com, or "*" to allow all origins`,
+				);
 				return;
 			}
 
@@ -109,13 +111,14 @@ export default function SecurityView() {
 							</label>
 							<p className="text-muted-foreground text-sm">
 								Comma-separated list of allowed origins for CORS and WebSocket connections. Localhost origins are always allowed. Each
-								origin must be a complete URL with protocol (e.g., https://app.example.com, http://10.0.0.100:3000, https://*.example.com).
+								origin must be a complete URL with protocol (e.g., https://app.example.com, http://10.0.0.100:3000). Wildcards are supported
+								for subdomains (e.g., https://*.example.com) or use "*" to allow all origins.
 							</p>
 						</div>
 						<Textarea
 							id="allowed-origins"
 							className="h-24"
-							placeholder="https://app.example.com, https://staging.example.com"
+							placeholder="https://app.example.com, https://*.example.com, *"
 							value={localValues.allowed_origins}
 							onChange={(e) => handleAllowedOriginsChange(e.target.value)}
 						/>

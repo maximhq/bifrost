@@ -1,11 +1,8 @@
 package gemini
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"reflect"
-	"strings"
 	"time"
 )
 
@@ -53,9 +50,9 @@ const (
 
 type GeminiGenerationRequest struct {
 	Model             string                   `json:"model,omitempty"`    // Model field for explicit model specification
-	Contents          []CustomContent          `json:"contents,omitempty"` // For chat completion requests
+	Contents          []Content                `json:"contents,omitempty"` // For chat completion requests
 	Requests          []GeminiEmbeddingRequest `json:"requests,omitempty"` // For batch embedding requests
-	SystemInstruction *CustomContent           `json:"systemInstruction,omitempty"`
+	SystemInstruction *Content                 `json:"systemInstruction,omitempty"`
 	GenerationConfig  GenerationConfig         `json:"generationConfig,omitempty"`
 	SafetySettings    []SafetySetting          `json:"safetySettings,omitempty"`
 	Tools             []Tool                   `json:"tools,omitempty"`
@@ -860,89 +857,11 @@ type GenerationConfigThinkingConfig struct {
 
 // EmbeddingRequest represents a single embedding request in a batch
 type GeminiEmbeddingRequest struct {
-	Content              *CustomContent `json:"content,omitempty"`
-	TaskType             *string        `json:"taskType,omitempty"`
-	Title                *string        `json:"title,omitempty"`
-	OutputDimensionality *int           `json:"outputDimensionality,omitempty"`
-	Model                string         `json:"model,omitempty"`
-}
-
-// CustomBlob handles URL-safe base64 decoding for Google GenAI requests
-type CustomBlob struct {
-	Data     []byte `json:"data,omitempty"`
-	MIMEType string `json:"mimeType,omitempty"`
-}
-
-// UnmarshalJSON custom unmarshalling to handle URL-safe base64 encoding
-func (b *CustomBlob) UnmarshalJSON(data []byte) error {
-	// First unmarshal into a temporary struct with string data
-	var temp struct {
-		Data     string `json:"data,omitempty"`
-		MIMEType string `json:"mimeType,omitempty"`
-	}
-
-	if err := json.Unmarshal(data, &temp); err != nil {
-		return err
-	}
-
-	b.MIMEType = temp.MIMEType
-
-	if temp.Data != "" {
-		// Convert URL-safe base64 to standard base64
-		standardBase64 := strings.ReplaceAll(strings.ReplaceAll(temp.Data, "_", "/"), "-", "+")
-
-		// Add padding if necessary
-		switch len(standardBase64) % 4 {
-		case 2:
-			standardBase64 += "=="
-		case 3:
-			standardBase64 += "="
-		}
-
-		decoded, err := base64.StdEncoding.DecodeString(standardBase64)
-		if err != nil {
-			return fmt.Errorf("failed to decode base64 data: %v", err)
-		}
-		b.Data = decoded
-	}
-
-	return nil
-}
-
-// CustomPart handles Google GenAI Part with custom Blob unmarshalling
-type CustomPart struct {
-	VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
-	Thought             bool                 `json:"thought,omitempty"`
-	CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
-	ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
-	FileData            *FileData            `json:"fileData,omitempty"`
-	FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
-	FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
-	InlineData          *CustomBlob          `json:"inlineData,omitempty"`
-	Text                string               `json:"text,omitempty"`
-}
-
-// ToGenAIPart converts CustomPart to Part
-func (p *CustomPart) ToGenAIPart() *Part {
-	part := &Part{
-		VideoMetadata:       p.VideoMetadata,
-		Thought:             p.Thought,
-		CodeExecutionResult: p.CodeExecutionResult,
-		ExecutableCode:      p.ExecutableCode,
-		FileData:            p.FileData,
-		FunctionCall:        p.FunctionCall,
-		FunctionResponse:    p.FunctionResponse,
-		Text:                p.Text,
-	}
-
-	if p.InlineData != nil {
-		part.InlineData = &Blob{
-			Data:     p.InlineData.Data,
-			MIMEType: p.InlineData.MIMEType,
-		}
-	}
-
-	return part
+	Content              *Content `json:"content,omitempty"`
+	TaskType             *string  `json:"taskType,omitempty"`
+	Title                *string  `json:"title,omitempty"`
+	OutputDimensionality *int     `json:"outputDimensionality,omitempty"`
+	Model                string   `json:"model,omitempty"`
 }
 
 // Contains the multi-part content of a message.
@@ -954,25 +873,6 @@ type Content struct {
 	// 'model'. Useful to set for multi-turn conversations, otherwise can be
 	// empty. If role is not specified, SDK will determine the role.
 	Role string `json:"role,omitempty"`
-}
-
-// CustomContent handles Google GenAI Content with custom Part unmarshalling
-type CustomContent struct {
-	Parts []*CustomPart `json:"parts,omitempty"`
-	Role  string        `json:"role,omitempty"`
-}
-
-// ToGenAIContent converts CustomContent to genai_sdk.Content
-func (c *CustomContent) ToGenAIContent() Content {
-	parts := make([]*Part, len(c.Parts))
-	for i, part := range c.Parts {
-		parts[i] = part.ToGenAIPart()
-	}
-
-	return Content{
-		Parts: parts,
-		Role:  c.Role,
-	}
 }
 
 // A datatype containing media content.
@@ -1334,4 +1234,18 @@ type GeminiChatRequestErrorStruct struct {
 	Code    int    `json:"code"`    // HTTP status code
 	Message string `json:"message"` // Error message
 	Status  string `json:"status"`  // Error status string (e.g., "INVALID_REQUEST")
+}
+
+type GeminiGenerationError struct {
+	Error struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+		Details []struct {
+			Type            string `json:"@type"`
+			FieldViolations []struct {
+				Description string `json:"description"`
+			} `json:"fieldViolations"`
+		} `json:"details"`
+	} `json:"error"`
 }

@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -9,19 +10,24 @@ import (
 )
 
 func TestMistral(t *testing.T) {
+	if os.Getenv("MISTRAL_API_KEY") == "" {
+		t.Skip("Skipping Mistral tests because MISTRAL_API_KEY is not set")
+	}
+
 	client, ctx, cancel, err := config.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:       schemas.Mistral,
-		ChatModel:      "pixtral-12b-latest",
+		Provider:  schemas.Mistral,
+		ChatModel: "mistral-medium-2508",
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Mistral, Model: "mistral-small-2503"},
+		},
 		VisionModel:    "pixtral-12b-latest",
-		TextModel:      "", // Mistral doesn't support text completion in newer models
-		EmbeddingModel: "mistral-embed",
+		EmbeddingModel: "codestral-embed",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -39,5 +45,8 @@ func TestMistral(t *testing.T) {
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("MistralTests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

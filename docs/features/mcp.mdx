@@ -12,7 +12,7 @@ Bifrost's MCP integration provides a secure, high-performance bridge between AI 
 
 **🔒 Security-First Design**: Bifrost never automatically executes tool calls. Instead, it provides APIs for explicit tool execution, ensuring human oversight and approval for all potentially dangerous operations.
 
-### Key Benefits
+**Key Benefits:**
 
 | Feature | Description |
 |---------|-------------|
@@ -104,14 +104,25 @@ func main() {
             },
         },
     }
+    // ToolsToExecute semantics for MCPClientConfig:
+	// - ["*"] => all tools are included
+	// - []    => no tools are included (deny-by-default)
+	// - nil/omitted => treated as [] (no tools)
+	// - ["tool1", "tool2"] => include only the specified tools
 
+    // Initialize Bifrost with MCP configuration
     client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
         Account:   account,
         MCPConfig: mcpConfig,
         Logger:    bifrost.NewDefaultLogger(schemas.LogLevelInfo),
     })
+    if err != nil {
+        panic(err)
+    }
 }
 ```
+
+Note: Bifrost needs to be initialized with the MCP configuration(even an empty MCP config is fine) before using the MCP Methods. Read more about runtime MCP client management [here](#client-state-management).
 
 ### Gateway Setup
 
@@ -121,13 +132,16 @@ func main() {
 ![MCP Configuration in Web UI](../media/ui-mcp-config.png)
 
 1. Navigate to **MCP Clients** in the Bifrost Gateway UI
-2. Click **Add MCP Client** 
+2. Click **New MCP Client** 
 3. Configure connection details:
    - **Name**: Unique identifier for the MCP client
    - **Connection Type**: STDIO, HTTP, or SSE
    - **Connection Details**: Command/URL based on connection type
 
-The UI automatically validates configurations and shows connection status in real-time.
+By default, all tools from the MCP client are included. You can update the tools to be included after the MCP client is created.
+
+![MCP Tools Configuration in Web UI](../media/ui-mcp-tool-config.png)
+
 
 </Tab>
 <Tab title="API">
@@ -149,7 +163,7 @@ curl -X POST http://localhost:8080/api/mcp/client \
     "tools_to_execute": ["read_file", "write_file"]
   }'
 
-# Add HTTP MCP client  
+# Add HTTP MCP client
 curl -X POST http://localhost:8080/api/mcp/client \
   -H "Content-Type: application/json" \
   -d '{
@@ -157,6 +171,20 @@ curl -X POST http://localhost:8080/api/mcp/client \
     "connection_type": "http",
     "connection_string": "http://localhost:3001/mcp",
     "tools_to_execute": ["*"]
+  }'
+
+# Update tools to be included to only specific tools
+curl -X PUT http://localhost:8080/api/mcp/client/web-search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tools_to_execute": ["search"]
+  }'
+
+# Update tools to be included to none
+curl -X PUT http://localhost:8080/api/mcp/client/web-search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tools_to_execute": []
   }'
 ```
 
@@ -188,7 +216,8 @@ Configure MCP clients in your `config.json`:
       {
         "name": "real-time-data",
         "connection_type": "sse",
-        "connection_string": "https://api.example.com/mcp/sse"
+        "connection_string": "https://api.example.com/mcp/sse",
+        "tools_to_execute": []
       }
     ]
   }
@@ -295,6 +324,7 @@ func main() {
                         Command: "node",
                         Args:    []string{"fs-mcp-server.js"},
                     },
+                    ToolsToExecute: []string{"*"},
                 },
             },
         },
@@ -497,8 +527,6 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 The Go SDK provides a powerful tool registry for hosting custom tools directly within your application using typed handlers.
 
-### Registering Typed Tools
-
 ```go
 package main
 
@@ -607,7 +635,7 @@ func main() {
 }
 ```
 
-### Tool Registry Benefits
+**Tool Registry Benefits:**
 
 - **Type Safety**: Compile-time checking of tool arguments and return types
 - **Performance**: In-process execution with zero network overhead  
@@ -678,24 +706,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 </Tab>
 </Tabs>
 
-**Filtering Priority Rules:**
+**Filtering Logic:**
 
-1. **Request-Level vs Config-Level**: Request-level filtering (context/headers) takes priority over config-level filtering and can override it
+The client's configuration (`ToolsToExecute`) defines the set of enabled tools for that client. The request-level `mcp-include-tools` list can then be used to select a subset of those tools for a specific request. If `mcp-include-tools` is not provided, all tools enabled by the client's configuration are available.
 
-2. **Include-Only Whitelist Filtering**: 
-   - **Include lists are strict whitelists**: If `include-clients`/`include-tools` is specified, ONLY those clients/tools are allowed
-   - **Wildcard support**: Use "*" to include all clients or tools
-   - **Empty array behavior**: An empty array `[]` means no clients/tools are included
-
-**Client Configuration Filtering:**
-```json
-{
-  "name": "external-api",
-  "connection_type": "http",
-  "connection_string": "https://api.example.com/mcp",
-  "tools_to_execute": ["search", "summarize"]       // Whitelist specific tools (use "*" for all tools)
-}
-```
+- **Include lists are strict whitelists**: If `include-clients`/`include-tools` is specified, ONLY those clients/tools are allowed.
+- **Wildcard support**: Use `*` to include all clients. For tools, use `*` in the client configuration to include all its tools. At the request level, use `<clientName>/*` to include all tools from a specific client.
+- **Empty array behavior**: An empty array `[]` means no clients/tools are included.
 
 ### Environment Variables
 
@@ -746,8 +763,7 @@ err = client.RemoveMCPClient("old-client")
 
 // Edit client tools
 err = client.EditMCPClientTools("filesystem-tools", 
-    []string{"read_file", "write_file"}, // tools to add
-    []string{"delete_file"})             // tools to remove
+    []string{"read_file", "write_file"}) // tools to be included
 ```
 
 </Tab>

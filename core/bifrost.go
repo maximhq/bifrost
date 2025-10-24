@@ -1229,7 +1229,11 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 
 	if primaryErr != nil {
-		bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+		if primaryErr.Error != nil {
+			bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
+		} else {
+			bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+		}
 		if len(fallbacks) > 0 {
 			bifrost.logger.Debug(fmt.Sprintf("Check if we should try %d fallbacks", len(fallbacks)))
 		}
@@ -1629,7 +1633,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				time.Sleep(backoff)
 			}
 
-			bifrost.logger.Debug("attempting request for provider %s", provider.GetProviderKey())
+			bifrost.logger.Debug("attempting %s request for provider %s", req.RequestType, provider.GetProviderKey())
 
 			// Attempt the request
 			if IsStreamRequestType(req.RequestType) {
@@ -1644,7 +1648,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 			}
 
-			bifrost.logger.Debug("request for provider %s completed", provider.GetProviderKey())
+			bifrost.logger.Debug("request %s for provider %s completed", req.RequestType, provider.GetProviderKey())
 
 			// Check if successful or if we should retry
 			if bifrostError == nil ||

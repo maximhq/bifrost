@@ -11,6 +11,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	mocker "github.com/maximhq/bifrost/plugins/mocker"
 )
 
 // getWeaviateConfigFromEnv retrieves Weaviate configuration from environment variables
@@ -110,6 +111,217 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}, nil
 }
 
+// getMockRules returns a list of mock rules for the semantic cache tests
+func getMockRules() []mocker.MockRule {
+	return []mocker.MockRule{
+		// Core test prompts
+		{
+			Name:        "bifrost-definition",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)What is Bifrost.*")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Bifrost is a unified API for interacting with multiple AI providers."}},
+			},
+		},
+		{
+			Name:        "machine-learning-explanation",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)what is machine learning\\?|explain machine learning|machine learning concepts|can you explain machine learning|explain the basics of machine learning")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Machine learning is a field of AI that uses statistical techniques to give computer systems the ability to learn from data."}},
+			},
+		},
+		{
+			Name:        "ai-explanation",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)what is artificial intelligence\\?|can you explain what ai is\\?|define artificial intelligence")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Artificial intelligence is the simulation of human intelligence in machines."}},
+			},
+		},
+		{
+			Name:        "capital-of-france",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("What is the capital of France\\?")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "The capital of France is Paris."}},
+			},
+		},
+		{
+			Name:        "newton-laws",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)describe.*newton.*three laws|describe.*three laws.*newton")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Newton's three laws of motion are: 1. An object at rest stays at rest and an object in motion stays in motion with the same speed and in the same direction unless acted upon by an unbalanced force. 2. The acceleration of an object as produced by a net force is directly proportional to the magnitude of the net force, in the same direction as the net force, and inversely proportional to the mass of the object. 3. For every action, there is an equal and opposite reaction."}},
+			},
+		},
+		// Weather-related prompts
+		{
+			Name:        "weather-question",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)what.*weather|weather.*like")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "It's sunny today with a temperature of 72°F."}},
+			},
+		},
+		// Blockchain and deep learning
+		{
+			Name:        "blockchain-definition",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)define blockchain|blockchain technology")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Blockchain is a distributed ledger technology that maintains a continuously growing list of records."}},
+			},
+		},
+		{
+			Name:        "deep-learning",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)what is deep learning")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Deep learning is a subset of machine learning that uses neural networks with multiple layers."}},
+			},
+		},
+		// Quantum computing
+		{
+			Name:        "quantum-computing",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)quantum computing|explain quantum")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Quantum computing uses quantum mechanical phenomena to process information in ways that classical computers cannot."}},
+			},
+		},
+		// Conversation prompts
+		{
+			Name:        "hello-greeting",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)^hello$|^hi$|hello.*world")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Hello! How can I help you today?"}},
+			},
+		},
+		{
+			Name:        "how-are-you",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)how are you")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "I'm doing well, thank you for asking!"}},
+			},
+		},
+		{
+			Name:        "meaning-of-life",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)meaning of life")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "The meaning of life is a philosophical question that has been pondered for centuries. Some say it's 42!"}},
+			},
+		},
+		{
+			Name:        "short-story",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)tell me.*short story")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Once upon a time, there was a brave knight who saved the day."}},
+			},
+		},
+		// Test-specific prompts
+		{
+			Name:        "test-configuration",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)test configuration")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "This is a test configuration response."}},
+			},
+		},
+		{
+			Name:        "test-messages",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)test.*message|test.*no-store|test.*cache|test.*error|ttl test|threshold test|provider.*test|edge case test")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "This is a test response for various test scenarios."}},
+			},
+		},
+		{
+			Name:        "long-prompt",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)very long prompt")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "This is a response to a very long prompt."}},
+			},
+		},
+		{
+			Name:        "parameter-tests",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)test.*parameters|performance test")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Parameter test response with various settings."}},
+			},
+		},
+		// Dynamic message patterns (for conversation tests)
+		{
+			Name:        "message-pattern",
+			Enabled:     true,
+			Conditions:  mocker.Conditions{MessageRegex: bifrost.Ptr("(?i)message \\d+")},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "Response to numbered message."}},
+			},
+		},
+		// Default catch-all rule (lowest priority)
+		{
+			Name:        "default-mock",
+			Enabled:     true,
+			Priority:    -1, // Lower priority
+			Conditions:  mocker.Conditions{},
+			Probability: 1.0,
+			Responses: []mocker.Response{
+				{Type: mocker.ResponseTypeSuccess, Content: &mocker.SuccessResponse{Message: "This is a generic mocked response."}},
+			},
+		},
+	}
+}
+
+// getMockedBifrostClient creates a Bifrost client with a mocker plugin for testing
+func getMockedBifrostClient(t *testing.T, ctx context.Context, logger schemas.Logger, semanticCachePlugin schemas.Plugin) *bifrost.Bifrost {
+	mockerCfg := mocker.MockerConfig{
+		Enabled: true,
+		Rules:   getMockRules(),
+	}
+
+	mockerPlugin, err := mocker.Init(mockerCfg)
+	if err != nil {
+		t.Fatalf("Failed to initialize mocker plugin: %v", err)
+	}
+
+	account := &BaseAccount{}
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Plugins: []schemas.Plugin{semanticCachePlugin, mockerPlugin},
+		Logger:  logger,
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost with mocker: %v", err)
+	}
+
+	return client
+}
+
 // TestSetup contains common test setup components
 type TestSetup struct {
 	Logger schemas.Logger
@@ -121,10 +333,6 @@ type TestSetup struct {
 
 // NewTestSetup creates a new test setup with default configuration
 func NewTestSetup(t *testing.T) *TestSetup {
-	// if os.Getenv("OPENAI_API_KEY") == "" {
-	// 	t.Skip("OPENAI_API_KEY is not set, skipping test")
-	// }
-
 	return NewTestSetupWithConfig(t, &Config{
 		Provider:          schemas.OpenAI,
 		EmbeddingModel:    "text-embedding-3-small",
@@ -145,6 +353,7 @@ func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
+	// Keep Weaviate for embeddings, as mocker only affects chat completions
 	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
 		Type:    vectorstore.VectorStoreTypeWeaviate,
 		Config:  getWeaviateConfigFromEnv(),
@@ -163,15 +372,8 @@ func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 	pluginImpl := plugin.(*Plugin)
 	clearTestKeysWithStore(t, pluginImpl.store)
 
-	account := &BaseAccount{}
-	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  logger,
-	})
-	if err != nil {
-		t.Fatalf("Error initializing Bifrost: %v", err)
-	}
+	// Get a mocked Bifrost client
+	client := getMockedBifrostClient(t, ctx, logger, plugin)
 
 	return &TestSetup{
 		Logger: logger,
@@ -371,10 +573,6 @@ func CreateContextWithCacheKeyAndNoStore(value string, noStore bool) context.Con
 
 // CreateTestSetupWithConversationThreshold creates a test setup with custom conversation history threshold
 func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *TestSetup {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping test")
-	}
-
 	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
@@ -395,10 +593,6 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 
 // CreateTestSetupWithExcludeSystemPrompt creates a test setup with ExcludeSystemPrompt setting
 func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *TestSetup {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping test")
-	}
-
 	config := &Config{
 		Provider:            schemas.OpenAI,
 		EmbeddingModel:      "text-embedding-3-small",
@@ -419,10 +613,6 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 
 // CreateTestSetupWithThresholdAndExcludeSystem creates a test setup with both conversation threshold and exclude system prompt settings
 func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, excludeSystem bool) *TestSetup {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping test")
-	}
-
 	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",

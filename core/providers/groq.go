@@ -124,13 +124,18 @@ func (provider *GroqProvider) TextCompletionStream(ctx context.Context, postHook
 				responseChan <- response
 				continue
 			}
-			response.ToTextCompletionResponse()
-			if response.BifrostTextCompletionResponse != nil {
-				response.BifrostTextCompletionResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
-				response.BifrostTextCompletionResponse.ExtraFields.Provider = provider.GetProviderKey()
-				response.BifrostTextCompletionResponse.ExtraFields.ModelRequested = request.Model
+			if response.BifrostChatResponse != nil {
+				textCompletionResponse := response.BifrostChatResponse.ToTextCompletionResponse()
+				if textCompletionResponse != nil {
+					textCompletionResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
+					textCompletionResponse.ExtraFields.Provider = provider.GetProviderKey()
+					textCompletionResponse.ExtraFields.ModelRequested = request.Model
+
+					responseChan <- &schemas.BifrostStream{
+						BifrostTextCompletionResponse: textCompletionResponse,
+					}
+				}
 			}
-			responseChan <- response
 		}
 	}()
 	return responseChan, nil

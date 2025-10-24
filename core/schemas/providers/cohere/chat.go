@@ -298,6 +298,11 @@ func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChat
 			if response.Usage.Tokens.OutputTokens != nil {
 				usage.CompletionTokens = int(*response.Usage.Tokens.OutputTokens)
 			}
+			if response.Usage.CachedTokens != nil {
+				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+					CachedTokens: int(*response.Usage.CachedTokens),
+				}
+			}
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
 

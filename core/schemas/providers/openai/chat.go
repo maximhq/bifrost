@@ -39,11 +39,25 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		// Removing extra parameters that are not supported by Gemini
 		openaiReq.ServiceTier = nil
 		return openaiReq
+	case schemas.Mistral:
+		openaiReq.filterOpenAISpecificParameters()
+
+		// Remove max_completion_tokens and replace with max_tokens
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
+
+		// Mistral does not support ToolChoiceStruct, only simple tool choice strings are supported.
+		if openaiReq.ToolChoice != nil && openaiReq.ToolChoice.ChatToolChoiceStruct != nil {
+			openaiReq.ToolChoice.ChatToolChoiceStr = schemas.Ptr("required")
+			openaiReq.ToolChoice.ChatToolChoiceStruct = nil
+		}
+		return openaiReq
 	default:
 		openaiReq.filterOpenAISpecificParameters()
 		return openaiReq
 	}
-
 }
 
 // Filter OpenAI Specific Parameters

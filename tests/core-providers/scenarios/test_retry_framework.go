@@ -3,6 +3,7 @@ package scenarios
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,85 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// DeepCopyBifrostStream creates a deep copy of a BifrostStream object to avoid pooling issues
+func DeepCopyBifrostStream(original *schemas.BifrostStream) *schemas.BifrostStream {
+	if original == nil {
+		return nil
+	}
+
+	// Use reflection to create a deep copy
+	return deepCopyReflect(original).(*schemas.BifrostStream)
+}
+
+// deepCopyReflect performs a deep copy using reflection
+func deepCopyReflect(original interface{}) interface{} {
+	if original == nil {
+		return nil
+	}
+
+	originalValue := reflect.ValueOf(original)
+	return deepCopyValue(originalValue).Interface()
+}
+
+// deepCopyValue recursively copies a reflect.Value
+func deepCopyValue(original reflect.Value) reflect.Value {
+	switch original.Kind() {
+	case reflect.Ptr:
+		if original.IsNil() {
+			return reflect.Zero(original.Type())
+		}
+		// Create a new pointer and recursively copy the value it points to
+		newPtr := reflect.New(original.Type().Elem())
+		newPtr.Elem().Set(deepCopyValue(original.Elem()))
+		return newPtr
+
+	case reflect.Struct:
+		// Create a new struct and copy each field
+		newStruct := reflect.New(original.Type()).Elem()
+		for i := 0; i < original.NumField(); i++ {
+			field := original.Field(i)
+			destField := newStruct.Field(i)
+			if destField.CanSet() {
+				destField.Set(deepCopyValue(field))
+			}
+		}
+		return newStruct
+
+	case reflect.Slice:
+		if original.IsNil() {
+			return reflect.Zero(original.Type())
+		}
+		// Create a new slice and copy each element
+		newSlice := reflect.MakeSlice(original.Type(), original.Len(), original.Cap())
+		for i := 0; i < original.Len(); i++ {
+			newSlice.Index(i).Set(deepCopyValue(original.Index(i)))
+		}
+		return newSlice
+
+	case reflect.Map:
+		if original.IsNil() {
+			return reflect.Zero(original.Type())
+		}
+		// Create a new map and copy each key-value pair
+		newMap := reflect.MakeMap(original.Type())
+		for _, key := range original.MapKeys() {
+			newMap.SetMapIndex(deepCopyValue(key), deepCopyValue(original.MapIndex(key)))
+		}
+		return newMap
+
+	case reflect.Interface:
+		if original.IsNil() {
+			return reflect.Zero(original.Type())
+		}
+		// Copy the concrete value inside the interface
+		return deepCopyValue(original.Elem())
+
+	default:
+		// For basic types (int, string, bool, etc.), just return the value
+		return original
+	}
+}
 
 // TestRetryCondition defines an interface for checking if a test operation should be retried
 // This focuses specifically on LLM behavior inconsistencies, not HTTP errors (handled by Bifrost core)
@@ -686,6 +766,18 @@ func DefaultTranscriptionRetryConfig() TestRetryConfig {
 	}
 }
 
+// ReasoningRetryConfig creates a retry config for reasoning tests
+func ReasoningRetryConfig() TestRetryConfig {
+	return TestRetryConfig{
+		MaxAttempts: 5,
+		BaseDelay:   750 * time.Millisecond,
+		MaxDelay:    8 * time.Second,
+		Conditions: []TestRetryCondition{
+			&EmptyResponseCondition{},
+		},
+	}
+}
+
 // DefaultEmbeddingRetryConfig creates a retry config for embedding tests
 func DefaultEmbeddingRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
@@ -849,6 +941,8 @@ func GetTestRetryConfigForScenario(scenarioName string, testConfig config.Compre
 		return SpeechStreamRetryConfig()
 	case "Transcription", "TranscriptionStream": // 🎙️ Transcription tests
 		return DefaultTranscriptionRetryConfig()
+	case "Reasoning":
+		return ReasoningRetryConfig()
 	default:
 		// For basic scenarios like SimpleChat, TextCompletion
 		return DefaultTestRetryConfig()

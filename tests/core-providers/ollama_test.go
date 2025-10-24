@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -9,12 +10,15 @@ import (
 )
 
 func TestOllama(t *testing.T) {
+	if os.Getenv("OLLAMA_BASE_URL") == "" {
+		t.Skip("Skipping Ollama tests because OLLAMA_BASE_URL is not set")
+	}
+
 	client, ctx, cancel, err := config.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:       schemas.Ollama,
@@ -38,5 +42,8 @@ func TestOllama(t *testing.T) {
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("OllamaTests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

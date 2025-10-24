@@ -697,7 +697,7 @@ func RunCrossProviderScenarioTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			responseContent = GetResponsesContent(response.ResponsesResponse)
 		} else {
 			if response.ChatResponse != nil {
-			// Use Chat API choices
+				// Use Chat API choices
 				for _, choice := range response.ChatResponse.Choices {
 					if choice.Message != nil {
 						conversationHistory = append(conversationHistory, *choice.Message)
@@ -798,7 +798,6 @@ func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx 
 
 		t.Logf("Testing %s...", provider.Provider)
 
-		var err *schemas.BifrostError
 		var content string
 
 		if useResponsesAPI {
@@ -839,11 +838,6 @@ func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx 
 				continue
 			}
 			content = GetChatContent(chatResponse)
-		}
-
-		if err != nil {
-			t.Logf("❌ %s failed: %v", provider.Provider, GetErrorMessage(err))
-			continue
 		}
 
 		sentences := strings.Split(strings.TrimSpace(content), ".")

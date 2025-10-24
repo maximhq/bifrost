@@ -1,14 +1,15 @@
 module github.com/maximhq/bifrost/plugins/semanticcache
 
-go 1.24
+go 1.24.1
 
 toolchain go1.24.3
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.2.12
-	github.com/maximhq/bifrost/framework v1.1.14
+	github.com/maximhq/bifrost/core v1.2.13
+	github.com/maximhq/bifrost/framework v1.1.15
+	github.com/maximhq/bifrost/plugins/mocker v1.3.14
 )
 
 require (
@@ -50,6 +51,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.6.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jaswdr/faker/v2 v2.8.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/josharian/intern v1.0.0 // indirect

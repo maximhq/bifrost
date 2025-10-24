@@ -1,49 +1,10 @@
 ---
-title: "Budget Management"
-description: "Enterprise-grade budget management and cost control with hierarchical budget allocation through virtual keys, teams, and customers."
-icon: "money-bills"
+title: "Virtual Keys"
+description: "Virtual keys are a way to manage access to your AI models."
+icon: "key"
 ---
 
 ## Overview
-
-Bifrost's budget management system provides comprehensive cost control and financial governance for enterprise AI deployments. It operates through a **hierarchical budget structure** that enables granular cost management, usage tracking, and financial oversight across your entire organization.
-
-**Core Hierarchy:**
-```
-Customer (has independent budget)
-    ↓ (one-to-many)
-Team (has independent budget) 
-    ↓ (one-to-many)
-Virtual Key (has independent budget + rate limits)
-
-OR
-
-Customer (has independent budget)
-    ↓ (direct attachment)
-Virtual Key (has independent budget + rate limits)
-
-OR
-
-Virtual Key (standalone - has independent budget + rate limits)
-```
-
-**Key Capabilities:**
-- **Virtual Keys** - Primary access control via `x-bf-vk` header (exclusive team OR customer attachment)
-- **Budget Management** - Independent budget limits at each hierarchy level with cumulative checking
-- **Rate Limiting** - Request and token-based throttling (VK-level only)
-- **Model/Provider Filtering** - Granular access control per virtual key  
-- **Usage Tracking** - Real-time monitoring and audit trails
-- **Audit Headers** - Optional team and customer identification
-
-**Budgeting Modes:**
-- **Mandatory** (`enforce_governance_header: true`) - All requests require `x-bf-vk` header
-- **Optional** (`enforce_governance_header: false`) - Governance applied only when `x-bf-vk` header present
-
-For detailed implementation architecture, see [Architecture > Plugins > Governance](../architecture/plugins/governance).
-
----
-
-## Virtual Keys
 
 Virtual Keys are the primary governance entity in Bifrost. Users and applications authenticate using the `x-bf-vk` header, which maps to specific access permissions, budgets, and rate limits.
 
@@ -55,26 +16,15 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive)
 - **Active/Inactive Status** - Enable/disable access instantly
 
-### Configuration
+## Configuration
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. **Navigate to Virtual Keys**
-   - Open Bifrost UI at `http://localhost:8080`
-   - Go to **Governance** → **Virtual Keys**
-
-2. **Create Virtual Key**
+1. Go to **Virtual Keys**
+2. Click on **Add Virtual Key** button
 
 ![Virtual Key Creation](../../media/ui-virtual-key.png)
-
-**Required Fields:**
-- **Name**: Descriptive identifier
-- **Description**: Optional usage details
-
-**Access Control:**
-- **Allowed Models**: Specific models (empty = all allowed)
-- **Allowed Providers**: Specific providers (empty = all allowed)
 
 **Budget Settings:**
 - **Max Limit**: Dollar amount (e.g., `10.50`)
@@ -88,11 +38,8 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 **Associations:**
 - **Team**: Assign to existing team (mutually exclusive with customer)
 - **Customer**: Assign to existing customer (mutually exclusive with team)
-- **Provider Keys**: Restrict VK to specific API keys (optional - leave empty for no restrictions)
 
-3. **Save Configuration**
-   - Click **Create Virtual Key**
-   - Note the generated VK value for client use
+3. Click **Create Virtual Key**
 
 </Tab>
 <Tab title="API">
@@ -288,60 +235,9 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 </Tab>
 </Tabs>
 
-### Key Restrictions
+## User Groups
 
-Virtual Keys can be restricted to use only specific provider API keys. When key restrictions are configured, the VK can only access those designated keys, providing fine-grained control over which API keys different users or applications can utilize.
-
-**How It Works:**
-- **No Restrictions** (default): VK can use any available provider keys based on load balancing
-- **With Restrictions**: VK limited to only the specified key IDs, regardless of other available keys
-
-**Example Scenario:**
-```
-Available Provider Keys:
-├── key-prod-001 → sk-prod-key... (Production OpenAI key)
-├── key-dev-002  → sk-dev-key...  (Development OpenAI key)  
-└── key-test-003 → sk-test-key... (Testing OpenAI key)
-
-Virtual Key Restrictions:
-├── vk-prod-main
-│   ├── Allowed Models: [gpt-4o]
-│   └── Restricted Keys: [key-prod-001] ← ONLY production key
-├── vk-dev-main  
-│   ├── Allowed Models: [gpt-4o-mini]
-│   └── Restricted Keys: [key-dev-002, key-test-003] ← Dev + test keys
-└── vk-unrestricted
-    ├── Allowed Models: [all models]
-    └── Restricted Keys: [] ← Can use ANY available key
-```
-
-**Request Behavior:**
-```bash
-# Production VK - will ONLY use key-prod-001
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-vk: vk-prod-main" \
-  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello!"}]}'
-
-# Development VK - will load balance between key-dev-002 and key-test-003
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-vk: vk-dev-main" \
-  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}'
-
-# VK with no key restrictions - can use any available OpenAI key
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-vk: vk-unrestricted" \
-  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}'
-```
-
-**Use Cases:**
-- **Environment Separation** - Production VKs use production keys, dev VKs use dev keys
-- **Cost Control** - Different teams use keys with different billing accounts
-- **Access Control** - Restrict sensitive keys to specific VKs only
-- **Compliance** - Ensure certain workloads only use compliant/audited keys
-
----
-
-## Teams
+### Teams
 
 Teams provide organizational grouping for virtual keys with department-level budget management. Teams can belong to one customer and have their own independent budget allocation.
 
@@ -356,29 +252,18 @@ Teams provide organizational grouping for virtual keys with department-level bud
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. **Navigate to Teams**
-   - Open Bifrost UI at `http://localhost:8080`
-   - Go to **Governance** → **Teams**
+1. Go to **Users & Groups** → **Teams**
 
-2. **Create Team**
+2. Click on **Add Team** button
 
 ![Team Creation](../../media/ui-create-teams.png)
 
-**Required Fields:**
-- **Name**: Team identifier
-- **Customer**: Optional parent customer
+Fill the form and click on **Create Team** button
 
-**Budget Settings:**
-- **Max Limit**: Department budget in dollars
-- **Reset Duration**: Budget reset frequency
-
-**Virtual Key Assignment:**
-- Assign existing virtual keys to team
-- Create new virtual keys under team
-
-3. **Save Configuration**
-   - Click **Create Team**
-   - Assign virtual keys to the team
+3. **Assign Virtual Keys to Team**
+   - Go to **Virtual Keys** page
+   - Edit the virtual key and assign it to the team
+   - Click on **Save** button
 
 </Tab>
 <Tab title="API">
@@ -467,9 +352,7 @@ curl -X DELETE http://localhost:8080/api/governance/teams/{team_id}
 </Tab>
 </Tabs>
 
----
-
-## Customers
+### Customers
 
 Customers represent the highest level in the governance hierarchy, typically corresponding to organizations or major business units. They provide top-level budget control and organizational structure.
 
@@ -484,29 +367,23 @@ Customers represent the highest level in the governance hierarchy, typically cor
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. **Navigate to Customers**
-   - Open Bifrost UI at `http://localhost:8080`
-   - Go to **Governance** → **Customers**
+1. Go to **Users & Groups** → **Customers**
 
-2. **Create Customer**
+2. Click on **Add Customer** button
 
 ![Customer Creation](../../media/ui-create-customer.png)
 
-**Required Fields:**
-- **Name**: Organization identifier
+Fill the form and click on **Create Customer** button
 
-**Budget Settings:**
-- **Max Limit**: Organization budget in dollars
-- **Reset Duration**: Budget reset frequency
+3. **Assign Teams to Customer**
+   - Go to **Teams** page
+   - Edit the team and assign it to the customer
+   - Click on **Save** button
 
-**Team Management:**
-- View all teams under customer
-- Create new teams under customer
-- Monitor aggregate usage
-
-3. **Save Configuration**
-   - Click **Create Customer**
-   - Create teams under the customer
+4. **Assign Virtual Keys to Customer**
+   - Go to **Virtual Keys** page
+   - Edit the virtual key and assign it to the customer
+   - Click on **Save** button
 
 </Tab>
 <Tab title="API">
@@ -592,9 +469,14 @@ curl -X DELETE http://localhost:8080/api/governance/customers/{customer_id}
 </Tab>
 </Tabs>
 
----
+## Features
 
-## Usage & Headers
+- **[Budget and Limits](./budget-and-limits)** - Enterprise-grade budget management and cost control and rate limiting using virtual keys
+- **[Routing](./routing)** - Route requests to the appropriate providers/models and restrict api keys using virtual keys
+- **[MCP Tool Filtering](./mcp-tools)** - Manage MCP clients/tools for virtual keys
+
+
+## Usage
 
 ### Required Header
 
@@ -609,6 +491,44 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
+
+By default governance is optional, meaning that if the `x-bf-vk` header is not present, the request will be allowed but without any governance checks/routing. But you can make it mandatory by enforcing the governance header.
+
+<Tabs group="enforce-governance-header">
+<Tab title="Web UI">
+
+1. Go to **Client** → **Governance**
+
+2. Check the **Enforce Governance Header** checkbox
+
+</Tab>
+<Tab title="API">
+```bash
+curl -X PUT http://localhost:8080/api/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_config": {
+      "enforce_governance_header": true
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "client": {
+    "enable_governance": true,
+    "enforce_governance_header": true
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+When the governance header is enforced, the request will be rejected if the `x-bf-vk` header is not present.
 
 ### Optional Audit Headers
 
@@ -633,60 +553,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 - `x-bf-customer` - Optional customer identifier for audit trails  
 - `x-bf-user-id` - Optional user identifier for detailed tracking
 
-### Cost Calculation
-
-Bifrost automatically calculates costs based on:
-- **Provider Pricing** - Real-time model pricing data
-- **Token Usage** - Input + output tokens from API responses
-- **Request Type** - Different pricing for chat, text, embedding, speech, transcription
-- **Cache Status** - Reduced costs for cached responses
-- **Batch Operations** - Volume discounts for batch requests
-
-Cost calculation details are covered in [Architecture > Plugins > Governance](../architecture/plugins/governance).
-
-### Budget Checking Flow
-
-When a request is made with a virtual key, Bifrost checks **all applicable budgets independently** in the hierarchy. Each budget must have sufficient remaining balance for the request to proceed.
-
-**Checking Sequence:**
-
-**For VK → Team → Customer:**
-```
-1. ✓ VK Budget (if VK has budget)
-2. ✓ Team Budget (if VK's team has budget)  
-3. ✓ Customer Budget (if team's customer has budget)
-```
-
-**For VK → Customer (direct):**
-```
-1. ✓ VK Budget (if VK has budget)
-2. ✓ Customer Budget (if VK's customer has budget)
-```
-
-**For Standalone VK:**
-```
-1. ✓ VK Budget (if VK has budget)
-```
-
-**Important Notes:**
-- **All applicable budgets must pass** - any single budget failure blocks the request
-- **Budgets are independent** - each tracks its own usage and limits
-- **Costs are deducted from all applicable budgets** - same cost applied to each level
-- **Rate limits checked only at VK level** - teams and customers have no rate limits
-
-**Example:**
-- VK budget: $9/$10 remaining ✓
-- Team budget: $15/$20 remaining ✓  
-- Customer budget: $45/$50 remaining ✓
-- **Result: Allowed** (no budget is exceeded)
-- After request: 
-    - Request cost: $2 
-    - Updated VK=$11/$10, Team=$17/$20, Customer=$47/$50
-    - Then the next request will be blocked.
-
----
-
-## Error Responses
+### Error Responses
 
 - Virtual Key Not Found (400)
 ```json
@@ -704,26 +571,6 @@ When a request is made with a virtual key, Bifrost checks **all applicable budge
   "error": {
     "type": "virtual_key_blocked", 
     "message": "Virtual key is inactive"
-  }
-}
-```
-
-- Model Not Allowed (403)
-```json
-{
-  "error": {
-    "type": "model_blocked",
-    "message": "Model 'gpt-4o' is not allowed for this virtual key"
-  }
-}
-```
-
-- Provider Not Allowed (403)
-```json
-{
-  "error": {
-    "type": "provider_blocked",
-    "message": "Provider 'anthropic' is not allowed for this virtual key"
   }
 }
 ```
@@ -768,35 +615,22 @@ When a request is made with a virtual key, Bifrost checks **all applicable budge
 }
 ```
 
-**Budget Error Variations:**
-- `"VK budget exceeded: 105.50 > 100.00 dollars"` - Virtual Key budget exceeded
-- `"Team budget exceeded: 250.75 > 250.00 dollars"` - Team budget exceeded  
-- `"Customer budget exceeded: 1500.25 > 1500.00 dollars"` - Customer budget exceeded
+- Model Not Allowed (403)
+```json
+{
+  "error": {
+    "type": "model_blocked",
+    "message": "Model 'gpt-4o' is not allowed for this virtual key"
+  }
+}
+```
 
----
-
-## Reset Durations
-
-Budgets and rate limits support flexible reset durations:
-
-**Format Examples:**
-- `1m` - 1 minute
-- `5m` - 5 minutes  
-- `1h` - 1 hour
-- `1d` - 1 day
-- `1w` - 1 week
-- `1M` - 1 month
-
-**Common Patterns:**
-- **Rate Limits**: `1m`, `1h`, `1d` for request throttling
-- **Budgets**: `1d`, `1w`, `1M` for cost control
-- **Development**: `5m`, `15m` for testing scenarios
-
----
-
-## Next Steps
-
-- **[Architecture Overview](../architecture/plugins/governance)** - Technical implementation details
-- **[Telemetry](./telemetry)** - Monitoring governance usage and performance
-- **[Tracing](./tracing)** - Audit trails and request tracking
-- **[Provider Configuration](../quickstart/gateway/provider-configuration)** - Setting up provider API keys
+- Provider Not Allowed (403)
+```json
+{
+  "error": {
+    "type": "provider_blocked",
+    "message": "Provider 'anthropic' is not allowed for this virtual key"
+  }
+}
+```

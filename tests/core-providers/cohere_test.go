@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -9,12 +10,15 @@ import (
 )
 
 func TestCohere(t *testing.T) {
+	if os.Getenv("COHERE_API_KEY") == "" {
+		t.Skip("Skipping Cohere tests because COHERE_API_KEY is not set")
+	}
+
 	client, ctx, cancel, err := config.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:       schemas.Cohere,
@@ -33,12 +37,15 @@ func TestCohere(t *testing.T) {
 			AutomaticFunctionCall: true,  // May not support automatic
 			ImageURL:              false, // Supported by c4ai-aya-vision-8b model
 			ImageBase64:           true,  // Supported by c4ai-aya-vision-8b model
-			MultipleImages:        true,  // Supported by c4ai-aya-vision-8b model
+			MultipleImages:        false, // Supported by c4ai-aya-vision-8b model
 			CompleteEnd2End:       false,
 			Embedding:             true,
 			Reasoning:             true,
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("CohereTests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

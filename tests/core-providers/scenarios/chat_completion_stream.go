@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,8 +21,12 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	}
 
 	t.Run("ChatCompletionStream", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		messages := []schemas.ChatMessage{
-			CreateBasicChatMessage("Tell me a short story about a robot learning to paint the city which has the eiffel tower. Keep it under 200 words."),
+			CreateBasicChatMessage("Tell me a short story about a robot learning to paint the city which has the eiffel tower. Keep it under 200 words and include the city's name."),
 		}
 
 		request := &schemas.BifrostChatRequest{
@@ -83,7 +88,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				if response == nil {
 					t.Fatal("Streaming response should not be nil")
 				}
-				lastResponse = response
+				lastResponse = DeepCopyBifrostStream(response)
 
 				// Basic validation of streaming response structure
 				if response.BifrostChatResponse != nil {
@@ -93,6 +98,9 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					if response.BifrostChatResponse.ID == "" {
 						t.Logf("⚠️ Warning: Response ID is empty")
 					}
+
+					// Log latency for each chunk (can be 0 for inter-chunks)
+					t.Logf("📊 Chunk %d latency: %d ms", responseCount+1, response.BifrostChatResponse.ExtraFields.Latency)
 
 					// Process each choice in the response
 					for _, choice := range response.BifrostChatResponse.Choices {
@@ -106,7 +114,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 						}
 
 						// Get content from delta
-						if choice.ChatStreamResponseChoice != nil  && choice.ChatStreamResponseChoice.Delta != nil {
+						if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
 							delta := choice.ChatStreamResponseChoice.Delta
 							if delta.Content != nil {
 								fullContent.WriteString(*delta.Content)
@@ -172,14 +180,15 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			if len(lastResponse.BifrostChatResponse.Choices) > 0 && lastResponse.BifrostChatResponse.Choices[0].FinishReason != nil {
 				consolidatedResponse.Choices[0].FinishReason = lastResponse.BifrostChatResponse.Choices[0].FinishReason
 			}
+			consolidatedResponse.ExtraFields.Latency = lastResponse.BifrostChatResponse.ExtraFields.Latency
 		}
 
 		// Enhanced validation expectations for streaming
 		expectations := GetExpectationsForScenario("ChatCompletionStream", testConfig, map[string]interface{}{})
 		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-		expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, []string{"paris"}...) // Should include story elements
-		expectations.MinContentLength = 50                                                                    // Should be substantial story
-		expectations.MaxContentLength = 2000                                                                  // Reasonable upper bound
+		expectations.ShouldContainAnyOf = append(expectations.ShouldContainAnyOf, []string{"paris"}...) // Should include story elements
+		expectations.MinContentLength = 50                                                              // Should be substantial story
+		expectations.MaxContentLength = 2000                                                            // Reasonable upper bound
 
 		// Validate the consolidated streaming response
 		validationResult := ValidateChatResponse(t, consolidatedResponse, nil, expectations, "ChatCompletionStream")
@@ -198,7 +207,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 		if !validationResult.Passed {
-			t.Logf("⚠️ Streaming validation warnings: %v", validationResult.Errors)
+			t.Errorf("❌ Streaming validation failed: %v", validationResult.Errors)
 		}
 
 		t.Logf("📊 Streaming metrics: %d chunks, %d chars", responseCount, len(finalContent))
@@ -210,8 +219,12 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	// Test streaming with tool calls if supported
 	if testConfig.Scenarios.ToolCalls {
 		t.Run("ChatCompletionStreamWithTools", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			messages := []schemas.ChatMessage{
-				CreateBasicChatMessage("What's the weather like in San Francisco? Please use the get_weather function."),
+				CreateBasicChatMessage("What's the weather like in San Francisco in celsius? Please use the get_weather function."),
 			}
 
 			tool := GetSampleChatTool(SampleToolTypeWeather)

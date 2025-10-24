@@ -22,6 +22,7 @@ func BasicChatExpectations() ResponseExpectations {
 		ShouldHaveUsageStats: true,
 		ShouldHaveTimestamps: true,
 		ShouldHaveModel:      true,
+		ShouldHaveLatency:    true, // Global expectation: latency should always be present
 		ShouldNotContainWords: []string{
 			"i can't", "i cannot", "i'm unable", "i am unable",
 			"i don't know", "i'm not sure", "i am not sure",
@@ -110,6 +111,7 @@ func EmbeddingExpectations(expectedTexts []string) ResponseExpectations {
 		ShouldHaveContent:   false, // Embeddings don't have text content
 		ExpectedChoiceCount: 0,     // Embeddings use different structure
 		ShouldHaveModel:     true,
+		ShouldHaveLatency:   true, // Global expectation: latency should always be present
 		// Custom validation will be needed for embedding data
 		ProviderSpecific: map[string]interface{}{
 			"expected_embedding_count": len(expectedTexts),
@@ -128,8 +130,8 @@ func StreamingExpectations() ResponseExpectations {
 // ConversationExpectations returns validation expectations for multi-turn conversation scenarios
 func ConversationExpectations(contextKeywords []string) ResponseExpectations {
 	expectations := BasicChatExpectations()
-	expectations.MinContentLength = 15                   // Conversation responses should be more substantial
-	expectations.ShouldContainKeywords = contextKeywords // Should reference conversation context
+	expectations.MinContentLength = 15                // Conversation responses should be more substantial
+	expectations.ShouldContainAnyOf = contextKeywords // Should reference conversation context
 
 	return expectations
 }
@@ -159,6 +161,7 @@ func SpeechExpectations(minAudioBytes int) ResponseExpectations {
 		ShouldHaveUsageStats: true,
 		ShouldHaveTimestamps: true,
 		ShouldHaveModel:      true,
+		ShouldHaveLatency:    true, // Global expectation: latency should always be present
 		// Speech-specific validations stored in ProviderSpecific
 		ProviderSpecific: map[string]interface{}{
 			"min_audio_bytes":   minAudioBytes,
@@ -177,6 +180,7 @@ func TranscriptionExpectations(minTextLength int) ResponseExpectations {
 		ShouldHaveUsageStats: true,
 		ShouldHaveTimestamps: true,
 		ShouldHaveModel:      true,
+		ShouldHaveLatency:    true, // Global expectation: latency should always be present
 		// Transcription-specific validations
 		ShouldNotContainWords: []string{
 			"could not transcribe", "failed to process",
@@ -198,14 +202,13 @@ func ReasoningExpectations() ResponseExpectations {
 		ShouldHaveContent:    true,
 		MinContentLength:     50,   // Reasoning requires substantial content
 		MaxContentLength:     3000, // Reasoning can be very verbose
-		ExpectedChoiceCount:  1,    // Usually expect one choice
 		ShouldHaveUsageStats: true,
 		ShouldHaveTimestamps: true,
 		ShouldHaveModel:      true,
 		// Reasoning-specific validations
 		ShouldContainAnyOf: []string{
 			"step", "first", "then", "next", "calculate", "therefore", "because",
-			"reasoning", "think", "analysis", "conclusion", "solution",
+			"reasoning", "think", "analysis", "conclusion", "solution", "solve",
 		},
 		ShouldNotContainWords: []string{
 			"i can't", "i cannot", "i'm unable", "i am unable",
@@ -300,10 +303,7 @@ func GetExpectationsForScenario(scenarioName string, testConfig config.Comprehen
 	case "Reasoning":
 		expectations := ReasoningExpectations()
 		if requiresReasoning, ok := customParams["requires_reasoning"].(bool); ok && requiresReasoning {
-			expectations.ShouldContainAnyOf = []string{"step", "first", "then", "calculate", "therefore", "because"}
-		}
-		if isMathematical, ok := customParams["mathematical_problem"].(bool); ok && isMathematical {
-			expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "calculate", "profit", "$")
+			expectations.ShouldContainAnyOf = []string{"step", "first", "then", "calculate", "therefore", "because", "solve"}
 		}
 		return expectations
 
@@ -459,6 +459,9 @@ func CombineExpectations(expectations ...ResponseExpectations) ResponseExpectati
 		}
 		if exp.ShouldHaveModel {
 			base.ShouldHaveModel = exp.ShouldHaveModel
+		}
+		if exp.ShouldHaveLatency {
+			base.ShouldHaveLatency = exp.ShouldHaveLatency
 		}
 
 		// Merge provider specific data

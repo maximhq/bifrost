@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"testing"
 
@@ -48,6 +49,10 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 	}
 
 	t.Run("Embedding", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Test texts with expected semantic relationships
 		testTexts := []string{
 			"Hello, world!",
@@ -64,7 +69,7 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			Params: &schemas.EmbeddingParameters{
 				EncodingFormat: bifrost.Ptr("float"),
 			},
-			Fallbacks: testConfig.Fallbacks,
+			Fallbacks: testConfig.EmbeddingFallbacks,
 		}
 
 		// Enhanced embedding validation
@@ -96,11 +101,17 @@ func validateEmbeddingSemantics(t *testing.T, response *schemas.BifrostEmbedding
 
 	// Extract and validate embeddings
 	embeddings := make([][]float32, len(testTexts))
-	if len(response.Data) != len(testTexts) {
-		t.Fatalf("Expected %d embedding results, got %d", len(testTexts), len(response.Data))
+	responseDataLength := len(response.Data)
+	if responseDataLength != len(testTexts) {
+		if responseDataLength > 0 && response.Data[0].Embedding.Embedding2DArray != nil {
+			responseDataLength = len(response.Data[0].Embedding.Embedding2DArray)
+		}
+		if responseDataLength != len(testTexts) {
+			t.Fatalf("Expected %d embedding results, got %d", len(testTexts), responseDataLength)
+		}
 	}
 
-	for i := range response.Data {
+	for i := range responseDataLength {
 		vec, extractErr := getEmbeddingVector(response.Data[i])
 		if extractErr != nil {
 			t.Fatalf("Failed to extract embedding vector for text '%s': %v", testTexts[i], extractErr)

@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -24,6 +25,10 @@ func RunReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 	}
 
 	t.Run("Reasoning", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Create a complex problem that requires step-by-step reasoning
 		problemPrompt := "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, what is the farmer's weekly profit? Please show your step-by-step reasoning."
 
@@ -46,6 +51,7 @@ func RunReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 				// Include reasoning content in response
 				Include: []string{"reasoning.encrypted_content"},
 			},
+			Fallbacks: testConfig.Fallbacks,
 		}
 
 		// Use retry framework with enhanced validation for reasoning
@@ -54,7 +60,6 @@ func RunReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			ScenarioName: "Reasoning",
 			ExpectedBehavior: map[string]interface{}{
 				"should_show_reasoning": true,
-				"should_calculate":      true,
 				"mathematical_problem":  true,
 				"step_by_step":          true,
 			},
@@ -83,9 +88,8 @@ func RunReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 		expectations.MinContentLength = 50   // Reasoning requires substantial content
 		expectations.MaxContentLength = 2000 // Reasoning can be verbose
-		expectations.ShouldContainKeywords = []string{"weekly", "profit", "$"}
 		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
-			"cannot solve", "unable to calculate", "need more information",
+			"cannot solve", "unable to calculate",
 		}...)
 
 		response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "Reasoning", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {

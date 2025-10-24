@@ -3,6 +3,7 @@ package scenarios
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -21,6 +22,10 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 	}
 
 	t.Run("ToolCalls", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		chatMessages := []schemas.ChatMessage{
 			CreateBasicChatMessage("What's the weather like in New York? answer in celsius"),
 		}

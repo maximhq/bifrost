@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,6 +20,10 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	}
 
 	t.Run("MultiTurnConversation", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// First message - introduction
 		userMessage1 := CreateBasicChatMessage("Hello, my name is Alice.")
 		messages1 := []schemas.ChatMessage{

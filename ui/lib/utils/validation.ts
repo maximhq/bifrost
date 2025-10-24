@@ -261,13 +261,23 @@ export function isValidDeployments(value: Record<string, string> | string | unde
 }
 
 /**
- * Validates if a string is a valid origin URL
- * @param origin - The origin URL to validate
- * @returns true if valid origin (protocol + hostname + optional port)
+ * Validates if a string is a valid origin URL or wildcard pattern
+ * @param origin - The origin URL to validate (supports wildcards like https://*.example.com)
+ * @returns true if valid origin (protocol + hostname + optional port) or valid wildcard pattern
  */
 export function isValidOrigin(origin: string): boolean {
 	if (!origin || !origin.trim()) {
 		return false;
+	}
+
+	// Allow just "*" to mean allow everything
+	if (origin.trim() === "*") {
+		return true;
+	}
+
+	// Handle wildcard patterns
+	if (origin.includes("*")) {
+		return isValidWildcardOrigin(origin);
 	}
 
 	try {
@@ -292,6 +302,64 @@ export function isValidOrigin(origin: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Validates if a string is a valid wildcard origin pattern
+ * @param origin - The wildcard origin pattern to validate
+ * @returns true if valid wildcard pattern
+ */
+function isValidWildcardOrigin(origin: string): boolean {
+	// Basic validation: must start with protocol
+	if (!origin.startsWith("http://") && !origin.startsWith("https://")) {
+		return false;
+	}
+
+	// Extract the part after protocol
+	const protocolEnd = origin.indexOf("://") + 3;
+	const hostPart = origin.substring(protocolEnd);
+
+	// Must not have path, query, or fragment
+	if (hostPart.includes("/") || hostPart.includes("?") || hostPart.includes("#")) {
+		return false;
+	}
+
+	// Handle port if present
+	let hostname = hostPart;
+	if (hostPart.includes(":")) {
+		const parts = hostPart.split(":");
+		if (parts.length !== 2) return false;
+		hostname = parts[0];
+		const port = parts[1];
+		// Validate port is a number
+		if (!/^\d+$/.test(port) || parseInt(port) < 1 || parseInt(port) > 65535) {
+			return false;
+		}
+	}
+
+	// Validate wildcard patterns
+	// Only allow wildcards at the beginning of subdomains
+	if (hostname === "*") {
+		return true; // Allow just * for any domain
+	}
+
+	// Pattern like *.example.com
+	if (hostname.startsWith("*.")) {
+		const domain = hostname.substring(2);
+		// Domain part after *. must be valid
+		if (!domain || domain.includes("*") || domain.startsWith(".") || domain.endsWith(".")) {
+			return false;
+		}
+		// Basic domain validation - must have at least one dot and valid characters
+		return /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain);
+	}
+
+	// No other wildcard patterns are allowed
+	if (hostname.includes("*")) {
+		return false;
+	}
+
+	return false;
 }
 
 /**

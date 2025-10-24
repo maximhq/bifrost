@@ -38,6 +38,7 @@ type ResponseExpectations struct {
 	ShouldHaveUsageStats bool // Should have token usage information
 	ShouldHaveTimestamps bool // Should have created timestamp
 	ShouldHaveModel      bool // Should have model field
+	ShouldHaveLatency    bool // Should have latency information in ExtraFields
 
 	// Provider-specific expectations
 	ProviderSpecific map[string]interface{} // Provider-specific validation data
@@ -488,6 +489,16 @@ func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResp
 			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
 		}
 	}
+
+	// Check latency field
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency <= 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected latency information but not present or invalid")
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
+		}
+	}
 }
 
 // collectChatResponseMetrics collects metrics from the chat response for analysis
@@ -649,6 +660,16 @@ func validateTextCompletionTechnicalFields(t *testing.T, response *schemas.Bifro
 	if expectations.ShouldHaveModel {
 		if strings.TrimSpace(response.Model) == "" {
 			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
+		}
+	}
+
+	// Check latency field
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency <= 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected latency information but not present or invalid")
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
 		}
 	}
 }
@@ -818,6 +839,16 @@ func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostRes
 			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
 		}
 	}
+
+	// Check latency field
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency <= 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected latency information but not present or invalid")
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
+		}
+	}
 }
 
 // collectResponsesResponseMetrics collects metrics from the Responses API response for analysis
@@ -875,6 +906,16 @@ func validateSpeechSynthesisResponse(t *testing.T, response *schemas.BifrostSpee
 		result.MetricsCollected["expected_audio_format"] = expectedFormat
 	}
 
+	// Check latency field
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency <= 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected latency information but not present or invalid")
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
+		}
+	}
+
 	result.MetricsCollected["speech_validation"] = "completed"
 }
 
@@ -930,6 +971,16 @@ func validateTranscriptionFields(t *testing.T, response *schemas.BifrostTranscri
 		result.MetricsCollected["audio_duration"] = *response.Duration
 	}
 
+	// Check latency field
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency <= 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected latency information but not present or invalid")
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
+		}
+	}
+
 	result.MetricsCollected["transcription_validation"] = "completed"
 }
 
@@ -948,7 +999,7 @@ func collectTranscriptionResponseMetrics(response *schemas.BifrostTranscriptionR
 // validateEmbeddingFields validates embedding responses
 func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingResponse, expectations ResponseExpectations, result *ValidationResult) {
 	// Check if response has embedding data
-	if response.Data == nil || len(response.Data) == 0 {
+	if len(response.Data) == 0 {
 		result.Passed = false
 		result.Errors = append(result.Errors, "Embedding response missing data")
 		return
@@ -973,6 +1024,16 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 		}
 	}
 
+	// Check latency field
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency <= 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected latency information but not present or invalid")
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
+		}
+	}
+
 	result.MetricsCollected["embedding_validation"] = "completed"
 }
 
@@ -981,11 +1042,11 @@ func collectEmbeddingResponseMetrics(response *schemas.BifrostEmbeddingResponse,
 	result.MetricsCollected["has_data"] = response.Data != nil
 	result.MetricsCollected["embedding_count"] = len(response.Data)
 	result.MetricsCollected["has_usage"] = response.Usage != nil
-	if response.Data != nil && len(response.Data) > 0 {
+	if len(response.Data) > 0 {
 		var dimensions int
 		if response.Data[0].Embedding.EmbeddingArray != nil {
 			dimensions = len(response.Data[0].Embedding.EmbeddingArray)
-		} else if response.Data[0].Embedding.Embedding2DArray != nil && len(response.Data[0].Embedding.Embedding2DArray) > 0 {
+		} else if len(response.Data[0].Embedding.Embedding2DArray) > 0 {
 			dimensions = len(response.Data[0].Embedding.Embedding2DArray[0])
 		}
 		result.MetricsCollected["embedding_dimensions"] = dimensions
@@ -1224,7 +1285,7 @@ func logValidationResults(t *testing.T, result ValidationResult, scenarioName st
 	if result.Passed {
 		t.Logf("✅ Validation passed for %s", scenarioName)
 	} else {
-		t.Logf("❌ Validation failed for %s with %d errors", scenarioName, len(result.Errors))
+		t.Errorf("❌ Validation failed for %s with %d errors", scenarioName, len(result.Errors))
 		for _, err := range result.Errors {
 			t.Logf("   Error: %s", err)
 		}

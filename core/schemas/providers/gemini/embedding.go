@@ -26,8 +26,8 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Gemi
 	// Create the Gemini embedding request
 	request := &GeminiEmbeddingRequest{
 		Model: bifrostReq.Model,
-		Content: &CustomContent{
-			Parts: []*CustomPart{
+		Content: &Content{
+			Parts: []*Part{
 				{
 					Text: text,
 				},

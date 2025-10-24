@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -350,7 +351,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 	// Convert usage information
 	if response.Usage != nil {
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     response.Usage.InputTokens,
+			PromptTokens: response.Usage.InputTokens,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedTokens: response.Usage.CacheCreationInputTokens + response.Usage.CacheReadInputTokens,
+			},
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
 		}
@@ -612,6 +616,11 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostChatResponse)
 		anthropicResp.Usage = &AnthropicUsage{
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
+		}
+
+		//NOTE: We cannot segregate between cache creation and cache read tokens, so we will use the total cached tokens as the cache read tokens
+		if bifrostResp.Usage.PromptTokensDetails != nil && bifrostResp.Usage.PromptTokensDetails.CachedTokens > 0 {
+			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.PromptTokensDetails.CachedTokens
 		}
 	}
 

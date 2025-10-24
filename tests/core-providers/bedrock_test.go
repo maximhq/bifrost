@@ -19,14 +19,17 @@ func TestBedrock(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:       schemas.Bedrock,
-		ChatModel:      "claude-sonnet-4",
-		VisionModel:    "claude-sonnet-4",
+		Provider:    schemas.Bedrock,
+		ChatModel:   "anthropic.claude-3-5-sonnet-20240620-v1:0",
+		VisionModel: "claude-sonnet-4",
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Bedrock, Model: "claude-3.7-sonnet"},
+		},
 		TextModel:      "mistral.mistral-7b-instruct-v0:2", // Bedrock Claude doesn't support text completion
-		EmbeddingModel: "amazon.titan-embed-text-v2:0",
+		EmbeddingModel: "cohere.embed-v4:0",
+		ReasoningModel: "claude-sonnet-4",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported for Claude
 			SimpleChat:            true,
@@ -36,13 +39,17 @@ func TestBedrock(t *testing.T) {
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
-			ImageURL:              false,
+			ImageURL:              false, // Direct Image URL is not supported for Bedrock
 			ImageBase64:           true,
-			MultipleImages:        false,
+			MultipleImages:        false, // Direct Image URL is not supported for Bedrock
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			Reasoning:             true,
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("BedrockTests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,6 +20,10 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 	}
 
 	t.Run("AutomaticFunctionCalling", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		chatMessages := []schemas.ChatMessage{
 			CreateBasicChatMessage("Get the current time in UTC timezone"),
 		}
@@ -79,6 +84,7 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 						},
 					},
 				},
+				Fallbacks: testConfig.Fallbacks,
 			}
 
 			return client.ChatCompletionRequest(ctx, chatReq)
@@ -100,6 +106,7 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 						},
 					},
 				},
+				Fallbacks: testConfig.Fallbacks,
 			}
 
 			return client.ResponsesRequest(ctx, responsesReq)

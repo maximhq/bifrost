@@ -482,21 +482,21 @@ func convertPropertyToGeminiSchema(prop interface{}) *Schema {
 }
 
 // convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage) ([]CustomContent, *CustomContent, error) {
-	var contents []CustomContent
-	var systemInstruction *CustomContent
+func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage) ([]Content, *Content, error) {
+	var contents []Content
+	var systemInstruction *Content
 
 	for _, msg := range messages {
 		// Handle system messages separately
 		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
 			if systemInstruction == nil {
-				systemInstruction = &CustomContent{}
+				systemInstruction = &Content{}
 			}
 
 			// Convert system message content
 			if msg.Content != nil {
 				if msg.Content.ContentStr != nil {
-					systemInstruction.Parts = append(systemInstruction.Parts, &CustomPart{
+					systemInstruction.Parts = append(systemInstruction.Parts, &Part{
 						Text: *msg.Content.ContentStr,
 					})
 				}
@@ -517,7 +517,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		}
 
 		// Handle regular messages
-		content := CustomContent{}
+		content := Content{}
 
 		if msg.Role != nil {
 			content.Role = string(*msg.Role)
@@ -528,7 +528,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		// Convert message content
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil {
-				content.Parts = append(content.Parts, &CustomPart{
+				content.Parts = append(content.Parts, &Part{
 					Text: *msg.Content.ContentStr,
 				})
 			}
@@ -559,7 +559,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					}
 
-					part := &CustomPart{
+					part := &Part{
 						FunctionCall: &FunctionCall{
 							Name: *msg.ResponsesToolMessage.Name,
 							Args: argsMap,
@@ -586,7 +586,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						funcName = *msg.ResponsesToolMessage.CallID
 					}
 
-					part := &CustomPart{
+					part := &Part{
 						FunctionResponse: &FunctionResponse{
 							Name:     funcName,
 							Response: responseMap,
@@ -608,11 +608,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 }
 
 // convertContentBlockToGeminiPart converts a content block to Gemini part
-func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock) (*CustomPart, error) {
+func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock) (*Part, error) {
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText:
 		if block.Text != nil {
-			return &CustomPart{
+			return &Part{
 				Text: *block.Text,
 			}, nil
 		}
@@ -645,14 +645,14 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 					return nil, fmt.Errorf("failed to decode base64 image data: %w", err)
 				}
 
-				return &CustomPart{
-					InlineData: &CustomBlob{
+				return &Part{
+					InlineData: &Blob{
 						MIMEType: mimeType,
 						Data:     decodedData,
 					},
 				}, nil
 			} else {
-				return &CustomPart{
+				return &Part{
 					FileData: &FileData{
 						MIMEType: mimeType,
 						FileURI:  sanitizedURL,
@@ -669,8 +669,8 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 				return nil, fmt.Errorf("failed to decode base64 audio data: %w", err)
 			}
 
-			return &CustomPart{
-				InlineData: &CustomBlob{
+			return &Part{
+				InlineData: &Blob{
 					MIMEType: func() string {
 						f := strings.ToLower(strings.TrimSpace(block.Audio.Format))
 						if f == "" {
@@ -689,15 +689,15 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 	case schemas.ResponsesInputMessageContentBlockTypeFile:
 		if block.ResponsesInputMessageContentBlockFile != nil {
 			if block.ResponsesInputMessageContentBlockFile.FileURL != nil {
-				return &CustomPart{
+				return &Part{
 					FileData: &FileData{
 						MIMEType: "application/octet-stream", // default
 						FileURI:  *block.ResponsesInputMessageContentBlockFile.FileURL,
 					},
 				}, nil
 			} else if block.ResponsesInputMessageContentBlockFile.FileData != nil {
-				return &CustomPart{
-					InlineData: &CustomBlob{
+				return &Part{
+					InlineData: &Blob{
 						MIMEType: "application/octet-stream", // default
 						Data:     []byte(*block.ResponsesInputMessageContentBlockFile.FileData),
 					},

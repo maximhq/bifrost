@@ -16,6 +16,7 @@ type BifrostChatRequest struct {
 	Fallbacks []Fallback      `json:"fallbacks,omitempty"`
 }
 
+// BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
 	ID                string                     `json:"id"`
 	Choices           []BifrostResponseChoice    `json:"choices"`
@@ -203,12 +204,12 @@ type ChatToolFunction struct {
 
 // ToolFunctionParameters represents the parameters for a function definition.
 type ToolFunctionParameters struct {
-	Type                 string                 `json:"type"`                           // Type of the parameters
-	Description          *string                `json:"description,omitempty"`          // Description of the parameters
-	Required             []string               `json:"required,omitempty"`             // Required parameter names
+	Type                 string                  `json:"type"`                           // Type of the parameters
+	Description          *string                 `json:"description,omitempty"`          // Description of the parameters
+	Required             []string                `json:"required,omitempty"`             // Required parameter names
 	Properties           *map[string]interface{} `json:"properties,omitempty"`           // Parameter properties
-	Enum                 []string               `json:"enum,omitempty"`                 // Enum values for the parameters
-	AdditionalProperties *bool                  `json:"additionalProperties,omitempty"` // Whether to allow additional properties
+	Enum                 []string                `json:"enum,omitempty"`                 // Enum values for the parameters
+	AdditionalProperties *bool                   `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 }
 
 type ChatToolCustom struct {
@@ -544,7 +545,21 @@ type ContentLogProb struct {
 
 // BifrostLLMUsage represents token usage information
 type BifrostLLMUsage struct {
-	PromptTokens     int `json:"prompt_tokens,omitempty"`
-	CompletionTokens int `json:"completion_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                          `json:"prompt_tokens,omitempty"`
+	PromptTokensDetails     *ChatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
+	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	TotalTokens             int                          `json:"total_tokens"`
+}
+
+type ChatPromptTokensDetails struct {
+	AudioTokens  int `json:"audio_tokens,omitempty"`
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+type ChatCompletionTokensDetails struct {
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+	AudioTokens              int `json:"audio_tokens,omitempty"`
+	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }

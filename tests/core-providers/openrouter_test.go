@@ -11,14 +11,14 @@ import (
 
 func TestOpenRouter(t *testing.T) {
 	if os.Getenv("OPENROUTER_API_KEY") == "" {
-		t.Skip("OPENROUTER_API_KEY not set; skipping OpenRouter tests")
+		t.Skip("Skipping OpenRouter tests because OPENROUTER_API_KEY is not set")
 	}
+
 	client, ctx, cancel, err := config.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:       schemas.OpenRouter,
@@ -33,14 +33,17 @@ func TestOpenRouter(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
+			End2EndToolCalling:    false, // OpenRouter's responses API is in Beta
 			AutomaticFunctionCall: true,
-			ImageURL:              true,
-			ImageBase64:           true,
-			MultipleImages:        true,
-			CompleteEnd2End:       true,
+			ImageURL:              false, // OpenRouter's responses API is in Beta
+			ImageBase64:           false, // OpenRouter's responses API is in Beta
+			MultipleImages:        false, // OpenRouter's responses API is in Beta
+			CompleteEnd2End:       false, // OpenRouter's responses API is in Beta
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("OpenRouterTests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

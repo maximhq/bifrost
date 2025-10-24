@@ -109,9 +109,6 @@ Calculate costs from a Bifrost response:
 // Calculate cost for a completed request
 cost := pricingManager.CalculateCost(
     result,                           // *schemas.BifrostResponse
-    schemas.OpenAI,                   // provider
-    "gpt-4",                          // model
-    schemas.ChatCompletionRequest,    // request type
 )
 
 logger.Info("Request cost: $%.6f", cost)
@@ -147,9 +144,6 @@ For workflows that implement semantic caching, use cache-aware cost calculation:
 // This automatically handles cache hits/misses and embedding costs
 cost := pricingManager.CalculateCostWithCacheDebug(
     result,                          // *schemas.BifrostResponse with cache debug info
-    schemas.Anthropic,               // provider
-    "claude-3-sonnet",               // model
-    schemas.ChatCompletionRequest,   // request type
 )
 
 // Cache hits return 0 for direct hits, embedding cost for semantic matches

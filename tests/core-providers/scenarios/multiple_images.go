@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,6 +20,10 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 	}
 
 	t.Run("MultipleImages", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Load lion base64 image for comparison
 		lionBase64, err := GetLionBase64Image()
 		if err != nil {

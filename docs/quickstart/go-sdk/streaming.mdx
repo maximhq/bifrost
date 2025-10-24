@@ -30,12 +30,12 @@ for chunk := range stream {
 	}
 
 	// Process response chunks
-	if chunk.BifrostResponse != nil && len(chunk.BifrostResponse.Choices) > 0 {
-		choice := chunk.BifrostResponse.Choices[0]
+	if chunk.BifrostTextCompletionResponse != nil && len(chunk.BifrostTextCompletionResponse.Choices) > 0 {
+		choice := chunk.BifrostTextCompletionResponse.Choices[0]
 		
 		// Check for streaming content
-		if choice.BifrostTextCompletionResponseChoice != nil &&
-			choice.BifrostTextCompletionResponseChoice.Text != nil {
+		if choice.TextCompletionResponseChoice != nil &&
+			choice.TextCompletionResponseChoice.Text != nil {
 			content := *choice.BifrostTextCompletionResponseChoice.Text
 			fmt.Print(content) // Print content as it arrives
 		}
@@ -67,15 +67,15 @@ for chunk := range stream {
 	}
 
 	// Process response chunks
-	if chunk.BifrostResponse != nil && len(chunk.BifrostResponse.Choices) > 0 {
-		choice := chunk.BifrostResponse.Choices[0]
+	if chunk.BifrostChatResponse != nil && len(chunk.BifrostChatResponse.Choices) > 0 {
+		choice := chunk.BifrostChatResponse.Choices[0]
 
 		// Check for streaming content
-		if choice.BifrostStreamResponseChoice != nil &&
-			choice.BifrostStreamResponseChoice.Delta != nil &&
-			choice.BifrostStreamResponseChoice.Delta.Content != nil {
+		if choice.ChatStreamResponseChoice != nil &&
+			choice.ChatStreamResponseChoice.Delta != nil &&
+			choice.ChatStreamResponseChoice.Delta.Content != nil {
 
-			content := *choice.BifrostStreamResponseChoice.Delta.Content
+			content := *choice.ChatStreamResponseChoice.Delta.Content
 			fmt.Print(content) // Print content as it arrives
 		}
 	}
@@ -121,8 +121,8 @@ for chunk := range stream {
 	}
 
 	// Process response chunks
-	if chunk.BifrostResponse != nil && chunk.BifrostResponse.ResponsesStreamResponse != nil {
-		delta := chunk.BifrostResponse.ResponsesStreamResponse.Delta
+	if chunk.BifrostResponsesStreamResponse != nil {
+		delta := chunk.BifrostResponsesStreamResponse.Delta
 
 		// Check for streaming content
 		if delta != nil {
@@ -165,11 +165,11 @@ for chunk := range stream {
 		panic(fmt.Sprintf("Stream error: %s", chunk.BifrostError.Error.Message))
 	}
 
-	if chunk.BifrostResponse != nil && chunk.BifrostResponse.Speech != nil {
+	if chunk.BifrostSpeechStreamResponse != nil {
 		// Accumulate audio data from each chunk
-		audioData = append(audioData, chunk.BifrostResponse.Speech.Audio...)
+		audioData = append(audioData, chunk.BifrostSpeechStreamResponse.Audio...)
 		totalChunks++
-		fmt.Printf("Received chunk %d, size: %d bytes\n", totalChunks, len(chunk.BifrostResponse.Speech.Audio))
+		fmt.Printf("Received chunk %d, size: %d bytes\n", totalChunks, len(chunk.BifrostSpeechStreamResponse.Audio))
 	}
 }
 
@@ -219,9 +219,9 @@ for chunk := range stream {
 		panic(fmt.Sprintf("Stream error: %s", chunk.BifrostError.Error.Message))
 	}
 
-	if chunk.BifrostResponse != nil && chunk.BifrostResponse.Transcribe != nil {
+	if chunk.BifrostTranscriptionStreamResponse != nil && chunk.BifrostTranscriptionStreamResponse.Delta != nil {
 		// Print each chunk of text as it arrives
-		fmt.Print(chunk.BifrostResponse.Transcribe.Text)
+		fmt.Print(*chunk.BifrostTranscriptionStreamResponse.Delta)
 	}
 }
 ```
@@ -239,9 +239,9 @@ var audioBuffer bytes.Buffer
 var lastSave time.Time
 
 for chunk := range stream {
-	if chunk.BifrostResponse != nil && chunk.BifrostResponse.Speech != nil {
-		audioBuffer.Write(chunk.BifrostResponse.Speech.Audio)
-		
+	if chunk.BifrostSpeechStreamResponse != nil {
+		audioBuffer.Write(chunk.BifrostSpeechStreamResponse.Audio)
+
 		// Save every second or when buffer is full
 		if time.Since(lastSave) > time.Second || audioBuffer.Len() > bufferSize {
 			// Append to file

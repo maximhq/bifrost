@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -9,20 +10,29 @@ import (
 )
 
 func TestOpenAI(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("Skipping OpenAI tests because OPENAI_API_KEY is not set")
+	}
+
 	client, ctx, cancel, err := config.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:             schemas.OpenAI,
-		TextModel:            "gpt-3.5-turbo-instruct",
-		ChatModel:            "gpt-4o-mini",
-		VisionModel:          "gpt-4o",
-		EmbeddingModel:       "text-embedding-3-small",
-		TranscriptionModel:   "whisper-1",
+		Provider:  schemas.OpenAI,
+		TextModel: "gpt-3.5-turbo-instruct",
+		ChatModel: "gpt-4o-mini",
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		},
+		VisionModel:        "gpt-4o",
+		EmbeddingModel:     "text-embedding-3-small",
+		TranscriptionModel: "gpt-4o-transcribe",
+		TranscriptionFallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "whisper-1"},
+		},
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		ReasoningModel:       "gpt-5",
 		Scenarios: config.TestScenarios{
@@ -48,5 +58,8 @@ func TestOpenAI(t *testing.T) {
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("OpenAITests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

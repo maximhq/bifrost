@@ -246,11 +246,15 @@ type ResponsesResponseUsage struct {
 }
 
 type ResponsesResponseInputTokens struct {
+	AudioTokens  int `json:"audio_tokens"`  // Tokens for audio input
 	CachedTokens int `json:"cached_tokens"` // Tokens retrieved from cache
 }
 
 type ResponsesResponseOutputTokens struct {
-	ReasoningTokens int `json:"reasoning_tokens"` // Number of reasoning tokens
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+	AudioTokens              int `json:"audio_tokens,omitempty"`
+	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }
 
 // =============================================================================
@@ -563,7 +567,7 @@ type ResponsesComputerToolCall struct {
 // ResponsesComputerToolCallPendingSafetyCheck represents a pending safety check
 type ResponsesComputerToolCallPendingSafetyCheck struct {
 	ID      string `json:"id"`
-	Context string `json:"context"`
+	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 

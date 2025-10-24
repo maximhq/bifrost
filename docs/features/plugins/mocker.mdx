@@ -39,14 +39,30 @@ func main() {
     }
     defer client.Shutdown()
 
-    // All requests will now return: "This is a mock response from the Mocker plugin"
-    response, _ := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+    // All chat and responses requests will now return: "This is a mock response from the Mocker plugin"
+    
+    // Chat completion request
+    chatResponse, _ := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4",
         Input: []schemas.ChatMessage{
             {
                 Role: schemas.ChatMessageRoleUser,
                 Content: schemas.ChatMessageContent{
+                    ContentStr: bifrost.Ptr("Hello!"),
+                },
+            },
+        },
+    })
+    
+    // Responses request
+    responsesResponse, _ := client.ResponsesRequest(context.Background(), &schemas.BifrostResponsesRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o",
+        Input: []schemas.ResponsesMessage{
+            {
+                Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+                Content: &schemas.ResponsesMessageContent{
                     ContentStr: bifrost.Ptr("Hello!"),
                 },
             },
@@ -84,6 +100,30 @@ plugin, err := mocker.NewMockerPlugin(mocker.MockerConfig{
         },
     },
 })
+```
+
+### Responses Request Example
+
+The mocker plugin automatically handles both chat completion and responses requests with the same configuration:
+
+```go
+// This rule will work for both ChatCompletionRequest and ResponsesRequest
+{
+    Name:        "universal-mock",
+    Enabled:     true,
+    Probability: 1.0,
+    Conditions: mocker.Conditions{
+        MessageRegex: stringPtr("(?i).*hello.*"),
+    },
+    Responses: []mocker.Response{
+        {
+            Type: mocker.ResponseTypeSuccess,
+            Content: &mocker.SuccessResponse{
+                Message: "Hello! I'm a mock response that works for both request types.",
+            },
+        },
+    },
+}
 ```
 
 ## Installation
@@ -135,6 +175,29 @@ client, initErr := bifrost.Init(context.Background(), schemas.BifrostConfig{
 config := mocker.MockerConfig{
     Enabled: false, // All requests pass through to real providers
 }
+```
+
+## Supported Request Types
+
+The Mocker plugin supports the following Bifrost request types:
+
+- **Chat Completion Requests** (`ChatCompletionRequest`) - Standard chat-based interactions
+- **Responses Requests** (`ResponsesRequest`) - OpenAI-compatible responses API format
+- **Skip Context Key** - Use `"skip-mocker"` context key to bypass mocking per request
+
+### Skip Mocker for Specific Requests
+
+You can skip the mocker plugin for specific requests by adding a context key:
+
+```go
+import "github.com/maximhq/bifrost/core/schemas"
+
+// Create context that skips mocker
+ctx := context.WithValue(context.Background(), 
+    schemas.BifrostContextKey("skip-mocker"), true)
+
+// This request will bypass the mocker and go to the real provider
+response, err := client.ChatCompletionRequest(ctx, request)
 ```
 
 ## Key Features
@@ -468,6 +531,27 @@ Response{
     },
 }
 ```
+
+### Skip Mocker Not Working
+
+Ensure you're using the correct context key format:
+
+```go
+// ✅ Correct
+ctx := context.WithValue(context.Background(), 
+    schemas.BifrostContextKey("skip-mocker"), true)
+
+// ❌ Wrong
+ctx := context.WithValue(context.Background(), "skip-mocker", true)
+```
+
+### Responses Request Issues
+
+If responses requests aren't being mocked:
+
+1. Verify the plugin supports `ResponsesRequest` (version 1.2.13+)
+2. Check that your regex patterns match the message content
+3. Ensure the request type is `schemas.ResponsesRequest`
 
 ### Debug Mode
 

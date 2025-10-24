@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -302,6 +303,7 @@ func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, 
 		return 0.0
 	}
 
+	pm.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 	// Get pricing for the model
 	pricing, exists := pm.getPricing(model, provider, requestType)
 	if !exists {
@@ -496,14 +498,46 @@ func (pm *PricingManager) getPricing(model, provider string, requestType schemas
 	if !ok {
 		// Lookup in vertex if gemini not found
 		if provider == string(schemas.Gemini) {
+			pm.logger.Debug("primary lookup failed, trying vertex provider for the same model")
 			pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
 			if ok {
 				return &pricing, true
+			}
+
+			// Lookup in chat if responses not found
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+				pm.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
+				pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+				if ok {
+					return &pricing, true
+				}
+			}
+		}
+
+		if provider == string(schemas.Vertex) {
+			// Vertex models can be of the form "provider/model", so try to lookup the model without the provider prefix and keep the original provider
+			if strings.Contains(model, "/") {
+				modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
+				pm.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
+				pricing, ok = pm.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(requestType))]
+				if ok {
+					return &pricing, true
+				}
+
+				// Lookup in chat if responses not found
+				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+					pm.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
+					pricing, ok = pm.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+					if ok {
+						return &pricing, true
+					}
+				}
 			}
 		}
 
 		// Lookup in chat if responses not found
 		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+			pm.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
 			pricing, ok = pm.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
 				return &pricing, true

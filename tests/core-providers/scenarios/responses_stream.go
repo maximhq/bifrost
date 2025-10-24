@@ -3,6 +3,7 @@ package scenarios
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,10 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	}
 
 	t.Run("ResponsesStream", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		messages := []schemas.ResponsesMessage{
 			{
 				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -97,13 +102,16 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				if response == nil {
 					t.Fatal("Streaming response should not be nil")
 				}
-				lastResponse = response
+				lastResponse = DeepCopyBifrostStream(response)
 
 				// Basic validation of streaming response structure
 				if response.BifrostResponsesStreamResponse != nil {
 					if response.BifrostResponsesStreamResponse.ExtraFields.Provider != testConfig.Provider {
 						t.Logf("⚠️ Warning: Provider mismatch - expected %s, got %s", testConfig.Provider, response.BifrostResponsesStreamResponse.ExtraFields.Provider)
 					}
+
+					// Log latency for each chunk (can be 0 for inter-chunks)
+					t.Logf("📊 Chunk %d latency: %d ms", responseCount+1, response.BifrostResponsesStreamResponse.ExtraFields.Latency)
 
 					// Process the streaming response
 					streamResp := response.BifrostResponsesStreamResponse
@@ -229,11 +237,15 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	// Test responses streaming with tool calls if supported
 	if testConfig.Scenarios.ToolCalls {
 		t.Run("ResponsesStreamWithTools", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			messages := []schemas.ResponsesMessage{
 				{
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
 					Content: &schemas.ResponsesMessageContent{
-						ContentStr: schemas.Ptr("What's the weather like in San Francisco? Please use the get_weather function."),
+						ContentStr: schemas.Ptr("What's the weather like in San Francisco in celsius? Please use the get_weather function."),
 					},
 				},
 			}
@@ -355,6 +367,10 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	// Test responses streaming with reasoning if supported
 	if testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != "" {
 		t.Run("ResponsesStreamWithReasoning", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			problemPrompt := "Solve this step by step: If a train leaves station A at 2 PM traveling at 60 mph, and another train leaves station B at 3 PM traveling at 80 mph toward station A, and the stations are 420 miles apart, when will they meet?"
 
 			messages := []schemas.ResponsesMessage{
@@ -503,7 +519,6 @@ func validateResponsesStreamingStructure(t *testing.T, eventTypes map[schemas.Re
 	}
 }
 
-
 // StreamingValidationResult represents the result of streaming validation
 type StreamingValidationResult struct {
 	Passed bool
@@ -590,6 +605,15 @@ func validateResponsesStreamingResponse(t *testing.T, eventTypes map[schemas.Res
 			if !hasStoryElements {
 				t.Logf("⚠️ Warning: Content doesn't seem to contain expected story elements")
 			}
+		}
+	}
+
+	// Validate latency is present in the last chunk (total latency)
+	if lastResponse != nil && lastResponse.BifrostResponsesStreamResponse != nil {
+		if lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency <= 0 {
+			errors = append(errors, fmt.Sprintf("Last streaming chunk missing latency information (got %d ms)", lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency))
+		} else {
+			t.Logf("✅ Total streaming latency: %d ms", lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency)
 		}
 	}
 

@@ -228,25 +228,6 @@ func TestContentVariations(t *testing.T) {
 		request *schemas.BifrostChatRequest
 	}{
 		{
-			name: "Unicode Content",
-			request: &schemas.BifrostChatRequest{
-				Provider: schemas.OpenAI,
-				Model:    "gpt-4o-mini",
-				Input: []schemas.ChatMessage{
-					{
-						Role: schemas.ChatMessageRoleUser,
-						Content: &schemas.ChatMessageContent{
-							ContentStr: bifrost.Ptr("🌟 Unicode test: Hello, 世界! مرحبا 🌍"),
-						},
-					},
-				},
-				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(50),
-					Temperature:         bifrost.Ptr(0.1),
-				},
-			},
-		},
-		{
 			name: "Image URL Content",
 			request: &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,

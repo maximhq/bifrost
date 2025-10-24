@@ -27,9 +27,9 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, responseMod
 
 	// Convert speech input to Gemini format
 	if bifrostReq.Input.Input != "" {
-		geminiReq.Contents = []CustomContent{
+		geminiReq.Contents = []Content{
 			{
-				Parts: []*CustomPart{
+				Parts: []*Part{
 					{
 						Text: bifrostReq.Input.Input,
 					},

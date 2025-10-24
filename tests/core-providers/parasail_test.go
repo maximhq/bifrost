@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -9,16 +10,19 @@ import (
 )
 
 func TestParasail(t *testing.T) {
+	if os.Getenv("PARASAIL_API_KEY") == "" {
+		t.Skip("Skipping Parasail tests because PARASAIL_API_KEY is not set")
+	}
+
 	client, ctx, cancel, err := config.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:       schemas.Parasail,
-		ChatModel:      "parasail-deepseek-r1",
+		ChatModel:      "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8",
 		TextModel:      "", // Parasail doesn't support text completion
 		EmbeddingModel: "", // Parasail doesn't support embedding
 		Scenarios: config.TestScenarios{
@@ -38,5 +42,8 @@ func TestParasail(t *testing.T) {
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("ParasailTests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

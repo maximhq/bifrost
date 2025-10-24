@@ -47,7 +47,9 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 							<AlertDialogDescription>Are you sure you want to delete this key. This action cannot be undone.</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter className="pt-4">
-							<AlertDialogCancel disabled={isUpdatingProvider}>Cancel</AlertDialogCancel>
+							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isUpdatingProvider}>
+								Cancel
+							</AlertDialogCancel>
 							<AlertDialogAction
 								disabled={isUpdatingProvider}
 								onClick={() => {

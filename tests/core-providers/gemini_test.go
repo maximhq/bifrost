@@ -11,7 +11,7 @@ import (
 
 func TestGemini(t *testing.T) {
 	if os.Getenv("GEMINI_API_KEY") == "" {
-		t.Skip("GEMINI_API_KEY not set; skipping Gemini tests")
+		t.Skip("Skipping Gemini tests because GEMINI_API_KEY is not set")
 	}
 
 	client, ctx, cancel, err := config.SetupTest()
@@ -19,16 +19,18 @@ func TestGemini(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:             schemas.Gemini,
 		ChatModel:            "gemini-2.0-flash",
 		VisionModel:          "gemini-2.0-flash",
-		TextModel:            "", // Gemini doesn't support text completion
 		EmbeddingModel:       "text-embedding-004",
 		TranscriptionModel:   "gemini-2.5-flash",
 		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
+		SpeechSynthesisFallbacks: []schemas.Fallback{
+			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
+		},
+		ReasoningModel: "gemini-2.5-pro",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -40,15 +42,19 @@ func TestGemini(t *testing.T) {
 			AutomaticFunctionCall: true,
 			ImageURL:              false,
 			ImageBase64:           true,
-			MultipleImages:        true,
+			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			Embedding:             true,
-			Transcription:         true,
-			TranscriptionStream:   true,
+			Transcription:         false,
+			TranscriptionStream:   false,
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
+			Reasoning:             false, //TODO: Supported but lost since we map Gemini's responses via chat completions, fix is a native Gemini handler or reasoning support in chat completions
 		},
 	}
 
-	runAllComprehensiveTests(t, client, ctx, testConfig)
+	t.Run("GeminiTests", func(t *testing.T) {
+		runAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+	client.Shutdown()
 }

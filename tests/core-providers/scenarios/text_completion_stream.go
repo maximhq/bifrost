@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,10 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	}
 
 	t.Run("TextCompletionStream", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Create a text completion prompt
 		prompt := "Write a short story about a robot learning to paint. Keep it under 150 words."
 
@@ -40,7 +45,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			Params: &schemas.TextCompletionParameters{
 				MaxTokens: bifrost.Ptr(150),
 			},
-			Fallbacks: testConfig.Fallbacks,
+			Fallbacks: testConfig.TextCompletionFallbacks,
 		}
 
 		// Use retry framework for stream requests
@@ -92,7 +97,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				if response == nil {
 					t.Fatal("Streaming response should not be nil")
 				}
-				lastResponse = response
+				lastResponse = DeepCopyBifrostStream(response)
 
 				// Basic validation of streaming response structure
 				if response.BifrostTextCompletionResponse != nil {
@@ -102,6 +107,9 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					if response.BifrostTextCompletionResponse.ID == "" {
 						t.Logf("⚠️ Warning: Response ID is empty")
 					}
+
+					// Log latency for each chunk (can be 0 for inter-chunks)
+					t.Logf("📊 Chunk %d latency: %d ms", responseCount+1, response.BifrostTextCompletionResponse.ExtraFields.Latency)
 
 					// Validate text completion response structure
 					if response.BifrostTextCompletionResponse.Choices == nil {
@@ -170,8 +178,17 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			t.Fatal("Final content should be substantial")
 		}
 
+		// Validate latency is present in the last chunk (total latency)
+		if lastResponse != nil && lastResponse.BifrostTextCompletionResponse != nil {
+			if lastResponse.BifrostTextCompletionResponse.ExtraFields.Latency <= 0 {
+				t.Errorf("❌ Last streaming chunk missing latency information (got %d ms)", lastResponse.BifrostTextCompletionResponse.ExtraFields.Latency)
+			} else {
+				t.Logf("✅ Total streaming latency: %d ms", lastResponse.BifrostTextCompletionResponse.ExtraFields.Latency)
+			}
+		}
+
 		if !validationResult.Passed {
-			t.Logf("⚠️ Text completion streaming validation warnings: %v", validationResult.Errors)
+			t.Errorf("❌ Text completion streaming validation failed: %v", validationResult.Errors)
 		}
 
 		t.Logf("📊 Text completion streaming metrics: %d chunks, %d chars", responseCount, len(finalContent))
@@ -182,6 +199,10 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 	// Test text completion streaming with different prompts
 	t.Run("TextCompletionStreamVariedPrompts", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Use TextModel if available, otherwise fall back to ChatModel
 		model := testConfig.TextModel
 		if model == "" {
@@ -211,6 +232,10 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 		for _, testCase := range testPrompts {
 			t.Run(testCase.name, func(t *testing.T) {
+				if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+					t.Parallel()
+				}
+
 				input := &schemas.TextCompletionInput{
 					PromptStr: &testCase.prompt,
 				}
@@ -223,7 +248,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 						MaxTokens:   bifrost.Ptr(50),
 						Temperature: bifrost.Ptr(0.7),
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.TextCompletionFallbacks,
 				}
 
 				responseChannel, err := client.TextCompletionStreamRequest(ctx, request)
@@ -291,6 +316,10 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 	// Test text completion streaming with different parameters
 	t.Run("TextCompletionStreamParameters", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Use TextModel if available, otherwise fall back to ChatModel
 		model := testConfig.TextModel
 		if model == "" {
@@ -327,6 +356,10 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 		for _, paramTest := range parameterTests {
 			t.Run(paramTest.name, func(t *testing.T) {
+				if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+					t.Parallel()
+				}
+
 				input := &schemas.TextCompletionInput{
 					PromptStr: &prompt,
 				}
@@ -340,7 +373,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 						Temperature: paramTest.temperature,
 						TopP:        paramTest.topP,
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.TextCompletionFallbacks,
 				}
 
 				responseChannel, err := client.TextCompletionStreamRequest(ctx, request)
@@ -414,6 +447,8 @@ func createConsolidatedTextCompletionResponse(finalContent string, lastResponse 
 		if len(lastResponse.BifrostTextCompletionResponse.Choices) > 0 && lastResponse.BifrostTextCompletionResponse.Choices[0].FinishReason != nil {
 			consolidatedResponse.Choices[0].FinishReason = lastResponse.BifrostTextCompletionResponse.Choices[0].FinishReason
 		}
+
+		consolidatedResponse.ExtraFields = lastResponse.BifrostTextCompletionResponse.ExtraFields
 	}
 
 	return consolidatedResponse

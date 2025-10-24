@@ -31,10 +31,10 @@ func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostC
 
 	allGenAiMessages := []Content{}
 	if request.SystemInstruction != nil {
-		allGenAiMessages = append(allGenAiMessages, request.SystemInstruction.ToGenAIContent())
+		allGenAiMessages = append(allGenAiMessages, *request.SystemInstruction)
 	}
 	for _, content := range request.Contents {
-		allGenAiMessages = append(allGenAiMessages, content.ToGenAIContent())
+		allGenAiMessages = append(allGenAiMessages, content)
 	}
 
 	for _, content := range allGenAiMessages {
@@ -363,7 +363,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	}
 
 	// Extract usage metadata
-	inputTokens, outputTokens, totalTokens := response.extractUsageMetadata()
+	inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens := response.extractUsageMetadata()
 
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
@@ -433,6 +433,12 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 		PromptTokens:     inputTokens,
 		CompletionTokens: outputTokens,
 		TotalTokens:      totalTokens,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedTokens: cachedTokens,
+		},
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			ReasoningTokens: reasoningTokens,
+		},
 	}
 
 	return bifrostResp
@@ -521,6 +527,12 @@ func ToGeminiChatResponse(bifrostResp *schemas.BifrostChatResponse) *GenerateCon
 			PromptTokenCount:     int32(bifrostResp.Usage.PromptTokens),
 			CandidatesTokenCount: int32(bifrostResp.Usage.CompletionTokens),
 			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
+		}
+		if bifrostResp.Usage.PromptTokensDetails != nil {
+			genaiResp.UsageMetadata.CachedContentTokenCount = int32(bifrostResp.Usage.PromptTokensDetails.CachedTokens)
+		}
+		if bifrostResp.Usage.CompletionTokensDetails != nil {
+			genaiResp.UsageMetadata.ThoughtsTokenCount = int32(bifrostResp.Usage.CompletionTokensDetails.ReasoningTokens)
 		}
 	}
 

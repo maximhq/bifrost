@@ -1,0 +1,127 @@
+---
+title: "Budget and Limits"
+description: "Enterprise-grade budget management and cost control with hierarchical budget allocation through virtual keys, teams, and customers."
+icon: "money-bills"
+---
+
+## Overview
+
+Budgeting and rate limiting are a core feature of Bifrost's governance system managed through [Virtual Keys](./virtual-keys).
+
+Bifrost's budget management system provides comprehensive cost control and financial governance for enterprise AI deployments. It operates through a **hierarchical budget structure** that enables granular cost management, usage tracking, and financial oversight across your entire organization.
+
+**Core Hierarchy:**
+```
+Customer (has independent budget)
+    ↓ (one-to-many)
+Team (has independent budget) 
+    ↓ (one-to-many)
+Virtual Key (has independent budget + rate limits)
+
+OR
+
+Customer (has independent budget)
+    ↓ (direct attachment)
+Virtual Key (has independent budget + rate limits)
+
+OR
+
+Virtual Key (standalone - has independent budget + rate limits)
+```
+
+**Key Capabilities:**
+- **Virtual Keys** - Primary access control via `x-bf-vk` header (exclusive team OR customer attachment)
+- **Budget Management** - Independent budget limits at each hierarchy level with cumulative checking
+- **Rate Limiting** - Request and token-based throttling (VK-level only)
+- **Model/Provider Filtering** - Granular access control per virtual key  
+- **Usage Tracking** - Real-time monitoring and audit trails
+- **Audit Headers** - Optional team and customer identification
+
+---
+
+## Budget Management
+
+### Cost Calculation
+
+Bifrost automatically calculates costs based on:
+- **Provider Pricing** - Real-time model pricing data
+- **Token Usage** - Input + output tokens from API responses
+- **Request Type** - Different pricing for chat, text, embedding, speech, transcription
+- **Cache Status** - Reduced costs for cached responses
+- **Batch Operations** - Volume discounts for batch requests
+
+All cost calculation details are covered in [Architecture > Framework > Pricing](../../architecture/framework/pricing).
+
+### Budget Checking Flow
+
+When a request is made with a a virtual key, Bifrost checks **all applicable budgets independently** in the hierarchy. Each budget must have sufficient remaining balance for the request to proceed.
+
+**Checking Sequence:**
+
+**For VK → Team → Customer:**
+```
+1. ✓ VK Budget (if VK has budget)
+2. ✓ Team Budget (if VK's team has budget)  
+3. ✓ Customer Budget (if team's customer has budget)
+```
+
+**For VK → Customer (direct):**
+```
+1. ✓ VK Budget (if VK has budget)
+2. ✓ Customer Budget (if VK's customer has budget)
+```
+
+**For Standalone VK:**
+```
+1. ✓ VK Budget (if VK has budget)
+```
+
+**Important Notes:**
+- **All applicable budgets must pass** - any single budget failure blocks the request
+- **Budgets are independent** - each tracks its own usage and limits
+- **Costs are deducted from all applicable budgets** - same cost applied to each level
+- **Rate limits checked only at VK level** - teams and customers have no rate limits
+
+**Example:**
+- VK budget: $9/$10 remaining ✓
+- Team budget: $15/$20 remaining ✓  
+- Customer budget: $45/$50 remaining ✓
+- **Result: Allowed** (no budget is exceeded)
+- After request: 
+    - Request cost: $2 
+    - Updated VK=$11/$10, Team=$17/$20, Customer=$47/$50
+    - Then the next request will be blocked.
+
+## Rate Limiting
+
+Rate limits protect your system from abuse and manage traffic by setting thresholds on request frequency and token usage over a specific time window. Unlike budgets, rate limits are configured **exclusively at the Virtual Key level**.
+
+Bifrost supports two types of rate limits that work in parallel:
+- **Request Limits**: Control the maximum number of API calls that can be made within a set duration (e.g., 100 requests per minute).
+- **Token Limits**: Control the maximum number of tokens (prompt + completion) that can be processed within a set duration (e.g., 50,000 tokens per hour).
+
+For a request to be allowed, it must pass both the request limit and the token limit checks.
+
+## Reset Durations
+
+Budgets and rate limits support flexible reset durations:
+
+**Format Examples:**
+- `1m` - 1 minute
+- `5m` - 5 minutes  
+- `1h` - 1 hour
+- `1d` - 1 day
+- `1w` - 1 week
+- `1M` - 1 month
+
+**Common Patterns:**
+- **Rate Limits**: `1m`, `1h`, `1d` for request throttling
+- **Budgets**: `1d`, `1w`, `1M` for cost control
+
+---
+
+## Next Steps
+
+- **[Routing](./routing)** - Direct requests to specific AI models, providers, and keys using Virtual Keys.
+- **[MCP Tool Filtering](./mcp-tools)** - Manage MCP clients/tools for virtual keys.
+- **[Tracing](../tracing)** - Audit trails and request tracking

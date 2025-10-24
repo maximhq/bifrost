@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,6 +20,10 @@ func RunImageBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 	}
 
 	t.Run("ImageBase64", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Load lion base64 image for testing
 		lionBase64, err := GetLionBase64Image()
 		if err != nil {
@@ -142,7 +147,7 @@ func validateBase64ImageContent(t *testing.T, content string, apiName string) {
 	lowerContent := strings.ToLower(content)
 	foundAnimal := strings.Contains(lowerContent, "lion") || strings.Contains(lowerContent, "animal") ||
 		strings.Contains(lowerContent, "cat") || strings.Contains(lowerContent, "feline")
-	
+
 	if len(content) < 10 {
 		t.Logf("⚠️ %s response seems quite short for image description: %s", apiName, content)
 	} else if foundAnimal {

@@ -24,6 +24,9 @@ Both options work perfectly - choose what fits your workflow:
 ```bash
 # Install and run locally
 npx -y @maximhq/bifrost
+
+# Install a specific version
+npx -y @maximhq/bifrost --transport-version v1.3.9
 ```
 
 #### Docker
@@ -32,6 +35,11 @@ npx -y @maximhq/bifrost
 # Pull and run Bifrost HTTP API
 docker pull maximhq/bifrost
 docker run -p 8080:8080 maximhq/bifrost
+
+# Pull a specific version
+docker pull maximhq/bifrost:v1.3.9
+docker pull maximhq/bifrost:v1.3.9-amd64
+docker pull maximhq/bifrost:v1.3.9-arm64
 ```
 
 **For Data Persistence**

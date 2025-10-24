@@ -21,6 +21,10 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	}
 
 	t.Run("SpeechSynthesis", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Test with shared text constants for round-trip validation with transcription
 		testCases := []struct {
 			name           string
@@ -58,6 +62,10 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
+				if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+					t.Parallel()
+				}
+
 				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
 				request := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
@@ -71,14 +79,16 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						},
 						ResponseFormat: tc.format,
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.SpeechSynthesisFallbacks,
 				}
 
 				// Enhanced validation for speech synthesis
 				expectations := SpeechExpectations(tc.expectMinBytes)
 				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
-				speechResponse, bifrostErr := client.SpeechRequest(ctx, request)
+				requestCtx := context.Background()
+
+				speechResponse, bifrostErr := client.SpeechRequest(requestCtx, request)
 				if bifrostErr != nil {
 					t.Fatalf("❌ SpeechSynthesis_"+tc.name+" request failed: %v", GetErrorMessage(bifrostErr))
 				}
@@ -123,7 +133,15 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 	}
 
 	t.Run("SpeechSynthesisAdvanced", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		t.Run("LongText_HDModel", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			// Test with longer text and HD model
 			longText := `
 			This is a comprehensive test of the text-to-speech functionality using a longer piece of text.
@@ -146,7 +164,7 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 					ResponseFormat: "mp3",
 					Instructions:   "Speak slowly and clearly with natural intonation.",
 				},
-				Fallbacks: testConfig.Fallbacks,
+				Fallbacks: testConfig.SpeechSynthesisFallbacks,
 			}
 
 			retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisHD", testConfig)
@@ -167,8 +185,10 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			expectations := SpeechExpectations(5000) // HD should produce substantial audio
 			expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
+			requestCtx := context.Background()
+
 			response, bifrostErr := WithTestRetry(t, retryConfig, retryContext, expectations, "SpeechSynthesis_HD", func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-				c, err := client.SpeechRequest(ctx, request)
+				c, err := client.SpeechRequest(requestCtx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -195,12 +215,20 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 		})
 
 		t.Run("AllVoiceOptions", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			// Test provider-specific voice options
 			voiceTypes := []string{"primary", "secondary", "tertiary"}
 			testText := TTSTestTextBasic // Use shared constant
 
 			for _, voiceType := range voiceTypes {
 				t.Run("VoiceType_"+voiceType, func(t *testing.T) {
+					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+						t.Parallel()
+					}
+
 					voice := GetProviderVoice(testConfig.Provider, voiceType)
 					request := &schemas.BifrostSpeechRequest{
 						Provider: testConfig.Provider,
@@ -214,13 +242,15 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 							},
 							ResponseFormat: "mp3",
 						},
-						Fallbacks: testConfig.Fallbacks,
+						Fallbacks: testConfig.SpeechSynthesisFallbacks,
 					}
 
 					expectations := SpeechExpectations(500)
 					expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
-					speechResponse, bifrostErr := client.SpeechRequest(ctx, request)
+					requestCtx := context.Background()
+
+					speechResponse, bifrostErr := client.SpeechRequest(requestCtx, request)
 					if bifrostErr != nil {
 						t.Fatalf("❌ SpeechSynthesis_Voice_"+voiceType+" request failed: %v", GetErrorMessage(bifrostErr))
 					}
@@ -255,7 +285,7 @@ func validateSpeechSynthesisSpecific(t *testing.T, response *schemas.BifrostSpee
 	if audioSize < expectMinBytes {
 		t.Fatalf("Audio data too small: got %d bytes, expected at least %d", audioSize, expectMinBytes)
 	}
-	
+
 	if expectedModel != "" && response.ExtraFields.ModelRequested != expectedModel {
 		t.Logf("⚠️ Expected model, got: %s", response.ExtraFields.ModelRequested)
 	}

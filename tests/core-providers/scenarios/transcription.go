@@ -56,6 +56,10 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 		for _, tc := range roundTripCases {
 			t.Run(tc.name, func(t *testing.T) {
+				if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+					t.Parallel()
+				}
+
 				// Step 1: Generate TTS audio
 				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
 				ttsRequest := &schemas.BifrostSpeechRequest{
@@ -70,7 +74,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						},
 						ResponseFormat: tc.format,
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.TranscriptionFallbacks,
 				}
 
 				ttsResponse, err := client.SpeechRequest(ctx, ttsRequest)
@@ -104,7 +108,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						Format:         bifrost.Ptr("mp3"),
 						ResponseFormat: tc.responseFormat,
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.TranscriptionFallbacks,
 				}
 
 				// Enhanced validation for transcription
@@ -152,6 +156,10 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 			for _, tc := range customCases {
 				t.Run(tc.name, func(t *testing.T) {
+					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+						t.Parallel()
+					}
+
 					// Use the utility function to generate audio
 					audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, tc.text, "primary", "mp3")
 
@@ -167,7 +175,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 							Format:         bifrost.Ptr("mp3"),
 							ResponseFormat: tc.responseFormat,
 						},
-						Fallbacks: testConfig.Fallbacks,
+						Fallbacks: testConfig.TranscriptionFallbacks,
 					}
 
 					response, err := client.TranscriptionRequest(ctx, request)
@@ -199,6 +207,10 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 			for _, format := range formats {
 				t.Run("Format_"+format, func(t *testing.T) {
+					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+						t.Parallel()
+					}
+
 					formatCopy := format
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
@@ -210,7 +222,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							Format:         bifrost.Ptr("mp3"),
 							ResponseFormat: &formatCopy,
 						},
-						Fallbacks: testConfig.Fallbacks,
+						Fallbacks: testConfig.TranscriptionFallbacks,
 					}
 
 					response, err := client.TranscriptionRequest(ctx, request)
@@ -226,6 +238,10 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		})
 
 		t.Run("WithCustomParameters", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			// Generate audio for custom parameters test
 			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextMedium, "secondary", "mp3")
 
@@ -242,7 +258,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					Prompt:         bifrost.Ptr("This audio contains technical terminology and proper nouns."),
 					ResponseFormat: bifrost.Ptr("json"), // Use json instead of verbose_json for whisper-1
 				},
-				Fallbacks: testConfig.Fallbacks,
+				Fallbacks: testConfig.TranscriptionFallbacks,
 			}
 
 			response, err := client.TranscriptionRequest(ctx, request)
@@ -262,6 +278,10 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 			for _, lang := range languages {
 				t.Run("Language_"+lang, func(t *testing.T) {
+					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+						t.Parallel()
+					}
+
 					langCopy := lang
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
@@ -273,7 +293,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							Format:   bifrost.Ptr("mp3"),
 							Language: &langCopy,
 						},
-						Fallbacks: testConfig.Fallbacks,
+						Fallbacks: testConfig.TranscriptionFallbacks,
 					}
 
 					response, err := client.TranscriptionRequest(ctx, request)

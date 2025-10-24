@@ -500,14 +500,13 @@ func (c *CohereStreamCitationStruct) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("citations field is neither array nor object")
 }
 
-
 // CohereStreamMessage represents the message part of streaming deltas
 type CohereStreamMessage struct {
-	Role      *string                    `json:"role,omitempty"`       // For message-start
-	Content   *CohereStreamContentStruct `json:"content,omitempty"`    // For content events (object)
-	ToolPlan  *string                    `json:"tool_plan,omitempty"`  // For tool-plan-delta
-	ToolCalls *CohereStreamToolCallStruct      `json:"tool_calls,omitempty"` // For tool-call events (flexible)
-	Citations *CohereStreamCitationStruct            `json:"citations,omitempty"`  // For citation events
+	Role      *string                     `json:"role,omitempty"`       // For message-start
+	Content   *CohereStreamContentStruct  `json:"content,omitempty"`    // For content events (object)
+	ToolPlan  *string                     `json:"tool_plan,omitempty"`  // For tool-plan-delta
+	ToolCalls *CohereStreamToolCallStruct `json:"tool_calls,omitempty"` // For tool-call events (flexible)
+	Citations *CohereStreamCitationStruct `json:"citations,omitempty"`  // For citation events
 }
 
 // CohereStreamContent represents content in streaming events

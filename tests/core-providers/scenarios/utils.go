@@ -14,13 +14,13 @@ import (
 // Shared test texts for TTS->SST round-trip validation
 const (
 	// Basic test text for simple round-trip validation
-	TTSTestTextBasic = "Hello, this is a test of speech synthesis from Bifrost."
+	TTSTestTextBasic = "Hello, this is a comprehensive test of speech synthesis capabilities from Bifrost AI Gateway. We are testing various aspects of text-to-speech conversion including clarity, pronunciation, and overall audio quality. This basic test should demonstrate the fundamental functionality of converting written text into natural-sounding speech audio."
 
 	// Medium length text with punctuation for comprehensive testing
-	TTSTestTextMedium = "Testing speech synthesis and transcription round-trip. This text includes punctuation, numbers like 123, and technical terms."
+	TTSTestTextMedium = "Testing speech synthesis and transcription round-trip functionality with Bifrost AI Gateway. This comprehensive text includes various punctuation marks: commas, periods, exclamation points! Question marks? Semicolons; and colons: for thorough testing. We also include numbers like 123, 456.789, and technical terms such as API, HTTP, JSON, WebSocket, and machine learning algorithms. The system should handle abbreviations like Dr., Mr., Mrs., and acronyms like NASA, FBI, and CPU correctly. Additionally, we test special characters and symbols: @, #, $, %, &, *, +, =, and various currency symbols like €, £, ¥."
 
-	// Short technical text for WAV format testing
-	TTSTestTextTechnical = "Bifrost AI gateway processes audio requests efficiently."
+	// Technical text for comprehensive format testing
+	TTSTestTextTechnical = "Bifrost AI Gateway is a sophisticated artificial intelligence proxy server that efficiently processes and routes audio requests, chat completions, embeddings, and various machine learning workloads across multiple provider endpoints. The system implements advanced load balancing algorithms, request queuing mechanisms, and intelligent failover strategies to ensure high availability and optimal performance. It supports multiple audio formats including MP3, WAV, FLAC, and OGG, with configurable bitrates, sample rates, and encoding parameters. The gateway handles authentication, rate limiting, request validation, response transformation, and comprehensive logging for enterprise-grade deployments. Performance metrics indicate sub-100ms latency for most operations with 99.9% uptime reliability."
 )
 
 // GetProviderVoice returns an appropriate voice for the given provider

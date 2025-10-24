@@ -41,17 +41,21 @@ type TestScenarios struct {
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
 type ComprehensiveTestConfig struct {
-	Provider             schemas.ModelProvider
-	TextModel            string
-	ChatModel            string
-	VisionModel          string
-	ReasoningModel       string
-	EmbeddingModel       string
-	TranscriptionModel   string
-	SpeechSynthesisModel string
-	Scenarios            TestScenarios
-	Fallbacks            []schemas.Fallback
-	SkipReason           string // Reason to skip certain tests
+	Provider                 schemas.ModelProvider
+	TextModel                string
+	ChatModel                string
+	VisionModel              string
+	ReasoningModel           string
+	EmbeddingModel           string
+	TranscriptionModel       string
+	SpeechSynthesisModel     string
+	Scenarios                TestScenarios
+	Fallbacks                []schemas.Fallback // for chat, responses, image and reasoning tests
+	TextCompletionFallbacks  []schemas.Fallback // for text completion tests
+	TranscriptionFallbacks   []schemas.Fallback // for transcription tests
+	SpeechSynthesisFallbacks []schemas.Fallback // for speech synthesis tests
+	EmbeddingFallbacks       []schemas.Fallback // for embedding tests
+	SkipReason               string             // Reason to skip certain tests
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -100,7 +104,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 	case ProviderOpenAICustom:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("GROQ_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
+				Value:  os.Getenv("OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -125,12 +129,13 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
 					ARN:          bifrost.Ptr(os.Getenv("AWS_ARN")),
 					Deployments: map[string]string{
-						"claude-sonnet-4": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+						"claude-sonnet-4":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
+						"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
 					},
 				},
 			},
 			{
-				Models: []string{"amazon.titan-embed-text-v2:0"},
+				Models: []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "cohere.embed-v4:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -152,12 +157,26 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("AZURE_API_KEY"),
-				Models: []string{"gpt-4o", "text-embedding-ada-002"},
+				Models: []string{"gpt-4o"},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: os.Getenv("AZURE_ENDPOINT"),
 					Deployments: map[string]string{
-						"gpt-4o":                 "gpt-4o-aug",
+						"gpt-4o": "gpt-4o-aug",
+					},
+					// Use environment variable for API version with fallback to current preview version
+					// Note: This is a preview API version that may change over time. Update as needed.
+					// Set AZURE_API_VERSION environment variable to override the default.
+					APIVersion: bifrost.Ptr(getEnvWithDefault("AZURE_API_VERSION", "2024-08-01-preview")),
+				},
+			},
+			{
+				Value:  os.Getenv("AZURE_EMB_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+				AzureKeyConfig: &schemas.AzureKeyConfig{
+					Endpoint: os.Getenv("AZURE_EMB_ENDPOINT"),
+					Deployments: map[string]string{
 						"text-embedding-ada-002": "text-embedding-ada-002",
 					},
 					// Use environment variable for API version with fallback to current preview version
@@ -184,7 +203,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("MISTRAL_API_KEY"),
-				Models: []string{"mistral-large-2411", "pixtral-12b-latest", "mistral-embed"},
+				Models: []string{},
 				Weight: 1.0,
 			},
 		}, nil
@@ -239,27 +258,27 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.OpenAI:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     3, // Higher retries for production-grade provider
 				RetryBackoffInitial:            500 * time.Millisecond,
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case ProviderOpenAICustom:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                        getEnvWithDefault("GROQ_OPENAI_BASE_URL", "https://api.groq.com/openai"),
-				DefaultRequestTimeoutInSeconds: 60,
+				BaseURL:                        "https://api.openai.com",
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     4, // Higher retries for Groq (can be flaky)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                10 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 			CustomProviderConfig: &schemas.CustomProviderConfig{
@@ -279,86 +298,86 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Anthropic:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     3, // Claude is generally reliable
 				RetryBackoffInitial:            500 * time.Millisecond,
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Bedrock:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // AWS services can have occasional issues
 				RetryBackoffInitial:            5 * time.Second,
 				RetryBackoffMax:                20 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Cohere:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     4, // Cohere can be variable
 				RetryBackoffInitial:            750 * time.Millisecond,
 				RetryBackoffMax:                10 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Azure:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     3, // Azure OpenAI is generally reliable
 				RetryBackoffInitial:            500 * time.Millisecond,
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Vertex:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     3, // Google Cloud is generally reliable
 				RetryBackoffInitial:            500 * time.Millisecond,
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Ollama:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     2, // Local service, fewer retries needed
 				RetryBackoffInitial:            250 * time.Millisecond,
 				RetryBackoffMax:                4 * time.Second,
-				BaseURL:                        getEnvWithDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+				BaseURL:                        os.Getenv("OLLAMA_BASE_URL"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Mistral:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     4, // Mistral can be variable
 				RetryBackoffInitial:            750 * time.Millisecond,
 				RetryBackoffMax:                10 * time.Second,
@@ -371,13 +390,13 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Groq:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // Groq can be flaky at times
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                15 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 2,
 				BufferSize:  10,
 			},
 		}, nil
@@ -385,65 +404,65 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				BaseURL:                        os.Getenv("SGL_BASE_URL"),
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // SGL (self-hosted) can be variable
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                15 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Parasail:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // Parasail can be variable
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Cerebras:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     4, // Cerebras is reasonably stable
 				RetryBackoffInitial:            750 * time.Millisecond,
 				RetryBackoffMax:                10 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 2,
 				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Gemini:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     4, // Gemini can be variable
 				RetryBackoffInitial:            750 * time.Millisecond,
 				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
-				BufferSize:  10,
+				Concurrency: 20,
+				BufferSize:  20,
 			},
 		}, nil
 	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 60,
+				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     4, // OpenRouter can be variable (proxy service)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil

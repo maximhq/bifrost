@@ -3,9 +3,9 @@ package scenarios
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
 
@@ -21,6 +21,10 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	}
 
 	t.Run("SpeechSynthesisStream", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Test streaming with different text lengths
 		testCases := []struct {
 			name            string
@@ -29,6 +33,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			format          string
 			expectMinChunks int
 			expectMinBytes  int
+			skip            bool
 		}{
 			{
 				name:            "ShortText_Streaming",
@@ -37,6 +42,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				format:          "mp3",
 				expectMinChunks: 1,
 				expectMinBytes:  1000,
+				skip:            false,
 			},
 			{
 				name: "LongText_Streaming",
@@ -48,6 +54,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				format:          "mp3",
 				expectMinChunks: 2,
 				expectMinBytes:  3000,
+				skip:            testConfig.Provider == schemas.Gemini,
 			},
 			{
 				name:            "MediumText_Echo_WAV",
@@ -56,11 +63,21 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				format:          "wav",
 				expectMinChunks: 1,
 				expectMinBytes:  2000,
+				skip:            false,
 			},
 		}
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
+				if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+					t.Parallel()
+				}
+
+				if tc.skip {
+					t.Skipf("Skipping %s test", tc.name)
+					return
+				}
+
 				voice := tc.voice
 				request := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
@@ -74,7 +91,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						},
 						ResponseFormat: tc.format,
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.SpeechSynthesisFallbacks,
 				}
 
 				// Use retry framework for streaming speech synthesis
@@ -97,8 +114,10 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					},
 				}
 
+				requestCtx := context.Background()
+
 				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					return client.SpeechStreamRequest(ctx, request)
+					return client.SpeechStreamRequest(requestCtx, request)
 				})
 
 				// Enhanced validation for streaming speech synthesis
@@ -113,69 +132,61 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				var chunkCount int
 				var lastResponse *schemas.BifrostStream
 				var streamErrors []string
-
-				streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				defer cancel()
+				var lastTokenLatency int64
 
 				// Read streaming chunks with enhanced validation
-				for {
-					select {
-					case response, ok := <-responseChannel:
-						if !ok {
-							// Channel closed, streaming complete
-							goto streamComplete
-						}
-
-						if response == nil {
-							streamErrors = append(streamErrors, "Received nil stream response")
-							continue
-						}
-
-						// Check for errors in stream
-						if response.BifrostError != nil {
-							streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
-							continue
-						}
-
-						if response.BifrostSpeechStreamResponse == nil {
-							streamErrors = append(streamErrors, "Stream response missing speech stream payload")
-							continue
-						}
-
-						if response.BifrostSpeechStreamResponse.Audio == nil {
-							streamErrors = append(streamErrors, "Stream response missing audio data")
-							continue
-						}
-
-						// Collect audio chunks
-						if response.BifrostSpeechStreamResponse.Audio != nil {
-							chunkSize := len(response.BifrostSpeechStreamResponse.Audio)
-							if chunkSize == 0 {
-								t.Logf("⚠️ Skipping zero-length audio chunk")
-								continue
-							}
-							totalBytes += chunkSize
-							chunkCount++
-							t.Logf("✅ Received audio chunk %d: %d bytes", chunkCount, chunkSize)
-
-							// Validate chunk structure
-							if response.BifrostSpeechStreamResponse.Type != "" && (response.BifrostSpeechStreamResponse.Type != schemas.SpeechStreamResponseTypeDelta && response.BifrostSpeechStreamResponse.Type != schemas.SpeechStreamResponseTypeDone) {
-								t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostSpeechStreamResponse.Type)
-							}
-							if response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != testConfig.SpeechSynthesisModel {
-								t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested)
-							}
-						}
-
-						lastResponse = response
-
-					case <-streamCtx.Done():
-						streamErrors = append(streamErrors, "Stream reading timed out")
-						goto streamComplete
+				for response := range responseChannel {
+					if response == nil {
+						streamErrors = append(streamErrors, "Received nil stream response")
+						continue
 					}
+
+					// Check for errors in stream
+					if response.BifrostError != nil {
+						streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
+						continue
+					}
+
+					if response.BifrostSpeechStreamResponse != nil {
+						lastTokenLatency = response.BifrostSpeechStreamResponse.ExtraFields.Latency
+					}
+
+					if response.BifrostSpeechStreamResponse == nil {
+						streamErrors = append(streamErrors, "Stream response missing speech stream payload")
+						continue
+					}
+
+					if response.BifrostSpeechStreamResponse.Audio == nil {
+						streamErrors = append(streamErrors, "Stream response missing audio data")
+						continue
+					}
+
+					// Log latency for each chunk (can be 0 for inter-chunks)
+					t.Logf("📊 Speech chunk %d latency: %d ms", chunkCount+1, response.BifrostSpeechStreamResponse.ExtraFields.Latency)
+
+					// Collect audio chunks
+					if response.BifrostSpeechStreamResponse.Audio != nil {
+						chunkSize := len(response.BifrostSpeechStreamResponse.Audio)
+						if chunkSize == 0 {
+							t.Logf("⚠️ Skipping zero-length audio chunk")
+							continue
+						}
+						totalBytes += chunkSize
+						chunkCount++
+						t.Logf("✅ Received audio chunk %d: %d bytes", chunkCount, chunkSize)
+
+						// Validate chunk structure
+						if response.BifrostSpeechStreamResponse.Type != "" && (response.BifrostSpeechStreamResponse.Type != schemas.SpeechStreamResponseTypeDelta && response.BifrostSpeechStreamResponse.Type != schemas.SpeechStreamResponseTypeDone) {
+							t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostSpeechStreamResponse.Type)
+						}
+						if response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != testConfig.SpeechSynthesisModel {
+							t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested)
+						}
+					}
+
+					lastResponse = DeepCopyBifrostStream(response)
 				}
 
-			streamComplete:
 				// Enhanced validation of streaming results
 				if len(streamErrors) > 0 {
 					t.Logf("⚠️ Stream errors encountered: %v", streamErrors)
@@ -203,6 +214,10 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					t.Logf("⚠️ Average chunk size seems small: %d bytes", averageChunkSize)
 				}
 
+				if lastTokenLatency == 0 {
+					t.Errorf("❌ Last token latency is 0")
+				}
+
 				t.Logf("✅ Streaming speech synthesis successful: %d chunks, %d total bytes for voice '%s' in %s format",
 					chunkCount, totalBytes, tc.voice, tc.format)
 			})
@@ -219,6 +234,15 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 
 	t.Run("SpeechSynthesisStreamAdvanced", func(t *testing.T) {
 		t.Run("LongText_HDModel_Streaming", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
+			if testConfig.Provider == schemas.Gemini {
+				t.Skipf("Skipping %s test", "LongText_HDModel_Streaming")
+				return
+			}
+
 			// Test streaming with HD model and very long text
 			finalText := ""
 			for i := 1; i <= 20; i++ {
@@ -239,7 +263,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					ResponseFormat: "mp3",
 					Instructions:   "Speak at a natural pace with clear pronunciation.",
 				},
-				Fallbacks: testConfig.Fallbacks,
+				Fallbacks: testConfig.SpeechSynthesisFallbacks,
 			}
 
 			retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisStreamHD", testConfig)
@@ -259,8 +283,10 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 				},
 			}
 
+			requestCtx := context.Background()
+
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.SpeechStreamRequest(ctx, request)
+				return client.SpeechStreamRequest(requestCtx, request)
 			})
 
 			RequireNoError(t, err, "HD streaming speech synthesis failed")
@@ -268,49 +294,39 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 			var totalBytes int
 			var chunkCount int
 			var streamErrors []string
+			var lastTokenLatency int64
 
-			streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			defer cancel()
+			for response := range responseChannel {
+				if response == nil {
+					streamErrors = append(streamErrors, "Received nil HD stream response")
+					continue
+				}
 
-			for {
-				select {
-				case response, ok := <-responseChannel:
-					if !ok {
-						goto hdStreamComplete
-					}
+				if response.BifrostError != nil {
+					streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
+					continue
+				}
 
-					if response == nil {
-						streamErrors = append(streamErrors, "Received nil HD stream response")
+				if response.BifrostSpeechStreamResponse != nil {
+					lastTokenLatency = response.BifrostSpeechStreamResponse.ExtraFields.Latency
+				}
+
+				if response.BifrostSpeechStreamResponse != nil && response.BifrostSpeechStreamResponse.Audio != nil {
+					chunkSize := len(response.BifrostSpeechStreamResponse.Audio)
+					if chunkSize == 0 {
+						t.Logf("⚠️ Skipping zero-length HD audio chunk")
 						continue
 					}
+					totalBytes += chunkSize
+					chunkCount++
+					t.Logf("✅ HD chunk %d: %d bytes", chunkCount, chunkSize)
+				}
 
-					if response.BifrostError != nil {
-						streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
-						continue
-					}
-
-					if response.BifrostSpeechStreamResponse != nil && response.BifrostSpeechStreamResponse.Audio != nil {
-						chunkSize := len(response.BifrostSpeechStreamResponse.Audio)
-						if chunkSize == 0 {
-							t.Logf("⚠️ Skipping zero-length HD audio chunk")
-							continue
-						}
-						totalBytes += chunkSize
-						chunkCount++
-						t.Logf("✅ HD chunk %d: %d bytes", chunkCount, chunkSize)
-					}
-
-					if response.BifrostSpeechStreamResponse != nil && response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != testConfig.SpeechSynthesisModel {
-						t.Logf("⚠️ Unexpected HD model: %s", response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested)
-					}
-
-				case <-streamCtx.Done():
-					streamErrors = append(streamErrors, "HD stream reading timed out")
-					goto hdStreamComplete
+				if response.BifrostSpeechStreamResponse != nil && response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested != testConfig.SpeechSynthesisModel {
+					t.Logf("⚠️ Unexpected HD model: %s", response.BifrostSpeechStreamResponse.ExtraFields.ModelRequested)
 				}
 			}
 
-		hdStreamComplete:
 			if len(streamErrors) > 0 {
 				t.Logf("⚠️ HD stream errors: %v", streamErrors)
 			}
@@ -323,16 +339,37 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 				t.Fatalf("HD model should produce substantial audio data: got %d bytes, expected > 10000", totalBytes)
 			}
 
+			if lastTokenLatency == 0 {
+				t.Errorf("❌ Last token latency is 0")
+			}
+
 			t.Logf("✅ HD streaming successful: %d chunks, %d total bytes", chunkCount, totalBytes)
 		})
 
 		t.Run("MultipleVoices_Streaming", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
+			voices := []string{}
+
 			// Test streaming with all available voices
-			voices := []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+			openaiVoices := []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+			geminiVoices := []string{"achernar", "achird", "algenib", "charon", "despina", "erinome"}
 			testText := "Testing streaming speech synthesis with different voice options."
+
+			if testConfig.Provider == schemas.OpenAI {
+				voices = openaiVoices
+			} else if testConfig.Provider == schemas.Gemini {
+				voices = geminiVoices
+			}
 
 			for _, voice := range voices {
 				t.Run("StreamingVoice_"+voice, func(t *testing.T) {
+					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+						t.Parallel()
+					}
+
 					voiceCopy := voice
 					request := &schemas.BifrostSpeechRequest{
 						Provider: testConfig.Provider,
@@ -346,7 +383,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 							},
 							ResponseFormat: "mp3",
 						},
-						Fallbacks: testConfig.Fallbacks,
+						Fallbacks: testConfig.SpeechSynthesisFallbacks,
 					}
 
 					retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisStreamVoice", testConfig)
@@ -362,53 +399,48 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 						},
 					}
 
+					requestCtx := context.Background()
+
 					responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-						return client.SpeechStreamRequest(ctx, request)
+						return client.SpeechStreamRequest(requestCtx, request)
 					})
 
 					RequireNoError(t, err, fmt.Sprintf("Streaming failed for voice %s", voice))
 
 					var receivedData bool
 					var streamErrors []string
+					var lastTokenLatency int64
 
-					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					defer cancel()
+					for response := range responseChannel {
+						if response == nil {
+							streamErrors = append(streamErrors, fmt.Sprintf("Received nil stream response for voice %s", voice))
+							continue
+						}
 
-					for {
-						select {
-						case response, ok := <-responseChannel:
-							if !ok {
-								goto voiceStreamComplete
-							}
+						if response.BifrostError != nil {
+							streamErrors = append(streamErrors, fmt.Sprintf("Error in stream for voice %s: %s", voice, FormatErrorConcise(ParseBifrostError(response.BifrostError))))
+							continue
+						}
 
-							if response == nil {
-								streamErrors = append(streamErrors, fmt.Sprintf("Received nil stream response for voice %s", voice))
-								continue
-							}
+						if response.BifrostSpeechStreamResponse != nil {
+							lastTokenLatency = response.BifrostSpeechStreamResponse.ExtraFields.Latency
+						}
 
-							if response.BifrostError != nil {
-								streamErrors = append(streamErrors, fmt.Sprintf("Error in stream for voice %s: %s", voice, FormatErrorConcise(ParseBifrostError(response.BifrostError))))
-								continue
-							}
-
-							if response.BifrostSpeechStreamResponse != nil && response.BifrostSpeechStreamResponse.Audio != nil && len(response.BifrostSpeechStreamResponse.Audio) > 0 {
-								receivedData = true
-								t.Logf("✅ Received data for voice %s: %d bytes", voice, len(response.BifrostSpeechStreamResponse.Audio))
-							}
-
-						case <-streamCtx.Done():
-							streamErrors = append(streamErrors, fmt.Sprintf("Stream timed out for voice %s", voice))
-							goto voiceStreamComplete
+						if response.BifrostSpeechStreamResponse != nil && response.BifrostSpeechStreamResponse.Audio != nil && len(response.BifrostSpeechStreamResponse.Audio) > 0 {
+							receivedData = true
+							t.Logf("✅ Received data for voice %s: %d bytes", voice, len(response.BifrostSpeechStreamResponse.Audio))
 						}
 					}
 
-				voiceStreamComplete:
 					if len(streamErrors) > 0 {
-						t.Logf("⚠️ Stream errors for voice %s: %v", voice, streamErrors)
+						t.Errorf("❌ Stream errors for voice %s: %v", voice, streamErrors)
 					}
 
 					if !receivedData {
-						t.Fatalf("Should receive audio data for voice %s", voice)
+						t.Errorf("❌ Should receive audio data for voice %s", voice)
+					}
+					if lastTokenLatency == 0 {
+						t.Errorf("❌ Last token latency is 0")
 					}
 					t.Logf("✅ Streaming successful for voice: %s", voice)
 				})

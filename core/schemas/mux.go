@@ -615,6 +615,64 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	return chatMessages
 }
 
+func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
+	if cu == nil {
+		return nil
+	}
+
+	usage := &ResponsesResponseUsage{
+		InputTokens:  cu.PromptTokens,
+		OutputTokens: cu.CompletionTokens,
+		TotalTokens:  cu.TotalTokens,
+	}
+
+	if cu.PromptTokensDetails != nil {
+		usage.InputTokensDetails = &ResponsesResponseInputTokens{
+			AudioTokens:  cu.PromptTokensDetails.AudioTokens,
+			CachedTokens: cu.PromptTokensDetails.CachedTokens,
+		}
+	}
+	if cu.CompletionTokensDetails != nil {
+		usage.OutputTokensDetails = &ResponsesResponseOutputTokens{
+			AcceptedPredictionTokens: cu.CompletionTokensDetails.AcceptedPredictionTokens,
+			AudioTokens:              cu.CompletionTokensDetails.AudioTokens,
+			ReasoningTokens:          cu.CompletionTokensDetails.ReasoningTokens,
+			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
+		}
+	}
+
+	return usage
+}
+
+func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
+	if ru == nil {
+		return nil
+	}
+
+	usage := &BifrostLLMUsage{
+		PromptTokens:     ru.InputTokens,
+		CompletionTokens: ru.OutputTokens,
+		TotalTokens:      ru.TotalTokens,
+	}
+
+	if ru.InputTokensDetails != nil {
+		usage.PromptTokensDetails = &ChatPromptTokensDetails{
+			AudioTokens:  ru.InputTokensDetails.AudioTokens,
+			CachedTokens: ru.InputTokensDetails.CachedTokens,
+		}
+	}
+	if ru.OutputTokensDetails != nil {
+		usage.CompletionTokensDetails = &ChatCompletionTokensDetails{
+			AcceptedPredictionTokens: ru.OutputTokensDetails.AcceptedPredictionTokens,
+			AudioTokens:              ru.OutputTokensDetails.AudioTokens,
+			ReasoningTokens:          ru.OutputTokensDetails.ReasoningTokens,
+			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
+		}
+	}
+
+	return usage
+}
+
 // =============================================================================
 // REQUEST CONVERSION METHODS
 // =============================================================================
@@ -805,15 +863,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 
 	// Convert Usage if needed
 	if cr.Usage != nil {
-		responsesResp.Usage = &ResponsesResponseUsage{
-			InputTokens:  cr.Usage.PromptTokens,
-			OutputTokens: cr.Usage.CompletionTokens,
-			TotalTokens:  cr.Usage.TotalTokens,
-		}
-
-		if responsesResp.Usage.TotalTokens == 0 {
-			responsesResp.Usage.TotalTokens = cr.Usage.PromptTokens + cr.Usage.CompletionTokens
-		}
+		responsesResp.Usage = cr.Usage.ToResponsesResponseUsage()
 	}
 
 	// Copy other relevant fields
@@ -859,15 +909,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	// Convert Usage if needed
 	if responsesResp.Usage != nil {
 		// Map Responses usage to Chat usage
-		chatResp.Usage = &BifrostLLMUsage{
-			PromptTokens:     responsesResp.Usage.InputTokens,
-			CompletionTokens: responsesResp.Usage.OutputTokens,
-			TotalTokens:      responsesResp.Usage.TotalTokens,
-		}
-
-		if chatResp.Usage.TotalTokens == 0 {
-			chatResp.Usage.TotalTokens = chatResp.Usage.PromptTokens + chatResp.Usage.CompletionTokens
-		}
+		chatResp.Usage = responsesResp.Usage.ToBifrostLLMUsage()
 	}
 
 	// Copy other relevant fields
@@ -976,11 +1018,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse() *BifrostRespon
 			// Add usage information if present in the response
 			if cr.Usage != nil {
 				streamResp.Response = &BifrostResponsesResponse{
-					Usage: &ResponsesResponseUsage{
-						InputTokens:  cr.Usage.PromptTokens,
-						OutputTokens: cr.Usage.CompletionTokens,
-						TotalTokens:  cr.Usage.TotalTokens,
-					},
+					Usage: cr.Usage.ToResponsesResponseUsage(),
 				}
 			}
 		} else {

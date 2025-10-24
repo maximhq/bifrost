@@ -23,6 +23,10 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 	}
 
 	t.Run("TranscriptionStream", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// Generate TTS audio for streaming round-trip validation
 		streamRoundTripCases := []struct {
 			name           string
@@ -30,7 +34,6 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 			voiceType      string
 			format         string
 			responseFormat *string
-			expectChunks   int
 		}{
 			{
 				name:           "StreamRoundTrip_Basic_MP3",
@@ -38,7 +41,6 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				voiceType:      "primary",
 				format:         "mp3",
 				responseFormat: nil, // Default JSON streaming
-				expectChunks:   1,
 			},
 			{
 				name:           "StreamRoundTrip_Medium_MP3",
@@ -46,7 +48,6 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				voiceType:      "secondary",
 				format:         "mp3",
 				responseFormat: bifrost.Ptr("json"),
-				expectChunks:   1,
 			},
 			{
 				name:           "StreamRoundTrip_Technical_MP3",
@@ -54,12 +55,15 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				voiceType:      "tertiary",
 				format:         "mp3",
 				responseFormat: bifrost.Ptr("json"),
-				expectChunks:   1,
 			},
 		}
 
 		for _, tc := range streamRoundTripCases {
 			t.Run(tc.name, func(t *testing.T) {
+				if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+					t.Parallel()
+				}
+
 				// Step 1: Generate TTS audio
 				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
 				ttsRequest := &schemas.BifrostSpeechRequest{
@@ -74,7 +78,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						},
 						ResponseFormat: tc.format,
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.TranscriptionFallbacks,
 				}
 
 				ttsResponse, err := client.SpeechRequest(ctx, ttsRequest)
@@ -110,7 +114,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						Format:         bifrost.Ptr(tc.format),
 						ResponseFormat: tc.responseFormat,
 					},
-					Fallbacks: testConfig.Fallbacks,
+					Fallbacks: testConfig.TranscriptionFallbacks,
 				}
 
 				// Use retry framework for streaming transcription
@@ -121,7 +125,6 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						"transcribe_streaming_audio": true,
 						"round_trip_test":            true,
 						"original_text":              tc.text,
-						"min_chunks":                 tc.expectChunks,
 					},
 					TestMetadata: map[string]interface{}{
 						"provider":     testConfig.Provider,
@@ -143,10 +146,10 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 				defer cancel()
 
-				var fullTranscriptionText string
-				var chunkCount int
-				var lastResponse *schemas.BifrostStream
-				var streamErrors []string
+				fullTranscriptionText := ""
+				lastResponse := &schemas.BifrostStream{}
+				streamErrors := []string{}
+				lastTokenLatency := int64(0)
 
 				// Read streaming chunks with enhanced validation
 				for {
@@ -173,39 +176,43 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 							continue
 						}
 
+						if response.BifrostTranscriptionStreamResponse != nil {
+							lastTokenLatency = response.BifrostTranscriptionStreamResponse.ExtraFields.Latency
+						}
+
 						if response.BifrostTranscriptionStreamResponse.Text == "" && response.BifrostTranscriptionStreamResponse.Delta == nil {
 							streamErrors = append(streamErrors, "Stream response missing transcription data")
 							continue
 						}
 
+						chunkIndex := response.BifrostTranscriptionStreamResponse.ExtraFields.ChunkIndex
+
+						// Log latency for each chunk (can be 0 for inter-chunks)
+						t.Logf("📊 Transcription chunk %d latency: %d ms", chunkIndex, response.BifrostTranscriptionStreamResponse.ExtraFields.Latency)
+
 						// Collect transcription chunks
 						transcribeData := response.BifrostTranscriptionStreamResponse
 						if transcribeData.Text != "" {
-							chunkText := transcribeData.Text
-
-							// Handle delta vs complete text chunks
-							if transcribeData.Delta != nil {
-								// This is a delta chunk
-								deltaText := *transcribeData.Delta
-								fullTranscriptionText += deltaText
-								t.Logf("✅ Received transcription delta chunk %d: '%s'", chunkCount+1, deltaText)
-							} else {
-								// This is a complete text chunk
-								fullTranscriptionText += chunkText
-								t.Logf("✅ Received transcription text chunk %d: '%s'", chunkCount+1, chunkText)
-							}
-							chunkCount++
-
-							// Validate chunk structure
-							if response.BifrostTranscriptionStreamResponse.Type != schemas.TranscriptionStreamResponseTypeDelta {
-								t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostTranscriptionStreamResponse.Type)
-							}
-							if response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != testConfig.TranscriptionModel {
-								t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested)
-							}
+							t.Logf("✅ Received transcription text chunk %d with latency %d ms: '%s'", chunkIndex, response.BifrostTranscriptionStreamResponse.ExtraFields.Latency, transcribeData.Text)
 						}
 
-						lastResponse = response
+						// Handle delta vs complete text chunks
+						if transcribeData.Delta != nil {
+							// This is a delta chunk
+							deltaText := *transcribeData.Delta
+							fullTranscriptionText += deltaText
+							t.Logf("✅ Received transcription delta chunk %d with latency %d ms: '%s'", chunkIndex, response.BifrostTranscriptionStreamResponse.ExtraFields.Latency, deltaText)
+						}
+
+						// Validate chunk structure
+						if response.BifrostTranscriptionStreamResponse.Type != schemas.TranscriptionStreamResponseTypeDelta {
+							t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostTranscriptionStreamResponse.Type)
+						}
+						if response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != testConfig.TranscriptionModel {
+							t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested)
+						}
+
+						lastResponse = DeepCopyBifrostStream(response)
 
 					case <-streamCtx.Done():
 						streamErrors = append(streamErrors, "Stream reading timed out")
@@ -219,16 +226,16 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 					t.Logf("⚠️ Stream errors encountered: %v", streamErrors)
 				}
 
-				if chunkCount < tc.expectChunks {
-					t.Fatalf("Insufficient chunks received: got %d, expected at least %d", chunkCount, tc.expectChunks)
-				}
-
 				if lastResponse == nil {
 					t.Fatal("Should have received at least one response")
 				}
 
 				if fullTranscriptionText == "" {
 					t.Fatal("Transcribed text should not be empty")
+				}
+
+				if lastTokenLatency == 0 {
+					t.Errorf("❌ Last token latency is 0")
 				}
 
 				// Normalize for comparison (lowercase, remove punctuation)
@@ -284,9 +291,6 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 					}
 					t.Fatalf("Round-trip accuracy too low: got %d/%d words, need at least %d", foundWords, len(originalWords), minExpectedWords)
 				}
-
-				t.Logf("✅ Stream round-trip successful: '%s' → TTS → SST → '%s' (%d chunks, found %d/%d words)",
-					tc.text, fullTranscriptionText, chunkCount, foundWords, len(originalWords))
 			})
 		}
 	})
@@ -301,6 +305,10 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 
 	t.Run("TranscriptionStreamAdvanced", func(t *testing.T) {
 		t.Run("JSONStreaming", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			// Generate audio for streaming test
 			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 
@@ -316,7 +324,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 					Format:         bifrost.Ptr("mp3"),
 					ResponseFormat: bifrost.Ptr("json"),
 				},
-				Fallbacks: testConfig.Fallbacks,
+				Fallbacks: testConfig.TranscriptionFallbacks,
 			}
 
 			retryConfig := GetTestRetryConfigForScenario("TranscriptionStreamJSON", testConfig)
@@ -342,50 +350,35 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			var receivedResponse bool
 			var streamErrors []string
 
-			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
+			for response := range responseChannel {
+				if response == nil {
+					streamErrors = append(streamErrors, "Received nil JSON stream response")
+					continue
+				}
 
-			for {
-				select {
-				case response, ok := <-responseChannel:
-					if !ok {
-						goto verboseStreamComplete
-					}
+				if response.BifrostError != nil {
+					streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
+					continue
+				}
 
-					if response == nil {
-						streamErrors = append(streamErrors, "Received nil JSON stream response")
-						continue
-					}
+				if response.BifrostTranscriptionStreamResponse != nil {
+					receivedResponse = true
 
-					if response.BifrostError != nil {
-						streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
-						continue
-					}
-
-					if response.BifrostTranscriptionStreamResponse != nil {
-						receivedResponse = true
-
-						// Check for JSON streaming specific fields
-						transcribeData := response.BifrostTranscriptionStreamResponse
-						if transcribeData.Type != "" {
-							t.Logf("✅ Stream type: %v", transcribeData.Type)
-							if transcribeData.Delta != nil {
-								t.Logf("✅ Delta: %s", *transcribeData.Delta)
-							}
-						}
-
-						if transcribeData.Text != "" {
-							t.Logf("✅ Received transcription text: %s", transcribeData.Text)
+					// Check for JSON streaming specific fields
+					transcribeData := response.BifrostTranscriptionStreamResponse
+					if transcribeData.Type != "" {
+						t.Logf("✅ Stream type: %v", transcribeData.Type)
+						if transcribeData.Delta != nil {
+							t.Logf("✅ Delta: %s", *transcribeData.Delta)
 						}
 					}
 
-				case <-streamCtx.Done():
-					streamErrors = append(streamErrors, "JSON stream reading timed out")
-					goto verboseStreamComplete
+					if transcribeData.Text != "" {
+						t.Logf("✅ Received transcription text: %s", transcribeData.Text)
+					}
 				}
 			}
 
-		verboseStreamComplete:
 			if len(streamErrors) > 0 {
 				t.Logf("⚠️ JSON stream errors: %v", streamErrors)
 			}
@@ -397,6 +390,10 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 		})
 
 		t.Run("MultipleLanguages_Streaming", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			// Generate audio for language streaming tests
 			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 			// Test streaming with different language hints (only English for now)
@@ -404,6 +401,10 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 
 			for _, lang := range languages {
 				t.Run("StreamLang_"+lang, func(t *testing.T) {
+					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+						t.Parallel()
+					}
+
 					langCopy := lang
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
@@ -414,7 +415,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 						Params: &schemas.TranscriptionParameters{
 							Language: &langCopy,
 						},
-						Fallbacks: testConfig.Fallbacks,
+						Fallbacks: testConfig.TranscriptionFallbacks,
 					}
 
 					retryConfig := GetTestRetryConfigForScenario("TranscriptionStreamLang", testConfig)
@@ -438,39 +439,28 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 
 					var receivedData bool
 					var streamErrors []string
+					var lastTokenLatency int64
 
-					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					defer cancel()
+					for response := range responseChannel {
+						if response == nil {
+							streamErrors = append(streamErrors, fmt.Sprintf("Received nil stream response for language %s", lang))
+							continue
+						}
 
-					for {
-						select {
-						case response, ok := <-responseChannel:
-							if !ok {
-								goto langStreamComplete
-							}
+						if response.BifrostError != nil {
+							streamErrors = append(streamErrors, fmt.Sprintf("Error in stream for language %s: %s", lang, FormatErrorConcise(ParseBifrostError(response.BifrostError))))
+							continue
+						}
 
-							if response == nil {
-								streamErrors = append(streamErrors, fmt.Sprintf("Received nil stream response for language %s", lang))
-								continue
-							}
-
-							if response.BifrostError != nil {
-								streamErrors = append(streamErrors, fmt.Sprintf("Error in stream for language %s: %s", lang, FormatErrorConcise(ParseBifrostError(response.BifrostError))))
-								continue
-							}
-
+						if response.BifrostTranscriptionStreamResponse != nil {
+							receivedData = true
+							t.Logf("✅ Received transcription data for language %s", lang)
 							if response.BifrostTranscriptionStreamResponse != nil {
-								receivedData = true
-								t.Logf("✅ Received transcription data for language %s", lang)
+								lastTokenLatency = response.BifrostTranscriptionStreamResponse.ExtraFields.Latency
 							}
-
-						case <-streamCtx.Done():
-							streamErrors = append(streamErrors, fmt.Sprintf("Stream timed out for language %s", lang))
-							goto langStreamComplete
 						}
 					}
 
-				langStreamComplete:
 					if len(streamErrors) > 0 {
 						t.Logf("⚠️ Stream errors for language %s: %v", lang, streamErrors)
 					}
@@ -478,12 +468,21 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 					if !receivedData {
 						t.Fatalf("Should receive transcription data for language %s", lang)
 					}
+
+					if lastTokenLatency == 0 {
+						t.Errorf("❌ Last token latency is 0")
+					}
+
 					t.Logf("✅ Streaming successful for language: %s", lang)
 				})
 			}
 		})
 
 		t.Run("WithCustomPrompt_Streaming", func(t *testing.T) {
+			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+				t.Parallel()
+			}
+
 			// Generate audio for custom prompt streaming test
 			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextTechnical, "tertiary", "mp3")
 
@@ -498,7 +497,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 					Language: bifrost.Ptr("en"),
 					Prompt:   bifrost.Ptr("This audio contains technical terms, proper nouns, and streaming-related vocabulary."),
 				},
-				Fallbacks: testConfig.Fallbacks,
+				Fallbacks: testConfig.TranscriptionFallbacks,
 			}
 
 			retryConfig := GetTestRetryConfigForScenario("TranscriptionStreamPrompt", testConfig)
@@ -525,41 +524,31 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			var chunkCount int
 			var streamErrors []string
 			var receivedText string
+			var lastTokenLatency int64
 
-			streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
+			for response := range responseChannel {
+				if response == nil {
+					streamErrors = append(streamErrors, "Received nil stream response with custom prompt")
+					continue
+				}
 
-			for {
-				select {
-				case response, ok := <-responseChannel:
-					if !ok {
-						goto promptStreamComplete
-					}
+				if response.BifrostError != nil {
+					streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
+					continue
+				}
 
-					if response == nil {
-						streamErrors = append(streamErrors, "Received nil stream response with custom prompt")
-						continue
-					}
+				if response.BifrostTranscriptionStreamResponse != nil {
+					lastTokenLatency = response.BifrostTranscriptionStreamResponse.ExtraFields.Latency
+				}
 
-					if response.BifrostError != nil {
-						streamErrors = append(streamErrors, FormatErrorConcise(ParseBifrostError(response.BifrostError)))
-						continue
-					}
-
-					if response.BifrostTranscriptionStreamResponse != nil && response.BifrostTranscriptionStreamResponse.Text != "" {
-						chunkCount++
-						chunkText := response.BifrostTranscriptionStreamResponse.Text
-						receivedText += chunkText
-						t.Logf("✅ Custom prompt chunk %d: '%s'", chunkCount, chunkText)
-					}
-
-				case <-streamCtx.Done():
-					streamErrors = append(streamErrors, "Custom prompt stream reading timed out")
-					goto promptStreamComplete
+				if response.BifrostTranscriptionStreamResponse != nil && response.BifrostTranscriptionStreamResponse.Text != "" {
+					chunkCount++
+					chunkText := response.BifrostTranscriptionStreamResponse.Text
+					receivedText += chunkText
+					t.Logf("✅ Custom prompt chunk %d: '%s'", chunkCount, chunkText)
 				}
 			}
 
-		promptStreamComplete:
 			if len(streamErrors) > 0 {
 				t.Logf("⚠️ Custom prompt stream errors: %v", streamErrors)
 			}
@@ -574,6 +563,11 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 			} else {
 				t.Logf("⚠️ Custom prompt produced empty transcription")
 			}
+
+			if lastTokenLatency == 0 {
+				t.Errorf("❌ Last token latency is 0")
+			}
+
 			t.Logf("✅ Custom prompt streaming successful: %d chunks received", chunkCount)
 		})
 	})

@@ -232,10 +232,10 @@ func main() {
 
     fmt.Println("Streaming JSON response:")
     for chunk := range stream {
-        if chunk.BifrostResponse != nil && len(chunk.BifrostResponse.Choices) > 0 {
-            choice := chunk.BifrostResponse.Choices[0]
-            if choice.BifrostStreamResponseChoice != nil && choice.BifrostStreamResponseChoice.Delta.Content != nil {
-                content := *choice.BifrostStreamResponseChoice.Delta.Content
+        if chunk.BifrostChatResponse != nil && len(chunk.BifrostChatResponse.Choices) > 0 {
+            choice := chunk.BifrostChatResponse.Choices[0]
+            if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+                content := *choice.ChatStreamResponseChoice.Delta.Content
                 fmt.Printf("Chunk: %s\n", content)
                 
                 // With JSON parser, you can parse each chunk immediately

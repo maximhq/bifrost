@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/maximhq/bifrost/tests/core-providers/config"
@@ -18,6 +19,10 @@ func RunTextCompletionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 	}
 
 	t.Run("TextCompletion", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		prompt := "In fruits, A is for apple and B is for"
 		request := &schemas.BifrostTextCompletionRequest{
 			Provider: testConfig.Provider,
@@ -25,7 +30,7 @@ func RunTextCompletionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			Input: &schemas.TextCompletionInput{
 				PromptStr: &prompt,
 			},
-			Fallbacks: testConfig.Fallbacks,
+			Fallbacks: testConfig.TextCompletionFallbacks,
 		}
 
 		// Use retry framework with enhanced validation

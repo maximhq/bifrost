@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,6 +20,10 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 	}
 
 	t.Run("End2EndToolCalling", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
 		// =============================================================================
 		// STEP 1: User asks for weather - Test both APIs in parallel
 		// =============================================================================
@@ -164,11 +169,11 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		}
 
 		// Enhanced validation for final response
-		expectations2 := ConversationExpectations([]string{"san francisco", "22", "sunny"})
+		expectations2 := ConversationExpectations([]string{"francisco", "22", "sunny"})
 		expectations2 = ModifyExpectationsForProvider(expectations2, testConfig.Provider)
-		expectations2.ShouldContainKeywords = []string{"san francisco", "22", "sunny"} // Should reference tool results
-		expectations2.ShouldNotContainWords = []string{"error", "failed", "cannot"}    // Should not contain error terms
-		expectations2.MinContentLength = 30                                            // Should be a substantial response
+		expectations2.ShouldContainKeywords = []string{"francisco", "22", "sunny"}  // Should reference tool results (using "francisco" to match both "San Francisco" and "san francisco")
+		expectations2.ShouldNotContainWords = []string{"error", "failed", "cannot"} // Should not contain error terms
+		expectations2.MinContentLength = 30                                         // Should be a substantial response
 
 		// Create operations for both APIs - Step 2
 		chatOperation2 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {

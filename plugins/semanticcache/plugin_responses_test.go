@@ -38,6 +38,13 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 
 	t.Logf("First request completed in %v", duration1)
 	t.Logf("Response contains %d output messages", len(response1.ResponsesResponse.Output))
+	if c := response1.ResponsesResponse.Output[0].Content; c != nil && c.ContentStr != nil {
+		t.Logf("Response: %s", *c.ContentStr)
+	} else if c != nil && len(c.ContentBlocks) > 0 && c.ContentBlocks[0].Text != nil {
+		t.Logf("Response: %s", *c.ContentBlocks[0].Text)
+	} else {
+		t.Log("Response: <no text>")
+	}
 
 	// Wait for cache to be written
 	WaitForCache()
@@ -55,6 +62,11 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 
 	if response2 == nil || len(response2.Output) == 0 {
 		t.Fatal("Second Responses response is invalid")
+	}
+	if response2.Output[0].Content.ContentStr != nil {
+		t.Logf("Response: %s", *response2.Output[0].Content.ContentStr)
+	} else {
+		t.Logf("Response: %v", *response2.Output[0].Content.ContentBlocks[0].Text)
 	}
 
 	t.Logf("Second request completed in %v", duration2)
@@ -334,7 +346,7 @@ func TestResponsesAPINoStoreFlag(t *testing.T) {
 // TestResponsesAPIStreaming tests streaming Responses API requests
 func TestResponsesAPIStreaming(t *testing.T) {
 	t.Log("Responses streaming not supported yet")
-	
+
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

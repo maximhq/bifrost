@@ -119,6 +119,56 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 									<LogEntryDetailsView className="w-full" label="Prompt Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Completion Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
+									{log.token_usage?.prompt_tokens_details && (
+										<>
+											{log.token_usage.prompt_tokens_details.cached_tokens && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Cached Tokens"
+													value={log.token_usage.prompt_tokens_details.cached_tokens || "-"}
+												/>
+											)}
+											{log.token_usage.prompt_tokens_details.audio_tokens && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Input Audio Tokens"
+													value={log.token_usage.prompt_tokens_details.audio_tokens || "-"}
+												/>
+											)}
+										</>
+									)}
+									{log.token_usage?.completion_tokens_details && (
+										<>
+											{log.token_usage.completion_tokens_details.reasoning_tokens && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Reasoning Tokens"
+													value={log.token_usage.completion_tokens_details.reasoning_tokens || "-"}
+												/>
+											)}
+											{log.token_usage.completion_tokens_details.audio_tokens && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Output Audio Tokens"
+													value={log.token_usage.completion_tokens_details.audio_tokens || "-"}
+												/>
+											)}
+											{log.token_usage.completion_tokens_details.accepted_prediction_tokens && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Accepted Prediction Tokens"
+													value={log.token_usage.completion_tokens_details.accepted_prediction_tokens || "-"}
+												/>
+											)}
+											{log.token_usage.completion_tokens_details.rejected_prediction_tokens && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Rejected Prediction Tokens"
+													value={log.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"}
+												/>
+											)}
+										</>
+									)}
 								</div>
 							</div>
 							{log.cache_debug && (
