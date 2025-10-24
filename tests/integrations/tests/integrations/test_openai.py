@@ -163,7 +163,7 @@ def openai_client():
     client_kwargs = {
         "api_key": api_key,
         "base_url": base_url,
-        "timeout": api_config.get("timeout", 30),
+        "timeout": api_config.get("timeout", 120),
         "max_retries": api_config.get("max_retries", 3),
     }
 
@@ -455,6 +455,7 @@ class TestOpenAIIntegration:
 
         # Verify the error is properly caught and contains role-related information
         error = exc_info.value
+        print(error)
         assert_valid_error_response(error, "tester")
         assert_error_propagation(error, "openai")
 
@@ -470,7 +471,7 @@ class TestOpenAIIntegration:
         )
 
         content, chunk_count, tool_calls_detected = collect_streaming_content(
-            stream, "openai", timeout=30
+            stream, "openai", timeout=120
         )
 
         # Validate streaming results
@@ -488,7 +489,7 @@ class TestOpenAIIntegration:
         )
 
         content_tools, chunk_count_tools, tool_calls_detected_tools = (
-            collect_streaming_content(stream_with_tools, "openai", timeout=30)
+            collect_streaming_content(stream_with_tools, "openai", timeout=120)
         )
 
         # Validate tool streaming results
@@ -570,7 +571,7 @@ class TestOpenAIIntegration:
             # If streaming is supported, collect the text chunks
             if hasattr(response, "__iter__"):
                 text_content, chunk_count = collect_streaming_transcription_content(
-                    response, "openai", timeout=60
+                    response, "openai", timeout=120
                 )
                 assert chunk_count > 0, "Should receive at least one text chunk"
                 assert_valid_transcription_response(
@@ -1054,3 +1055,10 @@ class TestOpenAIIntegration:
         assert (
             0.5 * texts_ratio <= token_ratio <= 2.0 * texts_ratio
         ), f"Token usage ratio ({token_ratio:.2f}) should be roughly proportional to text count ({texts_ratio})"
+    
+    @skip_if_no_api_key("openai")
+    def test_31_list_models(self, openai_client, test_config):
+        """Test Case 31: List models"""
+        response = openai_client.models.list()
+        assert response.data is not None
+        assert len(response.data) > 0

@@ -421,7 +421,52 @@ func ToGeminiChatResponse(bifrostResp *schemas.BifrostChatResponse) *GenerateCon
 
 			// Convert message content to Gemini parts
 			var parts []*Part
-			if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+			var role string
+
+			// Handle streaming responses
+			if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+				delta := choice.ChatStreamResponseChoice.Delta
+
+				// Set role from delta if available
+				if delta.Role != nil {
+					role = *delta.Role
+				} else {
+					role = "model" // Default role for streaming responses
+				}
+
+				// Handle content text
+				if delta.Content != nil && *delta.Content != "" {
+					parts = append(parts, &Part{Text: *delta.Content})
+				}
+
+				// Handle tool calls in streaming
+				if delta.ToolCalls != nil {
+					for _, toolCall := range delta.ToolCalls {
+						argsMap := make(map[string]interface{})
+						if toolCall.Function.Arguments != "" {
+							json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
+						}
+						if toolCall.Function.Name != nil {
+							fc := &FunctionCall{
+								Name: *toolCall.Function.Name,
+								Args: argsMap,
+							}
+							if toolCall.ID != nil {
+								fc.ID = *toolCall.ID
+							}
+							parts = append(parts, &Part{FunctionCall: fc})
+						}
+					}
+				}
+
+				if len(parts) > 0 {
+					candidate.Content = &Content{
+						Parts: parts,
+						Role:  role,
+					}
+				}
+			} else if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+				// Handle non-streaming responses
 				if choice.ChatNonStreamResponseChoice.Message.Content != nil {
 					if choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil && *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != "" {
 						parts = append(parts, &Part{Text: *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr})

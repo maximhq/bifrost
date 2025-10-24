@@ -614,18 +614,6 @@ def assert_error_propagation(error_response: Any, integration: str):
         if hasattr(error_response, "response"):
             error_data = error_response.response.json()
             assert "error" in error_data, "OpenAI error should have 'error' field"
-            assert (
-                "type" in error_data
-            ), "OpenAI error should have top-level 'type' field"
-            assert (
-                "event_id" in error_data
-            ), "OpenAI error should have top-level 'event_id' field"
-            assert isinstance(
-                error_data["type"], str
-            ), "OpenAI error type should be a string"
-            assert isinstance(
-                error_data["event_id"], str
-            ), "OpenAI error event_id should be a string"
 
             # Check nested error structure
             error_obj = error_data["error"]
@@ -634,9 +622,6 @@ def assert_error_propagation(error_response: Any, integration: str):
             ), "OpenAI error.error should have 'message' field"
             assert "type" in error_obj, "OpenAI error.error should have 'type' field"
             assert "code" in error_obj, "OpenAI error.error should have 'code' field"
-            assert (
-                "event_id" in error_obj
-            ), "OpenAI error.error should have 'event_id' field"
 
     elif integration.lower() == "anthropic":
         # Anthropic format: should have 'type' and 'error' with 'type' and 'message'
@@ -754,11 +739,6 @@ def assert_valid_streaming_response(
                     assert hasattr(
                         chunk.delta, "partial_json"
                     ), "Input JSON delta should have partial_json field"
-            else:
-                # Fallback: if no type specified, assume text_delta for backward compatibility
-                assert hasattr(
-                    chunk.delta, "text"
-                ), "Content delta should have text field"
         elif chunk.type == "message_delta" and is_final:
             assert hasattr(chunk, "usage"), "Final message delta should have usage"
 

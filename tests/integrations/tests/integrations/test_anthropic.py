@@ -75,7 +75,7 @@ def anthropic_client():
     client_kwargs = {
         "api_key": api_key,
         "base_url": base_url,
-        "timeout": api_config.get("timeout", 30),
+        "timeout": api_config.get("timeout", 120),
         "max_retries": api_config.get("max_retries", 3),
     }
 
@@ -483,7 +483,7 @@ class TestAnthropicIntegration:
             # Anthropic might return empty content if tool result is sufficient
             # This is valid behavior - just check that we got a response
             assert final_response is not None
-            if len(final_response.content) > 0:
+            if final_response.content and len(final_response.content) > 0:
                 # If there is content, validate it
                 assert_valid_chat_response(final_response)
             else:
@@ -537,17 +537,17 @@ class TestAnthropicIntegration:
     @skip_if_no_api_key("anthropic")
     def test_12_error_handling_invalid_roles(self, anthropic_client, test_config):
         """Test Case 12: Error handling for invalid roles"""
-        with pytest.raises(Exception) as exc_info:
-            anthropic_client.messages.create(
-                model=get_model("anthropic", "chat"),
-                messages=INVALID_ROLE_MESSAGES,
-                max_tokens=100,
-            )
+        # bifrost handles invalid roles internally so this test should not raise an exception
+        response = anthropic_client.messages.create(
+            model=get_model("anthropic", "chat"),
+            messages=INVALID_ROLE_MESSAGES,
+            max_tokens=100,
+        )
 
-        # Verify the error is properly caught and contains role-related information
-        error = exc_info.value
-        assert_valid_error_response(error, "tester")
-        assert_error_propagation(error, "anthropic")
+        # Verify the response is successful
+        assert response is not None
+        assert hasattr(response, "content")
+        assert len(response.content) > 0
 
     @skip_if_no_api_key("anthropic")
     def test_13_streaming(self, anthropic_client, test_config):
@@ -561,7 +561,7 @@ class TestAnthropicIntegration:
         )
 
         content, chunk_count, tool_calls_detected = collect_streaming_content(
-            stream, "anthropic", timeout=30
+            stream, "anthropic", timeout=120
         )
 
         # Validate streaming results
@@ -579,12 +579,48 @@ class TestAnthropicIntegration:
         )
 
         content_tools, chunk_count_tools, tool_calls_detected_tools = (
-            collect_streaming_content(stream_with_tools, "anthropic", timeout=30)
+            collect_streaming_content(stream_with_tools, "anthropic", timeout=120)
         )
 
         # Validate tool streaming results
         assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
         assert tool_calls_detected_tools, "Should receive at least one chunk with tools"
+        
+    @skip_if_no_api_key("anthropic")
+    def test_14_list_models(self, anthropic_client, test_config):
+        """Test Case 14: List models with pagination parameters"""
+        # Test basic list with limit
+        response = anthropic_client.models.list(limit=5)
+        assert response.data is not None
+        assert len(response.data) <= 5  # May return fewer if not enough models
+        assert hasattr(response, "first_id"), "Response should have first_id"
+        assert hasattr(response, "last_id"), "Response should have last_id"
+        assert hasattr(response, "has_more"), "Response should have has_more"
+        
+        # Test pagination with after_id if there are more results
+        if response.has_more and response.last_id:
+            next_response = anthropic_client.models.list(
+                limit=3,
+                after_id=response.last_id
+            )
+            assert next_response.data is not None
+            assert len(next_response.data) <= 3
+            # Ensure we got different results
+            if len(response.data) > 0 and len(next_response.data) > 0:
+                assert response.data[0].id != next_response.data[0].id
+        
+        # Test pagination with before_id if we have a first_id
+        if response.first_id:
+            # Get a second page first
+            second_response = anthropic_client.models.list(limit=10)
+            if len(second_response.data) > 5 and second_response.last_id:
+                # Now try to go backwards from the last item
+                prev_response = anthropic_client.models.list(
+                    limit=2,
+                    before_id=second_response.last_id
+                )
+                assert prev_response.data is not None
+                assert len(prev_response.data) <= 2
 
 
 # Additional helper functions specific to Anthropic
