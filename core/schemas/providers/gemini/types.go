@@ -1249,3 +1249,27 @@ type GeminiGenerationError struct {
 		} `json:"details"`
 	} `json:"error"`
 }
+
+// ==================== MODEL TYPES ====================
+
+type GeminiModel struct {
+	Name                       string   `json:"name"`
+	BaseModelID                string   `json:"baseModelId"`
+	Version                    string   `json:"version"`
+	DisplayName                string   `json:"displayName"`
+	Description                string   `json:"description"`
+	InputTokenLimit            int      `json:"inputTokenLimit"`
+	OutputTokenLimit           int      `json:"outputTokenLimit"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+	Thinking                   bool     `json:"thinking"`
+	Temperature                float64  `json:"temperature"`
+	MaxTemperature             float64  `json:"maxTemperature"`
+	TopP                       float64  `json:"topP"`
+	TopK                       int      `json:"topK"`
+}
+
+// GeminiListModelsResponse represents the response from Google Gemini's list models API.
+type GeminiListModelsResponse struct {
+	Models        []GeminiModel `json:"models"`
+	NextPageToken string        `json:"nextPageToken"`
+}

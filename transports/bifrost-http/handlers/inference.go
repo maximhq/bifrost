@@ -274,6 +274,9 @@ const (
 
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+	// Model endpoints
+	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+
 	// Completion endpoints
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, middlewares...))
 	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, middlewares...))
@@ -281,6 +284,64 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
+}
+
+// listModels handles GET /v1/models - Process list models requests
+// If provider is not specified, lists all models from all configured providers
+func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+
+	// Convert context
+	bifrostCtx := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context", h.logger)
+		return
+	}
+
+	var resp *schemas.BifrostListModelsResponse
+	var bifrostErr *schemas.BifrostError
+
+	pageSize := 0
+	if pageSizeStr := ctx.QueryArgs().Peek("page_size"); len(pageSizeStr) > 0 {
+		if n, err := strconv.Atoi(string(pageSizeStr)); err == nil && n >= 0 {
+			pageSize = n
+		}
+	}
+	pageToken := string(ctx.QueryArgs().Peek("page_token"))
+
+	bifrostListModelsReq := &schemas.BifrostListModelsRequest{
+		Provider:  schemas.ModelProvider(provider),
+		PageSize:  pageSize,
+		PageToken: pageToken,
+	}
+
+	// Pass-through unknown query params for provider-specific features
+	extraParams := map[string]interface{}{}
+	for k, v := range ctx.QueryArgs().All() {
+		s := string(k)
+		if s != "provider" && s != "page_size" && s != "page_token" {
+			extraParams[s] = string(v)
+		}
+	}
+	if len(extraParams) > 0 {
+		bifrostListModelsReq.ExtraParams = extraParams
+	}
+
+	// If provider is empty, list all models from all providers
+	if provider == "" {
+		resp, bifrostErr = h.client.ListAllModels(*bifrostCtx, bifrostListModelsReq)
+	} else {
+		resp, bifrostErr = h.client.ListModelsRequest(*bifrostCtx, bifrostListModelsReq)
+	}
+
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr, h.logger)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, resp, h.logger)
 }
 
 // textCompletion handles POST /v1/completions - Process text completion requests

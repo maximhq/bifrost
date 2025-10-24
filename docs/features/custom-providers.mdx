@@ -61,6 +61,7 @@ curl --location 'http://localhost:8080/api/providers' \
     "custom_provider_config": {
         "base_provider_type": "openai",
         "allowed_requests": {
+            "list_models": false,
             "text_completion": false,
             "chat_completion": true,
             "chat_completion_stream": true,
@@ -92,6 +93,7 @@ curl --location 'http://localhost:8080/api/providers' \
             "custom_provider_config": {
                 "base_provider_type": "openai",
                 "allowed_requests": {
+                    "list_models": false,
                     "text_completion": false,
                     "chat_completion": true,
                     "chat_completion_stream": true,

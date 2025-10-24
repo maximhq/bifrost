@@ -85,24 +85,25 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 
 The following table summarizes which operations are supported by each provider via Bifrost’s unified interface.
 
-| Provider | Text | Text (stream) | Chat | Chat (stream) | Responses | Responses (stream) | Embeddings | TTS | TTS (stream) | STT | STT (stream) |
-|----------|------|----------------|------|---------------|-----------|--------------------|------------|-----|-------------|-----|--------------|
-| Anthropic (`anthropic/<model>`) | Yes | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Azure OpenAI (`azure/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Bedrock (`bedrock/<model>`) | Yes | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Cerebras (`cerebras/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Cohere (`cohere/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Gemini (`gemini/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Groq (`groq/<model>`) | No | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Mistral (`mistral/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Ollama (`ollama/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| OpenAI (`openai/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenRouter (`openrouter/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| Parasail (`parasail/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
-| SGL (`sgl/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
-| Vertex AI (`vertex/<model>`) | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Provider | Models | Text | Text (stream) | Chat | Chat (stream) | Responses | Responses (stream) | Embeddings | TTS | TTS (stream) | STT | STT (stream) |
+|----------|--------|------|----------------|------|---------------|-----------|--------------------|------------|-----|-------------|-----|--------------|
+| Anthropic (`anthropic/<model>`) | Yes | Yes | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Azure OpenAI (`azure/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Bedrock (`bedrock/<model>`) | Yes | Yes | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Cerebras (`cerebras/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Cohere (`cohere/<model>`) | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Gemini (`gemini/<model>`) | Yes | No | No | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Groq (`groq/<model>`) | Yes | No | No | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Mistral (`mistral/<model>`) | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Ollama (`ollama/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| OpenAI (`openai/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| OpenRouter (`openrouter/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| Parasail (`parasail/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No |
+| SGL (`sgl/<model>`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
+| Vertex AI (`vertex/<model>`) | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No |
 
 Notes:
+- “Models” refers to the list models operation (`/v1/models`).
 - “Text” refers to the classic text completion interface (`/v1/completions`).
 - “Responses” refers to the OpenAI-style Responses API (`/v1/responses`). Non-OpenAI providers map this to their native chat API under the hood.
 - TTS corresponds to `/v1/audio/speech` and STT to `/v1/audio/transcriptions`.

@@ -65,6 +65,7 @@ export const DEFAULT_ALLOWED_REQUESTS = {
 	speech_stream: true,
 	transcription: true,
 	transcription_stream: true,
+	list_models: true,
 } as const satisfies Required<AllowedRequests>;
 
 export const IS_ENTERPRISE = process.env.NEXT_PUBLIC_IS_ENTERPRISE === "true";

@@ -45,6 +45,7 @@ export function ApiStructureFormFragment({ provider, showRestartAlert }: Props) 
 				speech_stream: provider.custom_provider_config?.allowed_requests?.speech_stream ?? true,
 				transcription: provider.custom_provider_config?.allowed_requests?.transcription ?? true,
 				transcription_stream: provider.custom_provider_config?.allowed_requests?.transcription_stream ?? true,
+				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
 			},
 		},
 	});

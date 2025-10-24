@@ -10,6 +10,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/azure"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
@@ -88,7 +89,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
-			apiVersion = schemas.Ptr("2024-02-01")
+			apiVersion = schemas.Ptr(azure.DefaultAzureAPIVersion)
 		}
 
 		url = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", url, deployment, path, *apiVersion)
@@ -106,7 +107,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(url)
-	req.Header.SetMethod("POST")
+	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
@@ -141,6 +142,97 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	bodyCopy := append([]byte(nil), resp.Body()...)
 
 	return bodyCopy, latency, nil
+}
+
+// ListModels performs a list models request to Azure's API.
+// It retrieves all models accessible by the Azure OpenAI resource
+func (provider *AzureProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	// Validate Azure key configuration
+	if key.AzureKeyConfig == nil {
+		return nil, newConfigurationError("azure key config not set", schemas.Azure)
+	}
+
+	if key.AzureKeyConfig.Endpoint == "" {
+		return nil, newConfigurationError("endpoint not set", schemas.Azure)
+	}
+
+	// Get API version
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr(azure.DefaultAzureAPIVersion)
+	}
+
+	// Construct URL - list models is a resource-level operation, doesn't require deployment
+	url := fmt.Sprintf("%s/openai/models?api-version=%s", key.AzureKeyConfig.Endpoint, *apiVersion)
+
+	// Create the request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	// Set Azure authentication - either Bearer token or api-key
+	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
+		// Ensure api-key is not accidentally present (from extra headers, etc.)
+		req.Header.Del("api-key")
+	} else {
+		req.Header.Set("api-key", key.Value)
+	}
+
+	// Send the request and measure latency
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from azure provider: %s", string(resp.Body())))
+
+		var errorResp map[string]interface{}
+
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = fmt.Sprintf("%s error: %v", schemas.Azure, errorResp)
+
+		return nil, bifrostErr
+	}
+
+	// Read the response body and copy it before releasing the response
+	// to avoid use-after-free since resp.Body() references fasthttp's internal buffer
+	responseBody := append([]byte(nil), resp.Body()...)
+
+	// Parse Azure-specific response
+	azureResponse := &azure.AzureListModelsResponse{}
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, azureResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert to Bifrost response
+	response := azureResponse.ToBifrostListModelsResponse()
+	if response == nil {
+		return nil, newBifrostOperationError("failed to convert Azure model list response", nil, schemas.Azure)
+	}
+
+	response = response.ApplyPagination(request.PageSize, request.PageToken)
+
+	response.ExtraFields.Provider = schemas.Azure
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // TextCompletion performs a text completion request to Azure's API.
@@ -202,7 +294,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHoo
 
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
-			apiVersion = schemas.Ptr("2024-02-01")
+			apiVersion = schemas.Ptr(azure.DefaultAzureAPIVersion)
 		}
 
 		fullURL = fmt.Sprintf("%s/openai/deployments/%s/completions?api-version=%s", baseURL, deployment, *apiVersion)
@@ -298,7 +390,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
-			apiVersion = schemas.Ptr("2024-02-01")
+			apiVersion = schemas.Ptr(azure.DefaultAzureAPIVersion)
 		}
 
 		fullURL = fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", baseURL, deployment, *apiVersion)

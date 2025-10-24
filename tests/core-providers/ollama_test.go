@@ -39,6 +39,7 @@ func TestOllama(t *testing.T) {
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			Embedding:             false,
+			ListModels:            true,
 		},
 	}
 

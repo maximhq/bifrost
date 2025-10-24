@@ -155,7 +155,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(url)
-	req.Header.SetMethod("POST")
+	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", provider.apiVersion)
@@ -186,6 +186,73 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	bodyCopy := append([]byte(nil), resp.Body()...)
 
 	return bodyCopy, latency, nil
+}
+
+// ListModels performs a list models request to Anthropic's API.
+func (provider *AnthropicProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Build URL using centralized URL construction
+	requestURL := anthropic.ToAnthropicListModelsURL(request, provider.networkConfig.BaseURL+"/v1/models")
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("x-api-key", key.Value)
+	req.Header.Set("anthropic-version", provider.apiVersion)
+
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
+
+		var errorResp anthropic.AnthropicError
+
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Type = &errorResp.Error.Type
+		bifrostErr.Error.Message = errorResp.Error.Message
+
+		return nil, bifrostErr
+	}
+
+	// Parse Anthropic's response
+	var anthropicResponse anthropic.AnthropicListModelsResponse
+	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &anthropicResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create final response
+	response := anthropicResponse.ToBifrostListModelsResponse(providerName)
+
+	// Set ExtraFields
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // TextCompletion performs a text completion request to Anthropic's API.
@@ -345,7 +412,7 @@ func handleAnthropicChatCompletionStreaming(
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -593,7 +660,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v1/messages", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v1/messages", bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{

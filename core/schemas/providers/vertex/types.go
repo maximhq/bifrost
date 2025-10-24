@@ -1,12 +1,14 @@
 package vertex
 
+import "time"
+
 // Vertex AI Embedding API types
 
 // VertexEmbeddingInstance represents a single embedding instance in the request
 type VertexEmbeddingInstance struct {
-	Content  string                   `json:"content"`             // The text to generate embeddings for
+	Content  string  `json:"content"`             // The text to generate embeddings for
 	TaskType *string `json:"task_type,omitempty"` // Intended downstream application (optional)
-	Title    *string                  `json:"title,omitempty"`     // Used to help the model produce better embeddings (optional)
+	Title    *string `json:"title,omitempty"`     // Used to help the model produce better embeddings (optional)
 }
 
 // VertexEmbeddingParameters represents the parameters for the embedding request
@@ -41,4 +43,22 @@ type VertexEmbeddingPrediction struct {
 // VertexEmbeddingResponse represents the complete embedding response from Vertex AI
 type VertexEmbeddingResponse struct {
 	Predictions []VertexEmbeddingPrediction `json:"predictions"` // List of embedding predictions
+}
+
+// ================================ Model Types ================================
+
+const DefaultPageSize = 100
+
+type VertexModel struct {
+	Name              string    `json:"name"`
+	VersionId         string    `json:"versionId"`
+	VersionAliases    []string  `json:"versionAliases"`
+	VersionCreateTime time.Time `json:"versionCreateTime"`
+	DisplayName       string    `json:"displayName"`
+	Description       string    `json:"description"`
+}
+
+type VertexListModelsResponse struct {
+	Models        []VertexModel `json:"models"`
+	NextPageToken string        `json:"nextPageToken"`
 }

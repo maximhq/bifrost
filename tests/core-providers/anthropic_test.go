@@ -43,6 +43,7 @@ func TestAnthropic(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             false,
 			Reasoning:             true,
+			ListModels:            true,
 		},
 	}
 

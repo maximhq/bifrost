@@ -37,6 +37,7 @@ type TestScenarios struct {
 	TranscriptionStream   bool // Streaming speech-to-text functionality
 	Embedding             bool // Embedding functionality
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
+	ListModels            bool // List available models functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -179,10 +180,9 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 					Deployments: map[string]string{
 						"text-embedding-ada-002": "text-embedding-ada-002",
 					},
-					// Use environment variable for API version with fallback to current preview version
-					// Note: This is a preview API version that may change over time. Update as needed.
+					// Use environment variable for API version with fallback to current stable version
 					// Set AZURE_API_VERSION environment variable to override the default.
-					APIVersion: bifrost.Ptr(getEnvWithDefault("AZURE_API_VERSION", "2024-08-01-preview")),
+					APIVersion: bifrost.Ptr(getEnvWithDefault("AZURE_API_VERSION", "2024-10-21")),
 				},
 			},
 		}, nil
@@ -500,6 +500,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   true, // OpenAI supports streaming STT
 			Embedding:             true,
 			Reasoning:             true, // OpenAI supports reasoning via o1 models
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -527,6 +528,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -554,6 +556,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -581,6 +584,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -608,6 +612,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported yet
 			TranscriptionStream:   false, // Not supported yet
 			Embedding:             true,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -635,6 +640,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -661,6 +667,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -688,6 +695,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -715,6 +723,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -742,6 +751,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -772,6 +782,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         true,
 			TranscriptionStream:   true,
 			Embedding:             true,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -799,6 +810,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false,
 			TranscriptionStream:   false,
 			Embedding:             false,
+			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

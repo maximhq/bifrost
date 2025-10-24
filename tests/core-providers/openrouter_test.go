@@ -39,6 +39,7 @@ func TestOpenRouter(t *testing.T) {
 			ImageBase64:           false, // OpenRouter's responses API is in Beta
 			MultipleImages:        false, // OpenRouter's responses API is in Beta
 			CompleteEnd2End:       false, // OpenRouter's responses API is in Beta
+			ListModels:            true,
 		},
 	}
 

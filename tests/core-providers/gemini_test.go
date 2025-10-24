@@ -50,6 +50,7 @@ func TestGemini(t *testing.T) {
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
 			Reasoning:             false, //TODO: Supported but lost since we map Gemini's responses via chat completions, fix is a native Gemini handler or reasoning support in chat completions
+			ListModels:            true,
 		},
 	}
 

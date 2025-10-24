@@ -124,3 +124,20 @@ func (r *OpenAISpeechRequest) IsStreamingRequested() bool {
 func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
+
+// MODEL TYPES
+type OpenAIModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+	Created *int64  `json:"created,omitempty"`
+
+	// GROQ specific fields
+	Active        *bool `json:"active,omitempty"`
+	ContextWindow *int  `json:"context_window,omitempty"`
+}
+
+type OpenAIListModelsResponse struct {
+	Object string        `json:"object"`
+	Data   []OpenAIModel `json:"data"`
+}
