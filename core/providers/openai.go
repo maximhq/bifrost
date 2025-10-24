@@ -143,12 +143,7 @@ func handleOpenAITextCompletionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-
-		var errorResp map[string]interface{}
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("%s error: %v", providerName, errorResp)
-		return nil, bifrostErr
+		return nil, parseOpenAIError(resp, schemas.TextCompletionRequest, providerName, request.Model)
 	}
 
 	responseBody := resp.Body()
@@ -282,7 +277,7 @@ func handleOpenAITextCompletionStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseStreamOpenAIError(resp)
+		return nil, parseStreamOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -331,22 +326,13 @@ func handleOpenAITextCompletionStreaming(
 			}
 
 			// First, check if this is an error response
-			var errorCheck map[string]interface{}
-			if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream data as JSON: %v", err))
-				continue
-			}
-
-			// Handle error responses
-			if _, hasError := errorCheck["error"]; hasError {
-				bifrostErr, err := parseOpenAIErrorForStreamDataLine(jsonData, schemas.TextCompletionStreamRequest, providerName, request.Model)
-				if err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
-					continue
+			var bifrostErr schemas.BifrostError
+			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+					processAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
+					return
 				}
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
-				return
 			}
 
 			// Parse into bifrost response
@@ -500,7 +486,7 @@ func handleOpenAIChatCompletionRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseOpenAIError(resp)
+		return nil, parseOpenAIError(resp, schemas.ChatCompletionRequest, providerName, request.Model)
 	}
 
 	responseBody := resp.Body()
@@ -641,7 +627,7 @@ func handleOpenAIChatCompletionStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseStreamOpenAIError(resp)
+		return nil, parseStreamOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -691,23 +677,13 @@ func handleOpenAIChatCompletionStreaming(
 			}
 
 			// First, check if this is an error response
-			//TODO: FIX THIS WITHING RESPONSE STRUCT
-			var errorCheck map[string]interface{}
-			if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream data as JSON: %v", err))
-				continue
-			}
-
-			// Handle error responses
-			if _, hasError := errorCheck["error"]; hasError {
-				bifrostErr, err := parseOpenAIErrorForStreamDataLine(jsonData, schemas.ChatCompletionStreamRequest, providerName, request.Model)
-				if err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
-					continue
+			var bifrostErr schemas.BifrostError
+			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+					processAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
+					return
 				}
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
-				return
 			}
 
 			// Parse into bifrost response
@@ -862,7 +838,7 @@ func handleOpenAIResponsesRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseOpenAIError(resp)
+		return nil, parseOpenAIError(resp, schemas.ResponsesRequest, providerName, request.Model)
 	}
 
 	responseBody := resp.Body()
@@ -909,6 +885,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }
@@ -925,11 +902,15 @@ func handleOpenAIResponsesStreaming(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
+	postRequestConverter func(*openai.OpenAIResponsesRequest) *openai.OpenAIResponsesRequest,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	reqBody := openai.ToOpenAIResponsesRequest(request)
 	if reqBody == nil {
 		return nil, newBifrostOperationError("responses input is not provided", nil, providerName)
+	}
+	if postRequestConverter != nil {
+		reqBody = postRequestConverter(reqBody)
 	}
 	reqBody.Stream = schemas.Ptr(true)
 
@@ -998,7 +979,7 @@ func handleOpenAIResponsesStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseStreamOpenAIError(resp)
+		return nil, parseStreamOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -1185,7 +1166,7 @@ func handleOpenAIEmbeddingRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseOpenAIError(resp)
+		return nil, parseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model)
 	}
 
 	responseBody := resp.Body()
@@ -1257,7 +1238,7 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseOpenAIError(resp)
+		return nil, parseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model)
 	}
 
 	// Get the binary audio data from the response body
@@ -1357,7 +1338,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseStreamOpenAIError(resp)
+		return nil, parseStreamOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -1403,22 +1384,13 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			}
 
 			// First, check if this is an error response
-			var errorCheck map[string]interface{}
-			if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse stream data as JSON: %v", err))
-				continue
-			}
-
-			// Handle error responses
-			if _, hasError := errorCheck["error"]; hasError {
-				bifrostErr, err := parseOpenAIErrorForStreamDataLine(jsonData, schemas.SpeechStreamRequest, providerName, request.Model)
-				if err != nil {
-					provider.logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
-					continue
+			var bifrostErr schemas.BifrostError
+			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+					processAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
+					return
 				}
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-				return
 			}
 
 			// Parse into bifrost response
@@ -1512,7 +1484,7 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseOpenAIError(resp)
+		return nil, parseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
 	}
 
 	responseBody := resp.Body()
@@ -1624,7 +1596,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseStreamOpenAIError(resp)
+		return nil, parseStreamOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -1669,22 +1641,13 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			}
 
 			// First, check if this is an error response
-			var errorCheck map[string]interface{}
-			if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse stream data as JSON: %v", err))
-				continue
-			}
-
-			// Handle error responses
-			if _, hasError := errorCheck["error"]; hasError {
-				bifrostErr, err := parseOpenAIErrorForStreamDataLine(jsonData, schemas.TranscriptionStreamRequest, providerName, request.Model)
-				if err != nil {
-					provider.logger.Warn(fmt.Sprintf("Failed to parse error response: %v", err))
-					continue
+			var bifrostErr schemas.BifrostError
+			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+					processAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
+					return
 				}
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-				return
 			}
 
 			var response schemas.BifrostTranscriptionStreamResponse
@@ -1778,7 +1741,7 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 }
 
 // parseOpenAIError parses OpenAI error responses.
-func parseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
 
 	bifrostErr := handleProviderAPIError(resp, &errorResp)
@@ -1798,13 +1761,18 @@ func parseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 		if errorResp.Error.EventID != nil {
 			bifrostErr.Error.EventID = errorResp.Error.EventID
 		}
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       providerName,
+			ModelRequested: model,
+			RequestType:    requestType,
+		}
 	}
 
 	return bifrostErr
 }
 
 // parseStreamOpenAIError parses OpenAI streaming error responses.
-func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
+func parseStreamOpenAIError(resp *http.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
 
 	statusCode := resp.StatusCode
@@ -1842,40 +1810,12 @@ func parseStreamOpenAIError(resp *http.Response) *schemas.BifrostError {
 		if errorResp.Error.EventID != nil {
 			bifrostErr.Error.EventID = errorResp.Error.EventID
 		}
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       providerName,
+			ModelRequested: model,
+			RequestType:    requestType,
+		}
 	}
 
 	return bifrostErr
-}
-
-// parseOpenAIErrorForStreamDataLine parses OpenAI error responses from a stream data line.
-func parseOpenAIErrorForStreamDataLine(jsonData string, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) (*schemas.BifrostError, error) {
-	var openAIError schemas.BifrostError
-	if err := sonic.Unmarshal([]byte(jsonData), &openAIError); err != nil {
-		return nil, err
-	}
-
-	// Send error through channel
-	bifrostErr := &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: &schemas.ErrorField{
-			Type:    openAIError.Error.Type,
-			Code:    openAIError.Error.Code,
-			Message: openAIError.Error.Message,
-			Param:   openAIError.Error.Param,
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType:    requestType,
-			Provider:       providerName,
-			ModelRequested: model,
-		},
-	}
-
-	if openAIError.EventID != nil {
-		bifrostErr.EventID = openAIError.EventID
-	}
-	if openAIError.Error.EventID != nil {
-		bifrostErr.Error.EventID = openAIError.Error.EventID
-	}
-
-	return bifrostErr, nil
 }

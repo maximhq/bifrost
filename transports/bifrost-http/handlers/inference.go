@@ -829,7 +829,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 		return
 	}
 
-	var requestType schemas.RequestType
+	var includeEventType bool
 
 	// Use streaming response writer
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
@@ -841,7 +841,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 				continue
 			}
 
-			includeEventType := false
+			includeEventType = false
 			if chunk.BifrostResponsesStreamResponse != nil ||
 				(chunk.BifrostError != nil && chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest) {
 				includeEventType = true
@@ -890,10 +890,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 		}
 
-		if requestType != schemas.ResponsesStreamRequest {
+		if !includeEventType {
 			// Send the [DONE] marker to indicate the end of the stream (only for non-responses APIs)
 			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-				h.logger.Warn(fmt.Sprintf("Failed to write SSE done marker: %v", err))
+				h.logger.Warn(fmt.Sprintf("Failed to write SSE [DONE] marker: %v", err))
 			}
 		}
 		// Note: OpenAI responses API doesn't use [DONE] marker, it ends when the stream closes

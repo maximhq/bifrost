@@ -158,7 +158,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Endpoint (Required)</FormLabel>
 								<FormControl>
-									<Input placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} />
+									<Input placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} value={field.value ?? ""} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -171,7 +171,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>API Version (Optional)</FormLabel>
 								<FormControl>
-									<Input placeholder="2024-02-01 or env.AZURE_API_VERSION" {...field} />
+									<Input placeholder="2024-02-01 or env.AZURE_API_VERSION" {...field} value={field.value ?? ""} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
