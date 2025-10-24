@@ -315,23 +315,23 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest, respo
 		}
 	}
 
-	var systemInstruction *CustomContent
+	var systemInstruction *Content
 	var regularMessages []schemas.ChatMessage
 
 	for _, msg := range bifrostReq.Input {
 		if msg.Role == schemas.ChatMessageRoleSystem {
 			if systemInstruction == nil {
-				systemInstruction = &CustomContent{}
+				systemInstruction = &Content{}
 			}
 			if msg.Content != nil {
 				if msg.Content.ContentStr != nil {
-					systemInstruction.Parts = append(systemInstruction.Parts, &CustomPart{
+					systemInstruction.Parts = append(systemInstruction.Parts, &Part{
 						Text: *msg.Content.ContentStr,
 					})
 				} else if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
-							systemInstruction.Parts = append(systemInstruction.Parts, &CustomPart{
+							systemInstruction.Parts = append(systemInstruction.Parts, &Part{
 								Text: *block.Text,
 							})
 						}

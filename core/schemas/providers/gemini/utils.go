@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"encoding/base64"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -359,16 +360,62 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 		var parts []*Part
 
 		// Handle content
-		if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
-			parts = append(parts, &Part{
-				Text: *message.Content.ContentStr,
-			})
-		} else if message.Content.ContentBlocks != nil {
-			for _, block := range message.Content.ContentBlocks {
-				if block.Text != nil {
-					parts = append(parts, &Part{
-						Text: *block.Text,
-					})
+		if message.Content != nil {
+			if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+				parts = append(parts, &Part{
+					Text: *message.Content.ContentStr,
+				})
+			} else if message.Content.ContentBlocks != nil {
+				for _, block := range message.Content.ContentBlocks {
+					switch block.Type {
+					case schemas.ChatContentBlockTypeText:
+						if block.Text != nil {
+							parts = append(parts, &Part{
+								Text: *block.Text,
+							})
+						}
+					case schemas.ChatContentBlockTypeImage:
+						if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
+							imageURL := block.ImageURLStruct.URL
+
+							sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
+							if err != nil {
+								continue
+							}
+
+							urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
+							mimeType := "image/jpeg"
+							if urlInfo.MediaType != nil {
+								mimeType = *urlInfo.MediaType
+							}
+
+							if urlInfo.Type == schemas.ImageContentTypeBase64 {
+								data := ""
+								if urlInfo.DataURLWithoutPrefix != nil {
+									data = *urlInfo.DataURLWithoutPrefix
+								}
+
+								decodedData, err := base64.StdEncoding.DecodeString(data)
+								if err != nil {
+									continue
+								}
+
+								parts = append(parts, &Part{
+									InlineData: &Blob{
+										MIMEType: mimeType,
+										Data:     decodedData,
+									},
+								})
+							} else {
+								parts = append(parts, &Part{
+									FileData: &FileData{
+										MIMEType: mimeType,
+										FileURI:  sanitizedURL,
+									},
+								})
+							}
+						}
+					}
 				}
 			}
 		}
@@ -406,18 +453,20 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 			var contentStr string
 
 			// Extract content string from ContentStr or ContentBlocks
-			if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
-				contentStr = *message.Content.ContentStr
-			} else if message.Content.ContentBlocks != nil {
-				// Fallback: try to extract text from content blocks
-				var textParts []string
-				for _, block := range message.Content.ContentBlocks {
-					if block.Text != nil && *block.Text != "" {
-						textParts = append(textParts, *block.Text)
+			if message.Content != nil {
+				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+					contentStr = *message.Content.ContentStr
+				} else if message.Content.ContentBlocks != nil {
+					// Fallback: try to extract text from content blocks
+					var textParts []string
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							textParts = append(textParts, *block.Text)
+						}
 					}
-				}
-				if len(textParts) > 0 {
-					contentStr = strings.Join(textParts, "\n")
+					if len(textParts) > 0 {
+						contentStr = strings.Join(textParts, "\n")
+					}
 				}
 			}
 

@@ -135,9 +135,6 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
 	}
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		var errorResp []gemini.GeminiGenerationError
 
 	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
 	if err != nil {
