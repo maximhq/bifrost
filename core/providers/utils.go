@@ -199,12 +199,13 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	statusCode := resp.StatusCode()
 
 	if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
+		rawResponse := resp.Body()
+		message := fmt.Sprintf("provider API error: %s", string(rawResponse))
 		return &schemas.BifrostError{
-			IsBifrostError: true,
+			IsBifrostError: false,
 			StatusCode:     &statusCode,
 			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseUnmarshal,
-				Error:   err,
+				Message: message,
 			},
 		}
 	}
@@ -307,6 +308,9 @@ func newConfigurationError(message string, providerType schemas.ModelProvider) *
 		Error: &schemas.ErrorField{
 			Message: message,
 		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider: providerType,
+		},
 	}
 }
 
@@ -318,6 +322,9 @@ func newBifrostOperationError(message string, err error, providerType schemas.Mo
 		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider: providerType,
 		},
 	}
 }
@@ -334,6 +341,9 @@ func newProviderAPIError(message string, err error, statusCode int, providerType
 			Message: message,
 			Error:   err,
 			Type:    errorType,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider: providerType,
 		},
 	}
 }

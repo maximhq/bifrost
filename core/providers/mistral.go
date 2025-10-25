@@ -91,7 +91,7 @@ func (provider *MistralProvider) ListModels(ctx context.Context, key schemas.Key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseOpenAIError(resp)
+		return nil, parseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
 	}
 
 	// Parse Mistral's response

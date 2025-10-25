@@ -87,7 +87,7 @@ func (provider *OpenRouterProvider) ListModels(ctx context.Context, key schemas.
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", schemas.OpenRouter, string(resp.Body())))
-		return nil, parseOpenAIError(resp)
+		return nil, parseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
 	}
 
 	var openrouterResponse schemas.BifrostListModelsResponse
@@ -200,11 +200,18 @@ func (provider *OpenRouterProvider) Responses(ctx context.Context, key schemas.K
 
 // ResponsesStream performs a streaming responses request to the OpenRouter API.
 func (provider *OpenRouterProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return provider.ChatCompletionStream(
+	return handleOpenAIResponsesStreaming(
 		ctx,
-		getResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
-		key,
-		request.ToChatRequest(),
+		provider.streamClient,
+		provider.networkConfig.BaseURL+"/alpha/responses",
+		request,
+		map[string]string{"Authorization": "Bearer " + key.Value},
+		provider.networkConfig.ExtraHeaders,
+		provider.sendBackRawResponse,
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		provider.logger,
 	)
 }
 
