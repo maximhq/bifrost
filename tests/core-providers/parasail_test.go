@@ -39,6 +39,7 @@ func TestParasail(t *testing.T) {
 			MultipleImages:        false, // Not supported yet
 			CompleteEnd2End:       true,
 			Embedding:             false, // Not supported yet
+			ListModels:            true,
 		},
 	}
 

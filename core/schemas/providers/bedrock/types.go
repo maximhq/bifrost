@@ -1,5 +1,8 @@
 package bedrock
 
+// DefaultBedrockRegion is the default region for Bedrock
+const DefaultBedrockRegion = "us-east-1"
+
 // ==================== REQUEST TYPES ====================
 
 // BedrockTextCompletionRequest represents a Bedrock text completion request
@@ -429,4 +432,27 @@ type BedrockTitanEmbeddingRequest struct {
 type BedrockTitanEmbeddingResponse struct {
 	Embedding           []float32 `json:"embedding"`           // The embedding vector
 	InputTextTokenCount int       `json:"inputTextTokenCount"` // Number of tokens in input
+}
+
+// ==================== MODELS TYPES ====================
+type BedrockModelLifecycle struct {
+	Status string `json:"status"`
+}
+
+type BedrockModel struct {
+	CustomizationsSupported    []string              `json:"customizationsSupported,omitempty"`
+	InferenceTypesSupported    []string              `json:"inferenceTypesSupported,omitempty"`
+	InputModalities            []string              `json:"inputModalities,omitempty"`
+	ModelArn                   string                `json:"modelArn"`
+	ModelID                    string                `json:"modelId"`
+	ModelLifecycle             BedrockModelLifecycle `json:"modelLifecycle,omitempty"`
+	ModelName                  string                `json:"modelName"`
+	OutputModalities           []string              `json:"outputModalities,omitempty"`
+	ProviderName               string                `json:"providerName"`
+	ResponseStreamingSupported bool                  `json:"responseStreamingSupported"`
+}
+
+// BedrockListModelsResponse represents the response from AWS Bedrock's ListFoundationModels API
+type BedrockListModelsResponse struct {
+	ModelSummaries []BedrockModel `json:"modelSummaries"`
 }

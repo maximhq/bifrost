@@ -6,7 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/jaswdr/faker/v2 v2.8.0
-	github.com/maximhq/bifrost/core v1.2.13
+	github.com/maximhq/bifrost/core v1.2.14
 )
 
 require (

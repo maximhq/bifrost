@@ -10,6 +10,7 @@ interface AllowedRequestsFieldsProps {
 }
 
 const REQUEST_TYPES = [
+	{ key: "list_models", label: "List Models" },
 	{ key: "text_completion", label: "Text Completion" },
 	{ key: "chat_completion", label: "Chat Completion" },
 	{ key: "chat_completion_stream", label: "Chat Completion Stream" },

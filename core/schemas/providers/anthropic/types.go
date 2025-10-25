@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -266,6 +267,22 @@ type AnthropicStreamDelta struct {
 	Signature    *string                  `json:"signature,omitempty"`
 	StopReason   *string                  `json:"stop_reason,omitempty"`
 	StopSequence *string                  `json:"stop_sequence,omitempty"`
+}
+
+// ==================== MODEL TYPES ====================
+
+type AnthropicModel struct {
+	ID          string    `json:"id"`
+	DisplayName string    `json:"display_name"`
+	CreatedAt   time.Time `json:"created_at"`
+	Type        string    `json:"type"`
+}
+
+type AnthropicListModelsResponse struct {
+	Data    []AnthropicModel `json:"data"`
+	FirstID *string           `json:"first_id,omitempty"`
+	HasMore bool             `json:"has_more"`
+	LastID  *string           `json:"last_id,omitempty"`
 }
 
 // ==================== ERROR TYPES ====================

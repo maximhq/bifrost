@@ -9,6 +9,7 @@ import (
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/mistral"
 	"github.com/valyala/fasthttp"
 )
 
@@ -64,6 +65,58 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 // GetProviderKey returns the provider identifier for Mistral.
 func (provider *MistralProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Mistral
+}
+
+// ListModels performs a list models request to Mistral's API.
+func (provider *MistralProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/models")
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
+
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, parseOpenAIError(resp)
+	}
+
+	// Parse Mistral's response
+	var mistralResponse mistral.MistralListModelsResponse
+	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &mistralResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create final response
+	response := mistralResponse.ToBifrostListModelsResponse()
+
+	response = response.ApplyPagination(request.PageSize, request.PageToken)
+
+	// Set ExtraFields
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // TextCompletion is not supported by the Mistral provider.

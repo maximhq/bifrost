@@ -55,6 +55,8 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *openai.OpenAIEmbeddingRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
+			case *schemas.BifrostListModelsRequest:
+				r.Provider = schemas.Azure
 			}
 
 			if deploymentEndpoint == nil || azureKey == nil || !handlerStore.ShouldAllowDirectKeys() {
@@ -101,7 +103,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/completions",
 	} {
 		routes = append(routes, RouteConfig{
-			Type: RouteConfigTypeOpenAI,
+			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -140,7 +142,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/chat/completions",
 	} {
 		routes = append(routes, RouteConfig{
-			Type: RouteConfigTypeOpenAI,
+			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -179,7 +181,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/responses",
 	} {
 		routes = append(routes, RouteConfig{
-			Type: RouteConfigTypeOpenAI,
+			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -219,7 +221,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/embeddings",
 	} {
 		routes = append(routes, RouteConfig{
-			Type: RouteConfigTypeOpenAI,
+			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -250,7 +252,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/audio/speech",
 	} {
 		routes = append(routes, RouteConfig{
-			Type: RouteConfigTypeOpenAI,
+			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -286,7 +288,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/deployments/{deployment-id}/audio/transcriptions",
 	} {
 		routes = append(routes, RouteConfig{
-			Type: RouteConfigTypeOpenAI,
+			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
@@ -322,10 +324,74 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	return routes
 }
 
+func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+
+	// Models endpoint
+	for _, path := range []string{
+		"/v1/models",
+		"/models",
+		"/openai/deployments/{deployment-id}/models",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostListModelsRequest{}
+			},
+			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+				if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
+					return &schemas.BifrostRequest{
+						ListModelsRequest: listModelsReq,
+					}, nil
+				}
+				return nil, errors.New("invalid request type")
+			},
+			ListModelsResponseConverter: func(resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+				return openai.ToOpenAIListModelsResponse(resp), nil
+			},
+			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: setQueryParamsAndAzureEndpointPreHook(handlerStore),
+		})
+	}
+
+	return routes
+}
+
+// setQueryParamsAndAzureEndpointPreHook creates a combined pre-callback for OpenAI list models
+// that handles both Azure endpoint preprocessing and query parameter extraction
+func setQueryParamsAndAzureEndpointPreHook(handlerStore lib.HandlerStore) PreRequestCallback {
+	azureHook := AzureEndpointPreHook(handlerStore)
+
+	return func(ctx *fasthttp.RequestCtx, req interface{}) error {
+		// First run the Azure endpoint pre-hook if needed
+		if azureHook != nil {
+			if err := azureHook(ctx, req); err != nil {
+				return err
+			}
+		}
+
+		// Then extract query parameters for list models
+		if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
+			// Set provider to OpenAI (may be overridden by Azure hook)
+			if listModelsReq.Provider == "" {
+				listModelsReq.Provider = schemas.OpenAI
+			}
+
+			return nil
+		}
+
+		return nil
+	}
+}
+
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, CreateOpenAIRouteConfigs("/openai", handlerStore), logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, append(CreateOpenAIRouteConfigs("/openai", handlerStore), CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...), logger),
 	}
 }
 

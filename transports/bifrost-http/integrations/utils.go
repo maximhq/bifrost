@@ -115,6 +115,8 @@ type RequestConverter func(req interface{}) (*schemas.BifrostRequest, error)
 
 // ResponseConverter is a function that converts Bifrost responses to integration-specific format.
 // It takes a BifrostResponse and returns the format expected by the specific integration.
+type ListModelsResponseConverter func(*schemas.BifrostListModelsResponse) (interface{}, error)
+
 type TextResponseConverter func(*schemas.BifrostTextCompletionResponse) (interface{}, error)
 
 type ChatResponseConverter func(*schemas.BifrostChatResponse) (interface{}, error)
@@ -193,20 +195,21 @@ type StreamConfig struct {
 type RouteConfigType string
 
 const (
-	RouteConfigTypeOpenAI RouteConfigType = "openai"
+	RouteConfigTypeOpenAI    RouteConfigType = "openai"
 	RouteConfigTypeAnthropic RouteConfigType = "anthropic"
-	RouteConfigTypeGenAI RouteConfigType = "genai"
+	RouteConfigTypeGenAI     RouteConfigType = "genai"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
 // It specifies the path, method, and handlers for request/response conversion.
 type RouteConfig struct {
-	Type                           RouteConfigType                         // Type of the route (e.g., "chat", "text", "embedding", "responses", "speech", "transcription")
+	Type                           RouteConfigType                // Type of the route
 	Path                           string                         // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                         string                         // HTTP method (POST, GET, PUT, DELETE)
 	GetRequestTypeInstance         func() interface{}             // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                  RequestParser                  // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter               RequestConverter               // Function to convert request to BifrostRequest (SHOULD NOT BE NIL)
+	ListModelsResponseConverter    ListModelsResponseConverter    // Function to convert BifrostListModelsResponse to integration format (SHOULD NOT BE NIL)
 	TextResponseConverter          TextResponseConverter          // Function to convert BifrostTextCompletionResponse to integration format (SHOULD NOT BE NIL)
 	ChatResponseConverter          ChatResponseConverter          // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
 	ResponsesResponseConverter     ResponsesResponseConverter     // Function to convert BifrostResponsesResponse to integration format (SHOULD NOT BE NIL)
@@ -244,27 +247,37 @@ func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, ro
 func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
 	for _, route := range g.routes {
 		// Validate route configuration at startup to fail fast
+		method := strings.ToUpper(route.Method)
+
 		if route.GetRequestTypeInstance == nil {
 			g.logger.Warn("route configuration is invalid: GetRequestTypeInstance cannot be nil for route " + route.Path)
 			continue
 		}
-		if route.RequestConverter == nil {
-			g.logger.Warn("route configuration is invalid: RequestConverter cannot be nil for route " + route.Path)
-			continue
-		}
-		if route.ErrorConverter == nil {
-			g.logger.Warn("route configuration is invalid: ErrorConverter cannot be nil for route " + route.Path)
-			continue
-		}
-
+		
 		// Test that GetRequestTypeInstance returns a valid instance
 		if testInstance := route.GetRequestTypeInstance(); testInstance == nil {
 			g.logger.Warn("route configuration is invalid: GetRequestTypeInstance returned nil for route " + route.Path)
 			continue
 		}
 
+		// For list models endpoints, verify ListModelsResponseConverter is set
+		if method == fasthttp.MethodGet && route.ListModelsResponseConverter == nil {
+			g.logger.Warn("route configuration is invalid: ListModelsResponseConverter cannot be nil for GET route " + route.Path)
+			continue
+		}
+
+		if route.RequestConverter == nil {
+			g.logger.Warn("route configuration is invalid: RequestConverter cannot be nil for route " + route.Path)
+			continue
+		}
+
+		if route.ErrorConverter == nil {
+			g.logger.Warn("route configuration is invalid: ErrorConverter cannot be nil for route " + route.Path)
+			continue
+		}
+
 		handler := g.createHandler(route)
-		switch strings.ToUpper(route.Method) {
+		switch method {
 		case fasthttp.MethodPost:
 			r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...))
 		case fasthttp.MethodGet:
@@ -289,14 +302,14 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...lib.Bifr
 // 6. Convert and send the response using the configured response converter
 func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
+		method := string(ctx.Method())
+
 		// Parse request body into the integration-specific request type
 		// Note: config validation is performed at startup in RegisterRoutes
 		req := config.GetRequestTypeInstance()
 
-		method := string(ctx.Method())
-
 		// Parse request body based on configuration
-		if method != fasthttp.MethodGet && method != fasthttp.MethodDelete {
+		if method != fasthttp.MethodGet {
 			if config.RequestParser != nil {
 				// Use custom parser (e.g., for multipart/form-data)
 				if err := config.RequestParser(ctx, req); err != nil {
@@ -372,6 +385,26 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	var err error
 
 	switch {
+	case bifrostReq.ListModelsRequest != nil:
+		listModelsResponse, bifrostErr := g.client.ListModelsRequest(*bifrostCtx, bifrostReq.ListModelsRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, listModelsResponse); err != nil {
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if listModelsResponse == nil {
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		response, err = config.ListModelsResponseConverter(listModelsResponse)
 	case bifrostReq.TextCompletionRequest != nil:
 		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(*bifrostCtx, bifrostReq.TextCompletionRequest)
 		if bifrostErr != nil {
