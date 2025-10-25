@@ -128,13 +128,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from azure provider: %s", string(resp.Body())))
-
-		var errorResp map[string]interface{}
-
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("%s error: %v", schemas.Azure, errorResp)
-
-		return nil, latency, bifrostErr
+		return nil, latency, parseOpenAIError(resp)
 	}
 
 	// Read the response body and copy it before releasing the response
@@ -196,13 +190,7 @@ func (provider *AzureProvider) ListModels(ctx context.Context, key schemas.Key, 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from azure provider: %s", string(resp.Body())))
-
-		var errorResp map[string]interface{}
-
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = fmt.Sprintf("%s error: %v", schemas.Azure, errorResp)
-
-		return nil, bifrostErr
+		return nil, parseOpenAIError(resp)
 	}
 
 	// Read the response body and copy it before releasing the response

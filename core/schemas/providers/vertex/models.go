@@ -10,8 +10,8 @@ import (
 func ToVertexListModelsURL(request *schemas.BifrostListModelsRequest, baseURL string) string {
 	// Add limit parameter (default to 100 for Vertex)
 	pageSize := request.PageSize
-	if pageSize <= 0 {
-		pageSize = DefaultPageSize
+	if pageSize <= 0 || pageSize > MaxPageSize {
+		pageSize = MaxPageSize
 	}
 
 	// Build query parameters

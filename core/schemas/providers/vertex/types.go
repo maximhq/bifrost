@@ -47,7 +47,7 @@ type VertexEmbeddingResponse struct {
 
 // ================================ Model Types ================================
 
-const DefaultPageSize = 100
+const MaxPageSize = 100
 
 type VertexModel struct {
 	Name              string    `json:"name"`
