@@ -100,7 +100,7 @@ func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key,
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(providerName, resp)
+		return nil, gemini.ParseGeminiError(providerName, resp)
 	}
 
 	// Parse Gemini's response
@@ -164,10 +164,6 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/openai/chat/completions")
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
