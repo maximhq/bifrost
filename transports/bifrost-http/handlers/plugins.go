@@ -16,7 +16,7 @@ import (
 )
 
 type PluginsLoader interface {
-	ReloadPlugin(ctx context.Context, name string, pluginConfig any) error
+	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	RemovePlugin(ctx context.Context, name string) error
 }
 
@@ -149,7 +149,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 
 	// We reload the plugin if its enabled
 	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Config); err != nil {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, nil, request.Config); err != nil {
 			h.logger.Error("failed to load plugin: %v", err)
 			SendJSON(ctx, map[string]any{
 				"message": fmt.Sprintf("Plugin created successfully; but failed to load plugin with new config: %v", err),
@@ -238,7 +238,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	// We reload the plugin if its enabled, otherwise we stop it
 	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Config); err != nil {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, name, nil, request.Config); err != nil {
 			h.logger.Error("failed to load plugin: %v", err)
 			SendJSON(ctx, map[string]any{
 				"message": fmt.Sprintf("Plugin updated successfully; but failed to load plugin with new config: %v", err),
