@@ -376,6 +376,11 @@ func (plugin *Plugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest)
 			*ctx = context.WithValue(*ctx, TraceIDKey, traceID)
 		}
 		*ctx = context.WithValue(*ctx, GenerationIDKey, generationID)
+
+		// Extract request ID from context
+		requestID := uuid.New().String()
+
+		*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("maxim-request-id"), requestID)
 	}
 
 	return req, nil, nil
@@ -411,10 +416,8 @@ func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResp
 			return res, bifrostErr, nil
 		}
 
-		// Extract request ID from context
-		requestID, ok := ctx.Value(schemas.BifrostContextKey("request-id")).(string)
+		requestID, ok := ctx.Value(schemas.BifrostContextKey("maxim-request-id")).(string)
 		if !ok || requestID == "" {
-			// Log error but don't fail the request
 			plugin.logger.Error("request-id not found in context or is empty")
 			return res, bifrostErr, nil
 		}
@@ -435,7 +438,7 @@ func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResp
 				isFinalChunk := bifrost.IsFinalChunk(ctxRef)
 
 				// Handle text-based streaming with ordered accumulation
-				plugin.handleStreamingResponse(ctxRef, res, bifrostErr)
+				plugin.handleStreamingResponse(ctxRef, requestID, res, bifrostErr)
 
 				// If this is the final chunk, process accumulated chunks asynchronously
 				// Use the IsComplete flag to prevent duplicate processing
@@ -542,6 +545,18 @@ func (plugin *Plugin) Cleanup() error {
 		logger.Flush()
 	}
 	plugin.loggerMutex.RUnlock()
+
+	// Clean up all stream accumulators safely
+	var keysToDelete []interface{}
+	plugin.streamAccumulators.Range(func(key, value interface{}) bool {
+		keysToDelete = append(keysToDelete, key)
+		return true
+	})
+
+	// Delete keys after iteration is complete
+	for _, key := range keysToDelete {
+		plugin.streamAccumulators.Delete(key)
+	}
 
 	return nil
 }

@@ -155,7 +155,7 @@ func (p *Plugin) buildCompleteMessageFromChunks(chunks []*StreamChunk) *schemas.
 			}
 			if completeMessage.AssistantMessage.Refusal == nil {
 				completeMessage.AssistantMessage.Refusal = chunk.Delta.Refusal
-			} else {
+			} else if completeMessage.AssistantMessage.Refusal != nil {
 				*completeMessage.AssistantMessage.Refusal += *chunk.Delta.Refusal
 			}
 		}
@@ -176,43 +176,8 @@ func (p *Plugin) cleanupStreamAccumulator(requestID string) {
 	}
 }
 
-// cleanupOldStreamAccumulators removes stream accumulators older than 5 minutes
-func (p *Plugin) cleanupOldStreamAccumulators() {
-	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
-	cleanedCount := 0
-
-	p.streamAccumulators.Range(func(key, value interface{}) bool {
-		requestID := key.(string)
-		accumulator := value.(*StreamAccumulator)
-		accumulator.mu.Lock()
-		defer accumulator.mu.Unlock()
-
-		// Check if this accumulator is old (no activity for 5 minutes)
-		// Use the timestamp of the first chunk as a reference
-		if len(accumulator.Chunks) > 0 {
-			firstChunkTime := accumulator.Chunks[0].Timestamp
-			if firstChunkTime.Before(fiveMinutesAgo) {
-				p.streamAccumulators.Delete(requestID)
-				cleanedCount++
-				p.logger.Debug("cleaned up old stream accumulator for request %s")
-			}
-		}
-		return true
-	})
-
-	if cleanedCount > 0 {
-		p.logger.Debug("cleaned up %d old stream accumulators", cleanedCount)
-	}
-}
-
 // handleStreamingResponse handles streaming responses with ordered accumulation
-func (p *Plugin) handleStreamingResponse(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	requestID, ok := (*ctx).Value(schemas.BifrostContextKey("request-id")).(string)
-	if !ok || requestID == "" {
-		p.logger.Error("request-id not found in context or is empty")
-		return result, err, nil
-	}
-
+func (p *Plugin) handleStreamingResponse(ctx *context.Context, requestID string, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Create chunk from current response using pool
 	chunk := &StreamChunk{}
 	chunk.Timestamp = time.Now()
