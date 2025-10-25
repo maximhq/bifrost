@@ -110,10 +110,17 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		return result, err, nil
 	}
 
+	// Create a deep copy of the result to avoid modifying the original pointer
+	// This ensures other plugins using the same pointer don't get corrupted data
+	resultCopy := p.deepCopyBifrostResponse(result)
+	if resultCopy == nil {
+		return result, err, nil
+	}
+
 	// Process only streaming choices to accumulate and fix partial JSON
-	if len(result.Choices) > 0 {
-		for i := range result.Choices {
-			choice := &result.Choices[i]
+	if len(resultCopy.Choices) > 0 {
+		for i := range resultCopy.Choices {
+			choice := &resultCopy.Choices[i]
 
 			// Handle only streaming response
 			if choice.BifrostStreamResponseChoice != nil {
@@ -155,7 +162,7 @@ func (p *JsonParserPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		}
 	}
 
-	return result, err, nil
+	return resultCopy, err, nil
 }
 
 // getRequestID extracts a unique identifier for the request to maintain state
