@@ -43,20 +43,25 @@ const availableTabs = (provider: ModelProvider) => {
 
 export default function ModelProviderConfig({ provider }: Props) {
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
-	const isCustomProver = !isKnownProvider(provider.name);
+	const [accordionValue, setAccordionValue] = useState<string | undefined>(undefined);
+	const isCustomProvider = !isKnownProvider(provider.name);
 	const tabs = useMemo(() => {
 		return availableTabs(provider);
 	}, [provider.name]);
+
+	const showApiKeys = keysRequired(provider.name);
 
 	useEffect(() => {
 		setSelectedTab(tabs[0]?.id);
 	}, [tabs]);
 
-	const showApiKeys = keysRequired(provider.name);
+	useEffect(() => {
+		setAccordionValue(!showApiKeys || isCustomProvider ? "item-1" : undefined);
+	}, [showApiKeys, isCustomProvider]);
 
 	return (
 		<div className="flex w-full flex-col gap-2">
-			<Accordion type="single" collapsible={showApiKeys} value={!showApiKeys || isCustomProver ? "item-1" : undefined}>
+			<Accordion type="single" collapsible={true} value={accordionValue} onValueChange={setAccordionValue}>
 				<AccordionItem value="item-1">
 					<AccordionTrigger className="flex cursor-pointer items-center text-[17px] font-semibold">
 						Provider level configuration

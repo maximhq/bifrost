@@ -21,7 +21,7 @@ import { PlusIcon, Trash } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import AddCustomProviderDialog from "./dialogs/addNewCustomProviderDialog";
+import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
 import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
 
@@ -91,7 +91,7 @@ export default function Providers() {
 	}
 
 	return (
-		<div className="flex h-full flex-row gap-4">
+		<div className="flex h-full flex-row gap-4 max-w-7xl mx-auto w-full">
 			<ConfirmDeleteProviderDialog
 				provider={selectedProvider!}
 				show={showDeleteProviderDialog}
@@ -110,7 +110,7 @@ export default function Providers() {
 					setPendingRedirection(undefined);
 				}}
 			/>
-			<AddCustomProviderDialog
+			<AddCustomProviderSheet
 				show={showCustomProviderDialog}
 				onSave={(id) => {
 					setTimeout(() => {

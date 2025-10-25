@@ -102,7 +102,7 @@ export default function TeamsCustomersPage() {
 	}
 
 	return (
-		<div className="flex w-full flex-row gap-4">
+		<div className="flex w-full flex-row gap-4 max-w-7xl mx-auto">
 			<div className="flex min-w-[200px] flex-col gap-1 rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
 				{tabs.map((tab) => (
 					<button

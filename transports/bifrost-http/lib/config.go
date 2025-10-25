@@ -839,7 +839,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					Name:    plugin.Name,
 					Enabled: plugin.Enabled,
 					Config:  pluginConfigCopy,
-					Path:    plugin.Path,
+					Path:    plugin.Path,					
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {

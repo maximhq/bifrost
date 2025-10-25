@@ -851,6 +851,10 @@ func (s *RDBConfigStore) CreatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		txDB = s.db
 	}
+	// Mark plugin as custom if path is not empty
+	if plugin.Path != nil && *plugin.Path != "" {
+		plugin.IsCustom = true
+	}
 	return txDB.WithContext(ctx).Create(plugin).Error
 }
 
@@ -864,6 +868,11 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		txDB = s.db.Begin()
 		localTx = true
+	}
+
+	// Mark plugin as custom if path is not empty
+	if plugin.Path != nil && *plugin.Path != "" {
+		plugin.IsCustom = true
 	}
 
 	if err := txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", plugin.Name).Error; err != nil {

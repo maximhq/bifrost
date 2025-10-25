@@ -7,6 +7,8 @@ export interface Plugin {
 	name: string;
 	enabled: boolean;
 	config: any;
+	isCustom: boolean;
+	path: string | null;
 }
 
 export interface PluginsResponse {
@@ -16,6 +18,7 @@ export interface PluginsResponse {
 
 export interface CreatePluginRequest {
 	name: string;
+	path: string;
 	enabled: boolean;
 	config: any;
 }

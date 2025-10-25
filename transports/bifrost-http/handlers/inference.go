@@ -351,7 +351,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	var req ChatRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {		
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err), h.logger)
 		return
 	}
