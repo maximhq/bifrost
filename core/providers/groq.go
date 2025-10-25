@@ -66,6 +66,21 @@ func (provider *GroqProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Groq
 }
 
+// ListModels performs a list models request to Groq's API.
+func (provider *GroqProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleOpenAIListModelsRequest(
+		ctx,
+		provider.client,
+		request,
+		provider.networkConfig.BaseURL+"/v1/models",
+		key,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Groq,
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}
+
 // TextCompletion is not supported by the Groq provider.
 func (provider *GroqProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	// Checking if litellm fallback is set

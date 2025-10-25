@@ -95,6 +95,68 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.Cohere, provider.customProviderConfig)
 }
 
+// ListModels performs a list models request to Cohere's API.
+func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Build URL using centralized URL construction
+	requestURL := cohere.ToCohereListModelsURL(request, provider.networkConfig.BaseURL+"/v1/models")
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
+
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+
+		var errorResp cohere.CohereError
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = errorResp.Message
+
+		return nil, bifrostErr
+	}
+
+	// Parse Cohere list models response
+	var cohereResponse cohere.CohereListModelsResponse
+	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &cohereResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert Cohere v2 response to Bifrost response
+	response := cohereResponse.ToBifrostListModelsResponse(providerName)
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
 // TextCompletion is not supported by the Cohere provider.
 // Returns an error indicating that text completion is not supported.
 func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
@@ -131,19 +193,19 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	// Convert Cohere v2 response to Bifrost response
-	reponse := cohereResponse.ToBifrostChatResponse()
+	response := cohereResponse.ToBifrostChatResponse()
 
-	reponse.Model = request.Model
-	reponse.ExtraFields.Provider = providerName
-	reponse.ExtraFields.ModelRequested = request.Model
-	reponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
-	reponse.ExtraFields.Latency = latency.Milliseconds()
+	response.Model = request.Model
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
-		reponse.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return reponse, nil
+	return response, nil
 }
 
 func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Context, reqBody *cohere.CohereChatRequest, key schemas.Key) (*cohere.CohereChatResponse, interface{}, time.Duration, *schemas.BifrostError) {
@@ -171,7 +233,7 @@ func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Co
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/chat")
-	req.Header.SetMethod("POST")
+	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
 
@@ -246,7 +308,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v2/chat", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v2/chat", bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -528,7 +590,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/v2/chat", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v2/chat", bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -723,7 +785,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/embed")
-	req.Header.SetMethod("POST")
+	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
 

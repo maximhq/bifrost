@@ -45,6 +45,7 @@ func TestBedrock(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			Reasoning:             true,
+			ListModels:            true,
 		},
 	}
 

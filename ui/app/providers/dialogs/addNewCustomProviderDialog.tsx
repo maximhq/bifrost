@@ -21,6 +21,7 @@ const allowedRequestsSchema = z.object({
 	speech_stream: z.boolean(),
 	transcription: z.boolean(),
 	transcription_stream: z.boolean(),
+	list_models: z.boolean(),
 });
 
 const formSchema = z.object({
@@ -55,6 +56,7 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 				speech_stream: true,
 				transcription: true,
 				transcription_stream: true,
+				list_models: true,
 			},
 		},
 	});

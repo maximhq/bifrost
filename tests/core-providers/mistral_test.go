@@ -42,6 +42,7 @@ func TestMistral(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			ListModels:            true,
 		},
 	}
 

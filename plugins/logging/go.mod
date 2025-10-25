@@ -6,8 +6,8 @@ toolchain go1.24.3
 
 require (
 	github.com/bytedance/sonic v1.14.0
-	github.com/maximhq/bifrost/core v1.2.13
-	github.com/maximhq/bifrost/framework v1.1.15
+	github.com/maximhq/bifrost/core v1.2.14
+	github.com/maximhq/bifrost/framework v1.1.16
 )
 
 require (

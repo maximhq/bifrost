@@ -281,6 +281,7 @@ export const allowedRequestsSchema = z.object({
 	speech_stream: z.boolean(),
 	transcription: z.boolean(),
 	transcription_stream: z.boolean(),
+	list_models: z.boolean(),
 });
 
 // Custom provider config schema

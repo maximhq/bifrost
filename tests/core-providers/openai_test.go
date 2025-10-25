@@ -55,6 +55,7 @@ func TestOpenAI(t *testing.T) {
 			TranscriptionStream:   true,
 			Embedding:             true,
 			Reasoning:             true,
+			ListModels:            true,
 		},
 	}
 

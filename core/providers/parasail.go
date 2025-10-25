@@ -66,6 +66,21 @@ func (provider *ParasailProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Parasail
 }
 
+// ListModels performs a list models request to Parasail's API.
+func (provider *ParasailProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleOpenAIListModelsRequest(
+		ctx,
+		provider.client,
+		request,
+		provider.networkConfig.BaseURL+"/v1/models",
+		key,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Parasail,
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}
+
 // TextCompletion is not supported by the Parasail provider.
 func (provider *ParasailProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", "parasail")

@@ -70,6 +70,61 @@ func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.Gemini, provider.customProviderConfig)
 }
 
+// ListModels performs a list models request to Gemini's API.
+func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Build URL using centralized URL construction
+	requestURL := gemini.ToGeminiListModelsURL(request, provider.networkConfig.BaseURL+"/models")
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("x-goog-api-key", key.Value)
+
+	// Make request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, parseGeminiError(providerName, resp)
+	}
+
+	// Parse Gemini's response
+	var geminiResponse gemini.GeminiListModelsResponse
+	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &geminiResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := geminiResponse.ToBifrostListModelsResponse(providerName)
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
 // TextCompletion is not supported by the Gemini provider.
 func (provider *GeminiProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("text completion", string(provider.GetProviderKey()))
@@ -111,6 +166,10 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/openai/chat/completions")
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Value)
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
@@ -479,7 +538,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -757,7 +816,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -1016,7 +1075,7 @@ func (provider *GeminiProvider) completeRequest(ctx context.Context, model strin
 
 	// Use Gemini's generateContent endpoint
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/models/" + model + endpoint)
-	req.Header.SetMethod("POST")
+	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("x-goog-api-key", key.Value)
 

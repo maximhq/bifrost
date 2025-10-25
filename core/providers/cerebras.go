@@ -61,6 +61,11 @@ func (provider *CerebrasProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Cerebras
 }
 
+// ListModels performs a list models request to Cerebras's API.
+func (provider *CerebrasProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleOpenAIListModelsRequest(ctx, provider.client, request, provider.networkConfig.BaseURL+"/v1/models", key, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), provider.sendBackRawResponse, provider.logger)
+}
+
 // TextCompletion performs a text completion request to Cerebras's API.
 // It formats the request, sends it to Cerebras, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.

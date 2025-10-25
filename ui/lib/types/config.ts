@@ -120,29 +120,14 @@ export interface AllowedRequests {
 	speech_stream: boolean;
 	transcription: boolean;
 	transcription_stream: boolean;
+	list_models: boolean;
 }
-
-export const DefaultAllowedRequests: AllowedRequests = {
-	text_completion: true,
-	chat_completion: true,
-	chat_completion_stream: true,
-	embedding: true,
-	speech: true,
-	speech_stream: true,
-	transcription: true,
-	transcription_stream: true,
-} as const satisfies Required<AllowedRequests>;
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
 export interface CustomProviderConfig {
 	base_provider_type: KnownProvider;
 	allowed_requests?: AllowedRequests;
 }
-
-export const DefaultCustomProviderConfig: CustomProviderConfig = {
-	base_provider_type: "openai",
-	allowed_requests: DefaultAllowedRequests,
-} as const satisfies Required<CustomProviderConfig>;
 
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {

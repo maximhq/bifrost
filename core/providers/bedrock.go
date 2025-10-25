@@ -89,7 +89,7 @@ func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBody interface{}, path string, key schemas.Key) ([]byte, time.Duration, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
 
-	region := "us-east-1"
+	region := bedrock.DefaultBedrockRegion
 	if config.Region != nil {
 		region = *config.Region
 	}
@@ -218,7 +218,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, reque
 	// Format the path with proper model identifier for streaming
 	path := provider.getModelPath("converse-stream", model, key)
 
-	region := "us-east-1"
+	region := bedrock.DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil {
 		region = *key.BedrockKeyConfig.Region
 	}
@@ -230,7 +230,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, reque
 	}
 
 	// Create HTTP request for streaming
-	req, reqErr := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewReader(jsonBody))
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewReader(jsonBody))
 	if reqErr != nil {
 		return nil, newBifrostOperationError("error creating request", reqErr, providerName)
 	}
@@ -343,6 +343,142 @@ func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey
 	}
 
 	return nil
+}
+
+// ListModels performs a list models request to Bedrock's API.
+// It retrieves all foundation models available in Amazon Bedrock.
+func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if key.BedrockKeyConfig == nil {
+		return nil, newConfigurationError("bedrock key config is not provided", providerName)
+	}
+
+	config := key.BedrockKeyConfig
+
+	region := bedrock.DefaultBedrockRegion
+	if config.Region != nil {
+		region = *config.Region
+	}
+
+	// List models endpoint uses the bedrock service (not bedrock-runtime)
+	url := fmt.Sprintf("https://bedrock.%s.amazonaws.com/foundation-models", region)
+
+	// Create the GET request without a body
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "error creating request",
+				Error:   err,
+			},
+		}
+	}
+
+	// Set any extra headers from network config
+	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// If Value is set, use API Key authentication - else use IAM role authentication
+	if key.Value != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	} else {
+		// Sign the request using either explicit credentials or IAM role authentication
+		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock", providerName); err != nil {
+			return nil, err
+		}
+	}
+
+	// Execute the request and measure latency
+	startTime := time.Now()
+	resp, err := provider.client.Do(req)
+	latency := time.Since(startTime)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderRequest,
+				Error:   err,
+			},
+		}
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "error reading request",
+				Error:   err,
+			},
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errorResp bedrock.BedrockError
+
+		if err := sonic.Unmarshal(responseBody, &errorResp); err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &resp.StatusCode,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderResponseUnmarshal,
+					Error:   err,
+				},
+			}
+		}
+
+		return nil, &schemas.BifrostError{
+			StatusCode: &resp.StatusCode,
+			Error: &schemas.ErrorField{
+				Message: errorResp.Message,
+			},
+		}
+	}
+
+	// Parse Bedrock-specific response
+	bedrockResponse := &bedrock.BedrockListModelsResponse{}
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, bedrockResponse, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert to Bifrost response
+	response := bedrockResponse.ToBifrostListModelsResponse(providerName)
+	if response == nil {
+		return nil, newBifrostOperationError("failed to convert Bedrock model list response", nil, providerName)
+	}
+
+	response = response.ApplyPagination(request.PageSize, request.PageToken)
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // TextCompletion performs a text completion request to Bedrock's API.

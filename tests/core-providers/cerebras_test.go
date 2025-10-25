@@ -44,6 +44,7 @@ func TestCerebras(t *testing.T) {
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			Embedding:             false,
+			ListModels:            true,
 		},
 	}
 

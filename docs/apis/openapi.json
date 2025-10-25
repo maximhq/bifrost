@@ -51,6 +51,10 @@
     {
       "name": "MCP",
       "description": "Endpoints for Model Context Protocol (MCP) integrations."
+    },
+    {
+      "name": "Models",
+      "description": "Endpoint for listing available models."
     }
   ],
   "paths": {
@@ -280,6 +284,66 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "summary": "List Models",
+        "description": "Lists available models. If a provider is specified, returns that provider's models; otherwise, returns models from all configured providers.\n\n**Note:** Only fields returned by the provider API are included in the response. Fields not provided by the provider are omitted from the JSON response.",
+        "operationId": "listModels",
+        "tags": [
+          "Bifrost Core",
+          "Models"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "description": "The provider to list models from. If not set, returns models from all configured providers in Bifrost.",
+            "schema": {
+              "$ref": "#/components/schemas/ModelProvider"
+            },
+            "example": "openai"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "description": "Number of models to return per page. If not specified, the provider's default page size will be used.",
+            "schema": {
+              "type": "integer"
+            },
+            "example": 100
+          },
+          {
+            "name": "page_token",
+            "in": "query",
+            "required": false,
+            "description": "Token received from previous request to retrieve the next page of results. Omit this parameter to fetch the first page.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response with list of models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListModelsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       }
@@ -3195,6 +3259,7 @@
       "RequestType": {
         "type": "string",
         "enum": [
+          "list_models",
           "text_completion",
           "chat_completion",
           "chat_completion_stream",
@@ -3916,8 +3981,8 @@
           },
           "latency": {
             "type": "number",
-            "description": "Request latency in seconds",
-            "example": 1.234
+            "description": "Request latency in milliseconds",
+            "example": 1234
           },
           "billed_usage": {
             "$ref": "#/components/schemas/BilledLLMUsage"
@@ -4559,8 +4624,8 @@
           },
           "latency": {
             "type": "number",
-            "description": "Request latency in seconds",
-            "example": 1.234
+            "description": "Request latency in milliseconds",
+            "example": 1234
           },
           "tokens": {
             "type": "integer",
@@ -6491,6 +6556,258 @@
             "$ref": "#/components/schemas/SearchStats"
           }
         }
+      },
+      "ListModelsResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelInfo"
+            },
+            "description": "Array of model information objects"
+          },
+          "next_page_token": {
+            "type": "string",
+            "description": "Token to retrieve the next page of results. Omitted if there are no more pages.",
+            "example": "eyJwYWdlIjoxfQ=="
+          },
+          "extra_fields": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "$ref": "#/components/schemas/ModelProvider"
+              },
+              "request_type": {
+                "$ref": "#/components/schemas/RequestType"
+              },
+              "latency": {
+                "type": "number",
+                "description": "Request latency in milliseconds",
+                "example": 1234
+              },
+              "raw_response": {
+                "type": "object",
+                "description": "Raw provider response"
+              }
+            }
+          }
+        }
+      },
+      "ModelInfo": {
+        "type": "object",
+        "description": "Model information object. Only fields returned by the provider API are included; unset fields are omitted from the JSON response.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique model identifier",
+            "example": "openrouter/openai/gpt-4o"
+          },
+          "canonical_slug": {
+            "type": "string",
+            "description": "Canonical slug for the model",
+            "example": "openai/gpt-4o",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable model name",
+            "example": "OpenAI: GPT-4o"
+          },
+          "created": {
+            "type": "integer",
+            "description": "Unix timestamp of model creation",
+            "example": 1715558400,
+            "nullable": true
+          },
+          "context_length": {
+            "type": "integer",
+            "description": "Maximum context length in tokens",
+            "example": 128000,
+            "nullable": true
+          },
+          "architecture": {
+            "$ref": "#/components/schemas/ModelArchitecture",
+            "description": "Object describing the model's technical capabilities",
+            "nullable": true
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ModelPricing",
+            "description": "Lowest price structure for using this model (all values in USD per token/request/unit)",
+            "nullable": true
+          },
+          "top_provider": {
+            "$ref": "#/components/schemas/ModelTopProvider",
+            "description": "Configuration details for the primary provider",
+            "nullable": true
+          },
+          "per_request_limits": {
+            "description": "Rate limiting information (null if no limits)",
+            "$ref": "#/components/schemas/ModelPerRequestLimits",
+            "nullable": true
+          },
+          "supported_parameters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of supported parameter names",
+            "nullable": true
+          },
+          "default_parameters": {
+            "$ref": "#/components/schemas/ModelDefaultParameters",
+            "nullable": true
+          },
+          "hugging_face_id": {
+            "type": "string",
+            "description": "Hugging Face model identifier",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "description": "Description of the model and its capabilities",
+            "example": "GPT-4o (\"o\" for \"omni\") is OpenAI's latest AI model, supporting both text and image inputs with text outputs",
+            "nullable": true
+          },
+          "owned_by": {
+            "type": "string",
+            "description": "Organization that owns the model",
+            "example": "openai",
+            "nullable": true
+          },
+          "supported_methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of supported API methods",
+            "nullable": true
+          }
+        }
+      },
+      "ModelArchitecture": {
+        "type": "object",
+        "properties": {
+          "tokenizer": {
+            "type": "string",
+            "example": "GPT",
+            "description": "Tokenization method used by the model"
+          },
+          "instruct_type": {
+            "description": "Instruction format type (null if not applicable)",
+            "type": "string",
+            "nullable": true
+          },
+          "input_modalities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["file", "image", "text", "audio", "video"]
+            },
+            "example": ["text", "image", "file"],
+            "description": "Supported input types for the model"
+          },
+          "output_modalities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["text", "image", "audio", "video"]
+            },
+            "example": ["text"],
+            "description": "Supported output types for the model"
+          },
+          "modality": {
+            "type": "string",
+            "description": "Primary model modality",
+            "example": "text+image->text"
+          }
+        }
+      },
+      "ModelPricing": {
+        "type": "object",
+        "description": "All pricing values are in USD per token/request/unit. A value of '0' indicates the feature is free.",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Cost per input token in USD",
+            "example": "0.0000025"
+          },
+          "completion": {
+            "type": "string",
+            "description": "Cost per output token in USD",
+            "example": "0.00001"
+          },
+          "request": {
+            "type": "string",
+            "description": "Fixed cost per API request in USD",
+            "example": "0"
+          },
+          "image": {
+            "type": "string",
+            "description": "Cost per image input in USD",
+            "example": "0.003613"
+          },
+          "web_search": {
+            "type": "string",
+            "description": "Cost per web search operation in USD",
+            "example": "0"
+          },
+          "internal_reasoning": {
+            "type": "string",
+            "description": "Cost for internal reasoning tokens in USD",
+            "example": "0"
+          },
+          "input_cache_read": {
+            "type": "string",
+            "description": "Cost per cached input token read in USD",
+            "example": "0.00000125"
+          },
+          "input_cache_write": {
+            "type": "string",
+            "description": "Cost per cached input token write in USD",
+            "example": "0"
+          }
+        }
+      },
+      "ModelTopProvider": {
+        "type": "object",
+        "description": "Configuration details for the primary provider",
+        "properties": {
+          "context_length": {
+            "type": "integer",
+            "description": "Provider-specific context limit in tokens"
+          },
+          "max_completion_tokens": {
+            "type": "integer",
+            "description": "Maximum completion tokens"
+          },
+          "is_moderated": {
+            "type": "boolean",
+            "description": "Whether content moderation is applied to the model output"
+          }
+        }
+      },
+      "ModelPerRequestLimits": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "description": "Maximum prompt tokens per request"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "description": "Maximum completion tokens per request"
+          }
+        }
+      },
+      "ModelDefaultParameters": {
+        "type": "object"
       }
     },
     "responses": {

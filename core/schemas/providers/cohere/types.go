@@ -523,3 +523,21 @@ type CohereError struct {
 	Message string  `json:"message"`        // Error message
 	Code    *string `json:"code,omitempty"` // Optional error code
 }
+
+// ==================== MODEL TYPES ====================
+
+type CohereModel struct {
+	Name             string   `json:"name"`
+	IsDeprecated     bool     `json:"is_deprecated"`
+	Endpoints        []string `json:"endpoints"`
+	Finetuned        bool     `json:"finetuned"`
+	ContextLength    int      `json:"context_length"`
+	TokenizerURL     string   `json:"tokenizer_url"`
+	DefaultEndpoints []string `json:"default_endpoints"`
+	Features         []string `json:"features"`
+}
+
+type CohereListModelsResponse struct {
+	Models        []CohereModel `json:"models"`
+	NextPageToken string        `json:"next_page_token"`
+}
