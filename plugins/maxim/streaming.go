@@ -182,12 +182,13 @@ func (p *Plugin) handleStreamingResponse(ctx *context.Context, requestID string,
 	chunk := &StreamChunk{}
 	chunk.Timestamp = time.Now()
 	chunk.ErrorDetails = err
-	chunk.ChunkIndex = result.ExtraFields.ChunkIndex
 
 	if err != nil {
 		// Error case - mark as final chunk
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil {
+		chunk.ChunkIndex = result.ExtraFields.ChunkIndex
+
 		// Extract delta and other information
 		if len(result.Choices) > 0 {
 			choice := result.Choices[0]
