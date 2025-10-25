@@ -45,8 +45,8 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 	return anthropicReq
 }
 
-// ToBifrostRequest converts an Anthropic text request back to Bifrost format
-func (request *AnthropicTextRequest) ToBifrostRequest() *schemas.BifrostTextCompletionRequest {
+// ToBifrostTextCompletionRequest converts an Anthropic text request back to Bifrost format
+func (request *AnthropicTextRequest) ToBifrostTextCompletionRequest() *schemas.BifrostTextCompletionRequest {
 	if request == nil {
 		return nil
 	}
@@ -77,7 +77,8 @@ func (request *AnthropicTextRequest) ToBifrostRequest() *schemas.BifrostTextComp
 	return bifrostReq
 }
 
-func (response *AnthropicTextResponse) ToBifrostResponse() *schemas.BifrostTextCompletionResponse {
+// ToBifrostTextCompletionResponse converts an Anthropic text response back to Bifrost format
+func (response *AnthropicTextResponse) ToBifrostTextCompletionResponse() *schemas.BifrostTextCompletionResponse {
 	if response == nil {
 		return nil
 	}

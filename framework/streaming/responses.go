@@ -10,6 +10,216 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// deepCopyResponsesStreamResponse creates a deep copy of BifrostResponsesStreamResponse
+// to prevent shared data mutation between different plugin accumulators
+func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse {
+	if original == nil {
+		return nil
+	}
+
+	copy := &schemas.BifrostResponsesStreamResponse{
+		Type:           original.Type,
+		SequenceNumber: original.SequenceNumber,
+		ExtraFields:    original.ExtraFields, // ExtraFields can be safely shared as they're typically read-only
+	}
+
+	// Deep copy Response if present
+	if original.Response != nil {
+		copy.Response = &schemas.BifrostResponsesResponse{}
+		*copy.Response = *original.Response // Shallow copy the struct
+
+		// Deep copy the Output slice if present
+		if original.Response.Output != nil {
+			copy.Response.Output = make([]schemas.ResponsesMessage, len(original.Response.Output))
+			for i, msg := range original.Response.Output {
+				copy.Response.Output[i] = deepCopyResponsesMessage(msg)
+			}
+		}
+
+		// Copy Usage if present (Usage can be shallow copied as it's typically immutable)
+		if original.Response.Usage != nil {
+			copyUsage := *original.Response.Usage
+			copy.Response.Usage = &copyUsage
+		}
+	}
+
+	// Copy pointer fields
+	if original.OutputIndex != nil {
+		copyOutputIndex := *original.OutputIndex
+		copy.OutputIndex = &copyOutputIndex
+	}
+
+	if original.Item != nil {
+		copyItem := deepCopyResponsesMessage(*original.Item)
+		copy.Item = &copyItem
+	}
+
+	if original.ContentIndex != nil {
+		copyContentIndex := *original.ContentIndex
+		copy.ContentIndex = &copyContentIndex
+	}
+
+	if original.ItemID != nil {
+		copyItemID := *original.ItemID
+		copy.ItemID = &copyItemID
+	}
+
+	if original.Part != nil {
+		copyPart := deepCopyResponsesMessageContentBlock(*original.Part)
+		copy.Part = &copyPart
+	}
+
+	if original.Delta != nil {
+		copyDelta := *original.Delta
+		copy.Delta = &copyDelta
+	}
+
+	// Deep copy LogProbs slice if present
+	if original.LogProbs != nil {
+		copy.LogProbs = make([]schemas.ResponsesOutputMessageContentTextLogProb, len(original.LogProbs))
+		for i, logProb := range original.LogProbs {
+			copy.LogProbs[i] = logProb
+		}
+	}
+
+	if original.Text != nil {
+		copyText := *original.Text
+		copy.Text = &copyText
+	}
+
+	if original.Refusal != nil {
+		copyRefusal := *original.Refusal
+		copy.Refusal = &copyRefusal
+	}
+
+	if original.Arguments != nil {
+		copyArguments := *original.Arguments
+		copy.Arguments = &copyArguments
+	}
+
+	if original.PartialImageB64 != nil {
+		copyPartialImageB64 := *original.PartialImageB64
+		copy.PartialImageB64 = &copyPartialImageB64
+	}
+
+	if original.PartialImageIndex != nil {
+		copyPartialImageIndex := *original.PartialImageIndex
+		copy.PartialImageIndex = &copyPartialImageIndex
+	}
+
+	if original.Annotation != nil {
+		copyAnnotation := *original.Annotation
+		copy.Annotation = &copyAnnotation
+	}
+
+	if original.AnnotationIndex != nil {
+		copyAnnotationIndex := *original.AnnotationIndex
+		copy.AnnotationIndex = &copyAnnotationIndex
+	}
+
+	if original.Code != nil {
+		copyCode := *original.Code
+		copy.Code = &copyCode
+	}
+
+	if original.Message != nil {
+		copyMessage := *original.Message
+		copy.Message = &copyMessage
+	}
+
+	if original.Param != nil {
+		copyParam := *original.Param
+		copy.Param = &copyParam
+	}
+
+	return copy
+}
+
+// deepCopyResponsesMessage creates a deep copy of a ResponsesMessage
+func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.ResponsesMessage {
+	copy := schemas.ResponsesMessage{}
+
+	if original.ID != nil {
+		copyID := *original.ID
+		copy.ID = &copyID
+	}
+
+	if original.Type != nil {
+		copyType := *original.Type
+		copy.Type = &copyType
+	}
+
+	if original.Role != nil {
+		copyRole := *original.Role
+		copy.Role = &copyRole
+	}
+
+	if original.Content != nil {
+		copy.Content = &schemas.ResponsesMessageContent{}
+
+		if original.Content.ContentStr != nil {
+			copyContentStr := *original.Content.ContentStr
+			copy.Content.ContentStr = &copyContentStr
+		}
+
+		if original.Content.ContentBlocks != nil {
+			copy.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, len(original.Content.ContentBlocks))
+			for i, block := range original.Content.ContentBlocks {
+				copy.Content.ContentBlocks[i] = deepCopyResponsesMessageContentBlock(block)
+			}
+		}
+	}
+
+	if original.ResponsesToolMessage != nil {
+		copy.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+		*copy.ResponsesToolMessage = *original.ResponsesToolMessage // Shallow copy for now
+
+		if original.ResponsesToolMessage.CallID != nil {
+			copyCallID := *original.ResponsesToolMessage.CallID
+			copy.ResponsesToolMessage.CallID = &copyCallID
+		}
+
+		if original.ResponsesToolMessage.Name != nil {
+			copyName := *original.ResponsesToolMessage.Name
+			copy.ResponsesToolMessage.Name = &copyName
+		}
+
+		if original.ResponsesToolMessage.Arguments != nil {
+			copyArguments := *original.ResponsesToolMessage.Arguments
+			copy.ResponsesToolMessage.Arguments = &copyArguments
+		}
+	}
+
+	return copy
+}
+
+// deepCopyResponsesMessageContentBlock creates a deep copy of a ResponsesMessageContentBlock
+func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageContentBlock) schemas.ResponsesMessageContentBlock {
+	copy := schemas.ResponsesMessageContentBlock{
+		Type: original.Type,
+	}
+
+	if original.Text != nil {
+		copyText := *original.Text
+		copy.Text = &copyText
+	}
+
+	// Copy other specific content type fields as needed
+	if original.ResponsesOutputMessageContentText != nil {
+		copyTextContent := *original.ResponsesOutputMessageContentText
+		copy.ResponsesOutputMessageContentText = &copyTextContent
+	}
+
+	if original.ResponsesOutputMessageContentRefusal != nil {
+		copyRefusal := *original.ResponsesOutputMessageContentRefusal
+		copy.ResponsesOutputMessageContentRefusal = &copyRefusal
+	}
+
+	// Add other content type fields as they're used
+
+	return copy
+}
+
 // buildCompleteMessageFromResponsesStreamChunks builds complete messages from accumulated responses stream chunks
 func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
@@ -276,9 +486,9 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 	endTimestamp := accumulator.FinalTimestamp
 	accumulator.mu.Unlock()
 
-	// For OpenAI provider, the last chunk already contains the whole accumulated response
+	// For OpenAI-compatible providers, the last chunk already contains the whole accumulated response
 	// so just return it as is
-	if provider == "openai" {
+	if provider == schemas.OpenAI || provider == schemas.OpenRouter || provider == schemas.Azure {
 		isFinalChunk := bifrost.IsFinalChunk(ctx)
 		if isFinalChunk {
 			// For OpenAI, the final chunk contains the complete response
@@ -348,8 +558,8 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil && result.ResponsesStreamResponse != nil {
-		// Store the stream response
-		chunk.StreamResponse = result.ResponsesStreamResponse
+		// Store a deep copy of the stream response to prevent shared data mutation between plugins
+		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)
 
 		// Extract token usage from stream response if available
 		if result.ResponsesStreamResponse.Response != nil &&

@@ -75,7 +75,7 @@ type OtelPlugin struct {
 	pricingManager *pricing.PricingManager
 	accumulator    *streaming.Accumulator // Accumulator for streaming chunks
 
-	emitWg         sync.WaitGroup         // Track in-flight emissions
+	emitWg sync.WaitGroup // Track in-flight emissions
 }
 
 // Init function for the OTEL plugin
@@ -209,36 +209,39 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 		logger.Warn("trace id not found in context")
 		return resp, bifrostErr, nil
 	}
-	span, ok := p.ongoingSpans.Get(traceID)
-	if !ok {
-		logger.Warn("span not found in ongoing spans")
-		return resp, bifrostErr, nil
-	}
-	requestType, _, _ := bifrost.GetResponseFields(resp, bifrostErr)
-	if span, ok := span.(*ResourceSpan); ok {
-		// We handle streaming responses differently, we will use the accumulator to process the response and then emit the final response
-		if bifrost.IsStreamRequestType(requestType) {
-			streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, resp, bifrostErr)
-			if err != nil {
-				logger.Error("failed to process streaming response: %v", err)
-			}
-			if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
-				defer p.ongoingSpans.Delete(traceID)
-				p.client.Emit(p.ctx, []*ResourceSpan{completeResourceSpan(span, time.Now(), streamResponse.ToBifrostResponse(), bifrostErr, p.pricingManager)})
-			}
-			return resp, bifrostErr, nil
+
+	// Track every PostHook emission, stream and non-stream.
+	p.emitWg.Add(1)
+	go func() {
+		defer p.emitWg.Done()
+		span, ok := p.ongoingSpans.Get(traceID)
+		if !ok {
+			logger.Warn("span not found in ongoing spans")
+			return
 		}
-		rs := completeResourceSpan(span, time.Now(), resp, bifrostErr, p.pricingManager)
-		p.emitWg.Add(1)
-		go func(resourceSpan *ResourceSpan) {
-			defer p.ongoingSpans.Delete(traceID)
-			defer p.emitWg.Done()
-			err := p.client.Emit(p.ctx, []*ResourceSpan{resourceSpan})
-			if err != nil {
-				logger.Error("failed to emit response span: %v", err)
+		requestType, _, _ := bifrost.GetResponseFields(resp, bifrostErr)
+		if span, ok := span.(*ResourceSpan); ok {
+			// We handle streaming responses differently, we will use the accumulator to process the response and then emit the final response
+			if bifrost.IsStreamRequestType(requestType) {
+				streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, resp, bifrostErr)
+				if err != nil {
+					logger.Error("failed to process streaming response: %v", err)
+				}
+				if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
+					defer p.ongoingSpans.Delete(traceID)
+					if err := p.client.Emit(p.ctx, []*ResourceSpan{completeResourceSpan(span, time.Now(), streamResponse.ToBifrostResponse(), bifrostErr, p.pricingManager)}); err != nil {
+						logger.Error("failed to emit response span for request %s: %v", traceID, err)
+					}
+				}
+				return
 			}
-		}(rs)
-	}
+			defer p.ongoingSpans.Delete(traceID)
+			rs := completeResourceSpan(span, time.Now(), resp, bifrostErr, p.pricingManager)
+			if err := p.client.Emit(p.ctx, []*ResourceSpan{rs}); err != nil {
+				logger.Error("failed to emit response span for request %s: %v", traceID, err)
+			}
+		}
+	}()
 	return resp, bifrostErr, nil
 }
 

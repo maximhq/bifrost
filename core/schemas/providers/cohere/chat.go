@@ -180,7 +180,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 	return cohereReq
 }
 
-// ToBifrostResponse converts a Cohere v2 response to Bifrost format
+// ToBifrostChatResponse converts a Cohere v2 response to Bifrost format
 func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
 	if response == nil {
 		return nil
