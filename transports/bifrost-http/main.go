@@ -410,8 +410,9 @@ func main() {
 	// Currently we support first party plugins only
 	// Eventually same flow will be used for third party plugins
 	for _, plugin := range config.Plugins {
+		logger.Debug("initializing plugin %s", plugin.Name)
 		if !plugin.Enabled {
- 			logger.Debug("plugin %s is disabled, skipping initialization", plugin.Name)
+			logger.Debug("plugin %s is disabled, skipping initialization", plugin.Name)
 			continue
 		}
 		switch strings.ToLower(plugin.Name) {
@@ -428,10 +429,11 @@ func main() {
 				}
 			}
 
-			maximPlugin, err := maxim.Init(maximConfig)
+			maximPlugin, err := maxim.Init(maximConfig, logger)
 			if err != nil {
 				logger.Warn("failed to initialize maxim plugin: %v", err)
 			} else {
+				logger.Debug("successfully initialized maxim plugin")
 				loadedPlugins = append(loadedPlugins, maximPlugin)
 			}
 		case semanticcache.PluginName:

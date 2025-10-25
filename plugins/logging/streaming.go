@@ -4,6 +4,7 @@ package logging
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -242,6 +243,10 @@ func (p *LoggerPlugin) buildCompleteMessageFromChunks(chunks []*StreamChunk) *sc
 		Content: schemas.MessageContent{},
 	}
 
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
+	})
+
 	for _, chunk := range chunks {
 		if chunk.Delta == nil {
 			continue
@@ -353,6 +358,7 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 	chunk := p.getStreamChunk()
 	chunk.Timestamp = time.Now()
 	chunk.ErrorDetails = err
+	chunk.ChunkIndex = result.ExtraFields.ChunkIndex
 
 	if err != nil {
 		// Error case - mark as final chunk
@@ -411,7 +417,6 @@ func (p *LoggerPlugin) handleStreamingResponse(ctx *context.Context, result *sch
 			accumulator.mu.Unlock()
 
 			if shouldProcess {
-
 				if processErr := p.processAccumulatedChunks(*ctx, requestID, err); processErr != nil {
 					p.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 				}

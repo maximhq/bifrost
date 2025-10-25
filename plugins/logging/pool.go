@@ -76,6 +76,7 @@ func (p *LoggerPlugin) putStreamChunk(chunk *StreamChunk) {
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
 	chunk.ErrorDetails = nil
+	chunk.ChunkIndex = 0
 
 	p.streamChunkPool.Put(chunk)
 }

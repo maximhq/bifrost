@@ -101,6 +101,7 @@ type StreamChunk struct {
 	SemanticCacheDebug *schemas.BifrostCacheDebug  // Semantic cache debug if available
 	Cost               *float64                    // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError       // Error if any
+	ChunkIndex         int                         // Chunk index
 }
 
 // StreamAccumulator manages accumulation of streaming chunks

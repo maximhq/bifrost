@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/maxim-go"
@@ -34,7 +36,7 @@ type Config struct {
 // Returns:
 //   - schemas.Plugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func Init(config Config) (schemas.Plugin, error) {
+func Init(config Config, logger schemas.Logger) (schemas.Plugin, error) {
 	// check if Maxim Logger variables are set
 	if config.ApiKey == "" {
 		return nil, fmt.Errorf("apiKey is not set")
@@ -43,10 +45,12 @@ func Init(config Config) (schemas.Plugin, error) {
 	mx := maxim.Init(&maxim.MaximSDKConfig{ApiKey: config.ApiKey})
 
 	plugin := &Plugin{
-		mx:               mx,
-		defaultLogRepoId: config.LogRepoId,
-		loggers:          make(map[string]*logging.Logger),
-		loggerMutex:      &sync.RWMutex{},
+		mx:                 mx,
+		defaultLogRepoId:   config.LogRepoId,
+		loggers:            make(map[string]*logging.Logger),
+		loggerMutex:        &sync.RWMutex{},
+		logger:             logger,
+		streamAccumulators: sync.Map{},
 	}
 
 	// Initialize default logger if LogRepoId is provided
@@ -102,10 +106,34 @@ const (
 //   - loggers: Map of log repo ID to logger instances
 //   - loggerMutex: RW mutex for thread-safe access to loggers map
 type Plugin struct {
-	mx               *maxim.Maxim
-	defaultLogRepoId string
-	loggers          map[string]*logging.Logger
-	loggerMutex      *sync.RWMutex
+	mx                 *maxim.Maxim
+	defaultLogRepoId   string
+	loggers            map[string]*logging.Logger
+	loggerMutex        *sync.RWMutex
+	streamAccumulators sync.Map // Track stream accumulators by request ID (atomic)
+	logger             schemas.Logger
+}
+
+// StreamChunk represents a single streaming chunk
+type StreamChunk struct {
+	Timestamp          time.Time                   // When chunk was received
+	Delta              *schemas.BifrostStreamDelta // The actual delta content
+	FinishReason       *string                     // If this is the final chunk
+	TokenUsage         *schemas.LLMUsage           // Token usage if available
+	SemanticCacheDebug *schemas.BifrostCacheDebug  // Semantic cache debug if available
+	Cost               *float64                    // Cost in dollars from pricing plugin
+	ErrorDetails       *schemas.BifrostError       // Error if any
+	ChunkIndex         int                         // Chunk index
+}
+
+// StreamAccumulator manages accumulation of streaming chunks
+type StreamAccumulator struct {
+	RequestID      string
+	Chunks         []*StreamChunk
+	IsComplete     bool
+	FinalTimestamp time.Time
+	Object         string // Store object type once for the entire stream
+	mu             sync.Mutex
 }
 
 // GetName returns the name of the plugin.
@@ -379,43 +407,129 @@ func (plugin *Plugin) PostHook(ctxRef *context.Context, res *schemas.BifrostResp
 
 		// Get effective log repo ID for this request
 		effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctxRef)
+		if effectiveLogRepoID == "" {
+			return res, bifrostErr, nil
+		}
 
-		generationID, ok := ctx.Value(GenerationIDKey).(string)
-		if ok && effectiveLogRepoID != "" {
-			// Process generation completion in the effective log repository
-			logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-			if err == nil {
-				if bifrostErr != nil {
-					genErr := logging.GenerationError{
-						Message: bifrostErr.Error.Message,
-						Code:    bifrostErr.Error.Code,
-						Type:    bifrostErr.Error.Type,
+		// Extract request ID from context
+		requestID, ok := ctx.Value(schemas.BifrostContextKey("request-id")).(string)
+		if !ok || requestID == "" {
+			// Log error but don't fail the request
+			plugin.logger.Error("request-id not found in context or is empty")
+			return res, bifrostErr, nil
+		}
+
+		// Check if this is a streaming response
+		requestType, ok := ctx.Value(schemas.BifrostContextKeyRequestType).(schemas.RequestType)
+		if !ok {
+			plugin.logger.Error("request type missing/invalid in PostHook for request %s", requestID)
+			return res, bifrostErr, nil
+		}
+
+		go func() {
+			isChatStreaming := requestType == schemas.ChatCompletionStreamRequest
+
+			var completeStreamResponse *schemas.BifrostResponse
+			if isChatStreaming {
+				plugin.logger.Debug("received a stream chunk")
+				isFinalChunk := bifrost.IsFinalChunk(ctxRef)
+
+				// Handle text-based streaming with ordered accumulation
+				plugin.handleStreamingResponse(ctxRef, res, bifrostErr)
+
+				// If this is the final chunk, process accumulated chunks asynchronously
+				// Use the IsComplete flag to prevent duplicate processing
+				shouldProcess := false
+				if isFinalChunk {
+					plugin.logger.Debug("received the final stream chunk")
+					// Get the accumulator to check if processing has already been triggered
+					accumulator := plugin.getOrCreateStreamAccumulator(requestID)
+					accumulator.mu.Lock()
+					shouldProcess = !accumulator.IsComplete
+
+					// Mark as complete when we're about to process
+					if shouldProcess {
+						accumulator.IsComplete = true
 					}
-					logger.SetGenerationError(generationID, &genErr)
-				} else if res != nil {
-					logger.AddResultToGeneration(generationID, res)
+					accumulator.mu.Unlock()
+
+					if shouldProcess {
+						plugin.logger.Debug("processing the final stream chunk")
+						accumulator.mu.Lock()
+						defer accumulator.mu.Unlock()
+
+						// Ensure cleanup happens
+						defer plugin.cleanupStreamAccumulator(requestID)
+
+						accumulator := plugin.getOrCreateStreamAccumulator(requestID)
+
+						// Build complete message from accumulated chunks
+						completeStreamResponse = &schemas.BifrostResponse{
+							ID:     res.ID,
+							Object: "chat.completion.chunk",
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									Index: 0,
+									BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+										Message: *plugin.buildCompleteMessageFromChunks(accumulator.Chunks),
+									},
+								},
+							},
+							Model:             res.Model,
+							Created:           res.Created,
+							ServiceTier:       res.ServiceTier,
+							SystemFingerprint: res.SystemFingerprint,
+							Usage:             res.Usage,
+							ExtraFields:       res.ExtraFields,
+						}
+						completeStreamResponse.ExtraFields.ChunkIndex = 0
+					}
+				} else {
+					// if not final chunk, return early because we only process the final chunk
+					return
 				}
-
-				logger.EndGeneration(generationID)
 			}
-		}
 
-		traceID, ok := ctx.Value(TraceIDKey).(string)
-		if ok && effectiveLogRepoID != "" {
-			// End trace in the effective log repository
+			generationID, ok := ctx.Value(GenerationIDKey).(string)
+			if ok {
+				// Process generation completion in the effective log repository
+				logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
+				if err == nil {
+					if bifrostErr != nil {
+						genErr := logging.GenerationError{
+							Message: bifrostErr.Error.Message,
+							Code:    bifrostErr.Error.Code,
+							Type:    bifrostErr.Error.Type,
+						}
+						logger.SetGenerationError(generationID, &genErr)
+					} else if res != nil {
+						if completeStreamResponse != nil {
+							logger.AddResultToGeneration(generationID, completeStreamResponse)
+						} else {
+							logger.AddResultToGeneration(generationID, res)
+						}
+					}
+
+					logger.EndGeneration(generationID)
+				}
+			}
+
+			traceID, ok := ctx.Value(TraceIDKey).(string)
+			if ok {
+				// End trace in the effective log repository
+				logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
+				if err == nil {
+					logger.EndTrace(traceID)
+				}
+			}
+
+			// Flush logger
 			logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
 			if err == nil {
-				logger.EndTrace(traceID)
-			}
-		}
-
-		// Flush only the effective logger that was used for this request
-		if effectiveLogRepoID != "" {
-			logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
-			if err == nil {
+				plugin.logger.Debug("flushing logger")
 				logger.Flush()
 			}
-		}
+		}()
 	}
 
 	return res, bifrostErr, nil
