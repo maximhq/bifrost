@@ -3,8 +3,8 @@ package bedrock
 import (
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 )
 
 // ToBedrockTextCompletionRequest converts a Bifrost text completion request to Bedrock format
