@@ -1,7 +1,7 @@
 "use client";
 
-import { CodeEditor } from "@/app/logs/views/codeEditor";
-import ConfirmDeletePluginDialog from "@/app/plugins/dialogs/confirmDeletePluginDialog";
+import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
+import ConfirmDeletePluginDialog from "@/app/workspace/plugins/dialogs/confirmDeletePluginDialog";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -142,7 +142,7 @@ export default function PluginsView(props: Props) {
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
 					{/* Editable Fields */}
-					<div className="p-4">
+					<div className="">
 						<h3 className="mb-4 text-lg font-semibold">Plugin Configuration</h3>
 						<div className="space-y-4">
 							<FormField

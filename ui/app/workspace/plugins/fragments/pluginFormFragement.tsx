@@ -1,6 +1,6 @@
 "use client";
 
-import { CodeEditor } from "@/app/logs/views/codeEditor";
+import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import { Button } from "@/components/ui/button";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";

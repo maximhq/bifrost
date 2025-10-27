@@ -7,10 +7,10 @@ toolchain go1.24.3
 require (
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.2.16
-	github.com/redis/go-redis/v9 v9.12.1
+	github.com/redis/go-redis/v9 v9.14.0
 	github.com/stretchr/testify v1.11.1
-	github.com/weaviate/weaviate v1.31.5
-	github.com/weaviate/weaviate-go-client/v5 v5.2.0
+	github.com/weaviate/weaviate v1.33.1
+	github.com/weaviate/weaviate-go-client/v5 v5.5.0
 	golang.org/x/crypto v0.43.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.0

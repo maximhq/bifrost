@@ -1,18 +1,18 @@
 package vertex
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/valyala/fasthttp"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	"github.com/bytedance/sonic"
@@ -56,6 +56,7 @@ func removeVertexClient(authCredentials string) {
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
 type VertexProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
@@ -65,8 +66,17 @@ type VertexProvider struct {
 // The client is configured with timeouts, concurrency limits, and optional proxy settings.
 func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*VertexProvider, error) {
 	config.CheckAndSetDefaults()
+	client := &fasthttp.Client{
+		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     10000,
+		MaxIdleConnDuration: 60 * time.Second,
+		MaxConnWaitTimeout:  10 * time.Second,
+	}
+	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	return &VertexProvider{
 		logger:              logger,
+		client:              client,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -74,47 +84,30 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
-// getAuthClient returns an authenticated HTTP client for Vertex AI API requests.
-// This function implements client pooling to avoid creating and authenticating
-// clients for every request, which significantly improves performance by:
-// - Avoiding repeated JWT config creation
-// - Reusing OAuth2 token refresh logic
-// - Reducing authentication overhead
-func getAuthClient(key schemas.Key) (*http.Client, error) {
+// getAuthTokenSource returns an authenticated token source for Vertex AI API requests.
+// It uses the default credentials if no auth credentials are provided.
+// It uses the JWT config if auth credentials are provided.
+// It returns an error if the token source creation fails.
+func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	if key.VertexKeyConfig == nil {
 		return nil, fmt.Errorf("vertex key config is not set")
 	}
-
 	authCredentials := key.VertexKeyConfig.AuthCredentials
-	var client *http.Client
-	// Generate cache key from credentials
-	clientKey := getClientKey(authCredentials)
-
-	// Try to get existing client from pool
-	if value, exists := vertexClientPool.Load(clientKey); exists {
-		return value.(*http.Client), nil
-	}
-
+	var tokenSource oauth2.TokenSource
 	if authCredentials == "" {
-		// When auth credentials are not explicitly set, use default credentials
-		// This will automatically detect credentials from the environment/server
-		var err error
-		client, err = google.DefaultClient(context.Background(), cloudPlatformScope)
+		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create default client: %w", err)
+			return nil, fmt.Errorf("failed to find default credentials: %w", err)
 		}
+		tokenSource = creds.TokenSource
 	} else {
 		conf, err := google.JWTConfigFromJSON([]byte(authCredentials), cloudPlatformScope)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create JWT config: %w", err)
 		}
-		client = conf.Client(context.Background())
+		tokenSource = conf.TokenSource(context.Background())
 	}
-
-	// Store the client using LoadOrStore to handle race conditions
-	// If another goroutine stored a client while we were creating ours, use theirs
-	actual, _ := vertexClientPool.LoadOrStore(clientKey, client)
-	return actual.(*http.Client), nil
+	return tokenSource, nil
 }
 
 // GetProviderKey returns the provider identifier for Vertex.
@@ -143,48 +136,31 @@ func (provider *VertexProvider) ListModels(ctx context.Context, key schemas.Key,
 	// Build URL using centralized URL construction
 	requestURL := ToVertexListModelsURL(request, fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/models", region, projectID, region))
 
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
-	}
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(requestURL)
+	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.Header.Set("Content-Type", "application/json")
-
-	client, err := getAuthClient(key)
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	tokenSource, err := getAuthTokenSource(key)
 	if err != nil {
-		// Remove client from pool if auth client creation fails
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, providerUtils.NewBifrostOperationError("error creating auth client", err, providerName)
+		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, providerName)
 	}
-
-	// Make request and measure latency
-	startTime := time.Now()
-	resp, err := client.Do(req)
-	latency := time.Since(startTime)
+	// Getting oauth2 token
+	token, err := tokenSource.Token()
 	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("error getting token", err, providerName)
+	}
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	// Make the request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -195,70 +171,44 @@ func (provider *VertexProvider) ListModels(ctx context.Context, key schemas.Key,
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
-	defer resp.Body.Close()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "error reading response",
-				Error:   err,
-			},
-		}
-	}
-
 	// Handle error response
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 		}
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(body)))
-
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, resp.String()))
 		var errorResp VertexError
-
-		if err := sonic.Unmarshal(body, &errorResp); err != nil {
+		if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: true,
-				StatusCode:     &resp.StatusCode,
+				StatusCode:     schemas.Ptr(resp.StatusCode()),
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderResponseUnmarshal,
 					Error:   err,
 				},
 			}
 		}
-
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
+			StatusCode:     schemas.Ptr(resp.StatusCode()),
 			Error: &schemas.ErrorField{
 				Message: errorResp.Error.Message,
 			},
 		}
 	}
-
 	// Parse Vertex's response
 	var vertexResponse VertexListModelsResponse
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &vertexResponse, provider.sendBackRawResponse)
+	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
 	// Create final response
 	response := vertexResponse.ToBifrostListModelsResponse()
-
 	// Set ExtraFields
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.RequestType = schemas.ListModelsRequest
@@ -358,9 +308,34 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		}
 	}
 
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Getting oauth2 token
+	tokenSource, err := getAuthTokenSource(key)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+	}
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	req.SetBody(jsonBody)
+
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
+
+	// Make the request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -371,91 +346,40 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, provider.GetProviderKey())
 	}
 
-	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.Header.Set("Content-Type", "application/json")
-
-	client, err := getAuthClient(key)
-	if err != nil {
-		// Remove client from pool if auth client creation fails
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, providerUtils.NewBifrostOperationError("error creating auth client", err, schemas.Vertex)
-	}
-
-	startTime := time.Now()
-
-	// Make request
-	resp, err := client.Do(req)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
-		}
-		// Remove client from pool for non-context errors (could be auth/network issues)
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
-	}
-	defer resp.Body.Close()
-
-	latency := time.Since(startTime)
-
-	// Handle error response
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error reading response", err, schemas.Vertex)
-	}
-
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
 		// Remove client from pool for authentication/authorization errors
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 		}
 
 		var openAIErr schemas.BifrostError
 
 		var vertexErr []VertexError
-		if err := sonic.Unmarshal(body, &openAIErr); err != nil {
+		if err := sonic.Unmarshal(resp.Body(), &openAIErr); err != nil {
 			// Try Vertex error format if OpenAI format fails
-			if err := sonic.Unmarshal(body, &vertexErr); err != nil {
+			if err := sonic.Unmarshal(resp.Body(), &vertexErr); err != nil {
 
 				//try with single Vertex error format
 				var vertexErr VertexError
-				if err := sonic.Unmarshal(body, &vertexErr); err != nil {
+				if err := sonic.Unmarshal(resp.Body(), &vertexErr); err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
 				}
 
-				return nil, providerUtils.NewProviderAPIError(vertexErr.Error.Message, nil, resp.StatusCode, schemas.Vertex, nil, nil)
+				return nil, providerUtils.NewProviderAPIError(vertexErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
 			}
 
 			if len(vertexErr) > 0 {
-				return nil, providerUtils.NewProviderAPIError(vertexErr[0].Error.Message, nil, resp.StatusCode, schemas.Vertex, nil, nil)
+				return nil, providerUtils.NewProviderAPIError(vertexErr[0].Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
 			}
 		}
 
-		return nil, providerUtils.NewProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode, schemas.Vertex, nil, nil)
+		return nil, providerUtils.NewProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
 	}
 
 	if strings.Contains(request.Model, "claude") {
@@ -463,7 +387,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		anthropicChatResponse := anthropic.AcquireAnthropicChatResponse()
 		defer anthropic.ReleaseAnthropicChatResponse(anthropicChatResponse)
 
-		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, anthropicChatResponse, provider.sendBackRawResponse)
+		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), anthropicChatResponse, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -487,7 +411,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		response := &schemas.BifrostChatResponse{}
 
 		// Use enhanced response handler with pre-allocated response
-		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, provider.sendBackRawResponse)
+		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), response, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -521,13 +445,6 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 	region := key.VertexKeyConfig.Region
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", schemas.Vertex)
-	}
-
-	client, err := getAuthClient(key)
-	if err != nil {
-		// Remove client from pool if auth client creation fails
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, providerUtils.NewBifrostOperationError("error creating auth client", err, schemas.Vertex)
 	}
 
 	if strings.Contains(request.Model, "claude") {
@@ -565,10 +482,21 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			"Cache-Control": "no-cache",
 		}
 
+		// Adding authorization header
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		headers["Authorization"] = "Bearer " + token.AccessToken
+
 		// Use shared Anthropic streaming logic
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			client,
+			provider.client,
 			url,
 			requestBody,
 			headers,
@@ -592,7 +520,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		// Use shared OpenAI streaming logic
 		return openai.HandleOpenAIChatCompletionStreaming(
 			ctx,
-			client,
+			provider.client,
 			url,
 			request,
 			authHeader,
@@ -671,42 +599,39 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
 		key.VertexKeyConfig.Region, key.VertexKeyConfig.ProjectID, key.VertexKeyConfig.Region, model)
 
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
-	}
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.Header.Set("Content-Type", "application/json")
-
-	client, err := getAuthClient(key)
+	// Getting oauth2 token
+	tokenSource, err := getAuthTokenSource(key)
 	if err != nil {
-		// Remove client from pool if auth client creation fails
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, providerUtils.NewBifrostOperationError("error creating auth client", err, schemas.Vertex)
+		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
 	}
-
-	startTime := time.Now()
-
-	// Make request
-	resp, err := client.Do(req)
+	token, err := tokenSource.Token()
 	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+	}
+	req.Header.Set("Authorization", "Bearer " + token.AccessToken)
+
+	req.SetBody(jsonBody)
+
+	
+	// Set any extra headers from network config
+	
+
+	// Make the request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -717,32 +642,22 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
-		// Remove client from pool for non-context errors (could be auth/network issues)
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
-	}
-	defer resp.Body.Close()
-
-	latency := time.Since(startTime)
-
-	// Handle error response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error reading response", err, schemas.Vertex)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, provider.GetProviderKey())
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	
+	if resp.StatusCode() != fasthttp.StatusOK {
 		// Remove client from pool for authentication/authorization errors
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 		}
 
 		// Try to parse Vertex's error format
 		var vertexError map[string]interface{}
-		if err := sonic.Unmarshal(body, &vertexError); err != nil {
+		if err := sonic.Unmarshal(resp.Body(), &vertexError); err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
 		}
 
@@ -758,12 +673,12 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 			}
 		}
 
-		return nil, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode, schemas.Vertex, nil, nil)
+		return nil, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
 	}
 
 	// Parse Vertex's native embedding response using typed response
 	var vertexResponse VertexEmbeddingResponse
-	if err := sonic.Unmarshal(body, &vertexResponse); err != nil {
+	if err := sonic.Unmarshal(resp.Body(), &vertexResponse); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
 	}
 
