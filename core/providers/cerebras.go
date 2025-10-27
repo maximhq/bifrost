@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -39,7 +41,7 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	}
 
 	// Configure proxy if provided
-	client = configureProxy(client, config.ProxyConfig, logger)
+	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
@@ -63,14 +65,14 @@ func (provider *CerebrasProvider) GetProviderKey() schemas.ModelProvider {
 
 // ListModels performs a list models request to Cerebras's API.
 func (provider *CerebrasProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return handleOpenAIListModelsRequest(ctx, provider.client, request, provider.networkConfig.BaseURL+"/v1/models", keys, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), provider.sendBackRawResponse, provider.logger)
+	return openai.HandleOpenAIListModelsRequest(ctx, provider.client, request, provider.networkConfig.BaseURL+"/v1/models", keys, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), provider.sendBackRawResponse, provider.logger)
 }
 
 // TextCompletion performs a text completion request to Cerebras's API.
 // It formats the request, sends it to Cerebras, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	return handleOpenAITextCompletionRequest(
+	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/completions",
@@ -87,7 +89,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schema
 // It formats the request, sends it to Cerebras, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return handleOpenAITextCompletionStreaming(
+	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/completions",
@@ -103,7 +105,7 @@ func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, post
 
 // ChatCompletion performs a chat completion request to the Cerebras API.
 func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return handleOpenAIChatCompletionRequest(
+	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -122,7 +124,7 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schema
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIChatCompletionStreaming(
+	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -154,7 +156,7 @@ func (provider *CerebrasProvider) Responses(ctx context.Context, key schemas.Key
 func (provider *CerebrasProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return provider.ChatCompletionStream(
 		ctx,
-		getResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
 		key,
 		request.ToChatRequest(),
 	)
@@ -162,25 +164,25 @@ func (provider *CerebrasProvider) ResponsesStream(ctx context.Context, postHookR
 
 // Embedding is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("embedding", "cerebras")
+	return nil, providerUtils.NewUnsupportedOperationError("embedding", string(provider.GetProviderKey()))
 }
 
 // Speech is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech", "cerebras")
+	return nil, providerUtils.NewUnsupportedOperationError("speech", string(provider.GetProviderKey()))
 }
 
 // SpeechStream is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech stream", "cerebras")
+	return nil, providerUtils.NewUnsupportedOperationError("speech stream", string(provider.GetProviderKey()))
 }
 
 // Transcription is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription", "cerebras")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription", string(provider.GetProviderKey()))
 }
 
 // TranscriptionStream is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription stream", "cerebras")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription stream", string(provider.GetProviderKey()))
 }

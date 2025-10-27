@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -44,7 +46,7 @@ func NewParasailProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	// }
 
 	// Configure proxy if provided
-	client = configureProxy(client, config.ProxyConfig, logger)
+	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
@@ -68,7 +70,7 @@ func (provider *ParasailProvider) GetProviderKey() schemas.ModelProvider {
 
 // ListModels performs a list models request to Parasail's API.
 func (provider *ParasailProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return handleOpenAIListModelsRequest(
+	return openai.HandleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
 		request,
@@ -83,19 +85,19 @@ func (provider *ParasailProvider) ListModels(ctx context.Context, keys []schemas
 
 // TextCompletion is not supported by the Parasail provider.
 func (provider *ParasailProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion", "parasail")
+	return nil, providerUtils.NewUnsupportedOperationError("text completion", "parasail")
 }
 
 // TextCompletionStream performs a streaming text completion request to Parasail's API.
 // It formats the request, sends it to Parasail, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *ParasailProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion stream", "parasail")
+	return nil, providerUtils.NewUnsupportedOperationError("text completion stream", "parasail")
 }
 
 // ChatCompletion performs a chat completion request to the Parasail API.
 func (provider *ParasailProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return handleOpenAIChatCompletionRequest(
+	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -114,7 +116,7 @@ func (provider *ParasailProvider) ChatCompletion(ctx context.Context, key schema
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIChatCompletionStreaming(
+	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -147,7 +149,7 @@ func (provider *ParasailProvider) Responses(ctx context.Context, key schemas.Key
 func (provider *ParasailProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return provider.ChatCompletionStream(
 		ctx,
-		getResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
 		key,
 		request.ToChatRequest(),
 	)
@@ -155,25 +157,25 @@ func (provider *ParasailProvider) ResponsesStream(ctx context.Context, postHookR
 
 // Embedding is not supported by the Parasail provider.
 func (provider *ParasailProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("embedding", "parasail")
+	return nil, providerUtils.NewUnsupportedOperationError("embedding", string(provider.GetProviderKey()))
 }
 
 // Speech is not supported by the Parasail provider.
 func (provider *ParasailProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech", "parasail")
+	return nil, providerUtils.NewUnsupportedOperationError("speech", string(provider.GetProviderKey()))
 }
 
 // SpeechStream is not supported by the Parasail provider.
 func (provider *ParasailProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech stream", "parasail")
+	return nil, providerUtils.NewUnsupportedOperationError("speech stream", string(provider.GetProviderKey()))
 }
 
 // Transcription is not supported by the Parasail provider.
 func (provider *ParasailProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription", "parasail")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription", string(provider.GetProviderKey()))
 }
 
 // TranscriptionStream is not supported by the Parasail provider.
 func (provider *ParasailProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription stream", "parasail")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription stream", string(provider.GetProviderKey()))
 }

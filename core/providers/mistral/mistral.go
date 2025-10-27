@@ -1,6 +1,5 @@
-// Package providers implements various LLM providers and their utility functions.
-// This file contains the Mistral provider implementation.
-package providers
+// Package mistral implements the Mistral provider.
+package mistral
 
 import (
 	"context"
@@ -8,8 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/providers/mistral"
 	"github.com/valyala/fasthttp"
 )
 
@@ -45,7 +45,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	// }
 
 	// Configure proxy if provided
-	client = configureProxy(client, config.ProxyConfig, logger)
+	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
@@ -79,22 +79,24 @@ func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schema
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/models")
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 
 	// Make request
-	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := parseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
 		return nil, bifrostErr
 	}
 
@@ -102,8 +104,8 @@ func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schema
 	responseBody := append([]byte(nil), resp.Body()...)
 
 	// Parse Mistral's response
-	var mistralResponse mistral.MistralListModelsResponse
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, &mistralResponse, provider.sendBackRawResponse)
+	var mistralResponse MistralListModelsResponse
+	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &mistralResponse, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -124,7 +126,7 @@ func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schema
 // ListModels performs a list models request to Mistral's API.
 // Requests are made concurrently for improved performance.
 func (provider *MistralProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return handleMultipleListModelsRequests(
+	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
 		request,
@@ -135,19 +137,19 @@ func (provider *MistralProvider) ListModels(ctx context.Context, keys []schemas.
 
 // TextCompletion is not supported by the Mistral provider.
 func (provider *MistralProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion", "mistral")
+	return nil, providerUtils.NewUnsupportedOperationError("text completion", "mistral")
 }
 
 // TextCompletionStream performs a streaming text completion request to Mistral's API.
 // It formats the request, sends it to Mistral, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *MistralProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion stream", "mistral")
+	return nil, providerUtils.NewUnsupportedOperationError("text completion stream", "mistral")
 }
 
 // ChatCompletion performs a chat completion request to the Mistral API.
 func (provider *MistralProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return handleOpenAIChatCompletionRequest(
+	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -166,7 +168,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, key schemas
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIChatCompletionStreaming(
+	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -199,7 +201,7 @@ func (provider *MistralProvider) Responses(ctx context.Context, key schemas.Key,
 func (provider *MistralProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return provider.ChatCompletionStream(
 		ctx,
-		getResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
 		key,
 		request.ToChatRequest(),
 	)
@@ -209,7 +211,7 @@ func (provider *MistralProvider) ResponsesStream(ctx context.Context, postHookRu
 // Supports Mistral's embedding models and returns a BifrostResponse containing the embedding(s).
 func (provider *MistralProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Use the shared embedding request handler
-	return handleOpenAIEmbeddingRequest(
+	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/embeddings",
@@ -224,20 +226,20 @@ func (provider *MistralProvider) Embedding(ctx context.Context, key schemas.Key,
 
 // Speech is not supported by the Mistral provider.
 func (provider *MistralProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech", "mistral")
+	return nil, providerUtils.NewUnsupportedOperationError("speech", "mistral")
 }
 
 // SpeechStream is not supported by the Mistral provider.
 func (provider *MistralProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech stream", "mistral")
+	return nil, providerUtils.NewUnsupportedOperationError("speech stream", "mistral")
 }
 
 // Transcription is not supported by the Mistral provider.
 func (provider *MistralProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription", "mistral")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription", "mistral")
 }
 
 // TranscriptionStream is not supported by the Mistral provider.
 func (provider *MistralProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription stream", "mistral")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription stream", "mistral")
 }

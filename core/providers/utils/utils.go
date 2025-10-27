@@ -21,12 +21,19 @@ import (
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
 
+var logger schemas.Logger
+
+func SetLogger(l schemas.Logger) {
+	logger = l
+}
+
+// MakeRequestWithContext makes a request with a context and returns the latency and error.
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
 // context is done. The fasthttp client call will continue in its goroutine until it completes
 // or times out based on its own settings. This function merely stops *waiting* for the
 // fasthttp call and returns an error related to the context.
 // Returns the request latency and any error that occurred.
-func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError) {
+func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError) {
 	startTime := time.Now()
 	errChan := make(chan error, 1)
 
@@ -66,7 +73,7 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 				}
 			}
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
 			return latency, &schemas.BifrostError{
@@ -83,10 +90,10 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 	}
 }
 
-// configureProxy sets up a proxy for the fasthttp client based on the provided configuration.
+// ConfigureProxy sets up a proxy for the fasthttp client based on the provided configuration.
 // It supports HTTP, SOCKS5, and environment-based proxy configurations.
 // Returns the configured client or the original client if proxy configuration is invalid.
-func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, logger schemas.Logger) *fasthttp.Client {
+func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, logger schemas.Logger) *fasthttp.Client {
 	if proxyConfig == nil {
 		return client
 	}
@@ -136,13 +143,13 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	return client
 }
 
-// setExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
+// SetExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // The Authorization header is excluded for security reasons.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
 	if extraHeaders == nil {
 		return
 	}
@@ -165,12 +172,12 @@ func setExtraHeaders(req *fasthttp.Request, extraHeaders map[string]string, skip
 	}
 }
 
-// setExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
+// SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
 	if extraHeaders == nil {
 		return
 	}
@@ -193,13 +200,14 @@ func setExtraHeadersHTTP(req *http.Request, extraHeaders map[string]string, skip
 	}
 }
 
-// handleProviderAPIError processes error responses from provider APIs.
+// HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
 // with the appropriate status code and error information.
-func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+// errorResp must be a pointer to the target struct for unmarshaling.
+func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 
-	if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
+	if err := sonic.Unmarshal(resp.Body(), errorResp); err != nil {
 		rawResponse := resp.Body()
 		message := fmt.Sprintf("provider API error: %s", string(rawResponse))
 		return &schemas.BifrostError{
@@ -218,11 +226,11 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	}
 }
 
-// handleProviderResponse handles common response parsing logic for provider responses.
+// HandleProviderResponse handles common response parsing logic for provider responses.
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
 // If sendBackRawResponse is true, it returns the raw response interface, otherwise nil.
-func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRawResponse bool) (interface{}, *schemas.BifrostError) {
+func HandleProviderResponse[T any](responseBody []byte, response *T, sendBackRawResponse bool) (interface{}, *schemas.BifrostError) {
 	var rawResponse interface{}
 
 	var wg sync.WaitGroup
@@ -268,9 +276,9 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 	return nil, nil
 }
 
-// newUnsupportedOperationError creates a standardized error for unsupported operations.
+// NewUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
-func newUnsupportedOperationError(operation string, providerName string) *schemas.BifrostError {
+func NewUnsupportedOperationError(operation string, providerName string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
@@ -283,11 +291,11 @@ func newUnsupportedOperationError(operation string, providerName string) *schema
 	}
 }
 
-// checkOperationAllowed enforces per-op gating using schemas.Operation.
+// CheckOperationAllowed enforces per-op gating using schemas.Operation.
 // Behavior:
 // - If no gating is configured (config == nil or AllowedRequests == nil), the operation is allowed.
 // - If gating is configured, returns an error when the operation is not explicitly allowed.
-func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.RequestType) *schemas.BifrostError {
+func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.RequestType) *schemas.BifrostError {
 	// No gating configured => allowed
 	if config == nil || config.AllowedRequests == nil {
 		return nil
@@ -297,13 +305,13 @@ func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 		return nil
 	}
 	// Gated and not allowed
-	resolved := getProviderName(defaultProvider, config)
-	return newUnsupportedOperationError(string(operation), string(resolved))
+	resolved := GetProviderName(defaultProvider, config)
+	return NewUnsupportedOperationError(string(operation), string(resolved))
 }
 
-// newConfigurationError creates a standardized error for configuration errors.
+// NewConfigurationError creates a standardized error for configuration errors.
 // This helper reduces code duplication across providers that have configuration errors.
-func newConfigurationError(message string, providerType schemas.ModelProvider) *schemas.BifrostError {
+func NewConfigurationError(message string, providerType schemas.ModelProvider) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
@@ -315,9 +323,9 @@ func newConfigurationError(message string, providerType schemas.ModelProvider) *
 	}
 }
 
-// newBifrostOperationError creates a standardized error for bifrost operation errors.
+// NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
-func newBifrostOperationError(message string, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
+func NewBifrostOperationError(message string, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: true,
 		Error: &schemas.ErrorField{
@@ -330,9 +338,9 @@ func newBifrostOperationError(message string, err error, providerType schemas.Mo
 	}
 }
 
-// newProviderAPIError creates a standardized error for provider API errors.
+// NewProviderAPIError creates a standardized error for provider API errors.
 // This helper reduces code duplication across providers that have provider API errors.
-func newProviderAPIError(message string, err error, statusCode int, providerType schemas.ModelProvider, errorType *string, eventID *string) *schemas.BifrostError {
+func NewProviderAPIError(message string, err error, statusCode int, providerType schemas.ModelProvider, errorType *string, eventID *string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     &statusCode,
@@ -349,7 +357,8 @@ func newProviderAPIError(message string, err error, statusCode int, providerType
 	}
 }
 
-func sendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream, logger schemas.Logger) {
+// SendCreatedEventResponsesChunk sends a ResponsesStreamResponseTypeCreated event.
+func SendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
 	firstChunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeCreated,
 		SequenceNumber: 0,
@@ -366,11 +375,11 @@ func sendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.
 	bifrostResponse := &schemas.BifrostResponse{
 		ResponsesStreamResponse: firstChunk,
 	}
-	processAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan, logger)
+	ProcessAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
-// sendInProgressResponsesChunk sends a ResponsesStreamResponseTypeInProgress event
-func sendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream, logger schemas.Logger) {
+// SendInProgressResponsesChunk sends a ResponsesStreamResponseTypeInProgress event
+func SendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
 	chunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeInProgress,
 		SequenceNumber: 1,
@@ -387,24 +396,23 @@ func sendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schem
 	bifrostResponse := &schemas.BifrostResponse{
 		ResponsesStreamResponse: chunk,
 	}
-	processAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan, logger)
+	ProcessAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
-// processAndSendResponse handles post-hook processing and sends the response to the channel.
+// ProcessAndSendResponse handles post-hook processing and sends the response to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
-func processAndSendResponse(
+func ProcessAndSendResponse(
 	ctx context.Context,
 	postHookRunner schemas.PostHookRunner,
 	response *schemas.BifrostResponse,
 	responseChan chan *schemas.BifrostStream,
-	logger schemas.Logger,
 ) {
 	// Run post hooks on the response
 	processedResponse, processedError := postHookRunner(&ctx, response, nil)
 
-	if handleStreamControlSkip(logger, processedError) {
+	if HandleStreamControlSkip(processedError) {
 		return
 	}
 
@@ -427,11 +435,11 @@ func processAndSendResponse(
 	}
 }
 
-// processAndSendBifrostError handles post-hook processing and sends the bifrost error to the channel.
+// ProcessAndSendBifrostError handles post-hook processing and sends the bifrost error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
-func processAndSendBifrostError(
+func ProcessAndSendBifrostError(
 	ctx context.Context,
 	postHookRunner schemas.PostHookRunner,
 	bifrostErr *schemas.BifrostError,
@@ -441,7 +449,7 @@ func processAndSendBifrostError(
 	// Send scanner error through channel
 	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostErr)
 
-	if handleStreamControlSkip(logger, processedError) {
+	if HandleStreamControlSkip(processedError) {
 		return
 	}
 
@@ -463,11 +471,11 @@ func processAndSendBifrostError(
 	}
 }
 
-// processAndSendError handles post-hook processing and sends the error to the channel.
+// ProcessAndSendError handles post-hook processing and sends the error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
-func processAndSendError(
+func ProcessAndSendError(
 	ctx context.Context,
 	postHookRunner schemas.PostHookRunner,
 	err error,
@@ -493,7 +501,7 @@ func processAndSendError(
 		}
 	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostError)
 
-	if handleStreamControlSkip(logger, processedError) {
+	if HandleStreamControlSkip(processedError) {
 		return
 	}
 
@@ -515,7 +523,8 @@ func processAndSendError(
 	}
 }
 
-func createBifrostTextCompletionChunkResponse(
+// CreateBifrostTextCompletionChunkResponse creates a bifrost text completion chunk response.
+func CreateBifrostTextCompletionChunkResponse(
 	id string,
 	usage *schemas.BifrostLLMUsage,
 	finishReason *string,
@@ -544,7 +553,8 @@ func createBifrostTextCompletionChunkResponse(
 	return response
 }
 
-func createBifrostChatCompletionChunkResponse(
+// CreateBifrostChatCompletionChunkResponse creates a bifrost chat completion chunk response.
+func CreateBifrostChatCompletionChunkResponse(
 	id string,
 	usage *schemas.BifrostLLMUsage,
 	finishReason *string,
@@ -575,18 +585,19 @@ func createBifrostChatCompletionChunkResponse(
 	return response
 }
 
-func handleStreamEndWithSuccess(
+// HandleStreamEndWithSuccess handles the end of a stream with success.
+func HandleStreamEndWithSuccess(
 	ctx context.Context,
 	response *schemas.BifrostResponse,
 	postHookRunner schemas.PostHookRunner,
 	responseChan chan *schemas.BifrostStream,
-	logger schemas.Logger,
 ) {
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-	processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
+	ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
 }
 
-func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostError) bool {
+// HandleStreamControlSkip checks if the stream control should be skipped.
+func HandleStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
 	if bifrostErr == nil || bifrostErr.StreamControl == nil {
 		return false
 	}
@@ -599,10 +610,10 @@ func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostE
 	return false
 }
 
-// getProviderName extracts the provider name from custom provider configuration.
+// GetProviderName extracts the provider name from custom provider configuration.
 // If a custom provider key is specified, it returns that; otherwise, it returns the default provider.
 // Note: CustomProviderKey is internally set by Bifrost and should always match the provider name.
-func getProviderName(defaultProvider schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) schemas.ModelProvider {
+func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) schemas.ModelProvider {
 	if customConfig != nil {
 		if key := strings.TrimSpace(customConfig.CustomProviderKey); key != "" {
 			return schemas.ModelProvider(key)
@@ -611,7 +622,8 @@ func getProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 	return defaultProvider
 }
 
-func getResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
+// GetResponsesChunkConverterCombinedPostHookRunner gets a combined post hook runner that converts to responses stream, then runs the original post hooks.
+func GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
 	responsesChunkConverter := func(_ *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			if result.ChatResponse != nil {
@@ -640,7 +652,8 @@ func getResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.Pos
 	return combinedPostHookRunner
 }
 
-func getBifrostResponseForStreamResponse(
+// GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.
+func GetBifrostResponseForStreamResponse(
 	textCompletionResponse *schemas.BifrostTextCompletionResponse,
 	chatResponse *schemas.BifrostChatResponse,
 	responsesStreamResponse *schemas.BifrostResponsesStreamResponse,
@@ -765,10 +778,10 @@ func extractSuccessfulListModelsResponses(
 	return successfulResponses, nil
 }
 
-// handleMultipleListModelsRequests handles multiple list models requests concurrently for different keys.
+// HandleMultipleListModelsRequests handles multiple list models requests concurrently for different keys.
 // It launches concurrent requests for all keys and waits for all goroutines to complete.
 // It returns the aggregated response or an error if the request fails.
-func handleMultipleListModelsRequests(
+func HandleMultipleListModelsRequests(
 	ctx context.Context,
 	keys []schemas.Key,
 	request *schemas.BifrostListModelsRequest,

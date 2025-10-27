@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -45,7 +47,7 @@ func NewSGLProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SGL
 	// }
 
 	// Configure proxy if provided
-	client = configureProxy(client, config.ProxyConfig, logger)
+	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
@@ -70,7 +72,7 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 
 // ListModels performs a list models request to SGL's API.
 func (provider *SGLProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return handleOpenAIListModelsRequest(
+	return openai.HandleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
 		request,
@@ -85,7 +87,7 @@ func (provider *SGLProvider) ListModels(ctx context.Context, keys []schemas.Key,
 
 // TextCompletion is not supported by the SGL provider.
 func (provider *SGLProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	return handleOpenAITextCompletionRequest(
+	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/completions",
@@ -102,7 +104,7 @@ func (provider *SGLProvider) TextCompletion(ctx context.Context, key schemas.Key
 // It formats the request, sends it to SGL, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return handleOpenAITextCompletionStreaming(
+	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/completions",
@@ -118,7 +120,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookR
 
 // ChatCompletion performs a chat completion request to the SGL API.
 func (provider *SGLProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return handleOpenAIChatCompletionRequest(
+	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -137,7 +139,7 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, key schemas.Key
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use shared OpenAI-compatible streaming logic
-	return handleOpenAIChatCompletionStreaming(
+	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
@@ -170,7 +172,7 @@ func (provider *SGLProvider) Responses(ctx context.Context, key schemas.Key, req
 func (provider *SGLProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return provider.ChatCompletionStream(
 		ctx,
-		getResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
 		key,
 		request.ToChatRequest(),
 	)
@@ -178,7 +180,7 @@ func (provider *SGLProvider) ResponsesStream(ctx context.Context, postHookRunner
 
 // Embedding is not supported by the SGL provider.
 func (provider *SGLProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return handleOpenAIEmbeddingRequest(
+	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/embeddings",
@@ -193,20 +195,20 @@ func (provider *SGLProvider) Embedding(ctx context.Context, key schemas.Key, req
 
 // Speech is not supported by the SGL provider.
 func (provider *SGLProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech", "sgl")
+	return nil, providerUtils.NewUnsupportedOperationError("speech", "sgl")
 }
 
 // SpeechStream is not supported by the SGL provider.
 func (provider *SGLProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech stream", "sgl")
+	return nil, providerUtils.NewUnsupportedOperationError("speech stream", "sgl")
 }
 
 // Transcription is not supported by the SGL provider.
 func (provider *SGLProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription", "sgl")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription", "sgl")
 }
 
 // TranscriptionStream is not supported by the SGL provider.
 func (provider *SGLProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription stream", "sgl")
+	return nil, providerUtils.NewUnsupportedOperationError("transcription stream", "sgl")
 }

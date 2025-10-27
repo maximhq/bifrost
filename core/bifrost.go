@@ -16,6 +16,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/azure"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/cohere"
+	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/mistral"
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/vertex"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -77,6 +86,12 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		return nil, fmt.Errorf("account is required to initialize Bifrost")
 	}
 
+	if config.Logger == nil {
+		config.Logger = NewDefaultLogger(schemas.LogLevelInfo)
+	}
+	
+	providerUtils.SetLogger(config.Logger)
+
 	bifrost := &Bifrost{
 		ctx:           ctx,
 		account:       config.Account,
@@ -84,6 +99,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		requestQueues: sync.Map{},
 		waitGroups:    sync.Map{},
 		keySelector:   config.KeySelector,
+		logger:        config.Logger,
 	}
 	bifrost.plugins.Store(&config.Plugins)
 
@@ -148,11 +164,6 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	if config.Logger == nil {
-		config.Logger = NewDefaultLogger(schemas.LogLevelInfo)
-	}
-	bifrost.logger = config.Logger
 
 	// Initialize MCP manager if configured
 	if config.MCPConfig != nil {
@@ -1253,19 +1264,19 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 
 	switch targetProviderKey {
 	case schemas.OpenAI:
-		return providers.NewOpenAIProvider(config, bifrost.logger), nil
+		return openai.NewOpenAIProvider(config, bifrost.logger), nil
 	case schemas.Anthropic:
-		return providers.NewAnthropicProvider(config, bifrost.logger), nil
+		return anthropic.NewAnthropicProvider(config, bifrost.logger), nil
 	case schemas.Bedrock:
-		return providers.NewBedrockProvider(config, bifrost.logger)
+		return bedrock.NewBedrockProvider(config, bifrost.logger)
 	case schemas.Cohere:
-		return providers.NewCohereProvider(config, bifrost.logger), nil
+		return cohere.NewCohereProvider(config, bifrost.logger)
 	case schemas.Azure:
-		return providers.NewAzureProvider(config, bifrost.logger)
+		return azure.NewAzureProvider(config, bifrost.logger)
 	case schemas.Vertex:
-		return providers.NewVertexProvider(config, bifrost.logger)
+		return vertex.NewVertexProvider(config, bifrost.logger)
 	case schemas.Mistral:
-		return providers.NewMistralProvider(config, bifrost.logger), nil
+		return mistral.NewMistralProvider(config, bifrost.logger), nil
 	case schemas.Ollama:
 		return providers.NewOllamaProvider(config, bifrost.logger)
 	case schemas.Groq:
@@ -1277,7 +1288,7 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 	case schemas.Cerebras:
 		return providers.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.Gemini:
-		return providers.NewGeminiProvider(config, bifrost.logger), nil
+		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:
 		return providers.NewOpenRouterProvider(config, bifrost.logger), nil
 	default:
