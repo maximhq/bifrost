@@ -67,8 +67,11 @@ func (provider *MistralProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Mistral
 }
 
-// ListModels performs a list models request to Mistral's API.
-func (provider *MistralProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+// listModelsByKey performs a list models request for a single key.
+// Returns the response and latency, or an error if the request fails.
+func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -91,12 +94,16 @@ func (provider *MistralProvider) ListModels(ctx context.Context, key schemas.Key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+		bifrostErr := parseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		return nil, bifrostErr
 	}
+
+	// Copy response body before releasing
+	responseBody := append([]byte(nil), resp.Body()...)
 
 	// Parse Mistral's response
 	var mistralResponse mistral.MistralListModelsResponse
-	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &mistralResponse, provider.sendBackRawResponse)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, &mistralResponse, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -104,11 +111,6 @@ func (provider *MistralProvider) ListModels(ctx context.Context, key schemas.Key
 	// Create final response
 	response := mistralResponse.ToBifrostListModelsResponse()
 
-	response = response.ApplyPagination(request.PageSize, request.PageToken)
-
-	// Set ExtraFields
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw response if enabled
@@ -117,6 +119,18 @@ func (provider *MistralProvider) ListModels(ctx context.Context, key schemas.Key
 	}
 
 	return response, nil
+}
+
+// ListModels performs a list models request to Mistral's API.
+// Requests are made concurrently for improved performance.
+func (provider *MistralProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion is not supported by the Mistral provider.

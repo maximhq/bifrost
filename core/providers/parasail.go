@@ -67,13 +67,13 @@ func (provider *ParasailProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // ListModels performs a list models request to Parasail's API.
-func (provider *ParasailProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+func (provider *ParasailProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return handleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
 		request,
 		provider.networkConfig.BaseURL+"/v1/models",
-		key,
+		keys,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Parasail,
 		provider.sendBackRawResponse,

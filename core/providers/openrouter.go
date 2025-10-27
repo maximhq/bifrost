@@ -4,7 +4,6 @@ package providers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -62,8 +61,11 @@ func (provider *OpenRouterProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.OpenRouter
 }
 
-// ListModels performs a list models request to OpenRouter's API.
-func (provider *OpenRouterProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+// listModelsByKey performs a list models request for a single key.
+// Returns the response and latency, or an error if the request fails.
+func (provider *OpenRouterProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -86,12 +88,15 @@ func (provider *OpenRouterProvider) ListModels(ctx context.Context, key schemas.
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", schemas.OpenRouter, string(resp.Body())))
-		return nil, parseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+		bifrostErr := parseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		return nil, bifrostErr
 	}
 
+	// Copy response body before releasing
+	responseBody := append([]byte(nil), resp.Body()...)
+
 	var openrouterResponse schemas.BifrostListModelsResponse
-	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &openrouterResponse, provider.sendBackRawResponse)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, &openrouterResponse, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -100,19 +105,26 @@ func (provider *OpenRouterProvider) ListModels(ctx context.Context, key schemas.
 		openrouterResponse.Data[i].ID = string(schemas.OpenRouter) + "/" + openrouterResponse.Data[i].ID
 	}
 
-	response := openrouterResponse.ApplyPagination(request.PageSize, request.PageToken)
-
-	// Set ExtraFields
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
+	openrouterResponse.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
+		openrouterResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	return response, nil
+	return &openrouterResponse, nil
+}
+
+// ListModels performs a list models request to OpenRouter's API.
+// Requests are made concurrently for improved performance.
+func (provider *OpenRouterProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion performs a text completion request to the OpenRouter API.

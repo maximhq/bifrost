@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"net/http"
+	"net/url"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -95,12 +97,9 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.Cohere, provider.customProviderConfig)
 }
 
-// ListModels performs a list models request to Cohere's API.
-func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
-		return nil, err
-	}
-
+// listModelsByKey performs a list models request for a single key.
+// Returns the response and latency, or an error if the request fails.
+func (provider *CohereProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	// Create request
@@ -112,9 +111,20 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 	// Set any extra headers from network config
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Build URL using centralized URL construction
-	requestURL := cohere.ToCohereListModelsURL(request, provider.networkConfig.BaseURL+"/v1/models")
-	req.SetRequestURI(requestURL)
+	// Build query parameters
+	params := url.Values{}
+	params.Set("page_size", strconv.Itoa(schemas.DefaultPageSize))
+	if request.ExtraParams != nil {
+		if endpoint, ok := request.ExtraParams["endpoint"].(string); ok && endpoint != "" {
+			params.Set("endpoint", endpoint)
+		}
+		if defaultOnly, ok := request.ExtraParams["default_only"].(bool); ok && defaultOnly {
+			params.Set("default_only", "true")
+		}
+	}
+
+	// Build URL
+	req.SetRequestURI(fmt.Sprintf("%s/v1/models?%s", provider.networkConfig.BaseURL, params.Encode()))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
@@ -127,18 +137,18 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-
 		var errorResp cohere.CohereError
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 		bifrostErr.Error.Message = errorResp.Message
-
 		return nil, bifrostErr
 	}
 
+	// Copy response body before releasing
+	responseBody := append([]byte(nil), resp.Body()...)
+
 	// Parse Cohere list models response
 	var cohereResponse cohere.CohereListModelsResponse
-	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &cohereResponse, provider.sendBackRawResponse)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, &cohereResponse, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -146,8 +156,6 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 	// Convert Cohere v2 response to Bifrost response
 	response := cohereResponse.ToBifrostListModelsResponse(providerName)
 
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
@@ -155,6 +163,21 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 	}
 
 	return response, nil
+}
+
+// ListModels performs a list models request to Cohere's API.
+// Requests are made concurrently for improved performance.
+func (provider *CohereProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion is not supported by the Cohere provider.

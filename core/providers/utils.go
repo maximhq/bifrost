@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -667,4 +668,144 @@ func getBifrostResponseForStreamResponse(
 		return bifrostResponse
 	}
 	return nil
+}
+
+// aggregateListModelsResponses merges multiple BifrostListModelsResponse objects into a single response.
+// It concatenates all model arrays, deduplicates based on model ID, sums up latencies across all responses,
+// and concatenates raw responses into an array.
+// When duplicate IDs are found, the first occurrence is kept to maintain the original ordering.
+func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse) *schemas.BifrostListModelsResponse {
+	if len(responses) == 0 {
+		return &schemas.BifrostListModelsResponse{
+			Data: []schemas.Model{},
+		}
+	}
+
+	if len(responses) == 1 {
+		return responses[0]
+	}
+
+	// Use a map to track unique model IDs for efficient deduplication
+	seenIDs := make(map[string]struct{})
+	aggregated := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0),
+	}
+
+	// Aggregate all models with deduplication, and collect raw responses
+	var rawResponses []interface{}
+
+	for _, response := range responses {
+		if response == nil {
+			continue
+		}
+
+		// Add models, skipping duplicates based on ID
+		for _, model := range response.Data {
+			if _, exists := seenIDs[model.ID]; !exists {
+				seenIDs[model.ID] = struct{}{}
+				aggregated.Data = append(aggregated.Data, model)
+			}
+		}
+
+		// Collect raw response if present
+		if response.ExtraFields.RawResponse != nil {
+			rawResponses = append(rawResponses, response.ExtraFields.RawResponse)
+		}
+	}
+
+	// Sort models alphabetically by ID
+	sort.Slice(aggregated.Data, func(i, j int) bool {
+		return aggregated.Data[i].ID < aggregated.Data[j].ID
+	})
+
+	if len(rawResponses) > 0 {
+		aggregated.ExtraFields.RawResponse = rawResponses
+	}
+
+	return aggregated
+}
+
+// extractSuccessfulListModelsResponses extracts successful responses from a results channel
+// and tracks the last error encountered. This utility reduces code duplication across providers
+// for handling multi-key ListModels requests.
+func extractSuccessfulListModelsResponses(
+	results chan schemas.ListModelsByKeyResult,
+	providerName schemas.ModelProvider,
+	logger schemas.Logger,
+) ([]*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	var successfulResponses []*schemas.BifrostListModelsResponse
+	var lastError *schemas.BifrostError
+
+	for result := range results {
+		if result.Err != nil {
+			logger.Debug(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, result.Err.Error.Message))
+			lastError = result.Err
+			continue
+		}
+
+		successfulResponses = append(successfulResponses, result.Response)
+	}
+
+	if len(successfulResponses) == 0 {
+		if lastError != nil {
+			return nil, lastError
+		}
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "all keys failed to list models",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider:    providerName,
+				RequestType: schemas.ListModelsRequest,
+			},
+		}
+	}
+
+	return successfulResponses, nil
+}
+
+// handleMultipleListModelsRequests handles multiple list models requests concurrently for different keys.
+func handleMultipleListModelsRequests(
+	ctx context.Context,
+	keys []schemas.Key,
+	request *schemas.BifrostListModelsRequest,
+	listModelsByKey func(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
+	logger schemas.Logger,
+) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	startTime := time.Now()
+
+	results := make(chan schemas.ListModelsByKeyResult, len(keys))
+	var wg sync.WaitGroup
+
+	// Launch concurrent requests for all keys
+	for _, key := range keys {
+		wg.Add(1)
+		go func(k schemas.Key) {
+			defer wg.Done()
+			resp, bifrostErr := listModelsByKey(ctx, k, request)
+			results <- schemas.ListModelsByKeyResult{Response: resp, Err: bifrostErr, KeyID: k.ID}
+		}(key)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+	close(results)
+
+	successfulResponses, err := extractSuccessfulListModelsResponses(results, request.Provider, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	// Aggregate all successful responses
+	response := aggregateListModelsResponses(successfulResponses)
+	response = response.ApplyPagination(request.PageSize, request.PageToken)
+
+	// Set ExtraFields
+	latency := time.Since(startTime)
+	response.ExtraFields.Provider = request.Provider
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	return response, nil
 }

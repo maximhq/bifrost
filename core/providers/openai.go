@@ -77,27 +77,26 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.OpenAI, provider.customProviderConfig)
 }
 
-func (provider *OpenAIProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := checkOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
 	}
 
 	providerName := provider.GetProviderKey()
 
-	return handleOpenAIListModelsRequest(ctx, provider.client, request, provider.networkConfig.BaseURL+"/v1/models", key, provider.networkConfig.ExtraHeaders, providerName, provider.sendBackRawResponse, provider.logger)
-
+	return handleOpenAIListModelsRequest(ctx, provider.client, request, provider.networkConfig.BaseURL+"/v1/models", keys, provider.networkConfig.ExtraHeaders, providerName, provider.sendBackRawResponse, provider.logger)
 }
 
-func handleOpenAIListModelsRequest(
+// listModelsByKeyOpenAI performs a list models request for a single key.
+// Returns the response and latency, or an error if the request fails.
+func listModelsByKeyOpenAI(
 	ctx context.Context,
 	client *fasthttp.Client,
-	request *schemas.BifrostListModelsRequest,
 	url string,
 	key schemas.Key,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawResponse bool,
-	logger schemas.Logger,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -115,6 +114,7 @@ func handleOpenAIListModelsRequest(
 	if key.Value != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value)
 	}
+
 	// Make request
 	latency, bifrostErr := makeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
@@ -123,11 +123,12 @@ func handleOpenAIListModelsRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr := parseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		return nil, bifrostErr
 	}
 
-	responseBody := resp.Body()
+	// Copy response body before releasing
+	responseBody := append([]byte(nil), resp.Body()...)
 
 	openaiResponse := &openai.OpenAIListModelsResponse{}
 
@@ -139,18 +140,35 @@ func handleOpenAIListModelsRequest(
 
 	response := openaiResponse.ToBifrostListModelsResponse(providerName)
 
-	response = response.ApplyPagination(request.PageSize, request.PageToken)
-
-	// Set raw response if enabled
+	response.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
-
 	return response, nil
+}
+
+func handleOpenAIListModelsRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	request *schemas.BifrostListModelsRequest,
+	url string,
+	keys []schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	listModelsByKey := func(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		return listModelsByKeyOpenAI(ctx, client, url, key, extraHeaders, providerName, sendBackRawResponse)
+	}
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		listModelsByKey,
+		logger,
+	)
 }
 
 // TextCompletion is not supported by the OpenAI provider.

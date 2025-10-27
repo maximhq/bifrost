@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -132,154 +133,160 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Vertex
 }
 
-// ListModels performs a list models request to Vertex's API.
-func (provider *VertexProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
+// listModelsByKey performs a list models request for a single key.
+// Returns the response and latency, or an error if the request fails.
+// Handles pagination automatically by following nextPageToken until all models are retrieved.
+func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
-		return nil, newConfigurationError("vertex key config is not set", providerName)
+		return nil, newConfigurationError("vertex key config is not set", schemas.Vertex)
 	}
 
 	projectID := key.VertexKeyConfig.ProjectID
 	if projectID == "" {
-		return nil, newConfigurationError("project ID is not set", providerName)
+		return nil, newConfigurationError("project ID is not set", schemas.Vertex)
 	}
 
 	region := key.VertexKeyConfig.Region
 	if region == "" {
-		return nil, newConfigurationError("region is not set in key config", providerName)
+		return nil, newConfigurationError("region is not set in key config", schemas.Vertex)
 	}
 
-	// Build URL using centralized URL construction
-	requestURL := vertex.ToVertexListModelsURL(request, fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/models", region, projectID, region))
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
+	var host string
+	if region == "global" {
+		host = "aiplatform.googleapis.com"
+	} else {
+		host = fmt.Sprintf("%s-aiplatform.googleapis.com", region)
 	}
-
-	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.Header.Set("Content-Type", "application/json")
 
 	client, err := getAuthClient(key)
 	if err != nil {
 		// Remove client from pool if auth client creation fails
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		return nil, newBifrostOperationError("error creating auth client", err, providerName)
+		return nil, newBifrostOperationError("error creating auth client", err, schemas.Vertex)
 	}
 
-	// Make request and measure latency
-	startTime := time.Now()
-	resp, err := client.Do(req)
-	latency := time.Since(startTime)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
+	// Accumulate all models from paginated requests
+	var allModels []vertex.VertexModel
+	var totalLatency time.Duration
+	var rawResponses []interface{}
+	pageToken := ""
+
+	// Loop through all pages until no nextPageToken is returned
+	for {
+		// Build URL with pagination parameters
+		requestURL := fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/models?pageSize=%d", host, projectID, region, vertex.MaxPageSize)
+		if pageToken != "" {
+			requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
+		}
+
+		// Create request
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Type:    schemas.Ptr(schemas.RequestCancelled),
+						Message: schemas.ErrRequestCancelled,
+						Error:   err,
+					},
+				}
+			} else if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 			}
+			return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderRequest,
-				Error:   err,
-			},
-		}
-	}
-	defer resp.Body.Close()
 
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "error reading response",
-				Error:   err,
-			},
-		}
-	}
+		// Set any extra headers from network config
+		setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+		req.Header.Set("Content-Type", "application/json")
 
-	// Handle error response
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
-		}
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(body)))
+		// Make request and measure latency
+		startTime := time.Now()
+		resp, err := client.Do(req)
+		latency := time.Since(startTime)
+		totalLatency += latency
 
-		var errorResp VertexError
-
-		if err := sonic.Unmarshal(body, &errorResp); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				StatusCode:     &resp.StatusCode,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseUnmarshal,
-					Error:   err,
-				},
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Type:    schemas.Ptr(schemas.RequestCancelled),
+						Message: schemas.ErrRequestCancelled,
+						Error:   err,
+					},
+				}
+			} else if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Vertex)
 			}
+			return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, schemas.Vertex)
 		}
 
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &resp.StatusCode,
-			Error: &schemas.ErrorField{
-				Message: errorResp.Error.Message,
-			},
+		// Read response body and close
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, newBifrostOperationError("error reading response", err, schemas.Vertex)
 		}
+
+		// Handle error response
+		if resp.StatusCode != http.StatusOK {
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+			}
+
+			var errorResp VertexError
+			if err := sonic.Unmarshal(body, &errorResp); err != nil {
+				return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+			}
+			return nil, newProviderAPIError(errorResp.Error.Message, nil, resp.StatusCode, schemas.Vertex, nil, nil)
+		}
+
+		// Parse Vertex's response
+		var vertexResponse vertex.VertexListModelsResponse
+		rawResponse, bifrostErr := handleProviderResponse(body, &vertexResponse, provider.sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if provider.sendBackRawResponse {
+			rawResponses = append(rawResponses, rawResponse)
+		}
+
+		// Accumulate models from this page
+		allModels = append(allModels, vertexResponse.Models...)
+
+		// Check if there are more pages
+		if vertexResponse.NextPageToken == "" {
+			break
+		}
+		pageToken = vertexResponse.NextPageToken
 	}
 
-	// Parse Vertex's response
-	var vertexResponse vertex.VertexListModelsResponse
-	rawResponse, bifrostErr := handleProviderResponse(body, &vertexResponse, provider.sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	// Create aggregated response from all pages
+	aggregatedResponse := &vertex.VertexListModelsResponse{
+		Models: allModels,
 	}
+	response := aggregatedResponse.ToBifrostListModelsResponse()
+	response.ExtraFields.Latency = totalLatency.Milliseconds()
 
-	// Create final response
-	response := vertexResponse.ToBifrostListModelsResponse()
-
-	// Set ExtraFields
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
-
-	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
+		response.ExtraFields.RawResponse = rawResponses
 	}
 
 	return response, nil
+}
+
+// ListModels performs a list models request to Vertex's API.
+// Requests are made concurrently for improved performance.
+func (provider *VertexProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion is not supported by the Vertex provider.

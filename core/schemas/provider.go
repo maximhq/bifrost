@@ -198,7 +198,7 @@ type Provider interface {
 	// GetProviderKey returns the provider's identifier
 	GetProviderKey() ModelProvider
 	// ListModels performs a list models request
-	ListModels(ctx context.Context, key Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
+	ListModels(ctx context.Context, keys []Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx context.Context, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
 	// TextCompletionStream performs a text completion stream request
