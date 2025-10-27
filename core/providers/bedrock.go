@@ -346,13 +346,9 @@ func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey
 	return nil
 }
 
-// ListModels performs a list models request to Bedrock's API.
-// It retrieves all foundation models available in Amazon Bedrock.
-func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
-		return nil, err
-	}
-
+// listModelsByKey performs a list models request to Bedrock's API for a single key.
+// It retrieves all foundation models available in Amazon Bedrock for a specific key.
+func (provider *BedrockProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if key.BedrockKeyConfig == nil {
@@ -394,10 +390,10 @@ func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key
 		}
 	}
 
-	// Execute the request and measure latency
 	startTime := time.Now()
+
+	// Execute the request
 	resp, err := provider.client.Do(req)
-	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -408,8 +404,7 @@ func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key
 					Error:   err,
 				},
 			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		} else if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, &schemas.BifrostError{
@@ -420,10 +415,10 @@ func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key
 			},
 		}
 	}
-	defer resp.Body.Close()
 
-	// Read response body
+	// Read response body and close
 	responseBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -447,7 +442,6 @@ func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key
 				},
 			}
 		}
-
 		return nil, &schemas.BifrostError{
 			StatusCode: &resp.StatusCode,
 			Error: &schemas.ErrorField{
@@ -469,17 +463,29 @@ func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key
 		return nil, newBifrostOperationError("failed to convert Bedrock model list response", nil, providerName)
 	}
 
-	response = response.ApplyPagination(request.PageSize, request.PageToken)
-
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.Latency = latency.Milliseconds()
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	return response, nil
+}
+
+// ListModels performs a list models request to Bedrock's API.
+// It retrieves all foundation models available in Amazon Bedrock.
+// Requests are made concurrently for improved performance.
+func (provider *BedrockProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion performs a text completion request to Bedrock's API.
@@ -592,7 +598,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, key schemas
 	}
 
 	// Convert using the new response converter
-	bifrostResponse, err := bedrockResponse.ToBifrostChatResponse()
+	bifrostResponse, err := bedrockResponse.ToBifrostChatResponse(request.Model)
 	if err != nil {
 		return nil, newBifrostOperationError("failed to convert bedrock response", err, providerName)
 	}
@@ -643,7 +649,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		defer resp.Body.Close()
 
 		// Process AWS Event Stream format
-		messageID := fmt.Sprintf("bedrock-%d", time.Now().UnixNano())
+		var messageID string
 		var usage *schemas.BifrostLLMUsage
 		var finishReason *string
 		chunkIndex := 0

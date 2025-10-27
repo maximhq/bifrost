@@ -1,46 +1,10 @@
 package anthropic
 
 import (
-	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
-
-func ToAnthropicListModelsURL(request *schemas.BifrostListModelsRequest, baseURL string) string {
-	// Add limit parameter (default to 1000)
-	pageSize := request.PageSize
-	if pageSize <= 0 {
-		pageSize = schemas.DefaultPageSize
-	}
-
-	// Build query parameters
-	params := url.Values{}
-	params.Set("limit", strconv.Itoa(pageSize))
-
-	// Add cursor-based pagination parameters
-	if request.ExtraParams != nil {
-		// before_id for backward pagination
-		if beforeID, ok := request.ExtraParams["before_id"].(string); ok && beforeID != "" {
-			params.Set("before_id", beforeID)
-		}
-		// after_id for forward pagination
-		if afterID, ok := request.ExtraParams["after_id"].(string); ok && afterID != "" {
-			params.Set("after_id", afterID)
-		}
-	}
-	// Use page_token as after_id if not explicitly provided in ExtraParams
-	if request.PageToken != "" {
-		if request.ExtraParams == nil {
-			params.Set("after_id", request.PageToken)
-		} else if _, hasAfterID := request.ExtraParams["after_id"]; !hasAfterID {
-			params.Set("after_id", request.PageToken)
-		}
-	}
-
-	return baseURL + "?" + params.Encode()
-}
 
 func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider) *schemas.BifrostListModelsResponse {
 	if response == nil {

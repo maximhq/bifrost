@@ -71,12 +71,9 @@ func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.Gemini, provider.customProviderConfig)
 }
 
-// ListModels performs a list models request to Gemini's API.
-func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
-		return nil, err
-	}
-
+// listModelsByKey performs a list models request for a single key.
+// Returns the response and latency, or an error if the request fails.
+func (provider *GeminiProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	// Create request
@@ -89,8 +86,7 @@ func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key,
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	requestURL := gemini.ToGeminiListModelsURL(request, provider.networkConfig.BaseURL+"/models")
-	req.SetRequestURI(requestURL)
+	req.SetRequestURI(fmt.Sprintf("%s/models?pageSize=%d", provider.networkConfig.BaseURL, schemas.DefaultPageSize))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("x-goog-api-key", key.Value)
@@ -103,7 +99,8 @@ func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key,
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(providerName, resp)
+		bifrostErr := parseGeminiError(providerName, resp)
+		return nil, bifrostErr
 	}
 
 	// Parse Gemini's response
@@ -115,8 +112,6 @@ func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key,
 
 	response := geminiResponse.ToBifrostListModelsResponse(providerName)
 
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if provider.sendBackRawResponse {
@@ -124,6 +119,21 @@ func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key,
 	}
 
 	return response, nil
+}
+
+// ListModels performs a list models request to Gemini's API.
+// Requests are made concurrently for improved performance.
+func (provider *GeminiProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion is not supported by the Gemini provider.

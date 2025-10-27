@@ -2,8 +2,10 @@ package bedrock
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 )
@@ -42,7 +44,7 @@ func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Be
 }
 
 // ToBifrostChatResponse converts a Bedrock Converse API response to Bifrost format
-func (response *BedrockConverseResponse) ToBifrostChatResponse() (*schemas.BifrostChatResponse, error) {
+func (response *BedrockConverseResponse) ToBifrostChatResponse(model string) (*schemas.BifrostChatResponse, error) {
 	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
@@ -136,8 +138,12 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse() (*schemas.Bifro
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostChatResponse{
+		ID:      uuid.New().String(),
+		Model:   model,
+		Object:  "chat.completion",
 		Choices: choices,
 		Usage:   usage,
+		Created: int(time.Now().Unix()),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ChatCompletionRequest,
 			Provider:    schemas.Bedrock,
