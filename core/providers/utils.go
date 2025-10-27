@@ -368,7 +368,7 @@ func sendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.
 	processAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
-// sendInProgressResponsesChunk sends a ResponsesStreamResponseTypeInProgress event
+// sendInProgressEventResponsesChunk sends a ResponsesStreamResponseTypeInProgress event
 func sendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
 	chunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeInProgress,
