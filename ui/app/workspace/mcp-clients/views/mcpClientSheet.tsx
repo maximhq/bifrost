@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem } from "@/components/ui/form";
 import { MCPClient } from "@/lib/types/mcp";
-import { CodeEditor } from "@/app/logs/views/codeEditor";
+import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { Sheet, SheetContent, SheetTitle, SheetHeader, SheetDescription } from "@/components/ui/sheet";
 import { useEffect } from "react";

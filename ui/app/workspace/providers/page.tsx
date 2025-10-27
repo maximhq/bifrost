@@ -1,6 +1,6 @@
 "use client";
 
-import ModelProviderConfig from "@/app/providers/views/modelProviderConfig";
+import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -17,7 +17,7 @@ import {
 } from "@/lib/store";
 import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
-import { AlertCircle, Info, PlusIcon, Trash } from "lucide-react";
+import { AlertCircle, PlusIcon, Trash } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";

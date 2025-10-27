@@ -2,11 +2,9 @@ package gemini
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,7 +20,6 @@ import (
 type GeminiProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for API requests
-	streamClient         *http.Client                  // HTTP client for streaming requests
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
@@ -37,12 +34,9 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 	client := &fasthttp.Client{
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost: config.ConcurrencyAndBufferSize.Concurrency,
-	}
-
-	// Initialize streaming HTTP client
-	streamClient := &http.Client{
-		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     10000,
+		MaxIdleConnDuration: 60 * time.Second,
+		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
 	// Configure proxy if provided
@@ -57,7 +51,6 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 	return &GeminiProvider{
 		logger:               logger,
 		client:               client,
-		streamClient:         streamClient,
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
 		sendBackRawResponse:  config.SendBackRawResponse,
@@ -251,7 +244,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/openai/chat/completions",
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
@@ -382,26 +375,16 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)	
 
-	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", provider.networkConfig.BaseURL, request.Model)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
 
 	// Set headers for streaming
 	req.Header.Set("Content-Type", "application/json")
@@ -409,9 +392,16 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Set headers
+	req.SetBody(jsonBody)
+
 	// Make the request
-	resp, err := provider.streamClient.Do(req)
+	err = provider.client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -422,15 +412,15 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamGeminiError(providerName, resp)
 	}
 
@@ -440,9 +430,9 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
 		buf := make([]byte, 0, 1024*1024) // 1MB initial buffer
 		scanner.Buffer(buf, 10*1024*1024) // Allow up to 10MB tokens
@@ -659,27 +649,21 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
 	}
 
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", provider.networkConfig.BaseURL, request.Model)
+
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)	
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
+
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers for streaming
 	req.Header.Set("Content-Type", "application/json")
@@ -687,9 +671,13 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
+	
+	req.SetBody(jsonBody)
+
 	// Make the request
-	resp, err := provider.streamClient.Do(req)
+	err = provider.client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -700,15 +688,14 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, parseStreamGeminiError(providerName, resp)
 	}
 
@@ -718,9 +705,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
 		buf := make([]byte, 0, 1024*1024) // 1MB initial buffer
 		scanner.Buffer(buf, 10*1024*1024) // Allow up to 10MB tokens
@@ -955,18 +942,15 @@ func (provider *GeminiProvider) completeRequest(ctx context.Context, model strin
 }
 
 // parseStreamGeminiError parses Gemini streaming error responses
-func parseStreamGeminiError(providerName schemas.ModelProvider, resp *http.Response) *schemas.BifrostError {
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to read error response body", err, providerName)
-	}
+func parseStreamGeminiError(providerName schemas.ModelProvider, resp *fasthttp.Response) *schemas.BifrostError {
+	body := resp.Body()
 
 	// Try to parse as JSON first
 	var errorResp GeminiGenerationError
 	if err := sonic.Unmarshal(body, &errorResp); err == nil {
 		bifrostErr := &schemas.BifrostError{
 			IsBifrostError: false,
-			StatusCode:     schemas.Ptr(resp.StatusCode),
+			StatusCode:     schemas.Ptr(int(resp.StatusCode())),
 			Error: &schemas.ErrorField{
 				Code:    schemas.Ptr(strconv.Itoa(errorResp.Error.Code)),
 				Message: errorResp.Error.Message,

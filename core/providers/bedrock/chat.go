@@ -7,7 +7,6 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 )
 
 // ToBedrockChatCompletionRequest converts a Bifrost request to Bedrock Converse API format

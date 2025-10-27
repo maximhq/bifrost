@@ -4,7 +4,6 @@ package providers
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"time"
 
@@ -17,8 +16,7 @@ import (
 // CerebrasProvider implements the Provider interface for Cerebras's API.
 type CerebrasProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
-	streamClient        *http.Client          // HTTP client for streaming requests
+	client              *fasthttp.Client      // HTTP client for API requests	
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
@@ -32,12 +30,9 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	client := &fasthttp.Client{
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
-	}
-
-	// Initialize streaming HTTP client
-	streamClient := &http.Client{
-		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     10000,
+		MaxIdleConnDuration: 60 * time.Second,
+		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
 	// Configure proxy if provided
@@ -51,8 +46,7 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 
 	return &CerebrasProvider{
 		logger:              logger,
-		client:              client,
-		streamClient:        streamClient,
+		client:              client,		
 		networkConfig:       config.NetworkConfig,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -91,7 +85,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schema
 func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/completions",
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
@@ -126,7 +120,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},

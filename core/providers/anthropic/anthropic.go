@@ -2,11 +2,9 @@ package anthropic
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -22,7 +20,6 @@ import (
 type AnthropicProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for API requests
-	streamClient         *http.Client                  // HTTP client for streaming requests
 	apiVersion           string                        // API version for the provider
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
@@ -78,14 +75,11 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	config.CheckAndSetDefaults()
 
 	client := &fasthttp.Client{
-		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost: config.ConcurrencyAndBufferSize.Concurrency,
-	}
-
-	// Initialize streaming HTTP client
-	streamClient := &http.Client{
-		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     10000,
+		MaxIdleConnDuration: 60 * time.Second,
+		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
 	// Pre-warm response pools
@@ -106,7 +100,6 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	return &AnthropicProvider{
 		logger:               logger,
 		client:               client,
-		streamClient:         streamClient,
 		apiVersion:           "2023-06-01",
 		networkConfig:        config.NetworkConfig,
 		sendBackRawResponse:  config.SendBackRawResponse,
@@ -367,7 +360,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 	// Use shared Anthropic streaming logic
 	return HandleAnthropicChatCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/messages",
 		reqBody,
 		headers,
@@ -383,7 +376,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 // This shared function reduces code duplication between providers that use the same SSE event format.
 func HandleAnthropicChatCompletionStreaming(
 	ctx context.Context,
-	httpClient *http.Client,
+	client *fasthttp.Client,
 	url string,
 	requestBody interface{},
 	headers map[string]string,
@@ -398,36 +391,27 @@ func HandleAnthropicChatCompletionStreaming(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerType)
 	}
 
-	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerType)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerType)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true // Initialize for streaming
+	defer fasthttp.ReleaseRequest(req)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(req, extraHeaders, nil)
 
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 
-	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, extraHeaders, nil)
+	req.SetBody(jsonBody)
 
 	// Make the request
-	resp, err := httpClient.Do(req)
+	err = client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -438,14 +422,15 @@ func HandleAnthropicChatCompletionStreaming(
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerType)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerType)
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamAnthropicError(resp, providerType)
 	}
 
@@ -455,9 +440,19 @@ func HandleAnthropicChatCompletionStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		if resp.BodyStream() == nil {
+			bifrostErr := providerUtils.NewBifrostOperationError(
+				"Provider returned an empty response",
+				fmt.Errorf("provider returned an empty response"),
+				providerType,
+			)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := 0
 
 		startTime := time.Now()
@@ -648,35 +643,31 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v1/messages", bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, provider.GetProviderKey())
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+
+	defer fasthttp.ReleaseRequest(req)
+
+	url := fmt.Sprintf("%s/v1/messages", provider.networkConfig.BaseURL)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
 
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	// Set body
+	req.SetBody(jsonBody)
 
 	// Make the request
-	resp, err := provider.streamClient.Do(req)
-	if err != nil {
+	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -687,14 +678,15 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, provider.GetProviderKey())
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamAnthropicError(resp, provider.GetProviderKey())
 	}
 
@@ -703,10 +695,20 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 
 	// Start streaming in a goroutine
 	go func() {
+		defer fasthttp.ReleaseResponse(resp)
 		defer close(responseChan)
-		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
+		if resp.BodyStream() == nil {
+			bifrostErr := providerUtils.NewBifrostOperationError(
+				"Provider returned an empty response",
+				fmt.Errorf("provider returned an empty response"),
+				provider.GetProviderKey(),
+			)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := 0
 
 		startTime := time.Now()
@@ -842,15 +844,8 @@ func (provider *AnthropicProvider) TranscriptionStream(ctx context.Context, post
 }
 
 // parseStreamAnthropicError parses Anthropic streaming error responses.
-func parseStreamAnthropicError(resp *http.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
-	statusCode := resp.StatusCode
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	var errorResp AnthropicError
-	if err := sonic.Unmarshal(body, &errorResp); err != nil {
-		return providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerType)
-	}
-
-	return providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, providerType, &errorResp.Error.Type, nil)
+func parseStreamAnthropicError(resp *fasthttp.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
+	statusCode := resp.StatusCode()
+	body := resp.Body()
+	return providerUtils.NewProviderAPIError(string(body), nil, statusCode, providerType, nil, nil)
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import ClientForm from "@/app/mcp-clients/views/mcpClientForm";
+import ClientForm from "@/app/workspace/mcp-clients/views/mcpClientForm";
 import {
 	AlertDialog,
 	AlertDialogAction,

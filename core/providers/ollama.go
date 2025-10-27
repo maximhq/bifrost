@@ -5,7 +5,6 @@ package providers
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 type OllamaProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
-	streamClient        *http.Client          // HTTP client for streaming requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
@@ -33,12 +31,9 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client := &fasthttp.Client{
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost: config.ConcurrencyAndBufferSize.BufferSize,
-	}
-
-	// Initialize streaming HTTP client
-	streamClient := &http.Client{
-		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     10000,
+		MaxIdleConnDuration: 60 * time.Second,
+		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
 	// // Pre-warm response pools
@@ -59,7 +54,6 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	return &OllamaProvider{
 		logger:              logger,
 		client:              client,
-		streamClient:        streamClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -99,7 +93,7 @@ func (provider *OllamaProvider) TextCompletion(ctx context.Context, key schemas.
 func (provider *OllamaProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/completions",
 		request,
 		nil,
@@ -134,7 +128,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		request,
 		nil,

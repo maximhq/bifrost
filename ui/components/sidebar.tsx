@@ -73,19 +73,19 @@ const MCPIcon = ({ className }: { className?: string }) => (
 const items = [
 	{
 		title: "Observability",
-		url: "/logs",
+		url: "/workspace/logs",
 		icon: Telescope,
 		description: "Request logs & monitoring",
 		subItems: [
 			{
 				title: "Logs",
-				url: "/logs",
+				url: "/workspace/logs",
 				icon: Logs,
 				description: "Request logs & monitoring",
 			},
 			{
 				title: "Connectors",
-				url: "/observability",
+				url: "/workspace/observability",
 				icon: ChevronsLeftRightEllipsis,
 				description: "Log connectors",
 			},
@@ -93,43 +93,43 @@ const items = [
 	},
 	{
 		title: "Prompt Repository",
-		url: "/prompt-repo",
+		url: "/workspace/prompt-repo",
 		icon: FolderGit,
 		description: "Prompt repository",
 	},
 	{
 		title: "Model Providers",
-		url: "/providers",
+		url: "/workspace/providers",
 		icon: BoxIcon,
 		description: "Configure models",
 	},
 	{
 		title: "Governance",
-		url: "/governance",
+		url: "/workspace/governance",
 		icon: Landmark,
 		description: "Govern access",
 		subItems: [
 			{
 				title: "Virtual Keys",
-				url: "/virtual-keys",
+				url: "/workspace/virtual-keys",
 				icon: KeyRound,
 				description: "Manage virtual keys & access",
 			},
 			{
 				title: "Users & Groups",
-				url: "/user-groups",
+				url: "/workspace/user-groups",
 				icon: Users,
 				description: "Manage users & groups",
 			},
 			{
 				title: "User Provisioning",
-				url: "/scim",
+				url: "/workspace/scim",
 				icon: BookUser,
 				description: "User management and provisioning",
 			},
 			{
 				title: "Audit Logs",
-				url: "/audit-logs",
+				url: "/workspace/audit-logs",
 				icon: ScrollText,
 				description: "Audit logs and compliance",
 			},
@@ -138,7 +138,7 @@ const items = [
 
 	{
 		title: "Plugins",
-		url: "/plugins",
+		url: "/workspace/plugins",
 		icon: Puzzle,		
 		tag: "BETA",
 		description: "Manage custom plugins",
@@ -146,25 +146,25 @@ const items = [
 
 	{
 		title: "MCP Gateway",
-		url: "/mcp-clients",
+		url: "/workspace/mcp-clients",
 		icon: MCPIcon,
 		description: "MCP configuration",
 	},
 	{
 		title: "Guardrails",
-		url: "/guardrails",
+		url: "/workspace/guardrails",
 		icon: Construction,
 		description: "Guardrails configuration",
 		subItems: [
 			{
 				title: "Configuration",
-				url: "/guardrails/configuration",
+				url: "/workspace/guardrails/configuration",
 				icon: Cog,
 				description: "Guardrail configuration",
 			},
 			{
 				title: "Providers",
-				url: "/guardrails/providers",
+				url: "/workspace/guardrails/providers",
 				icon: Boxes,
 				description: "Guardrail providers configuration",
 			},
@@ -172,19 +172,19 @@ const items = [
 	},
 	{
 		title: "Cluster Config",
-		url: "/cluster",
+		url: "/workspace/cluster",
 		icon: Layers,
 		description: "Manage Bifrost cluster",
 	},
 	{
 		title: "Adaptive Routing",
-		url: "/adaptive-routing",
+		url: "/workspace/adaptive-routing",
 		icon: Shuffle,
 		description: "Manage adaptive load balancer",
 	},
 	{
 		title: "Config",
-		url: "/config",
+		url: "/workspace/config",
 		icon: Settings2Icon,
 		description: "Bifrost settings",
 	},

@@ -1,9 +1,9 @@
 "use client";
 
-import { createColumns } from "@/app/logs/views/columns";
-import { EmptyState } from "@/app/logs/views/emptyState";
-import { LogDetailSheet } from "@/app/logs/views/logDetailsSheet";
-import { LogsDataTable } from "@/app/logs/views/logsTable";
+import { createColumns } from "@/app/workspace/logs/views/columns";
+import { EmptyState } from "@/app/workspace/logs/views/emptyState";
+import { LogDetailSheet } from "@/app/workspace/logs/views/logDetailsSheet";
+import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";

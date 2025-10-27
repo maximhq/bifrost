@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"mime/multipart"
 	"net/http"
@@ -24,7 +23,6 @@ import (
 type OpenAIProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for API requests
-	streamClient         *http.Client                  // HTTP client for streaming requests
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
@@ -37,14 +35,11 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	config.CheckAndSetDefaults()
 
 	client := &fasthttp.Client{
-		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost: config.ConcurrencyAndBufferSize.Concurrency,
-	}
-
-	// Initialize streaming HTTP client
-	streamClient := &http.Client{
-		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     10000,
+		MaxIdleConnDuration: 60 * time.Second,
+		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
 	// // Pre-warm response pools
@@ -64,7 +59,6 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	return &OpenAIProvider{
 		logger:               logger,
 		client:               client,
-		streamClient:         streamClient,
 		networkConfig:        config.NetworkConfig,
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
@@ -272,7 +266,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 	}
 	return HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/completions",
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
@@ -288,7 +282,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 // This shared function reduces code duplication between providers that use the same SSE format.
 func HandleOpenAITextCompletionStreaming(
 	ctx context.Context,
-	client *http.Client,
+	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostTextCompletionRequest,
 	authHeader map[string]string,
@@ -325,35 +319,29 @@ func HandleOpenAITextCompletionStreaming(
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, extraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, extraHeaders, nil)
 
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 
+	req.SetBody(jsonBody)
+
 	// Make the request
-	resp, err := client.Do(req)
+	err = client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -364,14 +352,14 @@ func HandleOpenAITextCompletionStreaming(
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
-
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model)
 	}
 
@@ -381,9 +369,9 @@ func HandleOpenAITextCompletionStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
 
@@ -393,6 +381,13 @@ func HandleOpenAITextCompletionStreaming(
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Check if context is done before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -628,7 +623,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Use shared streaming logic
 	return HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
@@ -644,7 +639,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 // This shared function reduces code duplication between providers that use the same SSE format.
 func HandleOpenAIChatCompletionStreaming(
 	ctx context.Context,
-	client *http.Client,
+	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
@@ -681,35 +676,29 @@ func HandleOpenAIChatCompletionStreaming(
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	// Updating request
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, extraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, extraHeaders, nil)
 
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
+	req.SetBody(jsonBody)
 
 	// Make the request
-	resp, err := client.Do(req)
+	err = client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -720,14 +709,15 @@ func HandleOpenAIChatCompletionStreaming(
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 	}
 
@@ -737,9 +727,9 @@ func HandleOpenAIChatCompletionStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
 
@@ -750,6 +740,13 @@ func HandleOpenAIChatCompletionStreaming(
 		var messageID string
 
 		for scanner.Scan() {
+			// Check if context is done before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -984,7 +981,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.streamClient,
+		provider.client,
 		provider.networkConfig.BaseURL+"/v1/responses",
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
@@ -997,11 +994,11 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 	)
 }
 
-// handleOpenAIResponsesStreaming handles streaming for OpenAI-compatible APIs.
+// HandleOpenAIResponsesStreaming handles streaming for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE format.
 func HandleOpenAIResponsesStreaming(
 	ctx context.Context,
-	client *http.Client,
+	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostResponsesRequest,
 	authHeader map[string]string,
@@ -1039,35 +1036,29 @@ func HandleOpenAIResponsesStreaming(
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, extraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, extraHeaders, nil)
 
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 
+	req.SetBody(jsonBody)
+
 	// Make the request
-	resp, err := client.Do(req)
+	err = client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1078,14 +1069,15 @@ func HandleOpenAIResponsesStreaming(
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
 	}
 
@@ -1095,14 +1087,21 @@ func HandleOpenAIResponsesStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(resp.BodyStream())
 
 		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Check if context is done before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Text()
 
 			// Skip empty lines, comments, and event lines
@@ -1374,9 +1373,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
 		return nil, err
 	}
-
 	providerName := provider.GetProviderKey()
-
 	// Use centralized converter
 	reqBody := ToOpenAISpeechRequest(request)
 	if reqBody == nil {
@@ -1389,6 +1386,12 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
 	}
 
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
 	// Prepare OpenAI headers
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -1396,37 +1399,26 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		"Accept":        "text/event-stream",
 		"Cache-Control": "no-cache",
 	}
+	url := fmt.Sprintf("%s/v1/audio/speech", provider.networkConfig.BaseURL)
 
-	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v1/audio/speech", bytes.NewReader(jsonBody))
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
-	}
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
+
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
-
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 
+	req.SetBody(jsonBody)
+
 	// Make the request
-	resp, err := provider.streamClient.Do(req)
+	err = provider.client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1437,14 +1429,15 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model)
 	}
 
@@ -1454,15 +1447,22 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
 
 		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Check if context is done before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -1661,35 +1661,34 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v1/audio/transcriptions", &body)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
-	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	url := fmt.Sprintf("%s/v1/audio/transcriptions", provider.networkConfig.BaseURL)
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 
+	req.SetBody(body.Bytes())
+
 	// Make the request
-	resp, err := provider.streamClient.Do(req)
+	err := provider.client.Do(req, resp)
 	if err != nil {
+		defer fasthttp.ReleaseResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1700,14 +1699,15 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				},
 			}
 		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
 	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer fasthttp.ReleaseResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
@@ -1717,15 +1717,22 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer resp.Body.Close()
+		defer fasthttp.ReleaseResponse(resp)
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
 
 		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Check if context is done before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -1889,30 +1896,9 @@ func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, 
 }
 
 // parseStreamOpenAIError parses OpenAI streaming error responses.
-func parseStreamOpenAIError(resp *http.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
+func parseStreamOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
-
-	statusCode := resp.StatusCode
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if err := sonic.Unmarshal(body, &errorResp); err != nil {
-		return &schemas.BifrostError{
-			IsBifrostError: true,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseUnmarshal,
-				Error:   err,
-			},
-		}
-	}
-
-	bifrostErr := &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     &statusCode,
-		Error:          &schemas.ErrorField{},
-	}
-
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if errorResp.EventID != nil {
 		bifrostErr.EventID = errorResp.EventID
 	}

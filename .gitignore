@@ -35,4 +35,7 @@ go.work.sum
 *.db-shm
 *.db-wal
 
+# Test reports
+test-reports/
+
 .claude
