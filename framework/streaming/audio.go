@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -12,6 +13,9 @@ import (
 // buildCompleteMessageFromAudioStreamChunks builds a complete message from accumulated audio chunks
 func (a *Accumulator) buildCompleteMessageFromAudioStreamChunks(chunks []*AudioStreamChunk) *schemas.BifrostSpeechResponse {
 	completeMessage := &schemas.BifrostSpeechResponse{}
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
+	})
 	for _, chunk := range chunks {
 		if chunk.Delta != nil {
 			completeMessage.Audio = append(completeMessage.Audio, chunk.Delta.Audio...)
@@ -107,21 +111,18 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *context.Context, result
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
-	} else if result != nil {
-		if result.SpeechStreamResponse != nil {
-			// We create a deep copy of the delta to avoid pointing to stack memory
-			newDelta := &schemas.BifrostSpeechStreamResponse{
-				Type:  result.SpeechStreamResponse.Type,
-				Usage: result.SpeechStreamResponse.Usage,
-				Audio: result.SpeechStreamResponse.Audio,
-			}
-			chunk.Delta = newDelta
-			if result.SpeechStreamResponse.Usage != nil {
-				chunk.TokenUsage = result.SpeechStreamResponse.Usage
-			}
+	} else if result != nil && result.SpeechStreamResponse != nil {
+		// We create a deep copy of the delta to avoid pointing to stack memory
+		newDelta := &schemas.BifrostSpeechStreamResponse{
+			Type:  result.SpeechStreamResponse.Type,
+			Usage: result.SpeechStreamResponse.Usage,
+			Audio: result.SpeechStreamResponse.Audio,
 		}
-	}
-	if result != nil {
+		chunk.Delta = newDelta
+		if result.SpeechStreamResponse.Usage != nil {
+			chunk.TokenUsage = result.SpeechStreamResponse.Usage
+		}
+		chunk.ChunkIndex = result.SpeechStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)

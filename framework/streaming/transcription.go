@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -13,6 +14,9 @@ import (
 func (a *Accumulator) buildCompleteMessageFromTranscriptionStreamChunks(chunks []*TranscriptionStreamChunk) *schemas.BifrostTranscriptionResponse {
 	completeMessage := &schemas.BifrostTranscriptionResponse{}
 	finalContent := ""
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
+	})
 	for _, chunk := range chunks {
 		if chunk.Delta == nil {
 			continue
@@ -119,8 +123,11 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *context.Context
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
-	} else if result != nil {
-		if result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil {
+	} else if result != nil && result.TranscriptionStreamResponse != nil {
+		if result.TranscriptionStreamResponse.Usage != nil {
+			chunk.TokenUsage = result.TranscriptionStreamResponse.Usage
+
+			// For Transcription, entire delta is sent in the final chunk which also has usage information
 			// We create a deep copy of the delta to avoid pointing to stack memory
 			newDelta := &schemas.BifrostTranscriptionStreamResponse{
 				Type:  result.TranscriptionStreamResponse.Type,
@@ -128,11 +135,7 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *context.Context
 			}
 			chunk.Delta = newDelta
 		}
-		if result.TranscriptionStreamResponse.Usage != nil {
-			chunk.TokenUsage = result.TranscriptionStreamResponse.Usage
-		}
-	}
-	if result != nil {
+		chunk.ChunkIndex = result.TranscriptionStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)

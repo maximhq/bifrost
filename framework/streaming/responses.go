@@ -428,12 +428,12 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
 
-	// Sort chunks by sequence number to ensure correct processing order
+	// Sort chunks by chunk index to ensure correct processing order
 	sort.Slice(chunks, func(i, j int) bool {
 		if chunks[i].StreamResponse == nil || chunks[j].StreamResponse == nil {
 			return false
 		}
-		return chunks[i].StreamResponse.SequenceNumber < chunks[j].StreamResponse.SequenceNumber
+		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
 	})
 
 	for _, chunk := range chunks {
@@ -764,7 +764,6 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 	} else if result != nil && result.ResponsesStreamResponse != nil {
 		// Store a deep copy of the stream response to prevent shared data mutation between plugins
 		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)
-
 		// Extract token usage from stream response if available
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.Usage != nil {
@@ -774,10 +773,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *context.Context, re
 				TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
 			}
 		}
-	}
-
-	// Add chunk to accumulator synchronously to maintain order
-	if result != nil {
+		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)

@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -15,6 +16,9 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		Role:    schemas.ChatMessageRoleAssistant,
 		Content: &schemas.ChatMessageContent{},
 	}
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
+	})
 	for _, chunk := range chunks {
 		if chunk.Delta == nil {
 			continue
@@ -161,9 +165,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *context.Context, result 
 		if result.ChatResponse.Usage != nil && result.ChatResponse.Usage.TotalTokens > 0 {
 			chunk.TokenUsage = result.ChatResponse.Usage
 		}
-	}
-	// Add chunk to accumulator synchronously to maintain order
-	if result != nil && result.ChatResponse != nil {
+		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
