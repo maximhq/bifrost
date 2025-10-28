@@ -18,11 +18,11 @@ func TestCacheTypeDirectOnly(t *testing.T) {
 	testRequest := CreateBasicChatRequest("What is Bifrost?", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 
@@ -51,11 +51,11 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	testRequest := CreateBasicChatRequest("Explain machine learning concepts", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 
@@ -98,11 +98,11 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 	testRequest := CreateBasicChatRequest("Define artificial intelligence", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 
@@ -153,21 +153,19 @@ func TestCacheTypeInvalidValue(t *testing.T) {
 	testRequest := CreateBasicChatRequest("Test invalid cache type", 0.7, 50)
 
 	t.Log("Making request with invalid CacheTypeKey value...")
-	response, err := ChatRequestWithRetries(t, setup.Client, ctx, testRequest)
+	response, err := setup.Client.ChatCompletionRequest(ctx, testRequest)
 	if err != nil {
 		return // Test will be skipped by retry function
 	}
 
 	// Should fall back to default behavior (both direct and semantic)
-	AssertNoCacheHit(t, response)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response})
 
 	t.Log("✅ Invalid CacheTypeKey value falls back to default behavior")
 }
 
 // TestCacheTypeWithEmbeddingRequests tests CacheTypeKey behavior with embedding requests
 func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
-	t.Skip("Skipping Embedding Tests")
-
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -176,11 +174,11 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 	// Cache first request
 	ctx1 := CreateContextWithCacheKey("test-embedding-cache-type")
 	t.Log("Making first embedding request...")
-	response1, err1 := EmbeddingRequestWithRetries(t, setup.Client, ctx1, embeddingRequest)
+	response1, err1 := setup.Client.EmbeddingRequest(ctx1, embeddingRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
 	WaitForCache()
 
@@ -220,11 +218,11 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 	// Cache first request
 	ctx1 := CreateContextWithCacheKey("test-cache-performance")
 	t.Log("Making first request to populate cache...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 

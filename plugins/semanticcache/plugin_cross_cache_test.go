@@ -17,11 +17,11 @@ func TestCrossCacheTypeAccessibility(t *testing.T) {
 	// Test 1: Cache with default behavior (both direct + semantic)
 	ctx1 := CreateContextWithCacheKey("test-cross-cache-access")
 	t.Log("Caching with default behavior (both direct + semantic)...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 
@@ -63,22 +63,22 @@ func TestCacheTypeIsolation(t *testing.T) {
 	// Test 1: Cache with direct-only
 	ctx1 := CreateContextWithCacheKeyAndType("test-cache-isolation", CacheTypeDirect)
 	t.Log("Caching with CacheTypeKey=direct only...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1) // Fresh request
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request
 
 	WaitForCache()
 
 	// Test 2: Try to retrieve with semantic-only (should miss because no semantic entry)
 	ctx2 := CreateContextWithCacheKeyAndType("test-cache-isolation", CacheTypeSemantic)
 	t.Log("Retrieving same request with CacheTypeKey=semantic (should miss)...")
-	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx2, testRequest)
+	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
 	if err2 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response2) // Should miss - no semantic cache entry
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // Should miss - no semantic cache entry
 
 	WaitForCache()
 
@@ -112,11 +112,11 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 	ctx1 := CreateContextWithCacheKey("test-fallback-behavior")
 
 	t.Log("Caching with default behavior...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, originalRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, originalRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 
@@ -125,11 +125,11 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 	ctx2 := CreateContextWithCacheKeyAndType("test-fallback-behavior", CacheTypeDirect)
 
 	t.Log("Testing similar request with CacheTypeKey=direct (should miss, make request, cache without embeddings)...")
-	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx2, similarRequest)
+	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, similarRequest)
 	if err2 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response2) // Should miss - no direct match, no semantic search
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // Should miss - no direct match, no semantic search
 
 	WaitForCache() // Let the response get cached
 
@@ -184,12 +184,12 @@ func TestMultipleCacheEntriesPriority(t *testing.T) {
 	// Create cache entry with default behavior first
 	ctx1 := CreateContextWithCacheKey("test-cache-priority")
 	t.Log("Creating cache entry with default behavior...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
-	originalContent := *response1.ChatResponse.Choices[0].Message.Content.ContentStr
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
+	originalContent := *response1.Choices[0].Message.Content.ContentStr
 
 	WaitForCache()
 
@@ -244,11 +244,11 @@ func TestCrossCacheTypeWithDifferentParameters(t *testing.T) {
 	ctx1 := CreateContextWithCacheKey("test-cross-cache-params")
 
 	t.Log("Caching with temp=0.7, max_tokens=100...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, request1)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, request1)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 	WaitForCache()
 
@@ -268,23 +268,23 @@ func TestCrossCacheTypeWithDifferentParameters(t *testing.T) {
 	// Test different parameters - should miss
 	request3 := CreateBasicChatRequest(baseMessage, 0.5, 200) // Different temp and tokens
 	t.Log("Testing different parameters (should miss)...")
-	response3, err3 := ChatRequestWithRetries(t, setup.Client, ctx2, request3)
+	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, request3)
 	if err3 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response3) // Should miss due to different params
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}) // Should miss due to different params
 
 	// Test semantic search with different parameters
 	ctx4 := CreateContextWithCacheKeyAndType("test-cross-cache-params", CacheTypeSemantic)
 	similarRequest := CreateBasicChatRequest("Can you explain quantum computing", 0.5, 200)
 
 	t.Log("Testing semantic search with different params and similar message...")
-	response4, err4 := ChatRequestWithRetries(t, setup.Client, ctx4, similarRequest)
+	response4, err4 := setup.Client.ChatCompletionRequest(ctx4, similarRequest)
 	if err4 != nil {
 		return // Test will be skipped by retry function
 	}
 	// Should miss semantic search due to different parameters (params_hash different)
-	AssertNoCacheHit(t, response4)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4})
 
 	t.Log("✅ Cross-cache-type parameter handling works correctly")
 }
@@ -301,11 +301,11 @@ func TestCacheTypeErrorHandling(t *testing.T) {
 	ctx1 = context.WithValue(ctx1, CacheTypeKey, "invalid_cache_type")
 
 	t.Log("Testing invalid cache type (should fallback to default behavior)...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx1, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1) // Should work with fallback behavior
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Should work with fallback behavior
 
 	WaitForCache()
 

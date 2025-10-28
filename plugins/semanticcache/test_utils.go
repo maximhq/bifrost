@@ -2,7 +2,6 @@ package semanticcache
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strconv"
 	"testing"
@@ -102,10 +101,10 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 			DefaultRequestTimeoutInSeconds: 60,
 			MaxRetries:                     5,
 			RetryBackoffInitial:            100 * time.Millisecond,
-			RetryBackoffMax:                10 * time.Second,
+			RetryBackoffMax:                30 * time.Second,
 		},
 		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-			Concurrency: 5,
+			Concurrency: 10,
 			BufferSize:  10,
 		},
 	}, nil
@@ -707,146 +706,4 @@ func DefaultRetryConfig() RetryConfig {
 		MaxRetries: 2,
 		BaseDelay:  5 * time.Millisecond,
 	}
-}
-
-// WithRetries executes a function with retry logic and exponential backoff
-// If all retries fail, the test is skipped instead of failed
-func WithRetries[T any](t *testing.T, operation func() (T, *schemas.BifrostError), config RetryConfig, operationName string) (T, *schemas.BifrostError) {
-	var lastErr *schemas.BifrostError
-	var result T
-
-	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff: baseDelay * 2^(attempt-1)
-			delay := config.BaseDelay * time.Duration(1<<(attempt-1))
-			t.Logf("Retrying %s (attempt %d/%d) after %v...", operationName, attempt+1, config.MaxRetries+1, delay)
-			time.Sleep(delay)
-		}
-
-		result, lastErr = operation()
-		if lastErr == nil {
-			if attempt > 0 {
-				t.Logf("✅ %s succeeded on attempt %d", operationName, attempt+1)
-			}
-			return result, nil
-		}
-
-		lastErrorMessage := ""
-		if lastErr.Error != nil {
-			lastErrorMessage = lastErr.Error.Message
-		}
-
-		t.Logf("❌ %s failed on attempt %d: %v", operationName, attempt+1, lastErrorMessage)
-	}
-
-	// If all retries failed, skip the test instead of failing it
-	skipMessage := fmt.Sprintf("Skipping test: %s failed after %d attempts", operationName, config.MaxRetries+1)
-	if lastErr != nil && lastErr.Error != nil {
-		skipMessage += fmt.Sprintf(" (last error: %s)", lastErr.Error.Message)
-	}
-	t.Skip(skipMessage)
-
-	// This return will never be reached due to t.Skip(), but needed for compilation
-	return result, lastErr
-}
-
-// ChatRequestWithRetries executes a chat completion request with retry logic
-func ChatRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostChatRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	config := DefaultRetryConfig()
-	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-		response, err := client.ChatCompletionRequest(ctx, request)
-		if err != nil {
-			if err.Error != nil {
-				return &schemas.BifrostResponse{ChatResponse: response}, err
-			}
-			return &schemas.BifrostResponse{ChatResponse: response}, err
-		}
-		return &schemas.BifrostResponse{ChatResponse: response}, nil
-	}, config, "chat completion request")
-}
-
-// ResponsesRequestWithRetries executes a responses request with retry logic
-func ResponsesRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	config := DefaultRetryConfig()
-	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-		response, err := client.ResponsesRequest(ctx, request)
-		if err != nil {
-			if err.Error != nil {
-				return &schemas.BifrostResponse{ResponsesResponse: response}, err
-			}
-			return &schemas.BifrostResponse{ResponsesResponse: response}, err
-		}
-		return &schemas.BifrostResponse{ResponsesResponse: response}, nil
-	}, config, "responses request")
-}
-
-// EmbeddingRequestWithRetries executes an embedding request with retry logic
-func EmbeddingRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	config := DefaultRetryConfig()
-	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-		response, err := client.EmbeddingRequest(ctx, request)
-		if err != nil {
-			if err.Error != nil {
-				return &schemas.BifrostResponse{EmbeddingResponse: response}, err
-			}
-			return &schemas.BifrostResponse{EmbeddingResponse: response}, err
-		}
-		return &schemas.BifrostResponse{EmbeddingResponse: response}, nil
-	}, config, "embedding request")
-}
-
-// SpeechRequestWithRetries executes a speech request with retry logic
-func SpeechRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostSpeechRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	config := DefaultRetryConfig()
-	return WithRetries(t, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-		response, err := client.SpeechRequest(ctx, request)
-		if err != nil {
-			if err.Error != nil {
-				return &schemas.BifrostResponse{SpeechResponse: response}, err
-			}
-			return &schemas.BifrostResponse{SpeechResponse: response}, err
-		}
-		return &schemas.BifrostResponse{SpeechResponse: response}, nil
-	}, config, "speech request")
-}
-
-// ChatStreamingRequestWithRetries executes a chat streaming request with retry logic
-func ChatStreamingRequestWithRetries(t *testing.T, client *bifrost.Bifrost, ctx context.Context, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	config := DefaultRetryConfig()
-	var lastErr *schemas.BifrostError
-	var result chan *schemas.BifrostStream
-
-	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff: baseDelay * 2^(attempt-1)
-			delay := config.BaseDelay * time.Duration(1<<(attempt-1))
-			t.Logf("Retrying chat streaming request (attempt %d/%d) after %v...", attempt+1, config.MaxRetries+1, delay)
-			time.Sleep(delay)
-		}
-
-		result, lastErr = client.ChatCompletionStreamRequest(ctx, request)
-		if lastErr == nil {
-			if attempt > 0 {
-				t.Logf("✅ chat streaming request succeeded on attempt %d", attempt+1)
-			}
-			return result, nil
-		}
-
-		lastErrorMessage := ""
-		if lastErr.Error != nil {
-			lastErrorMessage = lastErr.Error.Message
-		}
-
-		t.Logf("❌ chat streaming request failed on attempt %d: %v", attempt+1, lastErrorMessage)
-	}
-
-	// If all retries failed, skip the test instead of failing it
-	skipMessage := fmt.Sprintf("Skipping test: chat streaming request failed after %d attempts", config.MaxRetries+1)
-	if lastErr != nil && lastErr.Error != nil {
-		skipMessage += fmt.Sprintf(" (last error: %s)", lastErr.Error.Message)
-	}
-	t.Skip(skipMessage)
-
-	// This return will never be reached due to t.Skip(), but needed for compilation
-	return result, lastErr
 }

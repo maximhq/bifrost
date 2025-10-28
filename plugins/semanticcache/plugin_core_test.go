@@ -28,19 +28,19 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 
 	// Make first request (will go to OpenAI and be cached) - with retries
 	start1 := time.Now()
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, testRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.ChatResponse.Choices) == 0 || response1.ChatResponse.Choices[0].Message.Content.ContentStr == nil {
+	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
 		t.Fatal("First response is invalid")
 	}
 
 	t.Logf("First request completed in %v", duration1)
-	t.Logf("Response: %s", *response1.ChatResponse.Choices[0].Message.Content.ContentStr)
+	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written
 	WaitForCache()
@@ -88,7 +88,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	}
 
 	// Verify responses are identical (content should be the same)
-	content1 := *response1.ChatResponse.Choices[0].Message.Content.ContentStr
+	content1 := *response1.Choices[0].Message.Content.ContentStr
 	content2 := *response2.Choices[0].Message.Content.ContentStr
 
 	if content1 != content2 {
@@ -123,19 +123,19 @@ func TestSemanticSearch(t *testing.T) {
 
 	t.Log("Making first request (should go to OpenAI and be cached)...")
 	start1 := time.Now()
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, firstRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx, firstRequest)
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.ChatResponse.Choices) == 0 || response1.ChatResponse.Choices[0].Message.Content.ContentStr == nil {
+	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
 		t.Fatal("First response is invalid")
 	}
 
 	t.Logf("First request completed in %v", duration1)
-	t.Logf("Response: %s", *response1.ChatResponse.Choices[0].Message.Content.ContentStr)
+	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written (async PostHook needs time to complete)
 	WaitForCache()
@@ -226,7 +226,7 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 	)
 
 	t.Log("Making first request...")
-	_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, exactRequest)
+	_, err1 := setup.Client.ChatCompletionRequest(ctx, exactRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
@@ -304,7 +304,7 @@ func TestNoCacheScenarios(t *testing.T) {
 
 	// First request
 	request1 := CreateBasicChatRequest(basePrompt, 0.1, 50)
-	_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, request1)
+	_, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
@@ -313,25 +313,25 @@ func TestNoCacheScenarios(t *testing.T) {
 
 	// Second request with different temperature
 	request2 := CreateBasicChatRequest(basePrompt, 0.9, 50) // Different temperature
-	response2, err2 := ChatRequestWithRetries(t, setup.Client, ctx, request2)
+	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
 	if err2 != nil {
 		return // Test will be skipped by retry function
 	}
 
 	// Should NOT be cached
-	AssertNoCacheHit(t, response2)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2})
 
 	// Test Case 2: Different max_tokens should NOT cache hit
 	t.Log("\n=== Test Case 2: Different MaxTokens ===")
 
 	request3 := CreateBasicChatRequest(basePrompt, 0.1, 200) // Different max_tokens
-	response3, err3 := ChatRequestWithRetries(t, setup.Client, ctx, request3)
+	response3, err3 := setup.Client.ChatCompletionRequest(ctx, request3)
 	if err3 != nil {
 		return // Test will be skipped by retry function
 	}
 
 	// Should NOT be cached
-	AssertNoCacheHit(t, response3)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
 	t.Log("✅ No cache scenarios test completed!")
 }
@@ -392,7 +392,7 @@ func TestCacheConfiguration(t *testing.T) {
 			// Basic functionality test with the configuration
 			testRequest := CreateBasicChatRequest("Test configuration: "+tt.name, 0.5, 50)
 
-			_, err1 := ChatRequestWithRetries(t, setup.Client, ctx, testRequest)
+			_, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 			if err1 != nil {
 				return // Test will be skipped by retry function
 			}

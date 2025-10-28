@@ -25,20 +25,20 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 
 	// Make first request (will go to OpenAI and be cached) - with retries
 	start1 := time.Now()
-	response1, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, testRequest)
+	response1, err1 := setup.Client.ResponsesRequest(ctx, testRequest)
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.ResponsesResponse.Output) == 0 {
+	if response1 == nil || len(response1.Output) == 0 {
 		t.Fatal("First Responses response is invalid")
 	}
 
 	t.Logf("First request completed in %v", duration1)
-	t.Logf("Response contains %d output messages", len(response1.ResponsesResponse.Output))
-	if c := response1.ResponsesResponse.Output[0].Content; c != nil && c.ContentStr != nil {
+	t.Logf("Response contains %d output messages", len(response1.Output))
+	if c := response1.Output[0].Content; c != nil && c.ContentStr != nil {
 		t.Logf("Response: %s", *c.ContentStr)
 	} else if c != nil && len(c.ContentBlocks) > 0 && c.ContentBlocks[0].Text != nil {
 		t.Logf("Response: %s", *c.ContentBlocks[0].Text)
@@ -138,7 +138,7 @@ func TestResponsesAPIDifferentParameters(t *testing.T) {
 			clearTestKeysWithStore(t, setup.Store)
 
 			// Make first request
-			_, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, tt.request1)
+			_, err1 := setup.Client.ResponsesRequest(ctx, tt.request1)
 			if err1 != nil {
 				return // Test will be skipped by retry function
 			}
@@ -176,12 +176,12 @@ func TestResponsesAPISemanticMatching(t *testing.T) {
 	// First request
 	originalRequest := CreateBasicResponsesRequest("What is machine learning?", 0.5, 500)
 	t.Log("Making first Responses request with original text...")
-	response1, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, originalRequest)
+	response1, err1 := setup.Client.ResponsesRequest(ctx, originalRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 	WaitForCache()
 
 	// Test semantic match with similar but different text
@@ -217,12 +217,12 @@ func TestResponsesAPIWithInstructions(t *testing.T) {
 	)
 
 	t.Log("Making first Responses request with instructions...")
-	response1, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, request1)
+	response1, err1 := setup.Client.ResponsesRequest(ctx, request1)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 	WaitForCache()
 
 	// Make identical request
@@ -260,11 +260,11 @@ func TestResponsesAPICacheExpiration(t *testing.T) {
 	responsesRequest := CreateBasicResponsesRequest("TTL test for Responses API", 0.5, 500)
 
 	t.Log("Making first Responses request with short TTL...")
-	response1, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, responsesRequest)
+	response1, err1 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 
 	WaitForCache()
 
@@ -283,12 +283,12 @@ func TestResponsesAPICacheExpiration(t *testing.T) {
 	time.Sleep(shortTTL + 2*time.Second) // Wait for TTL to expire
 
 	t.Log("Making third Responses request after TTL expiration...")
-	response3, err3 := ResponsesRequestWithRetries(t, setup.Client, ctx, responsesRequest)
+	response3, err3 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err3 != nil {
 		return // Test will be skipped by retry function
 	}
 	// Should not be a cache hit since TTL expired
-	AssertNoCacheHit(t, response3)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response3})
 
 	t.Log("✅ Responses API requests properly handle TTL expiration")
 }
@@ -305,13 +305,13 @@ func TestResponsesAPIWithoutCacheKey(t *testing.T) {
 
 	t.Log("Making Responses request without cache key...")
 
-	response, err := ResponsesRequestWithRetries(t, setup.Client, ctx, responsesRequest)
+	response, err := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err != nil {
 		return // Test will be skipped by retry function
 	}
 
 	// Should not be cached
-	AssertNoCacheHit(t, response)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response})
 
 	t.Log("✅ Responses requests without cache key are properly not cached")
 }
@@ -325,20 +325,20 @@ func TestResponsesAPINoStoreFlag(t *testing.T) {
 	ctx := CreateContextWithCacheKeyAndNoStore("test-no-store-responses", true)
 
 	t.Log("Testing no-store with Responses API...")
-	response1, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, responsesRequest)
+	response1, err1 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 
 	WaitForCache()
 
 	// Verify not cached
-	response2, err2 := ResponsesRequestWithRetries(t, setup.Client, ctx, responsesRequest)
+	response2, err2 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err2 != nil {
 		return // Test will be skipped by retry function
 	}
-	AssertNoCacheHit(t, response2) // Should not be cached
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}) // Should not be cached
 
 	t.Log("✅ Responses API no-store flag working correctly")
 }
@@ -356,7 +356,7 @@ func TestResponsesAPIStreaming(t *testing.T) {
 	// Make non-streaming request first
 	t.Log("Making non-streaming Responses request...")
 	nonStreamRequest := CreateBasicResponsesRequest(prompt, 0.5, 500)
-	_, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, nonStreamRequest)
+	_, err1 := setup.Client.ResponsesRequest(ctx, nonStreamRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
@@ -417,12 +417,12 @@ func TestResponsesAPIComplexParameters(t *testing.T) {
 	request.Params.Store = &[]bool{true}[0]
 
 	t.Log("Making first Responses request with complex parameters...")
-	response1, err1 := ResponsesRequestWithRetries(t, setup.Client, ctx, request)
+	response1, err1 := setup.Client.ResponsesRequest(ctx, request)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 	WaitForCache()
 
 	// Create identical request

@@ -25,7 +25,7 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 
 	// Make first streaming request
 	start1 := time.Now()
-	stream1, err1 := ChatStreamingRequestWithRetries(t, setup.Client, ctx, testRequest)
+	stream1, err1 := setup.Client.ChatCompletionStreamRequest(ctx, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
@@ -125,7 +125,7 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 	// Make non-streaming request first
 	t.Log("Making non-streaming request...")
 	nonStreamRequest := CreateBasicChatRequest(prompt, 0.5, 50)
-	nonStreamResponse, err1 := ChatRequestWithRetries(t, setup.Client, ctx, nonStreamRequest)
+	nonStreamResponse, err1 := setup.Client.ChatCompletionRequest(ctx, nonStreamRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
@@ -177,7 +177,7 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 	}
 
 	// Verify non-streaming response was not affected
-	AssertNoCacheHit(t, nonStreamResponse)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: nonStreamResponse})
 
 	t.Log("✅ Streaming vs non-streaming test completed!")
 }
@@ -197,7 +197,7 @@ func TestStreamingChunkOrdering(t *testing.T) {
 	)
 
 	t.Log("Making first streaming request to establish cache...")
-	stream1, err1 := ChatStreamingRequestWithRetries(t, setup.Client, ctx, testRequest)
+	stream1, err1 := setup.Client.ChatCompletionStreamRequest(ctx, testRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
@@ -286,7 +286,7 @@ func TestSpeechSynthesisStreaming(t *testing.T) {
 
 	t.Log("Making first speech synthesis request...")
 	start1 := time.Now()
-	response1, err1 := SpeechRequestWithRetries(t, setup.Client, ctx, speechRequest)
+	response1, err1 := setup.Client.SpeechRequest(ctx, speechRequest)
 	duration1 := time.Since(start1)
 
 	if err1 != nil {

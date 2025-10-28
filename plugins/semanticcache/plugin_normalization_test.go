@@ -91,16 +91,16 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 
 	// Make first request (should miss cache and be stored)
 	t.Logf("Making first request with user: '%s', system: '%s'", testCases[0].userMsg, testCases[0].systemMsg)
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, requests[0])
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx, requests[0])
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.ChatResponse.Choices) == 0 {
+	if response1 == nil || len(response1.Choices) == 0 {
 		t.Fatal("First response is invalid")
 	}
 
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 	WaitForCache()
 
 	// Test all other variations should hit cache due to normalization
@@ -243,16 +243,16 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 
 	// Make first request (should miss cache and be stored)
 	t.Logf("Making first request with content blocks: %v", testCases[0].textBlocks)
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, requests[0])
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx, requests[0])
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.ChatResponse.Choices) == 0 {
+	if response1 == nil || len(response1.Choices) == 0 {
 		t.Fatal("First response is invalid")
 	}
 
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 	WaitForCache()
 
 	// Test all other variations should hit cache due to normalization
@@ -285,12 +285,12 @@ func TestNormalizationWithSemanticCache(t *testing.T) {
 	// Make first request with original text
 	originalRequest := CreateBasicChatRequest("What is Machine Learning?", 0.5, 50)
 	t.Log("Making first request with original text...")
-	response1, err1 := ChatRequestWithRetries(t, setup.Client, ctx, originalRequest)
+	response1, err1 := setup.Client.ChatCompletionRequest(ctx, originalRequest)
 	if err1 != nil {
 		return // Test will be skipped by retry function
 	}
 
-	AssertNoCacheHit(t, response1)
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 	WaitForCache()
 
 	// Test semantic match with different case (should hit semantic cache after normalization)
