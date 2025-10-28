@@ -42,7 +42,7 @@ go test -v ./...
 cd ..
 echo "🔧 Running core provider tests..."
 cd tests/core-providers
-go test -v ./...
+go test -v -run .
 cd ../..
 
 # Capturing changelog

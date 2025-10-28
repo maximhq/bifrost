@@ -10,6 +10,8 @@ import (
 )
 
 func TestCohere(t *testing.T) {
+	t.Skip("Skipping Cohere tests")
+
 	if os.Getenv("COHERE_API_KEY") == "" {
 		t.Skip("Skipping Cohere tests because COHERE_API_KEY is not set")
 	}

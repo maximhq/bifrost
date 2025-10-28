@@ -7,3 +7,4 @@
 - feat: refactored all plugin operations to completely async to prevent any blocking behavior
 - feat: added provider level budget and rate limits using virtual keys
 - feat: added streaming support in maxim plugin
+- feat: improved retry logic for rate limiting errors
