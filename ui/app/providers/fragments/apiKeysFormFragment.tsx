@@ -227,7 +227,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Project ID (Required)</FormLabel>
 								<FormControl>
-									<Input placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} />
+									<Input placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} value={field.value ?? ""} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -240,7 +240,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
 								<FormControl>
-									<Input placeholder="us-central1 or env.VERTEX_REGION" {...field} />
+									<Input placeholder="us-central1 or env.VERTEX_REGION" {...field} value={field.value ?? ""} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

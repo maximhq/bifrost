@@ -376,7 +376,9 @@ func TestResponsesAPIStreaming(t *testing.T) {
 		if streamMsg.BifrostError != nil {
 			t.Fatalf("Error in Responses stream: %v", streamMsg.BifrostError)
 		}
-		streamResponses = append(streamResponses, *streamMsg.BifrostResponsesStreamResponse)
+		if streamMsg.BifrostResponsesStreamResponse != nil {
+			streamResponses = append(streamResponses, *streamMsg.BifrostResponsesStreamResponse)
+		}
 	}
 
 	if len(streamResponses) == 0 {
