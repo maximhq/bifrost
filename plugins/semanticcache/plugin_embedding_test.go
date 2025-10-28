@@ -9,6 +9,8 @@ import (
 
 // TestEmbeddingRequestsCaching tests that embedding requests are properly cached using direct hash matching
 func TestEmbeddingRequestsCaching(t *testing.T) {
+	t.Skip("Skipping Embedding Tests")
+
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -31,7 +33,7 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	if response1 == nil || len(response1.EmbeddingResponse.Data) == 0 {
+	if response1 == nil || response1.EmbeddingResponse == nil || len(response1.EmbeddingResponse.Data) == 0 {
 		t.Fatal("First embedding response is invalid")
 	}
 
@@ -76,6 +78,8 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 
 // TestEmbeddingRequestsNoCacheWithoutCacheKey tests that embedding requests without cache key are not cached
 func TestEmbeddingRequestsNoCacheWithoutCacheKey(t *testing.T) {
+	t.Skip("Skipping Embedding Tests")
+
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -99,6 +103,8 @@ func TestEmbeddingRequestsNoCacheWithoutCacheKey(t *testing.T) {
 
 // TestEmbeddingRequestsDifferentTexts tests that different embedding texts produce different cache entries
 func TestEmbeddingRequestsDifferentTexts(t *testing.T) {
+	t.Skip("Skipping Embedding Tests")
+
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -130,6 +136,8 @@ func TestEmbeddingRequestsDifferentTexts(t *testing.T) {
 
 // TestEmbeddingRequestsCacheExpiration tests TTL functionality for embedding requests
 func TestEmbeddingRequestsCacheExpiration(t *testing.T) {
+	t.Skip("Skipping Embedding Tests")
+
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

@@ -166,7 +166,7 @@ func TestCacheTypeInvalidValue(t *testing.T) {
 
 // TestCacheTypeWithEmbeddingRequests tests CacheTypeKey behavior with embedding requests
 func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
-	t.Skip("Skipping embedding requests tests")
+	t.Skip("Skipping Embedding Tests")
 
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
