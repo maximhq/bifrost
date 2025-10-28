@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas/providers/bedrock"
 	cohere "github.com/maximhq/bifrost/core/schemas/providers/cohere"
 )
@@ -699,7 +700,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 				}
 
 				if streamEvent.StopReason != nil {
-					finishReason = schemas.Ptr(schemas.MapProviderFinishReasonToBifrost(*streamEvent.StopReason, providerName))
+					finishReason = schemas.Ptr(anthropic.ConvertAnthropicFinishReasonToBifrost(anthropic.AnthropicStopReason(*streamEvent.StopReason)))
 				}
 
 				response, bifrostErr, _ := streamEvent.ToBifrostChatCompletionStream()

@@ -293,6 +293,7 @@ const (
 	FinishReasonMaxTokens    CohereFinishReason = "MAX_TOKENS"    // Max tokens exceeded
 	FinishReasonToolCall     CohereFinishReason = "TOOL_CALL"     // Model generated tool call
 	FinishReasonError        CohereFinishReason = "ERROR"         // Generation failed due to internal error
+	FinishReasonTimeout      CohereFinishReason = "TIMEOUT"       // Timeout
 )
 
 // CohereUsage represents token usage information

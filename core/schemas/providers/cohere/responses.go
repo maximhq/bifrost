@@ -41,6 +41,18 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 			if presencePenalty, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["presence_penalty"]); ok {
 				cohereReq.PresencePenalty = presencePenalty
 			}
+			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
+				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
+					thinking := &CohereThinking{}
+					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
+						thinking.Type = CohereThinkingType(typeStr)
+					}
+					if tokenBudget, ok := schemas.SafeExtractIntPointer(thinkingMap["token_budget"]); ok {
+						thinking.TokenBudget = tokenBudget
+					}
+					cohereReq.Thinking = thinking
+				}
+			}
 		}
 	}
 

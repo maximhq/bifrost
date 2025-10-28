@@ -5,6 +5,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 )
 
 // ToBedrockChatCompletionRequest converts a Bifrost request to Bedrock Converse API format
@@ -47,47 +48,58 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse() (*schemas.Bifro
 	}
 
 	// Convert content blocks and tool calls
+	var contentStr *string
 	var contentBlocks []schemas.ChatContentBlock
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 
 	if response.Output.Message != nil {
-		for _, contentBlock := range response.Output.Message.Content {
-			// Handle text content
-			if contentBlock.Text != nil && *contentBlock.Text != "" {
-				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-					Type: schemas.ChatContentBlockTypeText,
-					Text: contentBlock.Text,
-				})
-			}
+		if len(response.Output.Message.Content) == 1 && response.Output.Message.Content[0].Text != nil {
+			contentStr = response.Output.Message.Content[0].Text
+		} else {
+			for _, contentBlock := range response.Output.Message.Content {
+				// Handle text content
+				if contentBlock.Text != nil && *contentBlock.Text != "" {
+					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+						Type: schemas.ChatContentBlockTypeText,
+						Text: contentBlock.Text,
+					})
+				}
 
-			// Handle tool use
-			if contentBlock.ToolUse != nil {
-				// Marshal the tool input to JSON string
-				var arguments string
-				if contentBlock.ToolUse.Input != nil {
-					if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
-						arguments = string(argBytes)
+				// Handle tool use
+				if contentBlock.ToolUse != nil {
+					// Marshal the tool input to JSON string
+					var arguments string
+					if contentBlock.ToolUse.Input != nil {
+						if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
+							arguments = string(argBytes)
+						} else {
+							arguments = fmt.Sprintf("%v", contentBlock.ToolUse.Input)
+						}
 					} else {
 						arguments = "{}"
 					}
-				} else {
-					arguments = "{}"
+
+					// Create copies of the values to avoid range loop variable capture
+					toolUseID := contentBlock.ToolUse.ToolUseID
+					toolUseName := contentBlock.ToolUse.Name
+
+					toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+						Type: schemas.Ptr("function"),
+						ID:   &toolUseID,
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      &toolUseName,
+							Arguments: arguments,
+						},
+					})
 				}
-
-				// Create copies of the values to avoid range loop variable capture
-				toolUseID := contentBlock.ToolUse.ToolUseID
-				toolUseName := contentBlock.ToolUse.Name
-
-				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-					Type: schemas.Ptr("function"),
-					ID:   &toolUseID,
-					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name:      &toolUseName,
-						Arguments: arguments,
-					},
-				})
 			}
 		}
+	}
+
+	// Create the message content
+	messageContent := schemas.ChatMessageContent{
+		ContentStr:    contentStr,
+		ContentBlocks: contentBlocks,
 	}
 
 	// Create assistant message if we have tool calls
@@ -96,12 +108,6 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse() (*schemas.Bifro
 		assistantMessage = &schemas.ChatAssistantMessage{
 			ToolCalls: toolCalls,
 		}
-	}
-
-	// Create the message content
-	messageContent := schemas.ChatMessageContent{}
-	if len(contentBlocks) > 0 {
-		messageContent.ContentBlocks = contentBlocks
 	}
 
 	// Create the response choice
@@ -115,7 +121,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse() (*schemas.Bifro
 					ChatAssistantMessage: assistantMessage,
 				},
 			},
-			FinishReason: schemas.Ptr(schemas.MapProviderFinishReasonToBifrost(response.StopReason, schemas.Bedrock)),
+			FinishReason: schemas.Ptr(anthropic.ConvertAnthropicFinishReasonToBifrost(anthropic.AnthropicStopReason(response.StopReason))),
 		},
 	}
 	var usage *schemas.BifrostLLMUsage

@@ -105,15 +105,12 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
 				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
 					thinking := &CohereThinking{}
-
 					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
 						thinking.Type = CohereThinkingType(typeStr)
 					}
-
 					if tokenBudget, ok := schemas.SafeExtractIntPointer(thinkingMap["token_budget"]); ok {
 						thinking.TokenBudget = tokenBudget
 					}
-
 					cohereReq.Thinking = thinking
 				}
 			}
@@ -206,45 +203,49 @@ func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChat
 		},
 	}
 
+	var content *string
+	var contentBlocks []schemas.ChatContentBlock
+	var toolCalls []schemas.ChatAssistantMessageToolCall
+
 	// Convert message content
 	if response.Message != nil {
 		if response.Message.Content != nil {
-			if response.Message.Content.IsString() {
-				content := response.Message.Content.GetString()
-				bifrostResponse.Choices[0].ChatNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{
-					ContentStr: content,
+			if response.Message.Content.IsString() ||
+				(response.Message.Content.IsBlocks() &&
+					len(response.Message.Content.GetBlocks()) == 1 &&
+					response.Message.Content.GetBlocks()[0].Type == CohereContentBlockTypeText) {
+				if response.Message.Content.IsString() {
+					content = response.Message.Content.GetString()
+				} else {
+					content = response.Message.Content.GetBlocks()[0].Text
 				}
 			} else if response.Message.Content.IsBlocks() {
-				blocks := response.Message.Content.GetBlocks()
-				if blocks != nil {
-					var contentBlocks []schemas.ChatContentBlock
-					for _, block := range blocks {
-						if block.Type == CohereContentBlockTypeText && block.Text != nil {
-							contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-								Type: schemas.ChatContentBlockTypeText,
-								Text: block.Text,
-							})
-						} else if block.Type == CohereContentBlockTypeImage && block.ImageURL != nil {
-							contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-								Type: schemas.ChatContentBlockTypeImage,
-								ImageURLStruct: &schemas.ChatInputImage{
-									URL: block.ImageURL.URL,
-								},
-							})
-						}
-					}
-					if len(contentBlocks) > 0 {
-						bifrostResponse.Choices[0].ChatNonStreamResponseChoice.Message.Content = &schemas.ChatMessageContent{
-							ContentBlocks: contentBlocks,
-						}
+				for _, block := range response.Message.Content.GetBlocks() {
+					if block.Type == CohereContentBlockTypeText && block.Text != nil {
+						contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+							Type: schemas.ChatContentBlockTypeText,
+							Text: block.Text,
+						})
+					} else if block.Type == CohereContentBlockTypeImage && block.ImageURL != nil {
+						contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: block.ImageURL.URL,
+							},
+						})
 					}
 				}
 			}
 		}
 
+		// Create the message content
+		messageContent := &schemas.ChatMessageContent{
+			ContentStr:    content,
+			ContentBlocks: contentBlocks,
+		}
+
 		// Convert tool calls
 		if response.Message.ToolCalls != nil {
-			var toolCalls []schemas.ChatAssistantMessageToolCall
 			for _, toolCall := range response.Message.ToolCalls {
 				// Check if Function is nil to avoid nil pointer dereference
 				if toolCall.Function == nil {
@@ -275,16 +276,27 @@ func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChat
 				}
 				toolCalls = append(toolCalls, bifrostToolCall)
 			}
-			bifrostResponse.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+		}
+
+		// Create assistant message if we have tool calls
+		var assistantMessage *schemas.ChatAssistantMessage
+		if len(toolCalls) > 0 {
+			assistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls: toolCalls,
 			}
+		}
+
+		bifrostResponse.Choices[0].ChatNonStreamResponseChoice.Message = &schemas.ChatMessage{
+			Role:                 schemas.ChatMessageRoleAssistant,
+			Content:              messageContent,
+			ChatAssistantMessage: assistantMessage,
 		}
 	}
 
 	// Convert finish reason
 	if response.FinishReason != nil {
-		finishReason := string(*response.FinishReason)
-		bifrostResponse.Choices[0].FinishReason = &finishReason
+		finishReason := ConvertCohereFinishReasonToBifrost(*response.FinishReason)
+		bifrostResponse.Choices[0].FinishReason = schemas.Ptr(finishReason)
 	}
 
 	// Convert usage information

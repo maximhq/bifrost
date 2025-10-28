@@ -267,44 +267,56 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 	// Collect all content and tool calls into a single message
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	var contentBlocks []schemas.ChatContentBlock
+	var contentStr *string
 
 	// Process content and tool calls
 	if response.Content != nil {
-		for _, c := range response.Content {
-			switch c.Type {
-			case AnthropicContentBlockTypeText:
-				if c.Text != nil {
-					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-						Type: schemas.ChatContentBlockTypeText,
-						Text: c.Text,
-					})
-				}
-			case AnthropicContentBlockTypeToolUse:
-				if c.ID != nil && c.Name != nil {
-					function := schemas.ChatAssistantMessageToolCallFunction{
-						Name: c.Name,
+		if len(response.Content) == 1 && response.Content[0].Type == AnthropicContentBlockTypeText {
+			contentStr = response.Content[0].Text
+		} else {
+			for _, c := range response.Content {
+				switch c.Type {
+				case AnthropicContentBlockTypeText:
+					if c.Text != nil {
+						contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+							Type: schemas.ChatContentBlockTypeText,
+							Text: c.Text,
+						})
 					}
-
-					// Marshal the input to JSON string
-					if c.Input != nil {
-						args, err := json.Marshal(c.Input)
-						if err != nil {
-							function.Arguments = fmt.Sprintf("%v", c.Input)
-						} else {
-							function.Arguments = string(args)
+				case AnthropicContentBlockTypeToolUse:
+					if c.ID != nil && c.Name != nil {
+						function := schemas.ChatAssistantMessageToolCallFunction{
+							Name: c.Name,
 						}
-					} else {
-						function.Arguments = "{}"
-					}
 
-					toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-						Type:     schemas.Ptr(string(schemas.ChatToolTypeFunction)),
-						ID:       c.ID,
-						Function: function,
-					})
+						// Marshal the input to JSON string
+						if c.Input != nil {
+							args, err := json.Marshal(c.Input)
+							if err != nil {
+								function.Arguments = fmt.Sprintf("%v", c.Input)
+							} else {
+								function.Arguments = string(args)
+							}
+						} else {
+							function.Arguments = "{}"
+						}
+
+						toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+							Type:     schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							ID:       c.ID,
+							Function: function,
+						})
+					}
 				}
 			}
 		}
+	}
+
+	// Create a single choice with the collected content
+	// Create message content
+	messageContent := schemas.ChatMessageContent{
+		ContentStr:    contentStr,
+		ContentBlocks: contentBlocks,
 	}
 
 	// Create the assistant message
@@ -315,12 +327,6 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 		assistantMessage = &schemas.ChatAssistantMessage{
 			ToolCalls: toolCalls,
 		}
-	}
-
-	// Create a single choice with the collected content
-	// Create message content
-	messageContent := schemas.ChatMessageContent{
-		ContentBlocks: contentBlocks,
 	}
 
 	// Create message
@@ -338,8 +344,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 			StopString: response.StopSequence,
 		},
 		FinishReason: func() *string {
-			if response.StopReason != nil && *response.StopReason != "" {
-				mapped := schemas.MapProviderFinishReasonToBifrost(*response.StopReason, schemas.Anthropic)
+			if response.StopReason != "" {
+				mapped := ConvertAnthropicFinishReasonToBifrost(response.StopReason)
 				return &mapped
 			}
 			return nil
@@ -630,8 +636,7 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostChatResponse)
 		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
 
 		if choice.FinishReason != nil {
-			mappedReason := schemas.MapBifrostFinishReasonToProvider(*choice.FinishReason, schemas.Anthropic)
-			anthropicResp.StopReason = &mappedReason
+			anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*choice.FinishReason)
 		}
 		if choice.StopString != nil {
 			anthropicResp.StopSequence = choice.StopString
@@ -891,7 +896,7 @@ func ToAnthropicChatCompletionStreamResponse(bifrostResp *schemas.BifrostChatRes
 				}
 			} else if choice.FinishReason != nil && *choice.FinishReason != "" {
 				// Handle finish reason - map back to Anthropic format
-				stopReason := schemas.MapBifrostFinishReasonToProvider(*choice.FinishReason, schemas.Anthropic)
+				stopReason := ConvertBifrostFinishReasonToAnthropic(*choice.FinishReason)
 				streamResp.Type = "message_delta"
 				streamResp.Delta = &AnthropicStreamDelta{
 					Type:       "message_delta",

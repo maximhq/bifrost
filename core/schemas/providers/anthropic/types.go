@@ -190,6 +190,18 @@ type AnthropicToolContent struct {
 
 // ==================== RESPONSE TYPES ====================
 
+type AnthropicStopReason string
+
+const (
+	AnthropicStopReasonEndTurn                    AnthropicStopReason = "end_turn"
+	AnthropicStopReasonMaxTokens                  AnthropicStopReason = "max_tokens"
+	AnthropicStopReasonStopSequence               AnthropicStopReason = "stop_sequence"
+	AnthropicStopReasonToolUse                    AnthropicStopReason = "tool_use"
+	AnthropicStopReasonPauseTurn                  AnthropicStopReason = "pause_turn"
+	AnthropicStopReasonRefusal                    AnthropicStopReason = "refusal"
+	AnthropicStopReasonModelContextWindowExceeded AnthropicStopReason = "model_context_window_exceeded"
+)
+
 // AnthropicMessageResponse represents an Anthropic messages API response
 type AnthropicMessageResponse struct {
 	ID           string                  `json:"id"`
@@ -197,7 +209,7 @@ type AnthropicMessageResponse struct {
 	Role         string                  `json:"role"`
 	Content      []AnthropicContentBlock `json:"content"`
 	Model        string                  `json:"model"`
-	StopReason   *string                 `json:"stop_reason,omitempty"`
+	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 }
@@ -265,7 +277,7 @@ type AnthropicStreamDelta struct {
 	PartialJSON  *string                  `json:"partial_json,omitempty"`
 	Thinking     *string                  `json:"thinking,omitempty"`
 	Signature    *string                  `json:"signature,omitempty"`
-	StopReason   *string                  `json:"stop_reason,omitempty"`
+	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
 	StopSequence *string                  `json:"stop_sequence,omitempty"`
 }
 
@@ -280,9 +292,9 @@ type AnthropicModel struct {
 
 type AnthropicListModelsResponse struct {
 	Data    []AnthropicModel `json:"data"`
-	FirstID *string           `json:"first_id,omitempty"`
+	FirstID *string          `json:"first_id,omitempty"`
 	HasMore bool             `json:"has_more"`
-	LastID  *string           `json:"last_id,omitempty"`
+	LastID  *string          `json:"last_id,omitempty"`
 }
 
 // ==================== ERROR TYPES ====================

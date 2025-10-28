@@ -38,6 +38,9 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 	if request.StopSequences != nil {
 		params.ExtraParams["stop"] = request.StopSequences
 	}
+	if request.Thinking != nil {
+		params.ExtraParams["thinking"] = request.Thinking
+	}
 	bifrostReq.Params = params
 
 	// Convert messages directly to ChatMessage format
@@ -140,17 +143,9 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 						anthropicThinking.Type = thinkingType
 					}
 					// Handle budget_tokens - JSON numbers can be float64 or int
-					if budgetTokensVal, exists := thinkingMap["budget_tokens"]; exists && budgetTokensVal != nil {
-						switch v := budgetTokensVal.(type) {
-						case float64:
-							budgetInt := int(v)
-							anthropicThinking.BudgetTokens = &budgetInt
-						case int:
-							anthropicThinking.BudgetTokens = &v
-						case int64:
-							budgetInt := int(v)
-							anthropicThinking.BudgetTokens = &budgetInt
-						}
+					budgetTokens, ok := schemas.SafeExtractInt(thinkingMap["budget_tokens"])
+					if ok {
+						anthropicThinking.BudgetTokens = &budgetTokens
 					}
 					anthropicReq.Thinking = anthropicThinking
 				}
@@ -266,14 +261,12 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 	}
 
 	// Set default stop reason - could be enhanced based on additional context
-	stopReason := "end_turn"
-	anthropicResp.StopReason = &stopReason
+	anthropicResp.StopReason = AnthropicStopReasonEndTurn
 
 	// Check if there are tool calls to set appropriate stop reason
 	for _, block := range contentBlocks {
 		if block.Type == AnthropicContentBlockTypeToolUse {
-			toolStopReason := "tool_use"
-			anthropicResp.StopReason = &toolStopReason
+			anthropicResp.StopReason = AnthropicStopReasonToolUse
 			break
 		}
 	}

@@ -6,6 +6,39 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+var (
+	// Maps provider-specific finish reasons to Bifrost format
+	anthropicFinishReasonToBifrost = map[AnthropicStopReason]string{
+		AnthropicStopReasonEndTurn:      "stop",
+		AnthropicStopReasonMaxTokens:    "length",
+		AnthropicStopReasonStopSequence: "stop",
+		AnthropicStopReasonToolUse:      "tool_calls",
+	}
+
+	// Maps Bifrost finish reasons to provider-specific format
+	bifrostToAnthropicFinishReason = map[string]AnthropicStopReason{
+		"stop":       AnthropicStopReasonEndTurn, // canonical default
+		"length":     AnthropicStopReasonMaxTokens,
+		"tool_calls": AnthropicStopReasonToolUse,
+	}
+)
+
+// ConvertAnthropicFinishReasonToBifrost converts provider finish reasons to Bifrost format
+func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) string {
+	if bifrostReason, ok := anthropicFinishReasonToBifrost[providerReason]; ok {
+		return bifrostReason
+	}
+	return string(providerReason)
+}
+
+// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format
+func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopReason {
+	if providerReason, ok := bifrostToAnthropicFinishReason[bifrostReason]; ok {
+		return providerReason
+	}
+	return AnthropicStopReason(bifrostReason)
+}
+
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format
 // Uses the same pattern as the original buildAnthropicImageSourceMap function
 func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicContentBlock {

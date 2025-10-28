@@ -538,9 +538,17 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 
 		// Convert content (skip for refusal messages since refusal is already extracted)
 		if rm.Content != nil && (rm.Type == nil || *rm.Type != ResponsesMessageTypeRefusal) {
-			if rm.Content.ContentStr != nil {
-				cm.Content = &ChatMessageContent{
-					ContentStr: rm.Content.ContentStr,
+			if rm.Content.ContentStr != nil ||
+				(len(rm.Content.ContentBlocks) == 1 &&
+					(rm.Content.ContentBlocks[0].Type == ResponsesInputMessageContentBlockTypeText || rm.Content.ContentBlocks[0].Type == ResponsesOutputMessageContentTypeText)) {
+				if rm.Content.ContentStr != nil {
+					cm.Content = &ChatMessageContent{
+						ContentStr: rm.Content.ContentStr,
+					}
+				} else {
+					cm.Content = &ChatMessageContent{
+						ContentStr: rm.Content.ContentBlocks[0].Text,
+					}
 				}
 			} else if rm.Content.ContentBlocks != nil {
 				chatBlocks := make([]ChatContentBlock, len(rm.Content.ContentBlocks))

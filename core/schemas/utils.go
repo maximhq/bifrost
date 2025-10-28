@@ -33,62 +33,6 @@ func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvide
 	return defaultProvider, model
 }
 
-// Shared finish reason mappings for Anthropic-compatible providers (Anthropic, Bedrock)
-var (
-	// Maps provider-specific finish reasons to Bifrost format
-	anthropicFinishReasonToBifrost = map[string]string{
-		"end_turn":      "stop",
-		"max_tokens":    "length",
-		"stop_sequence": "stop",
-		"tool_use":      "tool_calls",
-		"content_filtered": "content_filter",
-	}
-
-	// Maps Bifrost finish reasons to provider-specific format
-	bifrostToAnthropicFinishReason = map[string]string{
-		"stop":       "end_turn", // canonical default
-		"length":     "max_tokens",
-		"tool_calls": "tool_use",
-		"content_filter": "content_filtered",
-	}
-)
-
-// ConvertAnthropicFinishReasonToBifrost converts provider finish reasons to Bifrost format
-func ConvertAnthropicFinishReasonToBifrost(providerReason string) string {
-	if bifrostReason, ok := anthropicFinishReasonToBifrost[providerReason]; ok {
-		return bifrostReason
-	}
-	return providerReason
-}
-
-// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format
-func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) string {
-	if providerReason, ok := bifrostToAnthropicFinishReason[bifrostReason]; ok {
-		return providerReason
-	}
-	return bifrostReason
-}
-
-// MapProviderFinishReasonToBifrost maps provider finish reasons to bifrost finish reasons
-func MapProviderFinishReasonToBifrost(finishReason string, targetProvider ModelProvider) string {
-	switch targetProvider {
-	case Anthropic, Bedrock:
-		return ConvertAnthropicFinishReasonToBifrost(finishReason)
-	default:
-		return finishReason
-	}
-}
-
-// MapBifrostFinishReasonToProvider maps bifrost finish reasons to provider finish reasons
-func MapBifrostFinishReasonToProvider(bifrostReason string, targetProvider ModelProvider) string {
-	switch targetProvider {
-	case Anthropic, Bedrock:
-		return ConvertBifrostFinishReasonToAnthropic(bifrostReason)
-	default:
-		return bifrostReason
-	}
-}
-
 //* IMAGE UTILS *//
 
 // dataURIRegex is a precompiled regex for matching data URI format patterns.
