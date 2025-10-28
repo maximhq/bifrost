@@ -561,7 +561,7 @@ type ResponsesFileSearchToolCallResult struct {
 
 // ResponsesComputerToolCall represents a computer tool call
 type ResponsesComputerToolCall struct {
-	PendingSafetyChecks []ResponsesComputerToolCallPendingSafetyCheck `json:"pending_safety_checks"`
+	PendingSafetyChecks []ResponsesComputerToolCallPendingSafetyCheck `json:"pending_safety_checks,omitempty"`
 }
 
 // ResponsesComputerToolCallPendingSafetyCheck represents a pending safety check
@@ -984,11 +984,26 @@ type ResponsesToolChoiceAllowedToolDef struct {
 // 7. TOOL CONFIGURATION STRUCTURES
 // =============================================================================
 
+type ResponsesToolType string
+
+const (
+	ResponsesToolTypeFunction           ResponsesToolType = "function"
+	ResponsesToolTypeFileSearch         ResponsesToolType = "file_search"
+	ResponsesToolTypeComputerUsePreview ResponsesToolType = "computer_use_preview"
+	ResponsesToolTypeWebSearch          ResponsesToolType = "web_search"
+	ResponsesToolTypeMCP                ResponsesToolType = "mcp"
+	ResponsesToolTypeCodeInterpreter    ResponsesToolType = "code_interpreter"
+	ResponsesToolTypeImageGeneration    ResponsesToolType = "image_generation"
+	ResponsesToolTypeLocalShell         ResponsesToolType = "local_shell"
+	ResponsesToolTypeCustom             ResponsesToolType = "custom"
+	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
+)
+
 // ResponsesTool represents a tool
 type ResponsesTool struct {
-	Type        string  `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11"
-	Name        *string `json:"name,omitempty"`        // Common name field (Function, Custom tools)
-	Description *string `json:"description,omitempty"` // Common description field (Function, Custom tools)
+	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11"
+	Name        *string           `json:"name,omitempty"`        // Common name field (Function, Custom tools)
+	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
 
 	*ResponsesToolFunction
 	*ResponsesToolFileSearch
@@ -1204,6 +1219,54 @@ type ResponsesToolMCPAllowedToolsApprovalSetting struct {
 	Setting *string                                     `json:",omitempty"` // "always" | "never"
 	Always  *ResponsesToolMCPAllowedToolsApprovalFilter `json:"always,omitempty"`
 	Never   *ResponsesToolMCPAllowedToolsApprovalFilter `json:"never,omitempty"`
+}
+
+// MarshalJSON implements custom JSON marshalling for ResponsesToolMCPAllowedToolsApprovalSetting
+func (as ResponsesToolMCPAllowedToolsApprovalSetting) MarshalJSON() ([]byte, error) {
+	// Validation: ensure only one representation is set
+	if as.Setting != nil && (as.Always != nil || as.Never != nil) {
+		return nil, fmt.Errorf("only one of 'Setting' or ('Always'/'Never') can be set")
+	}
+
+	if as.Setting != nil {
+		return sonic.Marshal(*as.Setting)
+	}
+	if as.Always != nil || as.Never != nil {
+		// Marshal as an object with always/never fields
+		obj := make(map[string]interface{})
+		if as.Always != nil {
+			obj["always"] = as.Always
+		}
+		if as.Never != nil {
+			obj["never"] = as.Never
+		}
+		return sonic.Marshal(obj)
+	}
+	// If all are nil, return null
+	return sonic.Marshal(nil)
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for ResponsesToolMCPAllowedToolsApprovalSetting
+func (as *ResponsesToolMCPAllowedToolsApprovalSetting) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var settingStr string
+	if err := sonic.Unmarshal(data, &settingStr); err == nil {
+		as.Setting = &settingStr
+		return nil
+	}
+
+	// Try to unmarshal as an object with always/never fields
+	var obj struct {
+		Always *ResponsesToolMCPAllowedToolsApprovalFilter `json:"always,omitempty"`
+		Never  *ResponsesToolMCPAllowedToolsApprovalFilter `json:"never,omitempty"`
+	}
+	if err := sonic.Unmarshal(data, &obj); err == nil {
+		as.Always = obj.Always
+		as.Never = obj.Never
+		return nil
+	}
+
+	return fmt.Errorf("require_approval field is neither a string nor an object with always/never filters")
 }
 
 // ResponsesToolMCPAllowedToolsApprovalFilter - Filter for approval settings

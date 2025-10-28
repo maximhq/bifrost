@@ -27,7 +27,7 @@ func (ct *ChatTool) ToResponsesTool() *ResponsesTool {
 	}
 
 	rt := &ResponsesTool{
-		Type: string(ct.Type),
+		Type: ResponsesToolType(ct.Type),
 	}
 
 	// Convert function tools

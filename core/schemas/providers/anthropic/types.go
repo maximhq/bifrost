@@ -45,6 +45,7 @@ type AnthropicMessageRequest struct {
 	Stream        *bool                `json:"stream,omitempty"`
 	Tools         []AnthropicTool      `json:"tools,omitempty"`
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
+	MCPServers    []AnthropicMCPServer `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
 }
 
@@ -118,24 +119,29 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText       AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage      AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeToolUse    AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeToolResult AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeThinking   AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeText            AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage           AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeToolUse         AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse   AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult      AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchResult AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeMCPToolUse      AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult   AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking        AnthropicContentBlockType = "thinking"
 )
 
 // AnthropicContentBlock represents content in Anthropic message format
 type AnthropicContentBlock struct {
-	Type      AnthropicContentBlockType `json:"type"`                  // "text", "image", "tool_use", "tool_result", "thinking"
-	Text      *string                   `json:"text,omitempty"`        // For text content
-	Thinking  *string                   `json:"thinking,omitempty"`    // For thinking content
-	ToolUseID *string                   `json:"tool_use_id,omitempty"` // For tool_result content
-	ID        *string                   `json:"id,omitempty"`          // For tool_use content
-	Name      *string                   `json:"name,omitempty"`        // For tool_use content
-	Input     any                       `json:"input,omitempty"`       // For tool_use content
-	Content   *AnthropicContent         `json:"content,omitempty"`     // For tool_result content
-	Source    *AnthropicImageSource     `json:"source,omitempty"`      // For image content
+	Type       AnthropicContentBlockType `json:"type"`                  // "text", "image", "tool_use", "tool_result", "thinking"
+	Text       *string                   `json:"text,omitempty"`        // For text content
+	Thinking   *string                   `json:"thinking,omitempty"`    // For thinking content
+	ToolUseID  *string                   `json:"tool_use_id,omitempty"` // For tool_result content
+	ID         *string                   `json:"id,omitempty"`          // For tool_use content
+	Name       *string                   `json:"name,omitempty"`        // For tool_use content
+	Input      any                       `json:"input,omitempty"`       // For tool_use content
+	ServerName *string                   `json:"server_name,omitempty"` // For mcp_tool_use content
+	Content    *AnthropicContent         `json:"content,omitempty"`     // For tool_result content
+	Source     *AnthropicImageSource     `json:"source,omitempty"`      // For image content
 }
 
 // AnthropicImageSource represents image source in Anthropic format
@@ -158,18 +164,52 @@ type AnthropicToolType string
 const (
 	AnthropicToolTypeCustom             AnthropicToolType = "custom"
 	AnthropicToolTypeBash20250124       AnthropicToolType = "bash_20250124"
+	AnthropicToolTypeComputer20250124   AnthropicToolType = "computer_20250124"
+	AnthropicToolTypeCodeExecution      AnthropicToolType = "code_execution_20250825"
 	AnthropicToolTypeTextEditor20250124 AnthropicToolType = "text_editor_20250124"
 	AnthropicToolTypeTextEditor20250429 AnthropicToolType = "text_editor_20250429"
 	AnthropicToolTypeTextEditor20250728 AnthropicToolType = "text_editor_20250728"
 	AnthropicToolTypeWebSearch20250305  AnthropicToolType = "web_search_20250305"
 )
 
+type AnthropicToolName string
+
+const (
+	AnthropicToolNameComputer   AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch  AnthropicToolName = "web_search"
+	AnthropicToolNameBash       AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor AnthropicToolName = "str_replace_based_edit_tool"
+)
+
+type AnthropicToolComputerUse struct {
+	DisplayWidthPx  *int `json:"display_width_px,omitempty"`
+	DisplayHeightPx *int `json:"display_height_px,omitempty"`
+	DisplayNumber   *int `json:"display_number,omitempty"`
+}
+
+type AnthropicToolWebSearchUserLocation struct {
+	Type     *string `json:"type,omitempty"` // "approximate"
+	City     *string `json:"city,omitempty"`
+	Country  *string `json:"country,omitempty"`
+	Timezone *string `json:"timezone,omitempty"`
+}
+
+type AnthropicToolWebSearch struct {
+	MaxUses        *int                                `json:"max_uses,omitempty"`
+	AllowedDomains []string                            `json:"allowed_domains,omitempty"`
+	BlockedDomains []string                            `json:"blocked_domains,omitempty"`
+	UserLocation   *AnthropicToolWebSearchUserLocation `json:"user_location,omitempty"`
+}
+
 // AnthropicTool represents a tool in Anthropic format
 type AnthropicTool struct {
 	Name        string                          `json:"name"`
 	Type        *AnthropicToolType              `json:"type,omitempty"`
-	Description string                          `json:"description"`
+	Description *string                         `json:"description,omitempty"`
 	InputSchema *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
+
+	*AnthropicToolComputerUse
+	*AnthropicToolWebSearch
 }
 
 // AnthropicToolChoice represents tool choice in Anthropic format
@@ -186,6 +226,19 @@ type AnthropicToolContent struct {
 	URL              string  `json:"url,omitempty"`
 	EncryptedContent string  `json:"encrypted_content,omitempty"`
 	PageAge          *string `json:"page_age,omitempty"`
+}
+
+type AnthropicMCPServer struct {
+	Type               string                  `json:"type"`
+	URL                string                  `json:"url"`
+	Name               string                  `json:"name"`
+	AuthorizationToken *string                 `json:"authorization_token,omitempty"`
+	ToolConfiguration  *AnthropicMCPToolConfig `json:"tool_configuration,omitempty"`
+}
+
+type AnthropicMCPToolConfig struct {
+	Enabled      bool     `json:"enabled"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
 }
 
 // ==================== RESPONSE TYPES ====================

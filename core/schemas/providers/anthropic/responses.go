@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -41,6 +42,17 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 	if request.Thinking != nil {
 		params.ExtraParams["thinking"] = request.Thinking
 	}
+
+	// Add trucation parameter if computer tool is being used
+	if provider == schemas.OpenAI && request.Tools != nil {
+		for _, tool := range request.Tools {
+			if tool.Type != nil && *tool.Type == AnthropicToolTypeComputer20250124 {
+				params.Truncation = schemas.Ptr("auto")
+				break
+			}
+		}
+	}
+
 	bifrostReq.Params = params
 
 	// Convert messages directly to ChatMessage format
@@ -91,6 +103,19 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 		}
 		if len(bifrostTools) > 0 {
 			bifrostReq.Params.Tools = bifrostTools
+		}
+	}
+
+	if request.MCPServers != nil {
+		var bifrostMCPTools []schemas.ResponsesTool
+		for _, mcpServer := range request.MCPServers {
+			bifrostMCPTool := convertAnthropicMCPServerToBifrostTool(&mcpServer)
+			if bifrostMCPTool != nil {
+				bifrostMCPTools = append(bifrostMCPTools, *bifrostMCPTool)
+			}
+		}
+		if len(bifrostMCPTools) > 0 {
+			bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostMCPTools...)
 		}
 	}
 
@@ -155,7 +180,16 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
 			anthropicTools := []AnthropicTool{}
+			mcpServers := []AnthropicMCPServer{}
 			for _, tool := range bifrostReq.Params.Tools {
+				// handle mcp tool differently
+				if tool.Type == schemas.ResponsesToolTypeMCP && tool.ResponsesToolMCP != nil {
+					mcpServer := convertBifrostMCPToolToAnthropicServer(&tool)
+					if mcpServer != nil {
+						mcpServers = append(mcpServers, *mcpServer)
+					}
+					continue // Skip converting MCP tools to anthropicTools since they're handled separately
+				}
 				anthropicTool := convertBifrostToolToAnthropic(&tool)
 				if anthropicTool != nil {
 					anthropicTools = append(anthropicTools, *anthropicTool)
@@ -163,6 +197,9 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 			}
 			if len(anthropicTools) > 0 {
 				anthropicReq.Tools = anthropicTools
+			}
+			if len(mcpServers) > 0 {
+				anthropicReq.MCPServers = mcpServers
 			}
 		}
 
@@ -332,6 +369,33 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 					OutputIndex:    schemas.Ptr(0),
 					Item:           item,
 				}, nil, false
+			case AnthropicContentBlockTypeMCPToolUse:
+				// This is an MCP tool call starting - create MCP call message
+				item := &schemas.ResponsesMessage{
+					ID:   chunk.ContentBlock.ID,
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Name:      chunk.ContentBlock.Name,
+						Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
+					},
+				}
+
+				// Set server name if present
+				if chunk.ContentBlock.ServerName != nil {
+					item.ResponsesToolMessage.ResponsesMCPToolCall = &schemas.ResponsesMCPToolCall{
+						ServerLabel: *chunk.ContentBlock.ServerName,
+					}
+				}
+
+				// First emit output_item.added
+				outputItemAddedResp := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					Item:           item,
+				}
+
+				return outputItemAddedResp, nil, false
 			}
 
 			if part != nil {
@@ -542,6 +606,42 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
 
+	case schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta:
+		// MCP call arguments delta - convert to content_block_delta with input_json
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		if bifrostResp.ContentIndex != nil {
+			streamResp.Index = bifrostResp.ContentIndex
+		} else if bifrostResp.OutputIndex != nil {
+			streamResp.Index = bifrostResp.OutputIndex
+		}
+		if bifrostResp.Delta != nil {
+			streamResp.Delta = &AnthropicStreamDelta{
+				Type:        AnthropicStreamDeltaTypeInputJSON,
+				PartialJSON: bifrostResp.Delta,
+			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeMCPCallCompleted:
+		// MCP call completed - emit content_block_stop
+		streamResp.Type = AnthropicStreamEventTypeContentBlockStop
+		if bifrostResp.ContentIndex != nil {
+			streamResp.Index = bifrostResp.ContentIndex
+		} else if bifrostResp.OutputIndex != nil {
+			streamResp.Index = bifrostResp.OutputIndex
+		}
+
+	case schemas.ResponsesStreamResponseTypeMCPCallFailed:
+		// MCP call failed - emit error event
+		streamResp.Type = AnthropicStreamEventTypeError
+		errorMsg := "MCP call failed"
+		if bifrostResp.Message != nil {
+			errorMsg = *bifrostResp.Message
+		}
+		streamResp.Error = &AnthropicStreamError{
+			Type:    "error",
+			Message: errorMsg,
+		}
+
 	case schemas.ResponsesStreamResponseTypeError:
 		streamResp.Type = AnthropicStreamEventTypeError
 		if bifrostResp.Message != nil {
@@ -637,10 +737,22 @@ func convertAnthropicMessageToBifrostResponsesMessages(msg *AnthropicMessage) []
 						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 						Status: schemas.Ptr("completed"),
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
-							CallID:    block.ID,
-							Name:      block.Name,
-							Arguments: schemas.Ptr(schemas.JsonifyInput(block.Input)),
+							CallID: block.ID,
+							Name:   block.Name,
 						},
+					}
+
+					// here need to check for computer tool use
+					if block.Name != nil && *block.Name == string(AnthropicToolNameComputer) {
+						bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeComputerCall)
+						bifrostMsg.ResponsesToolMessage.Name = nil
+						if inputMap, ok := block.Input.(map[string]interface{}); ok {
+							bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+								ResponsesComputerToolCallAction: convertAnthropicToResponsesComputerAction(inputMap),
+							}
+						}
+					} else {
+						bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(schemas.JsonifyInput(block.Input))
 					}
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
 				}
@@ -682,6 +794,58 @@ func convertAnthropicMessageToBifrostResponsesMessages(msg *AnthropicMessage) []
 						bifrostMessages = append(bifrostMessages, bifrostMsg)
 					}
 				}
+			case AnthropicContentBlockTypeMCPToolUse:
+				// Convert MCP tool use to MCP call (assistant's tool call)
+				if block.ID != nil && block.Name != nil {
+					bifrostMsg := schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+						ID:   block.ID,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							Name:      block.Name,
+							Arguments: schemas.Ptr(schemas.JsonifyInput(block.Input)),
+						},
+					}
+					if block.ServerName != nil {
+						bifrostMsg.ResponsesToolMessage.ResponsesMCPToolCall = &schemas.ResponsesMCPToolCall{
+							ServerLabel: *block.ServerName,
+						}
+					}
+					bifrostMessages = append(bifrostMessages, bifrostMsg)
+				}
+			case AnthropicContentBlockTypeMCPToolResult:
+				// Convert MCP tool result to MCP call (user's tool result)
+				if block.ToolUseID != nil {
+					bifrostMsg := schemas.ResponsesMessage{
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+						Status: schemas.Ptr("completed"),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: block.ToolUseID,
+						},
+					}
+					// Initialize the nested struct before any writes
+					bifrostMsg.ResponsesToolMessage.Output = &schemas.ResponsesToolMessageOutputStruct{}
+
+					if block.Content != nil {
+						if block.Content.ContentStr != nil {
+							bifrostMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr = block.Content.ContentStr
+						} else if block.Content.ContentBlocks != nil {
+							var toolMsgContentBlocks []schemas.ResponsesMessageContentBlock
+							for _, contentBlock := range block.Content.ContentBlocks {
+								if contentBlock.Type == AnthropicContentBlockTypeText {
+									if contentBlock.Text != nil {
+										toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
+											Type: schemas.ResponsesInputMessageContentBlockTypeText,
+											Text: contentBlock.Text,
+										})
+									}
+								}
+							}
+							bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
+						}
+					}
+					bifrostMessages = append(bifrostMessages, bifrostMsg)
+				}
+
 			}
 		}
 	}
@@ -695,13 +859,82 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		return nil
 	}
 
+	// Handle special tool types first
+	if tool.Type != nil {
+		switch *tool.Type {
+		case AnthropicToolTypeComputer20250124:
+			bifrostTool := &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeComputerUsePreview,
+			}
+			if tool.AnthropicToolComputerUse != nil {
+				bifrostTool.ResponsesToolComputerUsePreview = &schemas.ResponsesToolComputerUsePreview{
+					Environment: "browser", // Default environment
+				}
+				if tool.AnthropicToolComputerUse.DisplayWidthPx != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.DisplayWidth = *tool.AnthropicToolComputerUse.DisplayWidthPx
+				}
+				if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
+				}
+			}
+			return bifrostTool
+
+		case AnthropicToolTypeWebSearch20250305:
+			bifrostTool := &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeWebSearch,
+				Name: &tool.Name,
+			}
+			if tool.AnthropicToolWebSearch != nil {
+				bifrostTool.ResponsesToolWebSearch = &schemas.ResponsesToolWebSearch{
+					Filters: &schemas.ResponsesToolWebSearchFilters{
+						AllowedDomains: tool.AnthropicToolWebSearch.AllowedDomains,
+					},
+				}
+				if tool.AnthropicToolWebSearch.UserLocation != nil {
+					bifrostTool.ResponsesToolWebSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{
+						Type:     tool.AnthropicToolWebSearch.UserLocation.Type,
+						City:     tool.AnthropicToolWebSearch.UserLocation.City,
+						Country:  tool.AnthropicToolWebSearch.UserLocation.Country,
+						Timezone: tool.AnthropicToolWebSearch.UserLocation.Timezone,
+					}
+				}
+			}
+			return bifrostTool
+
+		case AnthropicToolTypeBash20250124:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeLocalShell,
+			}
+
+		case AnthropicToolTypeTextEditor20250124:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124),
+				Name: &tool.Name,
+			}
+		case AnthropicToolTypeTextEditor20250429:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250429),
+				Name: &tool.Name,
+			}
+		case AnthropicToolTypeTextEditor20250728:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728),
+				Name: &tool.Name,
+			}
+		}
+	}
+
+	// Handle custom/default tool type (function)
 	bifrostTool := &schemas.ResponsesTool{
-		Type:        "function",
+		Type:        schemas.ResponsesToolTypeFunction,
 		Name:        &tool.Name,
-		Description: &tool.Description,
-		ResponsesToolFunction: &schemas.ResponsesToolFunction{
+		Description: tool.Description,
+	}
+
+	if tool.InputSchema != nil {
+		bifrostTool.ResponsesToolFunction = &schemas.ResponsesToolFunction{
 			Parameters: tool.InputSchema,
-		},
+		}
 	}
 
 	return bifrostTool
@@ -739,6 +972,68 @@ func convertAnthropicToolChoiceToBifrost(toolChoice *AnthropicToolChoice) *schem
 	return bifrostToolChoice
 }
 
+// flushPendingToolCalls is a helper that flushes accumulated tool calls into an assistant message
+func flushPendingToolCalls(
+	pendingToolCalls []AnthropicContentBlock,
+	currentAssistantMessage *AnthropicMessage,
+	anthropicMessages []AnthropicMessage,
+) ([]AnthropicContentBlock, *AnthropicMessage, []AnthropicMessage) {
+	if len(pendingToolCalls) > 0 && currentAssistantMessage != nil {
+		// Copy the slice to avoid aliasing issues
+		copied := make([]AnthropicContentBlock, len(pendingToolCalls))
+		copy(copied, pendingToolCalls)
+		currentAssistantMessage.Content = AnthropicContent{
+			ContentBlocks: copied,
+		}
+		anthropicMessages = append(anthropicMessages, *currentAssistantMessage)
+		// Return nil values to indicate flushed state
+		return nil, nil, anthropicMessages
+	}
+	// Return unchanged values if no flush was needed
+	return pendingToolCalls, currentAssistantMessage, anthropicMessages
+}
+
+// convertToolOutputToAnthropicContent converts tool output to Anthropic content format
+func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOutputStruct) *AnthropicContent {
+	if output == nil {
+		return nil
+	}
+
+	if output.ResponsesToolCallOutputStr != nil {
+		return &AnthropicContent{
+			ContentStr: output.ResponsesToolCallOutputStr,
+		}
+	}
+
+	if output.ResponsesFunctionToolCallOutputBlocks != nil {
+		var resultBlocks []AnthropicContentBlock
+		for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
+			if converted := convertContentBlockToAnthropic(block); converted != nil {
+				resultBlocks = append(resultBlocks, *converted)
+			}
+		}
+		if len(resultBlocks) > 0 {
+			return &AnthropicContent{
+				ContentBlocks: resultBlocks,
+			}
+		}
+	}
+
+	if output.ResponsesComputerToolCallOutput != nil && output.ResponsesComputerToolCallOutput.ImageURL != nil {
+		imgBlock := ConvertToAnthropicImageBlock(schemas.ChatContentBlock{
+			Type: schemas.ChatContentBlockTypeImage,
+			ImageURLStruct: &schemas.ChatInputImage{
+				URL: *output.ResponsesComputerToolCallOutput.ImageURL,
+			},
+		})
+		return &AnthropicContent{
+			ContentBlocks: []AnthropicContentBlock{imgBlock},
+		}
+	}
+
+	return nil
+}
+
 // Helper function to convert ResponsesInputItems back to AnthropicMessages
 func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMessage) ([]AnthropicMessage, *AnthropicContent) {
 	var anthropicMessages []AnthropicMessage
@@ -756,17 +1051,8 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 		switch msgType {
 		case schemas.ResponsesMessageTypeMessage:
 			// Flush any pending tool calls first
-			if len(pendingToolCalls) > 0 && currentAssistantMessage != nil {
-				// Copy the slice to avoid aliasing issues
-				copied := make([]AnthropicContentBlock, len(pendingToolCalls))
-				copy(copied, pendingToolCalls)
-				currentAssistantMessage.Content = AnthropicContent{
-					ContentBlocks: copied,
-				}
-				anthropicMessages = append(anthropicMessages, *currentAssistantMessage)
-				pendingToolCalls = nil
-				currentAssistantMessage = nil
-			}
+			pendingToolCalls, currentAssistantMessage, anthropicMessages = flushPendingToolCalls(
+				pendingToolCalls, currentAssistantMessage, anthropicMessages)
 
 			// Handle system messages separately
 			if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
@@ -776,12 +1062,7 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 							ContentStr: msg.Content.ContentStr,
 						}
 					} else if msg.Content.ContentBlocks != nil {
-						contentBlocks := []AnthropicContentBlock{}
-						for _, block := range msg.Content.ContentBlocks {
-							if anthropicBlock := convertContentBlockToAnthropic(block); anthropicBlock != nil {
-								contentBlocks = append(contentBlocks, *anthropicBlock)
-							}
-						}
+						contentBlocks := convertBifrostContentBlocksToAnthropic(msg.Content.ContentBlocks)
 						if len(contentBlocks) > 0 {
 							systemContent = &AnthropicContent{
 								ContentBlocks: contentBlocks,
@@ -816,12 +1097,7 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 						ContentStr: msg.Content.ContentStr,
 					}
 				} else if msg.Content.ContentBlocks != nil {
-					contentBlocks := []AnthropicContentBlock{}
-					for _, block := range msg.Content.ContentBlocks {
-						if anthropicBlock := convertContentBlockToAnthropic(block); anthropicBlock != nil {
-							contentBlocks = append(contentBlocks, *anthropicBlock)
-						}
-					}
+					contentBlocks := convertBifrostContentBlocksToAnthropic(msg.Content.ContentBlocks)
 					if len(contentBlocks) > 0 {
 						anthropicMsg.Content = AnthropicContent{
 							ContentBlocks: contentBlocks,
@@ -897,56 +1173,25 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
 			// Flush any pending tool calls first before processing tool results
-			if len(pendingToolCalls) > 0 && currentAssistantMessage != nil {
-				// Copy the slice to avoid aliasing issues
-				copied := make([]AnthropicContentBlock, len(pendingToolCalls))
-				copy(copied, pendingToolCalls)
-				currentAssistantMessage.Content = AnthropicContent{
-					ContentBlocks: copied,
-				}
-				anthropicMessages = append(anthropicMessages, *currentAssistantMessage)
-				pendingToolCalls = nil
-				currentAssistantMessage = nil
-			}
+			pendingToolCalls, currentAssistantMessage, anthropicMessages = flushPendingToolCalls(
+				pendingToolCalls, currentAssistantMessage, anthropicMessages)
 
 			// Handle tool call output - convert to user message with tool_result
 			if msg.ResponsesToolMessage != nil {
+				toolResultBlock := AnthropicContentBlock{
+					Type:      AnthropicContentBlockTypeToolResult,
+					ToolUseID: msg.ResponsesToolMessage.CallID,
+				}
+
+				if msg.ResponsesToolMessage.Output != nil {
+					toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+				}
+
 				toolResultMsg := AnthropicMessage{
 					Role: AnthropicMessageRoleUser,
-				}
-
-				toolResultBlock := AnthropicContentBlock{
-					Type: AnthropicContentBlockTypeToolResult,
-				}
-
-				if msg.ResponsesToolMessage.CallID != nil {
-					toolResultBlock.ToolUseID = msg.ResponsesToolMessage.CallID
-				}
-
-				// Convert tool output content
-				if msg.ResponsesToolMessage.Output != nil {
-					output := msg.ResponsesToolMessage.Output
-					if output.ResponsesToolCallOutputStr != nil {
-						toolResultBlock.Content = &AnthropicContent{
-							ContentStr: output.ResponsesToolCallOutputStr,
-						}
-					} else if output.ResponsesFunctionToolCallOutputBlocks != nil {
-						var resultContentBlocks []AnthropicContentBlock
-						for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
-							if convertedBlock := convertContentBlockToAnthropic(block); convertedBlock != nil {
-								resultContentBlocks = append(resultContentBlocks, *convertedBlock)
-							}
-						}
-						if len(resultContentBlocks) > 0 {
-							toolResultBlock.Content = &AnthropicContent{
-								ContentBlocks: resultContentBlocks,
-							}
-						}
-					}
-				}
-
-				toolResultMsg.Content = AnthropicContent{
-					ContentBlocks: []AnthropicContentBlock{toolResultBlock},
+					Content: AnthropicContent{
+						ContentBlocks: []AnthropicContentBlock{toolResultBlock},
+					},
 				}
 
 				anthropicMessages = append(anthropicMessages, toolResultMsg)
@@ -968,14 +1213,126 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 
 				anthropicMessages = append(anthropicMessages, referenceMsg)
 			}
+		case schemas.ResponsesMessageTypeComputerCall:
+			// Start accumulating tool calls for assistant message
+			if currentAssistantMessage == nil {
+				currentAssistantMessage = &AnthropicMessage{
+					Role: AnthropicMessageRoleAssistant,
+				}
+			}
+
+			if msg.ResponsesToolMessage != nil {
+				toolUseBlock := AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeToolUse,
+					Name: schemas.Ptr(string(AnthropicToolNameComputer)),
+				}
+				if msg.ResponsesToolMessage.CallID != nil {
+					toolUseBlock.ID = msg.ResponsesToolMessage.CallID
+				}
+				if msg.ResponsesToolMessage.Name != nil {
+					toolUseBlock.Name = msg.ResponsesToolMessage.Name
+				}
+
+				if msg.ResponsesToolMessage.Action != nil && msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
+					toolUseBlock.Input = convertResponsesToAnthropicComputerAction(msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
+				}
+
+				pendingToolCalls = append(pendingToolCalls, toolUseBlock)
+			}
+
+		case schemas.ResponsesMessageTypeMCPCall:
+			// Check if this is a tool use (from assistant) or tool result (from user)
+			// Tool use: has Name and Arguments but no Output
+			// Tool result: has CallID and Output
+			if msg.ResponsesToolMessage != nil {
+				// This is a tool use call (assistant calling a tool)
+				if msg.ResponsesToolMessage.Name != nil {
+					// Start accumulating MCP tool calls for assistant message
+					if currentAssistantMessage == nil {
+						currentAssistantMessage = &AnthropicMessage{
+							Role: AnthropicMessageRoleAssistant,
+						}
+					}
+
+					toolUseBlock := AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeMCPToolUse,
+					}
+
+					if msg.ID != nil {
+						toolUseBlock.ID = msg.ID
+					}
+					toolUseBlock.Name = msg.ResponsesToolMessage.Name
+
+					// Set server name if present
+					if msg.ResponsesToolMessage.ResponsesMCPToolCall != nil && msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel != "" {
+						toolUseBlock.ServerName = &msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+					}
+
+					// Parse arguments as JSON input
+					if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
+						toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+					}
+
+					pendingToolCalls = append(pendingToolCalls, toolUseBlock)
+				} else if msg.ResponsesToolMessage.CallID != nil {
+					// This is a tool result (user providing result of tool execution)
+					toolResultBlock := AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeMCPToolResult,
+						ID:   msg.ResponsesToolMessage.CallID,
+					}
+
+					if msg.ResponsesToolMessage.Output != nil {
+						toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+					}
+
+					toolResultMsg := AnthropicMessage{
+						Role: AnthropicMessageRoleUser,
+						Content: AnthropicContent{
+							ContentBlocks: []AnthropicContentBlock{toolResultBlock},
+						},
+					}
+
+					anthropicMessages = append(anthropicMessages, toolResultMsg)
+				}
+			}
+
+		case schemas.ResponsesMessageTypeMCPApprovalRequest:
+			// MCP approval request is OpenAI-specific for human-in-the-loop workflows
+			// Convert to Anthropic's mcp_tool_use format (same as regular MCP calls)
+			if currentAssistantMessage == nil {
+				currentAssistantMessage = &AnthropicMessage{
+					Role: AnthropicMessageRoleAssistant,
+				}
+			}
+
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
+				toolUseBlock := AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeMCPToolUse,
+				}
+
+				if msg.ID != nil {
+					toolUseBlock.ID = msg.ID
+				}
+				toolUseBlock.Name = msg.ResponsesToolMessage.Name
+
+				// Set server name if present
+				if msg.ResponsesToolMessage.ResponsesMCPToolCall != nil && msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel != "" {
+					toolUseBlock.ServerName = &msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+				}
+
+				// Parse arguments as JSON input
+				if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
+					toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+				}
+
+				pendingToolCalls = append(pendingToolCalls, toolUseBlock)
+			}
 
 		// Handle other tool call types that are not natively supported by Anthropic
 		case schemas.ResponsesMessageTypeFileSearchCall,
-			schemas.ResponsesMessageTypeComputerCall,
-			schemas.ResponsesMessageTypeWebSearchCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall,
+			schemas.ResponsesMessageTypeWebSearchCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
-			schemas.ResponsesMessageTypeMCPCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
 			// Convert unsupported tool calls to regular text messages
@@ -1001,8 +1358,33 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 				anthropicMessages = append(anthropicMessages, toolCallMsg)
 			}
 
-		case schemas.ResponsesMessageTypeComputerCallOutput,
-			schemas.ResponsesMessageTypeLocalShellCallOutput,
+		case schemas.ResponsesMessageTypeComputerCallOutput:
+			// Flush any pending tool calls first before processing tool results
+			pendingToolCalls, currentAssistantMessage, anthropicMessages = flushPendingToolCalls(
+				pendingToolCalls, currentAssistantMessage, anthropicMessages)
+
+			// Handle computer call output - convert to user message with tool_result
+			if msg.ResponsesToolMessage != nil {
+				toolResultBlock := AnthropicContentBlock{
+					Type:      AnthropicContentBlockTypeToolResult,
+					ToolUseID: msg.ResponsesToolMessage.CallID,
+				}
+
+				if msg.ResponsesToolMessage.Output != nil {
+					toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+				}
+
+				toolResultMsg := AnthropicMessage{
+					Role: AnthropicMessageRoleUser,
+					Content: AnthropicContent{
+						ContentBlocks: []AnthropicContentBlock{toolResultBlock},
+					},
+				}
+
+				anthropicMessages = append(anthropicMessages, toolResultMsg)
+			}
+
+		case schemas.ResponsesMessageTypeLocalShellCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			// Handle tool outputs as user messages
 			if msg.ResponsesToolMessage != nil {
@@ -1012,11 +1394,8 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 
 				var outputText string
 				// Try to extract output text based on tool type
-				switch msgType {
-				case schemas.ResponsesMessageTypeLocalShellCallOutput, schemas.ResponsesMessageTypeCustomToolCallOutput:
-					if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						outputText = *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
-					}
+				if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+					outputText = *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
 				}
 
 				if outputText != "" {
@@ -1034,15 +1413,8 @@ func convertResponsesMessagesToAnthropicMessages(messages []schemas.ResponsesMes
 	}
 
 	// Flush any remaining pending tool calls
-	if len(pendingToolCalls) > 0 && currentAssistantMessage != nil {
-		// Copy the slice to avoid aliasing issues
-		copied := make([]AnthropicContentBlock, len(pendingToolCalls))
-		copy(copied, pendingToolCalls)
-		currentAssistantMessage.Content = AnthropicContent{
-			ContentBlocks: copied,
-		}
-		anthropicMessages = append(anthropicMessages, *currentAssistantMessage)
-	}
+	pendingToolCalls, currentAssistantMessage, anthropicMessages = flushPendingToolCalls(
+		pendingToolCalls, currentAssistantMessage, anthropicMessages)
 
 	return anthropicMessages, systemContent
 }
@@ -1053,17 +1425,72 @@ func convertBifrostToolToAnthropic(tool *schemas.ResponsesTool) *AnthropicTool {
 		return nil
 	}
 
+	switch tool.Type {
+	case schemas.ResponsesToolTypeComputerUsePreview:
+		if tool.ResponsesToolComputerUsePreview != nil {
+			return &AnthropicTool{
+				Type: schemas.Ptr(AnthropicToolTypeComputer20250124),
+				Name: string(AnthropicToolNameComputer),
+				AnthropicToolComputerUse: &AnthropicToolComputerUse{
+					DisplayWidthPx:  schemas.Ptr(tool.ResponsesToolComputerUsePreview.DisplayWidth),
+					DisplayHeightPx: schemas.Ptr(tool.ResponsesToolComputerUsePreview.DisplayHeight),
+					DisplayNumber:   schemas.Ptr(1),
+				},
+			}
+		}
+	case schemas.ResponsesToolTypeWebSearch:
+		anthropicTool := &AnthropicTool{
+			Type:                   schemas.Ptr(AnthropicToolTypeWebSearch20250305),
+			Name:                   string(AnthropicToolNameWebSearch),
+			AnthropicToolWebSearch: &AnthropicToolWebSearch{},
+		}
+		if tool.ResponsesToolWebSearch != nil {
+			if tool.ResponsesToolWebSearch.Filters != nil {
+				anthropicTool.AnthropicToolWebSearch.AllowedDomains = tool.ResponsesToolWebSearch.Filters.AllowedDomains
+			}
+			if tool.ResponsesToolWebSearch.UserLocation != nil {
+				anthropicTool.AnthropicToolWebSearch.UserLocation = &AnthropicToolWebSearchUserLocation{
+					Type:     tool.ResponsesToolWebSearch.UserLocation.Type,
+					City:     tool.ResponsesToolWebSearch.UserLocation.City,
+					Country:  tool.ResponsesToolWebSearch.UserLocation.Country,
+					Timezone: tool.ResponsesToolWebSearch.UserLocation.Timezone,
+				}
+			}
+		}
+
+		return anthropicTool
+	case schemas.ResponsesToolTypeLocalShell:
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeBash20250124),
+			Name: string(AnthropicToolNameBash),
+		}
+	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124):
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250124),
+			Name: string(AnthropicToolNameTextEditor),
+		}
+	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250429):
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250429),
+			Name: string(AnthropicToolNameTextEditor),
+		}
+	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728):
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250728),
+			Name: string(AnthropicToolNameTextEditor),
+		}
+	}
+
 	anthropicTool := &AnthropicTool{
 		Type: schemas.Ptr(AnthropicToolTypeCustom),
 	}
 
-	// Try to extract from ResponsesExtendedTool if present
 	if tool.Name != nil {
 		anthropicTool.Name = *tool.Name
 	}
 
 	if tool.Description != nil {
-		anthropicTool.Description = *tool.Description
+		anthropicTool.Description = tool.Description
 	}
 
 	// Convert parameters from ToolFunction
@@ -1135,7 +1562,7 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 
 	for _, block := range content {
 		switch block.Type {
-		case "text":
+		case AnthropicContentBlockTypeText:
 			if block.Text != nil {
 				// Append text to existing message
 				messages = append(messages, schemas.ResponsesMessage{
@@ -1147,7 +1574,20 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 				})
 			}
 
-		case "thinking":
+		case AnthropicContentBlockTypeImage:
+			if block.Source != nil {
+				messages = append(messages, schemas.ResponsesMessage{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							block.toBifrostResponsesImageBlock(),
+						},
+					},
+				})
+			}
+
+		case AnthropicContentBlockTypeThinking:
 			if block.Thinking != nil {
 				// Create reasoning message
 				messages = append(messages, schemas.ResponsesMessage{
@@ -1164,20 +1604,33 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 				})
 			}
 
-		case "tool_use":
+		case AnthropicContentBlockTypeToolUse:
 			if block.ID != nil && block.Name != nil {
 				// Create function call message
-				messages = append(messages, schemas.ResponsesMessage{
+				message := schemas.ResponsesMessage{
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status: schemas.Ptr("completed"),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:    block.ID,
-						Name:      block.Name,
-						Arguments: schemas.Ptr(schemas.JsonifyInput(block.Input)),
+						CallID: block.ID,
+						Name:   block.Name,
 					},
-				})
+				}
+
+				if block.Name != nil && *block.Name == string(AnthropicToolNameComputer) {
+					message.Type = schemas.Ptr(schemas.ResponsesMessageTypeComputerCall)
+					message.ResponsesToolMessage.Name = nil
+					if inputMap, ok := block.Input.(map[string]interface{}); ok {
+						message.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+							ResponsesComputerToolCallAction: convertAnthropicToResponsesComputerAction(inputMap),
+						}
+					}
+				} else {
+					message.ResponsesToolMessage.Arguments = schemas.Ptr(schemas.JsonifyInput(block.Input))
+				}
+
+				messages = append(messages, message)
 			}
-		case "tool_result":
+		case AnthropicContentBlockTypeToolResult:
 			if block.ToolUseID != nil {
 				// Create function call output message
 				msg := schemas.ResponsesMessage{
@@ -1217,6 +1670,61 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 				messages = append(messages, msg)
 			}
 
+		case AnthropicContentBlockTypeMCPToolUse:
+			if block.ID != nil && block.Name != nil {
+				// Create MCP call message (tool invocation from assistant)
+				message := schemas.ResponsesMessage{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+					ID:   block.ID,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Name:      block.Name,
+						Arguments: schemas.Ptr(schemas.JsonifyInput(block.Input)),
+					},
+				}
+
+				// Set server name if present
+				if block.ServerName != nil {
+					message.ResponsesToolMessage.ResponsesMCPToolCall = &schemas.ResponsesMCPToolCall{
+						ServerLabel: *block.ServerName,
+					}
+				}
+
+				messages = append(messages, message)
+			}
+
+		case AnthropicContentBlockTypeMCPToolResult:
+			if block.ToolUseID != nil {
+				// Create MCP call message (tool result)
+				msg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: block.ToolUseID,
+					},
+				}
+				// Initialize nested output struct
+				msg.ResponsesToolMessage.Output = &schemas.ResponsesToolMessageOutputStruct{}
+				if block.Content != nil {
+					if block.Content.ContentStr != nil {
+						msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr = block.Content.ContentStr
+					} else if block.Content.ContentBlocks != nil {
+						var outBlocks []schemas.ResponsesMessageContentBlock
+						for _, cb := range block.Content.ContentBlocks {
+							if cb.Type == AnthropicContentBlockTypeText {
+								if cb.Text != nil {
+									outBlocks = append(outBlocks, schemas.ResponsesMessageContentBlock{
+										Type: schemas.ResponsesOutputMessageContentTypeText,
+										Text: cb.Text,
+									})
+								}
+							}
+						}
+						msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = outBlocks
+					}
+				}
+				messages = append(messages, msg)
+			}
+
 		default:
 			// Handle other block types if needed
 		}
@@ -1234,17 +1742,19 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 			switch *msg.Type {
 			case schemas.ResponsesMessageTypeMessage:
 				// Regular text message
-				if msg.Content.ContentStr != nil {
-					contentBlocks = append(contentBlocks, AnthropicContentBlock{
-						Type: "text",
-						Text: msg.Content.ContentStr,
-					})
-				} else if msg.Content.ContentBlocks != nil {
-					// Convert content blocks
-					for _, block := range msg.Content.ContentBlocks {
-						anthropicBlock := convertContentBlockToAnthropic(block)
-						if anthropicBlock != nil {
-							contentBlocks = append(contentBlocks, *anthropicBlock)
+				if msg.Content != nil {
+					if msg.Content.ContentStr != nil {
+						contentBlocks = append(contentBlocks, AnthropicContentBlock{
+							Type: "text",
+							Text: msg.Content.ContentStr,
+						})
+					} else if msg.Content.ContentBlocks != nil {
+						// Convert content blocks
+						for _, block := range msg.Content.ContentBlocks {
+							anthropicBlock := convertContentBlockToAnthropic(block)
+							if anthropicBlock != nil {
+								contentBlocks = append(contentBlocks, *anthropicBlock)
+							}
 						}
 					}
 				}
@@ -1267,57 +1777,23 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 			case schemas.ResponsesMessageTypeFunctionCallOutput:
 				// Tool result block - need to extract from ToolMessage
 				resultBlock := AnthropicContentBlock{
-					Type: "tool_result",
+					Type: AnthropicContentBlockTypeToolResult,
 				}
 
-				// Extract result content from ToolMessage or Content
 				if msg.ResponsesToolMessage != nil {
-					// Copy the call ID to maintain association between result and call
-					if msg.ResponsesToolMessage.CallID != nil {
-						resultBlock.ToolUseID = msg.ResponsesToolMessage.CallID
-					}
-
-					// Try to get content from the tool message structure
+					resultBlock.ToolUseID = msg.ResponsesToolMessage.CallID
+					// Try content from msg.Content first, then Output
 					if msg.Content != nil && msg.Content.ContentStr != nil {
 						resultBlock.Content = &AnthropicContent{
 							ContentStr: msg.Content.ContentStr,
 						}
 					} else if msg.ResponsesToolMessage.Output != nil {
-						if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-							resultBlock.Content = &AnthropicContent{
-								ContentStr: msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr,
-							}
-						} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-							var resultBlocks []AnthropicContentBlock
-							for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-								if block.Type == schemas.ResponsesInputMessageContentBlockTypeText {
-									resultBlocks = append(resultBlocks, AnthropicContentBlock{
-										Type: AnthropicContentBlockTypeText,
-										Text: block.Text,
-									})
-								} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
-									if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-										resultBlocks = append(resultBlocks, AnthropicContentBlock{
-											Type: AnthropicContentBlockTypeImage,
-											Source: &AnthropicImageSource{
-												Type: "url",
-												URL:  block.ResponsesInputMessageContentBlockImage.ImageURL,
-											},
-										})
-									}
-								}
-							}
-							resultBlock.Content = &AnthropicContent{
-								ContentBlocks: resultBlocks,
-							}
-						}
+						resultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 					}
-				} else if msg.Content != nil {
+				} else if msg.Content != nil && msg.Content.ContentStr != nil {
 					// Fallback to msg.Content when ResponsesToolMessage is nil
-					if msg.Content.ContentStr != nil {
-						resultBlock.Content = &AnthropicContent{
-							ContentStr: msg.Content.ContentStr,
-						}
+					resultBlock.Content = &AnthropicContent{
+						ContentStr: msg.Content.ContentStr,
 					}
 				}
 
@@ -1344,9 +1820,95 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 					})
 				}
 
+			case schemas.ResponsesMessageTypeComputerCall:
+				if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
+					toolBlock := AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeToolUse,
+						ID:   msg.ResponsesToolMessage.CallID,
+						Name: schemas.Ptr(string(AnthropicToolNameComputer)),
+					}
+
+					// Convert computer action to Anthropic input format
+					if msg.ResponsesToolMessage.Action != nil && msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
+						toolBlock.Input = convertResponsesToAnthropicComputerAction(msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
+					}
+					contentBlocks = append(contentBlocks, toolBlock)
+				}
+
+			case schemas.ResponsesMessageTypeMCPCall:
+				// Check if this is a tool use (from assistant) or tool result (from user)
+				// Tool use: has Name and Arguments but no Output
+				// Tool result: has CallID and Output
+				if msg.ResponsesToolMessage != nil {
+					if msg.ResponsesToolMessage.Name != nil {
+						// This is a tool use call (assistant calling a tool)
+						toolUseBlock := AnthropicContentBlock{
+							Type: AnthropicContentBlockTypeMCPToolUse,
+						}
+
+						if msg.ID != nil {
+							toolUseBlock.ID = msg.ID
+						}
+
+						if msg.ResponsesToolMessage.Name != nil {
+							toolUseBlock.Name = msg.ResponsesToolMessage.Name
+						}
+
+						// Set server name if present
+						if msg.ResponsesToolMessage.ResponsesMCPToolCall != nil && msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel != "" {
+							toolUseBlock.ServerName = &msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+						}
+
+						// Parse arguments as JSON input
+						if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
+							toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+						}
+
+						contentBlocks = append(contentBlocks, toolUseBlock)
+					} else if msg.ResponsesToolMessage.CallID != nil {
+						// This is a tool result (user providing result of tool execution)
+						resultBlock := AnthropicContentBlock{
+							Type:      AnthropicContentBlockTypeMCPToolResult,
+							ToolUseID: msg.ResponsesToolMessage.CallID,
+						}
+
+						if msg.ResponsesToolMessage.Output != nil {
+							resultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+						}
+
+						contentBlocks = append(contentBlocks, resultBlock)
+					}
+				}
+
+			case schemas.ResponsesMessageTypeMCPApprovalRequest:
+				// MCP approval request is OpenAI-specific for human-in-the-loop workflows
+				// Convert to Anthropic's mcp_tool_use format (same as regular MCP calls)
+				if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
+					toolUseBlock := AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeMCPToolUse,
+					}
+
+					if msg.ID != nil {
+						toolUseBlock.ID = msg.ID
+					}
+					toolUseBlock.Name = msg.ResponsesToolMessage.Name
+
+					// Set server name if present
+					if msg.ResponsesToolMessage.ResponsesMCPToolCall != nil && msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel != "" {
+						toolUseBlock.ServerName = &msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+					}
+
+					// Parse arguments as JSON input
+					if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
+						toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+					}
+
+					contentBlocks = append(contentBlocks, toolUseBlock)
+				}
+
 			default:
 				// Handle other types as text if they have content
-				if msg.Content.ContentStr != nil {
+				if msg.Content != nil && msg.Content.ContentStr != nil {
 					contentBlocks = append(contentBlocks, AnthropicContentBlock{
 						Type: AnthropicContentBlockTypeText,
 						Text: msg.Content.ContentStr,
@@ -1392,6 +1954,23 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 	return nil
 }
 
+// Helper to convert Bifrost content blocks slice to Anthropic content blocks
+func convertBifrostContentBlocksToAnthropic(blocks []schemas.ResponsesMessageContentBlock) []AnthropicContentBlock {
+	if len(blocks) == 0 {
+		return nil
+	}
+	var result []AnthropicContentBlock
+	for _, block := range blocks {
+		if converted := convertContentBlockToAnthropic(block); converted != nil {
+			result = append(result, *converted)
+		}
+	}
+	if len(result) > 0 {
+		return result
+	}
+	return nil
+}
+
 func (block AnthropicContentBlock) toBifrostResponsesImageBlock() schemas.ResponsesMessageContentBlock {
 	return schemas.ResponsesMessageContentBlock{
 		Type: schemas.ResponsesInputMessageContentBlockTypeImage,
@@ -1399,4 +1978,302 @@ func (block AnthropicContentBlock) toBifrostResponsesImageBlock() schemas.Respon
 			ImageURL: schemas.Ptr(getImageURLFromBlock(block)),
 		},
 	}
+}
+
+// Helper functions for MCP tool/server conversion
+// convertAnthropicMCPServerToBifrostTool converts a single Anthropic MCP server to a Bifrost ResponsesTool
+func convertAnthropicMCPServerToBifrostTool(mcpServer *AnthropicMCPServer) *schemas.ResponsesTool {
+	if mcpServer == nil {
+		return nil
+	}
+
+	bifrostTool := &schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeMCP,
+		ResponsesToolMCP: &schemas.ResponsesToolMCP{
+			ServerLabel: mcpServer.Name,
+		},
+	}
+
+	// Set server URL if present
+	if mcpServer.URL != "" {
+		bifrostTool.ResponsesToolMCP.ServerURL = schemas.Ptr(mcpServer.URL)
+	}
+
+	// Set authorization token if present
+	if mcpServer.AuthorizationToken != nil {
+		bifrostTool.ResponsesToolMCP.Authorization = mcpServer.AuthorizationToken
+	}
+
+	// Set allowed tools from tool configuration
+	if mcpServer.ToolConfiguration != nil && len(mcpServer.ToolConfiguration.AllowedTools) > 0 {
+		bifrostTool.ResponsesToolMCP.AllowedTools = &schemas.ResponsesToolMCPAllowedTools{
+			ToolNames: mcpServer.ToolConfiguration.AllowedTools,
+		}
+	}
+
+	return bifrostTool
+}
+
+// convertBifrostMCPToolToAnthropicServer converts a Bifrost MCP tool back to an Anthropic MCP server
+func convertBifrostMCPToolToAnthropicServer(tool *schemas.ResponsesTool) *AnthropicMCPServer {
+	if tool == nil || tool.Type != schemas.ResponsesToolTypeMCP || tool.ResponsesToolMCP == nil {
+		return nil
+	}
+
+	mcpServer := &AnthropicMCPServer{
+		Type: "url",
+		Name: tool.ResponsesToolMCP.ServerLabel,
+		ToolConfiguration: &AnthropicMCPToolConfig{
+			Enabled: true,
+		},
+	}
+
+	// Set server URL if present
+	if tool.ResponsesToolMCP.ServerURL != nil {
+		mcpServer.URL = *tool.ResponsesToolMCP.ServerURL
+	}
+
+	// Set allowed tools if present
+	if tool.ResponsesToolMCP.AllowedTools != nil && len(tool.ResponsesToolMCP.AllowedTools.ToolNames) > 0 {
+		mcpServer.ToolConfiguration.AllowedTools = tool.ResponsesToolMCP.AllowedTools.ToolNames
+	}
+
+	// Set authorization token if present
+	if tool.ResponsesToolMCP.Authorization != nil {
+		mcpServer.AuthorizationToken = tool.ResponsesToolMCP.Authorization
+	}
+
+	return mcpServer
+}
+
+// convertResponsesToAnthropicComputerAction converts ResponsesComputerToolCallAction to Anthropic input map
+func convertResponsesToAnthropicComputerAction(action *schemas.ResponsesComputerToolCallAction) map[string]any {
+	input := map[string]any{}
+	var actionStr string
+
+	// Map action type from OpenAI to Anthropic format
+	switch action.Type {
+	case "screenshot":
+		actionStr = "screenshot"
+
+	case "click":
+		// Map click with button variants
+		if action.Button != nil {
+			switch *action.Button {
+			case "right":
+				actionStr = "right_click"
+			case "wheel":
+				actionStr = "middle_click"
+			default: // "left", "back", "forward" or others
+				actionStr = "left_click"
+			}
+		} else {
+			actionStr = "left_click"
+		}
+		// Add coordinates
+		if action.X != nil && action.Y != nil {
+			input["coordinate"] = []int{*action.X, *action.Y}
+		}
+
+	case "double_click":
+		actionStr = "double_click"
+		if action.X != nil && action.Y != nil {
+			input["coordinate"] = []int{*action.X, *action.Y}
+		}
+
+	case "move":
+		actionStr = "mouse_move"
+		if action.X != nil && action.Y != nil {
+			input["coordinate"] = []int{*action.X, *action.Y}
+		}
+
+	case "type":
+		actionStr = "type"
+		if action.Text != nil {
+			input["text"] = *action.Text
+		}
+
+	case "keypress":
+		actionStr = "key"
+		if len(action.Keys) > 0 {
+			// Convert array of keys to "key1+key2+..." format
+			text := ""
+			for i, key := range action.Keys {
+				if i > 0 {
+					text += "+"
+				}
+				text += key
+			}
+			input["text"] = text
+		}
+
+	case "scroll":
+		actionStr = "scroll"
+		if action.X != nil && action.Y != nil {
+			input["coordinate"] = []int{*action.X, *action.Y}
+		}
+
+		// Handle scroll direction - Anthropic supports one direction at a time
+		// If both ScrollX and ScrollY are present, use the one with larger absolute value
+		scrollX := 0
+		scrollY := 0
+		if action.ScrollX != nil {
+			scrollX = *action.ScrollX
+		}
+		if action.ScrollY != nil {
+			scrollY = *action.ScrollY
+		}
+
+		if math.Abs(float64(scrollY)) >= math.Abs(float64(scrollX)) && scrollY != 0 {
+			// Vertical scroll is dominant or only one present
+			if scrollY > 0 {
+				input["scroll_direction"] = "down"
+				input["scroll_amount"] = scrollY / 100
+			} else {
+				input["scroll_direction"] = "up"
+				input["scroll_amount"] = (-scrollY) / 100
+			}
+		} else if scrollX != 0 {
+			// Horizontal scroll is dominant or only one present
+			if scrollX > 0 {
+				input["scroll_direction"] = "right"
+				input["scroll_amount"] = scrollX / 100
+			} else {
+				input["scroll_direction"] = "left"
+				input["scroll_amount"] = (-scrollX) / 100
+			}
+		}
+
+	case "drag":
+		actionStr = "left_click_drag"
+		if len(action.Path) >= 2 {
+			// Map first and last points as start and end coordinates
+			input["start_coordinate"] = []int{action.Path[0].X, action.Path[0].Y}
+			input["end_coordinate"] = []int{action.Path[len(action.Path)-1].X, action.Path[len(action.Path)-1].Y}
+		}
+
+	case "wait":
+		actionStr = "wait"
+		input["duration"] = 2
+
+	default:
+		// Pass through any unknown action types
+		actionStr = action.Type
+	}
+
+	input["action"] = actionStr
+
+	return input
+}
+
+// convertAnthropicToResponsesComputerAction converts Anthropic input map to ResponsesComputerToolCallAction
+func convertAnthropicToResponsesComputerAction(inputMap map[string]interface{}) *schemas.ResponsesComputerToolCallAction {
+	action := &schemas.ResponsesComputerToolCallAction{}
+
+	// Extract action type
+	actionStr, ok := inputMap["action"].(string)
+	if !ok {
+		return action
+	}
+
+	// Map action type from Anthropic to OpenAI format
+	switch actionStr {
+	case "screenshot":
+		action.Type = "screenshot"
+
+	case "left_click":
+		action.Type = "click"
+		action.Button = schemas.Ptr("left")
+
+	case "right_click":
+		action.Type = "click"
+		action.Button = schemas.Ptr("right")
+
+	case "middle_click":
+		action.Type = "click"
+		action.Button = schemas.Ptr("wheel")
+
+	case "double_click":
+		action.Type = "double_click"
+
+	case "mouse_move":
+		action.Type = "move"
+
+	case "type":
+		action.Type = "type"
+		if text, ok := inputMap["text"].(string); ok {
+			action.Text = schemas.Ptr(text)
+		}
+
+	case "key":
+		action.Type = "keypress"
+		if text, ok := inputMap["text"].(string); ok {
+			// Convert "key1+key2+..." format to array of keys
+			keys := strings.Split(text, "+")
+			action.Keys = keys
+		}
+
+	case "scroll":
+		action.Type = "scroll"
+		// Convert scroll_direction and scroll_amount to pixel values
+		if direction, ok := inputMap["scroll_direction"].(string); ok {
+			amount := 100 // Default scroll amount in pixels
+			if scrollAmount, ok := inputMap["scroll_amount"].(float64); ok {
+				amount = int(scrollAmount) * 100 // Convert scroll units to pixels
+			}
+			switch direction {
+			case "down":
+				action.ScrollY = schemas.Ptr(amount)
+				action.ScrollX = schemas.Ptr(0)
+			case "up":
+				action.ScrollY = schemas.Ptr(-amount)
+				action.ScrollX = schemas.Ptr(0)
+			case "right":
+				action.ScrollX = schemas.Ptr(amount)
+				action.ScrollY = schemas.Ptr(0)
+			case "left":
+				action.ScrollX = schemas.Ptr(-amount)
+				action.ScrollY = schemas.Ptr(0)
+			}
+		}
+
+	case "left_click_drag":
+		action.Type = "drag"
+		// Extract start and end coordinates
+		if startCoord, ok := inputMap["start_coordinate"].([]interface{}); ok && len(startCoord) == 2 {
+			if endCoord, ok := inputMap["end_coordinate"].([]interface{}); ok && len(endCoord) == 2 {
+				// JSON unmarshaling produces float64 for numbers, so convert them
+				startX, startXOk := startCoord[0].(float64)
+				startY, startYOk := startCoord[1].(float64)
+				endX, endXOk := endCoord[0].(float64)
+				endY, endYOk := endCoord[1].(float64)
+				if startXOk && startYOk && endXOk && endYOk {
+					action.Path = []schemas.ResponsesComputerToolCallActionPath{
+						{X: int(startX), Y: int(startY)},
+						{X: int(endX), Y: int(endY)},
+					}
+				}
+			}
+		}
+
+	case "wait":
+		action.Type = "wait"
+
+	default:
+		// Pass through any unknown action types
+		action.Type = actionStr
+	}
+
+	// Extract coordinates for all actions that use them (click, double_click, move, scroll, etc.)
+	if coordinate, ok := inputMap["coordinate"].([]interface{}); ok && len(coordinate) == 2 {
+		// JSON unmarshaling produces float64 for numbers, so convert them
+		if x, xOk := coordinate[0].(float64); xOk {
+			if y, yOk := coordinate[1].(float64); yOk {
+				action.X = schemas.Ptr(int(x))
+				action.Y = schemas.Ptr(int(y))
+			}
+		}
+	}
+
+	return action
 }

@@ -351,7 +351,7 @@ func getResponsesRequestParams(req *schemas.BifrostResponsesRequest) []*KeyValue
 		if req.Params.Tools != nil {
 			tools := make([]string, len(req.Params.Tools))
 			for i, tool := range req.Params.Tools {
-				tools[i] = tool.Type
+				tools[i] = string(tool.Type)
 			}
 			params = append(params, kvStr("gen_ai.request.tools", strings.Join(tools, ",")))
 		}
@@ -608,7 +608,7 @@ func completeResourceSpan(span *ResourceSpan, timestamp time.Time, resp *schemas
 			if responsesResponse.Tools != nil {
 				tools := make([]string, len(responsesResponse.Tools))
 				for i, tool := range responsesResponse.Tools {
-					tools[i] = tool.Type
+					tools[i] = string(tool.Type)
 				}
 				params = append(params, kvStr("gen_ai.responses.tools", strings.Join(tools, ",")))
 			}

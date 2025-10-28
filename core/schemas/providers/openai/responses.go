@@ -47,7 +47,39 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// Filter out tools that OpenAI doesn't support
+		req.filterUnsupportedTools()
 	}
 
 	return req
+}
+
+// filterUnsupportedTools removes tool types that OpenAI doesn't support
+func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
+	if len(req.Tools) == 0 {
+		return
+	}
+
+	// Define OpenAI-supported tool types
+	supportedTypes := map[schemas.ResponsesToolType]bool{
+		schemas.ResponsesToolTypeFunction:           true,
+		schemas.ResponsesToolTypeFileSearch:         true,
+		schemas.ResponsesToolTypeComputerUsePreview: true,
+		schemas.ResponsesToolTypeWebSearch:          true,
+		schemas.ResponsesToolTypeMCP:                true,
+		schemas.ResponsesToolTypeCodeInterpreter:    true,
+		schemas.ResponsesToolTypeImageGeneration:    true,
+		schemas.ResponsesToolTypeLocalShell:         true,
+		schemas.ResponsesToolTypeCustom:             true,
+		schemas.ResponsesToolTypeWebSearchPreview:   true,
+	}
+
+	// Filter tools to only include supported types
+	filteredTools := make([]schemas.ResponsesTool, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		if supportedTypes[tool.Type] {
+			filteredTools = append(filteredTools, tool)
+		}
+	}
+	req.Tools = filteredTools
 }
