@@ -148,7 +148,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 				responsesConversationMessages = append(responsesConversationMessages, output)
 			}
 		}
-		responsesConversationMessages = append(responsesConversationMessages, CreateToolResponsesMessage(toolResult, responsesToolCall.ID))
+		responsesConversationMessages = append(responsesConversationMessages, CreateToolResponsesMessage(toolResult, responsesToolCall.Name, responsesToolCall.ID))
 
 		// Use retry framework for second request (conversation continuation)
 		// Step 2 validates conversational synthesis of tool results, not tool calling

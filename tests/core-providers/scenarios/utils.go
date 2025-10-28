@@ -275,12 +275,13 @@ func CreateToolChatMessage(content string, toolCallID string) schemas.ChatMessag
 	}
 }
 
-func CreateToolResponsesMessage(content string, toolCallID string) schemas.ResponsesMessage {
+func CreateToolResponsesMessage(content string, functionName string, toolCallID string) schemas.ResponsesMessage {
 	return schemas.ResponsesMessage{
 		Type: bifrost.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
 		// Note: function_call_output messages don't have a role field per OpenAI API
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{
 			CallID: bifrost.Ptr(toolCallID),
+			Name:   bifrost.Ptr(functionName),
 			// Set ResponsesFunctionToolCallOutput for OpenAI's native Responses API
 			Output: &schemas.ResponsesToolMessageOutputStruct{
 				ResponsesToolCallOutputStr: bifrost.Ptr(content),

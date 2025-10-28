@@ -159,7 +159,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Logf("✅ Responses API weather tool call: %s with args: %s", responsesToolCall.Name, responsesToolCall.Arguments)
 
 			toolResult := `{"temperature": "18", "unit": "celsius", "description": "cloudy", "humidity": "70%"}`
-			toolMessage := CreateToolResponsesMessage(toolResult, responsesToolCall.ID)
+			toolMessage := CreateToolResponsesMessage(toolResult, responsesToolCall.Name, responsesToolCall.ID)
 			responsesConversationHistory = append(responsesConversationHistory, toolMessage)
 			t.Logf("✅ Added tool result to Responses API conversation history")
 		} else {
