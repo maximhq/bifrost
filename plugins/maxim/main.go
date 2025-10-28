@@ -476,7 +476,7 @@ func (plugin *Plugin) PostHook(ctx *context.Context, result *schemas.BifrostResp
 		if bifrost.IsStreamRequestType(requestType) {
 			streamResponse, err = plugin.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
 			if err != nil {
-				plugin.logger.Error("%s failed to process streaming response: %v", PluginLoggerPrefix, err)
+				plugin.logger.Debug("%s failed to process streaming response: %v", PluginLoggerPrefix, err)
 				return
 			}
 

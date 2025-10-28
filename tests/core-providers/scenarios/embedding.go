@@ -149,7 +149,7 @@ func validateEmbeddingSemantics(t *testing.T, response *schemas.BifrostEmbedding
 		t.Logf("   This suggests the embedding model may not be capturing semantic meaning optimally")
 
 		// Don't fail the test entirely, but log the concern
-		t.Logf("🔄 Continuing test - semantic coherence is provider-dependent")
+		t.Logf("Continuing test - semantic coherence is provider-dependent")
 	} else {
 		t.Logf("✅ Semantic coherence validated:")
 		t.Logf("   Similarity('Hello, world!' vs 'Hi, world!'): %.6f", similarityHelloHi)

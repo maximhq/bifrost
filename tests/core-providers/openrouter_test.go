@@ -26,6 +26,7 @@ func TestOpenRouter(t *testing.T) {
 		VisionModel:    "openai/gpt-4o",
 		TextModel:      "google/gemini-2.5-flash",
 		EmbeddingModel: "",
+		ReasoningModel: "openai/o1",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,
@@ -39,6 +40,7 @@ func TestOpenRouter(t *testing.T) {
 			ImageBase64:           false, // OpenRouter's responses API is in Beta
 			MultipleImages:        false, // OpenRouter's responses API is in Beta
 			CompleteEnd2End:       false, // OpenRouter's responses API is in Beta
+			Reasoning:             true,
 			ListModels:            true,
 		},
 	}

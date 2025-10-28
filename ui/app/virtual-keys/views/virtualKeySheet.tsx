@@ -578,9 +578,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		? providerConfig.name
 																		: ProviderLabels[config.provider as ProviderName]}
 																</div>
-																<Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveProvider(index)}>
-																	<Trash2 className="h-4 w-4 opacity-75" />
-																</Button>
+																<div className="hover:bg-accent/50 cursor-pointer rounded-sm p-2">
+																	<Trash2 onClick={() => handleRemoveProvider(index)} className="h-4 w-4 opacity-75" />
+																</div>
 															</div>
 														</AccordionTrigger>
 														<AccordionContent className="flex flex-col gap-4 text-balance">

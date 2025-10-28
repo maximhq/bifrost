@@ -344,7 +344,7 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 
 			streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
 			if err != nil {
-				p.logger.Error("failed to process streaming response: %v", err)
+				p.logger.Debug("failed to process streaming response: %v", err)
 			} else if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
 				// Prepare final log data
 				logMsg.Operation = LogOperationStreamUpdate

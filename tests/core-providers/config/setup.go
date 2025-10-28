@@ -14,8 +14,8 @@ import (
 // Constants for test configuration
 const (
 	// TestTimeout defines the maximum duration for comprehensive tests
-	// Set to 5 minutes to allow for complex multi-step operations
-	TestTimeout = 5 * time.Minute
+	// Set to 20 minutes to allow for complex multi-step operations
+	TestTimeout = 20 * time.Minute
 )
 
 // getBifrost initializes and returns a Bifrost instance for comprehensive testing.

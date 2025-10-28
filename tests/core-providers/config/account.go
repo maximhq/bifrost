@@ -158,12 +158,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("AZURE_API_KEY"),
-				Models: []string{"gpt-4o"},
+				Models: []string{},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: os.Getenv("AZURE_ENDPOINT"),
 					Deployments: map[string]string{
-						"gpt-4o": "gpt-4o-aug",
+						"gpt-4o":        "gpt-4o",
+						"gpt-4o-backup": "gpt-4o-aug",
+						"o1":            "o1",
 					},
 					// Use environment variable for API version with fallback to current preview version
 					// Note: This is a preview API version that may change over time. Update as needed.
@@ -314,7 +316,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // AWS services can have occasional issues
 				RetryBackoffInitial:            5 * time.Second,
-				RetryBackoffMax:                20 * time.Second,
+				RetryBackoffMax:                40 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 10,
@@ -325,9 +327,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
-				MaxRetries:                     4, // Cohere can be variable
-				RetryBackoffInitial:            750 * time.Millisecond,
-				RetryBackoffMax:                10 * time.Second,
+				MaxRetries:                     5, // Cohere can be variable
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                40 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 10,
@@ -337,13 +339,13 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Azure:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 120,
-				MaxRetries:                     3, // Azure OpenAI is generally reliable
-				RetryBackoffInitial:            500 * time.Millisecond,
-				RetryBackoffMax:                8 * time.Second,
+				DefaultRequestTimeoutInSeconds: 600,
+				MaxRetries:                     5,
+				RetryBackoffInitial:            20 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: 2,
 				BufferSize:  10,
 			},
 		}, nil
@@ -378,12 +380,12 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
-				MaxRetries:                     4, // Mistral can be variable
-				RetryBackoffInitial:            750 * time.Millisecond,
-				RetryBackoffMax:                10 * time.Second,
+				MaxRetries:                     5, // Mistral can be variable
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 3,
+				Concurrency: 1,
 				BufferSize:  10,
 			},
 		}, nil
@@ -396,7 +398,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                15 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 2,
+				Concurrency: 1,
 				BufferSize:  10,
 			},
 		}, nil
@@ -431,9 +433,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
-				MaxRetries:                     4, // Cerebras is reasonably stable
-				RetryBackoffInitial:            750 * time.Millisecond,
-				RetryBackoffMax:                10 * time.Second,
+				MaxRetries:                     5, // Cerebras is reasonably stable
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 2,
@@ -449,7 +451,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 20,
+				Concurrency: 5,
 				BufferSize:  20,
 			},
 		}, nil

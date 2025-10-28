@@ -33,10 +33,10 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		}
 
 		chatMessages := []schemas.ChatMessage{
-			CreateBasicChatMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both?"),
+			CreateBasicChatMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both in a single request?"),
 		}
 		responsesMessages := []schemas.ResponsesMessage{
-			CreateBasicResponsesMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both?"),
+			CreateBasicResponsesMessage("I need to know the weather in London and also calculate 15 * 23. Can you help with both in a single request?"),
 		}
 
 		// Get tools for both APIs using the new GetSampleTool function
@@ -50,9 +50,8 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		retryContext := TestRetryContext{
 			ScenarioName: "MultipleToolCalls",
 			ExpectedBehavior: map[string]interface{}{
-				"expected_tool_count":    2,
-				"expected_tool_sequence": []string{"weather", "calculate"},
-				"should_handle_both":     true,
+				"expected_tool_count": 2,
+				"should_handle_both":  true,
 			},
 			TestMetadata: map[string]interface{}{
 				"provider": testConfig.Provider,

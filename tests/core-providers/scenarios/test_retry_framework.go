@@ -657,7 +657,6 @@ func MultiToolRetryConfig(expectedToolCount int, expectedTools []string) TestRet
 		Conditions: []TestRetryCondition{
 			&EmptyResponseCondition{},
 			&PartialToolCallCondition{ExpectedCount: expectedToolCount},
-			// &WrongToolSequenceCondition{ExpectedTools: expectedTools},
 			&MalformedToolArgsCondition{},
 		},
 		OnRetry: func(attempt int, reason string, t *testing.T) {
@@ -911,6 +910,14 @@ func WithDualAPITestRetry(
 		}
 
 		break
+	}
+
+	// Ensure BothSucceeded reflects the final validation state
+	// This fixes a bug where successful retries weren't properly reflected in the result
+	if lastResult.ChatCompletionsResponse != nil && lastResult.ResponsesAPIResponse != nil {
+		chatValidationResult := ValidateChatResponse(t, lastResult.ChatCompletionsResponse, lastResult.ChatCompletionsError, expectations, scenarioName+" (Chat Completions)")
+		responsesValidationResult := ValidateResponsesResponse(t, lastResult.ResponsesAPIResponse, lastResult.ResponsesAPIError, expectations, scenarioName+" (Responses API)")
+		lastResult.BothSucceeded = chatValidationResult.Passed && responsesValidationResult.Passed
 	}
 
 	return lastResult

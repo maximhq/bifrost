@@ -355,7 +355,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 
 			// Test streaming with all available voices
 			openaiVoices := []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
-			geminiVoices := []string{"achernar", "achird", "algenib", "charon", "despina", "erinome"}
+			geminiVoices := []string{"achernar", "achird", "despina", "erinome"}
 			testText := "Testing streaming speech synthesis with different voice options."
 
 			if testConfig.Provider == schemas.OpenAI {

@@ -101,12 +101,9 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		// Test Responses API
 		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			responsesReq := &schemas.BifrostResponsesRequest{
-				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
-				Input:    responsesMessages,
-				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(150),
-				},
+				Provider:  testConfig.Provider,
+				Model:     testConfig.ChatModel,
+				Input:     responsesMessages,
 				Fallbacks: testConfig.Fallbacks,
 			}
 			response, err := client.ResponsesRequest(ctx, responsesReq)

@@ -263,7 +263,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				streamCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 				defer cancel()
 
-				t.Logf("🔄 Testing text completion streaming with prompt: %s", testCase.name)
+				t.Logf("Testing text completion streaming with prompt: %s", testCase.name)
 
 				for {
 					select {

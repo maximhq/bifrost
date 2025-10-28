@@ -52,6 +52,10 @@ func (c *EmptyResponseCondition) ShouldRetry(response *schemas.BifrostResponse, 
 				}
 			}
 		}
+
+		if len(toolCalls) == 0 {
+			return true, "no tool calls found in response"
+		}
 	}
 
 	if !hasContent {

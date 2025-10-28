@@ -1285,7 +1285,8 @@ func logValidationResults(t *testing.T, result ValidationResult, scenarioName st
 	if result.Passed {
 		t.Logf("✅ Validation passed for %s", scenarioName)
 	} else {
-		t.Errorf("❌ Validation failed for %s with %d errors", scenarioName, len(result.Errors))
+		// LogF, not ErrorF else later retries will still fail the test
+		t.Logf("❌ Validation failed for %s with %d errors", scenarioName, len(result.Errors))
 		for _, err := range result.Errors {
 			t.Logf("   Error: %s", err)
 		}

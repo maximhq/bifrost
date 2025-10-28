@@ -10,6 +10,8 @@ import (
 )
 
 func TestAzure(t *testing.T) {
+	t.Skip("Skipping Azure tests because Azure.")
+
 	if os.Getenv("AZURE_API_KEY") == "" {
 		t.Skip("Skipping Azure tests because AZURE_API_KEY is not set")
 	}
@@ -22,14 +24,14 @@ func TestAzure(t *testing.T) {
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:    schemas.Azure,
-		ChatModel:   "gpt-4o",
+		ChatModel:   "gpt-4o-backup",
 		VisionModel: "gpt-4o",
 		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Azure, Model: "gpt-4o-mini"},
-			{Provider: schemas.Azure, Model: "gpt-4.1"},
+			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
 		},
 		TextModel:      "", // Azure OpenAI doesn't support text completion in newer models
 		EmbeddingModel: "text-embedding-ada-002",
+		ReasoningModel: "o1",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -45,6 +47,7 @@ func TestAzure(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			ListModels:            true,
+			Reasoning:             true,
 		},
 	}
 

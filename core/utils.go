@@ -3,10 +3,44 @@ package bifrost
 import (
 	"context"
 	"math/rand"
+	"strings"
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+// Define a set of retryable status codes
+var retryableStatusCodes = map[int]bool{
+	500: true, // Internal Server Error
+	502: true, // Bad Gateway
+	503: true, // Service Unavailable
+	504: true, // Gateway Timeout
+	429: true, // Too Many Requests
+}
+
+// Define rate limit error message patterns (case-insensitive)
+var rateLimitPatterns = []string{
+	"rate limit",
+	"rate_limit",
+	"ratelimit",
+	"too many requests",
+	"quota exceeded",
+	"quota_exceeded",
+	"request limit",
+	"throttled",
+	"throttling",
+	"rate exceeded",
+	"limit exceeded",
+	"requests per",
+	"rpm exceeded",
+	"tpm exceeded",
+	"tokens per minute",
+	"requests per minute",
+	"requests per second",
+	"api rate limit",
+	"usage limit",
+	"concurrent requests limit",
+}
 
 // Ptr returns a pointer to the given value.
 func Ptr[T any](v T) *T {
@@ -49,6 +83,25 @@ func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	}
 
 	return nil
+}
+
+// isRateLimitError checks if an error message indicates a rate limit issue
+func isRateLimitError(errorMessage string) bool {
+	if errorMessage == "" {
+		return false
+	}
+
+	// Convert to lowercase for case-insensitive matching
+	lowerMessage := strings.ToLower(errorMessage)
+
+	// Check if any rate limit pattern is found in the error message
+	for _, pattern := range rateLimitPatterns {
+		if strings.Contains(lowerMessage, pattern) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.

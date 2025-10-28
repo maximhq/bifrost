@@ -100,7 +100,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 					os.Remove(audioFileName)
 				})
 
-				t.Logf("🔄 Generated TTS audio for stream round-trip: %s (%d bytes)", audioFileName, len(ttsResponse.Audio))
+				t.Logf("Generated TTS audio for stream round-trip: %s (%d bytes)", audioFileName, len(ttsResponse.Audio))
 
 				// Step 2: Test streaming transcription
 				streamRequest := &schemas.BifrostTranscriptionRequest{

@@ -225,7 +225,7 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 			if bifrost.IsStreamRequestType(requestType) {
 				streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, resp, bifrostErr)
 				if err != nil {
-					logger.Error("failed to process streaming response: %v", err)
+					logger.Debug("failed to process streaming response: %v", err)
 				}
 				if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
 					defer p.ongoingSpans.Delete(traceID)

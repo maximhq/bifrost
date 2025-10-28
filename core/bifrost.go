@@ -63,14 +63,8 @@ type PluginPipeline struct {
 	postHookErrors []error
 }
 
-// Define a set of retryable status codes
-var retryableStatusCodes = map[int]bool{
-	500: true, // Internal Server Error
-	502: true, // Bad Gateway
-	503: true, // Service Unavailable
-	504: true, // Gateway Timeout
-	429: true, // Too Many Requests
-}
+// Global logger instance which is set in the Init function
+var logger schemas.Logger
 
 // INITIALIZATION
 
@@ -183,6 +177,10 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			bifrost.logger.Warn(fmt.Sprintf("failed to get config for provider, skipping init: %v", err))
 			continue
 		}
+		if config == nil {
+			bifrost.logger.Warn(fmt.Sprintf("config is nil for provider %s, skipping init", providerKey))
+			continue
+		}
 
 		// Lock the provider mutex during initialization
 		providerMutex := bifrost.getProviderMutex(providerKey)
@@ -194,6 +192,9 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			bifrost.logger.Warn(fmt.Sprintf("failed to prepare provider %s: %v", providerKey, err))
 		}
 	}
+
+	// Set logger
+	logger = bifrost.logger
 
 	return bifrost, nil
 }
@@ -246,9 +247,15 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 
 	// Determine the base provider type for key requirement checks
 	baseProvider := req.Provider
-	providerConfig, err := bifrost.account.GetConfigForProvider(req.Provider)
-	if err == nil && providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
-		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
 	}
 
 	// Get API key for the provider if required
@@ -266,7 +273,9 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 		}
 	}
 
-	response, bifrostErr := provider.ListModels(ctx, key, request)
+	response, bifrostErr := executeRequestWithRetries(config, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		return provider.ListModels(ctx, key, request)
+	}, schemas.ListModelsRequest, req.Provider, "")
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -793,6 +802,9 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 	if err != nil {
 		return fmt.Errorf("failed to get updated config for provider %s: %v", providerKey, err)
 	}
+	if providerConfig == nil {
+		return fmt.Errorf("config is nil for provider %s", providerKey)
+	}
 
 	// Lock the provider to prevent concurrent access during update
 	providerMutex := bifrost.getProviderMutex(providerKey)
@@ -1196,6 +1208,9 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	if err != nil {
 		return fmt.Errorf("failed to get config for provider: %v", err)
 	}
+	if providerConfig == nil {
+		return fmt.Errorf("config is nil for provider %s", providerKey)
+	}
 
 	queue := make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
 
@@ -1267,6 +1282,9 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config for provider: %v", err)
+	}
+	if config == nil {
+		return nil, fmt.Errorf("config is nil for provider %s", providerKey)
 	}
 
 	if err := bifrost.prepareProvider(providerKey, config); err != nil {
@@ -1750,7 +1768,11 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 		bifrost.releaseChannelMessage(msg)
 		return stream, nil
 	case bifrostErrVal := <-msg.Err:
-		bifrost.logger.Warn("error while executing stream request: %v", bifrostErrVal.Error.Message)
+		if bifrostErrVal.Error != nil {
+			bifrost.logger.Debug("error while executing stream request: %s", bifrostErrVal.Error.Message)
+		} else {
+			bifrost.logger.Debug("error while executing stream request: %+v", bifrostErrVal)
+		}
 		// Marking final chunk
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
@@ -1764,6 +1786,83 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 		}
 		return nil, &bifrostErrVal
 	}
+}
+
+// executeRequestWithRetries is a generic function that handles common request processing logic
+// It consolidates retry logic, backoff calculation, and error handling
+// It is not a bifrost method because interface methods in go cannot be generic
+func executeRequestWithRetries[T any](
+	config *schemas.ProviderConfig,
+	requestHandler func() (T, *schemas.BifrostError),
+	requestType schemas.RequestType,
+	providerKey schemas.ModelProvider,
+	model string,
+) (T, *schemas.BifrostError) {
+	var result T
+	var bifrostError *schemas.BifrostError
+	var attempts int
+
+	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
+		if attempts > 0 {
+			// Log retry attempt
+			var retryMsg string
+			if bifrostError != nil && bifrostError.Error != nil {
+				retryMsg = bifrostError.Error.Message
+			} else if bifrostError != nil && bifrostError.StatusCode != nil {
+				retryMsg = fmt.Sprintf("status=%d", *bifrostError.StatusCode)
+				if bifrostError.Type != nil {
+					retryMsg += ", type=" + *bifrostError.Type
+				}
+			}
+			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
+
+			// Calculate and apply backoff
+			backoff := calculateBackoff(attempts-1, config)
+			time.Sleep(backoff)
+		}
+
+		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
+
+		// Attempt the request
+		result, bifrostError = requestHandler()
+
+		logger.Debug("request %s for provider %s completed", requestType, providerKey)
+
+		// Check if successful or if we should retry
+		if bifrostError == nil ||
+			bifrostError.IsBifrostError ||
+			(bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
+			break
+		}
+
+		// Check if we should retry based on status code or error message
+		shouldRetry := false
+
+		if bifrostError.Error != nil && bifrostError.Error.Message == schemas.ErrProviderRequest {
+			shouldRetry = true
+			logger.Debug("detected request HTTP error, will retry: %s", bifrostError.Error.Message)
+		}
+
+		// Retry if status code or error object indicates rate limiting
+		if (bifrostError.StatusCode != nil && retryableStatusCodes[*bifrostError.StatusCode]) ||
+			(bifrostError.Error != nil &&
+				(isRateLimitError(bifrostError.Error.Message) ||
+					(bifrostError.Error.Type != nil && isRateLimitError(*bifrostError.Error.Type)))) {
+			shouldRetry = true
+			logger.Debug("detected rate limit error in message, will retry: %s", bifrostError.Error.Message)
+		}
+
+		if !shouldRetry {
+			break
+		}
+	}
+
+	// Add retry information to error
+	if attempts > 0 {
+		logger.Debug("request failed after %d %s", attempts, map[bool]string{true: "retries", false: "retry"}[attempts > 1])
+	}
+
+	return result, bifrostError
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
@@ -1808,15 +1907,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKey, key.ID)
 		}
 
-		// Track attempts
-		var attempts int
-
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
 		var postHookRunner schemas.PostHookRunner
+		var pipeline *PluginPipeline
 		if IsStreamRequestType(req.RequestType) {
-			pipeline := bifrost.getPluginPipeline()
-			defer bifrost.releasePluginPipeline(pipeline)
-
+			pipeline = bifrost.getPluginPipeline()
 			postHookRunner = func(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(*bifrost.plugins.Load()))
 				if bifrostErr != nil {
@@ -1827,47 +1922,21 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		// Execute request with retries
-		for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
-			if attempts > 0 {
-				// Log retry attempt
-				bifrost.logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, bifrostError.Error.Message)
+		if IsStreamRequestType(req.RequestType) {
+			stream, bifrostError = executeRequestWithRetries(config, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				return bifrost.handleProviderStreamRequest(provider, req, key, postHookRunner)
+			}, req.RequestType, provider.GetProviderKey(), model)
+		} else {
+			result, bifrostError = executeRequestWithRetries(config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return bifrost.handleProviderRequest(provider, req, key)
+			}, req.RequestType, provider.GetProviderKey(), model)
+		}
 
-				// Calculate and apply backoff
-				backoff := calculateBackoff(attempts-1, config)
-				time.Sleep(backoff)
-			}
-
-			bifrost.logger.Debug("attempting %s request for provider %s", req.RequestType, provider.GetProviderKey())
-
-			// Attempt the request
-			if IsStreamRequestType(req.RequestType) {
-				stream, bifrostError = handleProviderStreamRequest(provider, req, key, postHookRunner)
-				if bifrostError != nil && !bifrostError.IsBifrostError {
-					break // Don't retry client errors
-				}
-			} else {
-				result, bifrostError = bifrost.handleProviderRequest(provider, req, key)
-				if bifrostError != nil {
-					break // Don't retry client errors
-				}
-			}
-
-			bifrost.logger.Debug("request %s for provider %s completed", req.RequestType, provider.GetProviderKey())
-
-			// Check if successful or if we should retry
-			if bifrostError == nil ||
-				bifrostError.IsBifrostError ||
-				(bifrostError.StatusCode != nil && !retryableStatusCodes[*bifrostError.StatusCode]) ||
-				(bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
-				break
-			}
+		if pipeline != nil {
+			bifrost.releasePluginPipeline(pipeline)
 		}
 
 		if bifrostError != nil {
-			// Add retry information to error
-			if attempts > 0 {
-				bifrost.logger.Debug("request failed after %d %s", attempts, map[bool]string{true: "retries", false: "retry"}[attempts > 1])
-			}
 			bifrostError.ExtraFields = schemas.BifrostErrorExtraFields{
 				Provider:       provider.GetProviderKey(),
 				ModelRequested: model,
@@ -1969,7 +2038,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 }
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
-func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
 		return provider.TextCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.TextCompletionRequest)
