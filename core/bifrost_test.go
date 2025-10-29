@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -560,4 +561,391 @@ func BenchmarkIsRateLimitError(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		isRateLimitError(messages[i%len(messages)])
 	}
+}
+
+// Mock Account implementation for testing UpdateProvider
+type MockAccount struct {
+	configs map[schemas.ModelProvider]*schemas.ProviderConfig
+	keys    map[schemas.ModelProvider][]schemas.Key
+}
+
+func NewMockAccount() *MockAccount {
+	return &MockAccount{
+		configs: make(map[schemas.ModelProvider]*schemas.ProviderConfig),
+		keys:    make(map[schemas.ModelProvider][]schemas.Key),
+	}
+}
+
+func (ma *MockAccount) AddProvider(provider schemas.ModelProvider, concurrency int, bufferSize int) {
+	ma.configs[provider] = &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			DefaultRequestTimeoutInSeconds: 30,
+			MaxRetries:                     3,
+			RetryBackoffInitial:            500 * time.Millisecond,
+			RetryBackoffMax:                5 * time.Second,
+		},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+			Concurrency: concurrency,
+			BufferSize:  bufferSize,
+		},
+	}
+
+	ma.keys[provider] = []schemas.Key{
+		{
+			ID:     fmt.Sprintf("test-key-%s", provider),
+			Value:  fmt.Sprintf("sk-test-%s", provider),
+			Weight: 100,
+		},
+	}
+}
+
+func (ma *MockAccount) UpdateProviderConfig(provider schemas.ModelProvider, concurrency int, bufferSize int) {
+	if config, exists := ma.configs[provider]; exists {
+		config.ConcurrencyAndBufferSize.Concurrency = concurrency
+		config.ConcurrencyAndBufferSize.BufferSize = bufferSize
+	}
+}
+
+func (ma *MockAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	providers := make([]schemas.ModelProvider, 0, len(ma.configs))
+	for provider := range ma.configs {
+		providers = append(providers, provider)
+	}
+	return providers, nil
+}
+
+func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if config, exists := ma.configs[provider]; exists {
+		// Return a copy to simulate real behavior
+		configCopy := *config
+		return &configCopy, nil
+	}
+	return nil, fmt.Errorf("provider %s not configured", provider)
+}
+
+func (ma *MockAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	if keys, exists := ma.keys[provider]; exists {
+		return keys, nil
+	}
+	return nil, fmt.Errorf("no keys for provider %s", provider)
+}
+
+// Test UpdateProvider functionality
+func TestUpdateProvider(t *testing.T) {
+	t.Run("SuccessfulUpdate", func(t *testing.T) {
+		// Setup mock account with initial configuration
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 5, 1000)
+
+		// Initialize Bifrost
+		ctx := context.Background()
+		bifrost, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError), // Keep tests quiet
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+
+		// Verify initial provider exists
+		initialProvider := bifrost.getProviderByKey(schemas.OpenAI)
+		if initialProvider == nil {
+			t.Fatalf("Initial provider not found")
+		}
+
+		// Update configuration
+		account.UpdateProviderConfig(schemas.OpenAI, 10, 2000)
+
+		// Perform update
+		err = bifrost.UpdateProvider(schemas.OpenAI)
+		if err != nil {
+			t.Fatalf("UpdateProvider failed: %v", err)
+		}
+
+		// Verify provider was replaced
+		updatedProvider := bifrost.getProviderByKey(schemas.OpenAI)
+		if updatedProvider == nil {
+			t.Fatalf("Updated provider not found")
+		}
+
+		// Verify it's a different instance (provider should have been recreated)
+		if initialProvider == updatedProvider {
+			t.Errorf("Provider instance was not replaced - same memory address")
+		}
+
+		// Verify provider key is still correct
+		if updatedProvider.GetProviderKey() != schemas.OpenAI {
+			t.Errorf("Updated provider has wrong key: got %s, want %s",
+				updatedProvider.GetProviderKey(), schemas.OpenAI)
+		}
+	})
+
+	t.Run("UpdateNonExistentProvider", func(t *testing.T) {
+		// Setup account without the provider we'll try to update
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 5, 1000)
+
+		ctx := context.Background()
+		bifrost, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+
+		// Try to update a provider not in the account
+		err = bifrost.UpdateProvider(schemas.Anthropic)
+		if err == nil {
+			t.Errorf("Expected error when updating non-existent provider, got nil")
+		}
+
+		// Verify error message
+		expectedErrMsg := "failed to get updated config for provider anthropic"
+		if err != nil && !strings.Contains(err.Error(), expectedErrMsg) {
+			t.Errorf("Expected error containing '%s', got: %v", expectedErrMsg, err)
+		}
+	})
+
+	t.Run("UpdateInactiveProvider", func(t *testing.T) {
+		// Setup account with provider but don't initialize it in Bifrost
+		account := NewMockAccount()
+		account.AddProvider(schemas.Anthropic, 3, 500)
+
+		ctx := context.Background()
+		bifrost, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+
+		// Verify provider doesn't exist initially
+		if bifrost.getProviderByKey(schemas.Anthropic) != nil {
+			t.Fatal("Provider should not exist initially")
+		}
+
+		// Update should succeed and initialize the provider
+		err = bifrost.UpdateProvider(schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("UpdateProvider should succeed for inactive provider: %v", err)
+		}
+
+		// Verify provider now exists
+		provider := bifrost.getProviderByKey(schemas.Anthropic)
+		if provider == nil {
+			t.Fatal("Provider should exist after update")
+		}
+
+		if provider.GetProviderKey() != schemas.Anthropic {
+			t.Errorf("Provider has wrong key: got %s, want %s",
+				provider.GetProviderKey(), schemas.Anthropic)
+		}
+	})
+
+	t.Run("MultipleProviderUpdates", func(t *testing.T) {
+		// Test updating multiple different providers
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 5, 1000)
+		account.AddProvider(schemas.Anthropic, 3, 500)
+		account.AddProvider(schemas.Cohere, 2, 200)
+
+		ctx := context.Background()
+		bifrost, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+
+		// Get initial provider references
+		initialOpenAI := bifrost.getProviderByKey(schemas.OpenAI)
+		initialAnthropic := bifrost.getProviderByKey(schemas.Anthropic)
+		initialCohere := bifrost.getProviderByKey(schemas.Cohere)
+
+		// Update configurations
+		account.UpdateProviderConfig(schemas.OpenAI, 10, 2000)
+		account.UpdateProviderConfig(schemas.Anthropic, 6, 1000)
+		account.UpdateProviderConfig(schemas.Cohere, 4, 400)
+
+		// Update all providers
+		providers := []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Cohere}
+		for _, provider := range providers {
+			err = bifrost.UpdateProvider(provider)
+			if err != nil {
+				t.Fatalf("Failed to update provider %s: %v", provider, err)
+			}
+		}
+
+		// Verify all providers were replaced
+		newOpenAI := bifrost.getProviderByKey(schemas.OpenAI)
+		newAnthropic := bifrost.getProviderByKey(schemas.Anthropic)
+		newCohere := bifrost.getProviderByKey(schemas.Cohere)
+
+		if initialOpenAI == newOpenAI {
+			t.Error("OpenAI provider was not replaced")
+		}
+		if initialAnthropic == newAnthropic {
+			t.Error("Anthropic provider was not replaced")
+		}
+		if initialCohere == newCohere {
+			t.Error("Cohere provider was not replaced")
+		}
+
+		// Verify all providers still have correct keys
+		if newOpenAI.GetProviderKey() != schemas.OpenAI {
+			t.Error("OpenAI provider has wrong key after update")
+		}
+		if newAnthropic.GetProviderKey() != schemas.Anthropic {
+			t.Error("Anthropic provider has wrong key after update")
+		}
+		if newCohere.GetProviderKey() != schemas.Cohere {
+			t.Error("Cohere provider has wrong key after update")
+		}
+	})
+
+	t.Run("ConcurrentProviderUpdates", func(t *testing.T) {
+		// Test updating the same provider concurrently (should be serialized by mutex)
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 5, 1000)
+
+		ctx := context.Background()
+		bifrost, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+
+		// Launch concurrent updates
+		const numConcurrentUpdates = 5
+		errChan := make(chan error, numConcurrentUpdates)
+
+		for i := 0; i < numConcurrentUpdates; i++ {
+			go func(updateNum int) {
+				// Update with slightly different config each time
+				account.UpdateProviderConfig(schemas.OpenAI, 5+updateNum, 1000+updateNum*100)
+				err := bifrost.UpdateProvider(schemas.OpenAI)
+				errChan <- err
+			}(i)
+		}
+
+		// Collect results
+		var errors []error
+		for i := 0; i < numConcurrentUpdates; i++ {
+			if err := <-errChan; err != nil {
+				errors = append(errors, err)
+			}
+		}
+
+		// All updates should succeed (mutex should serialize them)
+		if len(errors) > 0 {
+			t.Fatalf("Expected no errors from concurrent updates, got: %v", errors)
+		}
+
+		// Verify provider still exists and has correct key
+		provider := bifrost.getProviderByKey(schemas.OpenAI)
+		if provider == nil {
+			t.Fatal("Provider should exist after concurrent updates")
+		}
+		if provider.GetProviderKey() != schemas.OpenAI {
+			t.Error("Provider has wrong key after concurrent updates")
+		}
+	})
+}
+
+// Test provider slice management during updates
+func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
+	t.Run("ProviderSliceConsistency", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 5, 1000)
+		account.AddProvider(schemas.Anthropic, 3, 500)
+
+		ctx := context.Background()
+		bifrost, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+
+		// Get initial provider count
+		initialProviders := bifrost.providers.Load()
+		initialCount := len(*initialProviders)
+
+		// Update one provider
+		account.UpdateProviderConfig(schemas.OpenAI, 10, 2000)
+		err = bifrost.UpdateProvider(schemas.OpenAI)
+		if err != nil {
+			t.Fatalf("UpdateProvider failed: %v", err)
+		}
+
+		// Verify provider count is the same (replacement, not addition)
+		updatedProviders := bifrost.providers.Load()
+		updatedCount := len(*updatedProviders)
+
+		if initialCount != updatedCount {
+			t.Errorf("Provider count changed: initial=%d, updated=%d", initialCount, updatedCount)
+		}
+
+		// Verify both providers still exist with correct keys
+		foundOpenAI := false
+		foundAnthropic := false
+
+		for _, provider := range *updatedProviders {
+			switch provider.GetProviderKey() {
+			case schemas.OpenAI:
+				foundOpenAI = true
+			case schemas.Anthropic:
+				foundAnthropic = true
+			}
+		}
+
+		if !foundOpenAI {
+			t.Error("OpenAI provider not found in providers slice after update")
+		}
+		if !foundAnthropic {
+			t.Error("Anthropic provider not found in providers slice after update")
+		}
+	})
+
+	t.Run("ProviderSliceNoMemoryLeaks", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 5, 1000)
+
+		ctx := context.Background()
+		bifrost, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+
+		// Perform multiple updates to ensure no memory leaks in provider slice
+		for i := 0; i < 10; i++ {
+			account.UpdateProviderConfig(schemas.OpenAI, 5+i, 1000+i*100)
+			err = bifrost.UpdateProvider(schemas.OpenAI)
+			if err != nil {
+				t.Fatalf("UpdateProvider failed on iteration %d: %v", i, err)
+			}
+
+			// Verify only one OpenAI provider exists
+			providers := bifrost.providers.Load()
+			openAICount := 0
+			for _, provider := range *providers {
+				if provider.GetProviderKey() == schemas.OpenAI {
+					openAICount++
+				}
+			}
+
+			if openAICount != 1 {
+				t.Fatalf("Expected exactly 1 OpenAI provider, found %d on iteration %d", openAICount, i)
+			}
+		}
+	})
 }

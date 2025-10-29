@@ -781,9 +781,22 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 	}
 }
 
-// UpdateProviderConcurrency dynamically updates the queue size and concurrency for an existing provider.
-// This method gracefully stops existing workers, creates a new queue with updated settings,
-// and starts new workers with the updated concurrency configuration.
+func (bifrost *Bifrost) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	providers := bifrost.providers.Load()
+	if providers == nil {
+		return nil, fmt.Errorf("no providers configured")
+	}
+	modelProviders := make([]schemas.ModelProvider, len(*providers))
+	for i, provider := range *providers {
+		modelProviders[i] = provider.GetProviderKey()
+	}
+	return modelProviders, nil
+}
+
+// UpdateProvider dynamically updates a provider with new configuration.
+// This method gracefully recreates the provider instance with updated settings,
+// stops existing workers, creates a new queue with updated settings,
+// and starts new workers with the updated provider and concurrency configuration.
 //
 // Parameters:
 //   - providerKey: The provider to update
@@ -794,8 +807,8 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 // Note: This operation will temporarily pause request processing for the specified provider
 // while the transition occurs. In-flight requests will complete before workers are stopped.
 // Buffered requests in the old queue will be transferred to the new queue to prevent loss.
-func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvider) error {
-	bifrost.logger.Info(fmt.Sprintf("Updating concurrency configuration for provider %s", providerKey))
+func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error {
+	bifrost.logger.Info(fmt.Sprintf("Updating provider configuration for provider %s", providerKey))
 
 	// Get the updated configuration from the account
 	providerConfig, err := bifrost.account.GetConfigForProvider(providerKey)
@@ -898,6 +911,52 @@ transferComplete:
 		return fmt.Errorf("failed to create provider instance for %s: %v", providerKey, err)
 	}
 
+	// Step 7.5: Atomically replace the provider in the providers slice
+	// This must happen before starting new workers to prevent stale reads
+	bifrost.logger.Debug("atomically replacing provider instance in providers slice for %s", providerKey)
+
+	replacementAttempts := 0
+	maxReplacementAttempts := 100 // Prevent infinite loops in high-contention scenarios
+
+	for {
+		replacementAttempts++
+		if replacementAttempts > maxReplacementAttempts {
+			return fmt.Errorf("failed to replace provider %s in providers slice after %d attempts", providerKey, maxReplacementAttempts)
+		}
+
+		oldPtr := bifrost.providers.Load()
+		var oldSlice []schemas.Provider
+		if oldPtr != nil {
+			oldSlice = *oldPtr
+		}
+
+		// Create new slice without the old provider of this key
+		// Use exact capacity to avoid allocations
+		newSlice := make([]schemas.Provider, 0, len(oldSlice))
+		oldProviderFound := false
+
+		for _, existingProvider := range oldSlice {
+			if existingProvider.GetProviderKey() != providerKey {
+				newSlice = append(newSlice, existingProvider)
+			} else {
+				oldProviderFound = true
+			}
+		}
+
+		// Add the new provider
+		newSlice = append(newSlice, provider)
+
+		if bifrost.providers.CompareAndSwap(oldPtr, &newSlice) {
+			if oldProviderFound {
+				bifrost.logger.Debug("successfully replaced existing provider instance for %s in providers slice", providerKey)
+			} else {
+				bifrost.logger.Debug("successfully added new provider instance for %s to providers slice", providerKey)
+			}
+			break
+		}
+		// Retrying as swapping did not work (likely due to concurrent modification)
+	}
+
 	// Step 8: Start new workers with updated concurrency
 	bifrost.logger.Debug("starting %d new workers for provider %s with buffer size %d",
 		providerConfig.ConcurrencyAndBufferSize.Concurrency,
@@ -912,7 +971,7 @@ transferComplete:
 		go bifrost.requestWorker(provider, providerConfig, newQueue)
 	}
 
-	bifrost.logger.Info("successfully updated concurrency configuration for provider %s", providerKey)
+	bifrost.logger.Info("successfully updated provider configuration for provider %s", providerKey)
 	return nil
 }
 
@@ -1449,7 +1508,6 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
-
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
 			bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
@@ -1464,6 +1522,13 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
+		if primaryErr != nil {
+			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       provider,
+				ModelRequested: model,
+			}
+		}
 		return primaryResult, primaryErr
 	}
 
@@ -1487,7 +1552,20 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       fallback.Provider,
+				ModelRequested: fallback.Model,
+			}
 			return nil, fallbackErr
+		}
+	}
+
+	if primaryErr != nil {
+		primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			ModelRequested: model,
 		}
 	}
 
@@ -1524,6 +1602,13 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
+		if primaryErr != nil {
+			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       provider,
+				ModelRequested: model,
+			}
+		}
 		return primaryResult, primaryErr
 	}
 
@@ -1545,9 +1630,23 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       fallback.Provider,
+				ModelRequested: fallback.Model,
+			}
 			return nil, fallbackErr
 		}
 	}
+
+	if primaryErr != nil {
+		primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			ModelRequested: model,
+		}
+	}
+
 	// All providers failed, return the original error
 	return nil, primaryErr
 }

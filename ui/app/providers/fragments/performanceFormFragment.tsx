@@ -16,10 +16,9 @@ import { toast } from "sonner";
 
 interface PerformanceFormFragmentProps {
 	provider: ModelProvider;
-	showRestartAlert?: boolean;
 }
 
-export function PerformanceFormFragment({ provider, showRestartAlert = false }: PerformanceFormFragmentProps) {
+export function PerformanceFormFragment({ provider }: PerformanceFormFragmentProps) {
 	const dispatch = useAppDispatch();
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const form = useForm<PerformanceFormSchema, any, PerformanceFormSchema>({
@@ -38,12 +37,6 @@ export function PerformanceFormFragment({ provider, showRestartAlert = false }: 
 	useEffect(() => {
 		dispatch(setProviderFormDirtyState(form.formState.isDirty));
 	}, [form.formState.isDirty]);
-
-	useEffect(() => {
-		console.log("Form errors:", form.formState.errors);
-		console.log("Form is valid:", form.formState.isValid);
-		console.log("Form is dirty:", form.formState.isDirty);
-	}, [form.formState.errors, form.formState.isValid, form.formState.isDirty]);
 
 	useEffect(() => {
 		// Reset form with new provider's concurrency_and_buffer_size when provider changes

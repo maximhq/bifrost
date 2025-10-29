@@ -1,29 +1,24 @@
 "use client";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
 import { proxyOnlyFormSchema, type ProxyOnlyFormSchema } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle } from "lucide-react";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { fi } from "zod/v4/locales";
 
 interface ProxyFormFragmentProps {
 	provider: ModelProvider;
-	showRestartAlert?: boolean;
 }
 
-export function ProxyFormFragment({ provider, showRestartAlert = false }: ProxyFormFragmentProps) {
+export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 	const dispatch = useAppDispatch();
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const form = useForm<ProxyOnlyFormSchema>({
@@ -81,16 +76,6 @@ export function ProxyFormFragment({ provider, showRestartAlert = false }: ProxyF
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
-				{showRestartAlert && form.formState.isDirty && (
-					<Alert>
-						<AlertTriangle className="h-4 w-4" />
-						<AlertDescription>
-							The settings below require a Bifrost service restart to take effect. Current connections will continue with existing settings
-							until restart.
-						</AlertDescription>
-					</Alert>
-				)}
-
 				{/* Proxy Configuration */}
 				<div className="space-y-4">
 					<div className="space-y-4">

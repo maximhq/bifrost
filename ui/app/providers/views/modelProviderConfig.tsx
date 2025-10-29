@@ -75,13 +75,13 @@ export default function ModelProviderConfig({ provider }: Props) {
 									))}
 								</TabsList>
 								<TabsContent value="api-structure">
-									<ApiStructureFormFragment provider={provider} showRestartAlert={true} />
+									<ApiStructureFormFragment provider={provider} />
 								</TabsContent>
 								<TabsContent value="network">
-									<NetworkFormFragment provider={provider} showRestartAlert={true} />
+									<NetworkFormFragment provider={provider} />
 								</TabsContent>
 								<TabsContent value="proxy">
-									<ProxyFormFragment provider={provider} showRestartAlert={true} />
+									<ProxyFormFragment provider={provider} />
 								</TabsContent>
 								<TabsContent value="performance">
 									<PerformanceFormFragment provider={provider} />

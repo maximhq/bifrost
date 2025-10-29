@@ -10,13 +10,10 @@ import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { KnownProvider, ModelProvider } from "@/lib/types/config";
 import { formCustomProviderConfigSchema } from "@/lib/types/schemas";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { use, useEffect } from "react";
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
-import { fi } from "zod/v4/locales";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertTriangle } from "lucide-react";
 
 // Type for form data
 type FormCustomProviderConfig = z.infer<typeof formCustomProviderConfigSchema>;
@@ -24,11 +21,10 @@ type FormCustomProviderConfig = z.infer<typeof formCustomProviderConfigSchema>;
 // Standalone usage (for provider configuration tabs)
 interface Props {
 	provider: ModelProvider;
-	showRestartAlert?: boolean;
 }
 
 // Standalone component for provider configuration tabs
-export function ApiStructureFormFragment({ provider, showRestartAlert }: Props) {
+export function ApiStructureFormFragment({ provider }: Props) {
 	const dispatch = useAppDispatch();
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const form = useForm<FormCustomProviderConfig>({
@@ -81,16 +77,6 @@ export function ApiStructureFormFragment({ provider, showRestartAlert }: Props) 
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
-				{showRestartAlert && form.formState.isDirty && (
-					<Alert>
-						<AlertTriangle className="h-4 w-4" />
-						<AlertDescription>
-							The settings below require a Bifrost service restart to take effect. Current connections will continue with existing settings
-							until restart.
-						</AlertDescription>
-					</Alert>
-				)}
-
 				<div className="space-y-4">
 					<FormField
 						control={form.control}

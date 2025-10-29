@@ -3,7 +3,7 @@
 import ModelProviderConfig from "@/app/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
@@ -13,11 +13,11 @@ import {
 	useAppDispatch,
 	useAppSelector,
 	useGetProvidersQuery,
-	useLazyGetProviderQuery
+	useLazyGetProviderQuery,
 } from "@/lib/store";
-import { KnownProvider, ModelProviderName } from "@/lib/types/config";
+import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
-import { PlusIcon, Trash } from "lucide-react";
+import { AlertCircle, Info, PlusIcon, Trash } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -39,9 +39,9 @@ export default function Providers() {
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 
-	const allProviders = ProviderNames.map((p) => savedProviders?.find((provider) => provider.name === p) ?? { name: p, keys: [] }).sort(
-		(a, b) => a.name.localeCompare(b.name),
-	);
+	const allProviders = ProviderNames.map(
+		(p) => savedProviders?.find((provider) => provider.name === p) ?? { name: p, keys: [], status: "active" as ProviderStatus },
+	).sort((a, b) => a.name.localeCompare(b.name));
 	const customProviders =
 		savedProviders
 			?.filter((provider) => !ProviderNames.includes(provider.name as KnownProvider))
@@ -69,6 +69,7 @@ export default function Providers() {
 							custom_provider_config: undefined,
 							proxy_config: undefined,
 							send_back_raw_response: undefined,
+							status: "error",
 						}),
 					);
 					return;
@@ -151,23 +152,11 @@ export default function Providers() {
 												}}
 												asChild
 											>
-												<span>
-													{p.custom_provider_config ? (
-														<>
-															<RenderProviderIcon
-																provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
-																size="sm"
-																className="h-4 w-4"
-															/>
-															<div className="text-sm">{p.name}</div>
-														</>
-													) : (
-														<>
-															<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-															<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
-														</>
-													)}
-												</span>
+												<div className="flex items-center gap-2">
+													<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
+													<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
+													<ProviderStatusBadge status={p.status} />
+												</div>
 											</TooltipTrigger>
 										</Tooltip>
 									);
@@ -195,22 +184,14 @@ export default function Providers() {
 											asChild
 										>
 											<div className="group flex w-full items-center gap-2">
-												<div className="flex w-full items-center gap-3">
-													{p.custom_provider_config ? (
-														<>
-															<RenderProviderIcon
-																provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
-																size="sm"
-																className="h-4 w-4"
-															/>
-															<div className="text-sm">{p.name}</div>
-														</>
-													) : (
-														<>
-															<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-															<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
-														</>
-													)}
+												<div className="flex w-full items-center gap-2">
+													<RenderProviderIcon
+														provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
+														size="sm"
+														className="h-4 w-4"
+													/>
+													<div className="text-sm">{p.name}</div>
+													<ProviderStatusBadge status={p.status} />
 												</div>
 												{selectedProvider?.name === p.name && (
 													<Trash
@@ -259,4 +240,15 @@ export default function Providers() {
 			{!isLoadingProvider && selectedProvider && <ModelProviderConfig provider={selectedProvider} />}
 		</div>
 	);
+}
+
+function ProviderStatusBadge({ status }: { status: ProviderStatus }) {
+	return status != "active" ? (
+		<Tooltip>
+			<TooltipTrigger>
+				<AlertCircle className="h-3 w-3" />
+			</TooltipTrigger>
+			<TooltipContent>{status === "error" ? "Provider could not be initialized" : "Provider is deleted"}</TooltipContent>
+		</Tooltip>
+	) : null;
 }

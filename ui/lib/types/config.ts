@@ -142,6 +142,7 @@ export interface ModelProviderConfig {
 // ProviderResponse matching Go's ProviderResponse
 export interface ModelProvider extends ModelProviderConfig {
 	name: ModelProviderName;
+	status: ProviderStatus;
 }
 
 // ListProvidersResponse matching Go's ListProvidersResponse
@@ -270,4 +271,4 @@ export interface ProviderFormData {
 }
 
 // Status types
-export type ProviderStatus = "active" | "error" | "added" | "updated" | "deleted";
+export type ProviderStatus = "active" | "error" | "deleted";

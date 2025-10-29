@@ -5,13 +5,18 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -29,39 +34,210 @@ const (
 //   - Error counts
 type PrometheusPlugin struct {
 	pricingManager *modelcatalog.ModelCatalog
+	registry       *prometheus.Registry
+
+	// Built-in collectors registered by this plugin
+	GoCollector      prometheus.Collector
+	ProcessCollector prometheus.Collector
 
 	// Metrics are defined using promauto for automatic registration
-	UpstreamRequestsTotal   *prometheus.CounterVec
-	UpstreamLatency         *prometheus.HistogramVec
-	SuccessRequestsTotal    *prometheus.CounterVec
-	ErrorRequestsTotal      *prometheus.CounterVec
-	InputTokensTotal        *prometheus.CounterVec
-	OutputTokensTotal       *prometheus.CounterVec
-	CacheHitsTotal          *prometheus.CounterVec
-	CostTotal               *prometheus.CounterVec
-	StreamInterTokenLatency *prometheus.HistogramVec
-	StreamFirstTokenLatency *prometheus.HistogramVec
+	HTTPRequestsTotal              *prometheus.CounterVec
+	HTTPRequestDuration            *prometheus.HistogramVec
+	HTTPRequestSizeBytes           *prometheus.HistogramVec
+	HTTPResponseSizeBytes          *prometheus.HistogramVec
+	UpstreamRequestsTotal          *prometheus.CounterVec
+	UpstreamLatencySeconds         *prometheus.HistogramVec
+	SuccessRequestsTotal           *prometheus.CounterVec
+	ErrorRequestsTotal             *prometheus.CounterVec
+	InputTokensTotal               *prometheus.CounterVec
+	OutputTokensTotal              *prometheus.CounterVec
+	CacheHitsTotal                 *prometheus.CounterVec
+	CostTotal                      *prometheus.CounterVec
+	StreamInterTokenLatencySeconds *prometheus.HistogramVec
+	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
+	customLabels                   []string
+}
+
+type Config struct {
+	CustomLabels []string `json:"custom_labels"`
 }
 
 // Init creates a new PrometheusPlugin with initialized metrics.
-func Init(pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
+func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+
 	if pricingManager == nil {
 		logger.Warn("telemetry plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
 	}
 
+	registry := prometheus.NewRegistry()
+
+	// Create collectors and store references for cleanup
+	goCollector := collectors.NewGoCollector()
+	if err := registry.Register(goCollector); err != nil {
+		return nil, fmt.Errorf("failed to register Go collector: %v", err)
+	}
+
+	processCollector := collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})
+	if err := registry.Register(processCollector); err != nil {
+		return nil, fmt.Errorf("failed to register process collector: %v", err)
+	}
+
+	httpDefaultLabels := []string{"path", "method", "status"}
+	bifrostDefaultLabels := []string{"provider", "model", "method"}
+
+	factory := promauto.With(registry)
+
+	// Upstream LLM latency buckets - extended range for AI model inference times
+	upstreamLatencyBuckets := []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 15, 30, 45, 60, 90} // in seconds
+
+	httpRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Total number of HTTP requests.",
+		},
+		append(httpDefaultLabels, config.CustomLabels...),
+	)
+
+	// httpRequestDuration tracks the duration of HTTP requests
+	httpRequestDuration := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "Duration of HTTP requests.",
+			Buckets: prometheus.DefBuckets,
+		},
+		append(httpDefaultLabels, config.CustomLabels...),
+	)
+
+	// httpRequestSizeBytes tracks the size of incoming HTTP requests
+	httpRequestSizeBytes := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_size_bytes",
+			Help:    "Size of HTTP requests.",
+			Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
+		},
+		append(httpDefaultLabels, config.CustomLabels...),
+	)
+
+	// httpResponseSizeBytes tracks the size of outgoing HTTP responses
+	httpResponseSizeBytes := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_response_size_bytes",
+			Help:    "Size of HTTP responses.",
+			Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
+		},
+		append(httpDefaultLabels, config.CustomLabels...),
+	)
+
+	// Bifrost Upstream Metrics
+	bifrostUpstreamRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_upstream_requests_total",
+			Help: "Total number of requests forwarded to upstream providers by Bifrost.",
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
+	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_upstream_latency_seconds",
+			Help:    "Latency of requests forwarded to upstream providers by Bifrost.",
+			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
+	bifrostSuccessRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_success_requests_total",
+			Help: "Total number of successful requests forwarded to upstream providers by Bifrost.",
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
+	bifrostErrorRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_error_requests_total",
+			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
+		},
+		append(append(bifrostDefaultLabels, "reason"), config.CustomLabels...),
+	)
+
+	bifrostInputTokensTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_input_tokens_total",
+			Help: "Total number of input tokens forwarded to upstream providers by Bifrost.",
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
+	bifrostOutputTokensTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_output_tokens_total",
+			Help: "Total number of output tokens forwarded to upstream providers by Bifrost.",
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
+	bifrostCacheHitsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_cache_hits_total",
+			Help: "Total number of cache hits forwarded to upstream providers by Bifrost, separated by cache type (direct/semantic).",
+		},
+		append(append(bifrostDefaultLabels, "cache_type"), config.CustomLabels...),
+	)
+
+	bifrostCostTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_cost_total",
+			Help: "Total cost in USD for requests to upstream providers.",
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
+	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "bifrost_stream_inter_token_latency_seconds",
+			Help: "Latency of the intermediate tokens of a stream response.",
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
+	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "bifrost_stream_first_token_latency_seconds",
+			Help: "Latency of the first token of a stream response.",
+		},
+		append(bifrostDefaultLabels, config.CustomLabels...),
+	)
+
 	return &PrometheusPlugin{
-		pricingManager:          pricingManager,
-		UpstreamRequestsTotal:   bifrostUpstreamRequestsTotal,
-		UpstreamLatency:         bifrostUpstreamLatencySeconds,
-		SuccessRequestsTotal:    bifrostSuccessRequestsTotal,
-		ErrorRequestsTotal:      bifrostErrorRequestsTotal,
-		InputTokensTotal:        bifrostInputTokensTotal,
-		OutputTokensTotal:       bifrostOutputTokensTotal,
-		CacheHitsTotal:          bifrostCacheHitsTotal,
-		CostTotal:               bifrostCostTotal,
-		StreamInterTokenLatency: bifrostStreamInterTokenLatencySeconds,
-		StreamFirstTokenLatency: bifrostStreamFirstTokenLatencySeconds,
+		pricingManager:                 pricingManager,
+		registry:                       registry,
+		GoCollector:                    goCollector,
+		ProcessCollector:               processCollector,
+		HTTPRequestsTotal:              httpRequestsTotal,
+		HTTPRequestDuration:            httpRequestDuration,
+		HTTPRequestSizeBytes:           httpRequestSizeBytes,
+		HTTPResponseSizeBytes:          httpResponseSizeBytes,
+		UpstreamRequestsTotal:          bifrostUpstreamRequestsTotal,
+		UpstreamLatencySeconds:         bifrostUpstreamLatencySeconds,
+		SuccessRequestsTotal:           bifrostSuccessRequestsTotal,
+		ErrorRequestsTotal:             bifrostErrorRequestsTotal,
+		InputTokensTotal:               bifrostInputTokensTotal,
+		OutputTokensTotal:              bifrostOutputTokensTotal,
+		CacheHitsTotal:                 bifrostCacheHitsTotal,
+		CostTotal:                      bifrostCostTotal,
+		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
+		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
+		customLabels:                   config.CustomLabels,
 	}, nil
+}
+
+func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {
+	return p.registry
 }
 
 // GetName returns the name of the plugin.
@@ -104,7 +280,7 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		}
 
 		// Get all prometheus labels from context
-		for _, key := range customLabels {
+		for _, key := range p.customLabels {
 			if value := (*ctx).Value(schemas.BifrostContextKey(key)); value != nil {
 				if strValue, ok := value.(string); ok {
 					labelValues[key] = strValue
@@ -113,7 +289,7 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		}
 
 		// Get label values in the correct order (cache_type will be handled separately for cache hits)
-		promLabelValues := getPrometheusLabelValues(append([]string{"provider", "model", "method"}, customLabels...), labelValues)
+		promLabelValues := getPrometheusLabelValues(append([]string{"provider", "model", "method"}, p.customLabels...), labelValues)
 
 		// For streaming requests, handle per-token metrics for intermediate chunks
 		if bifrost.IsStreamRequestType(requestType) {
@@ -128,9 +304,9 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 				if result != nil {
 					extraFields := result.GetExtraFields()
 					if extraFields.ChunkIndex == 0 {
-						p.StreamFirstTokenLatency.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
+						p.StreamFirstTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
 					} else {
-						p.StreamInterTokenLatency.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
+						p.StreamInterTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
 					}
 				}
 				return // Exit goroutine for intermediate chunks
@@ -143,7 +319,7 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		}
 
 		duration := time.Since(startTime).Seconds()
-		p.UpstreamLatency.WithLabelValues(promLabelValues...).Observe(duration)
+		p.UpstreamLatencySeconds.WithLabelValues(promLabelValues...).Observe(duration)
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 
 		// Record cost using the dedicated cost counter
@@ -228,6 +404,49 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	return result, bifrostErr, nil
 }
 
+// PrometheusMiddleware wraps a FastHTTP handler to collect Prometheus metrics.
+// It tracks:
+//   - Total number of requests
+//   - Request duration
+//   - Request and response sizes
+//   - HTTP status codes
+//   - Bifrost upstream requests and errors
+func (p *PrometheusPlugin) HTTPMiddleware(handler fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		start := time.Now()
+
+		// Collect request metrics and headers
+		promKeyValues := collectPrometheusKeyValues(ctx)
+		reqSize := float64(ctx.Request.Header.ContentLength())
+
+		// Process the request
+		handler(ctx)
+
+		// Record metrics after request completion
+		duration := time.Since(start).Seconds()
+		status := strconv.Itoa(ctx.Response.StatusCode())
+		respSize := float64(ctx.Response.Header.ContentLength())
+
+		// Add status to the label values
+		promKeyValues["status"] = status
+
+		// Get label values in the correct order
+		promLabelValues := getPrometheusLabelValues(append([]string{"path", "method", "status"}, p.customLabels...), promKeyValues)
+
+		// Record all metrics with prometheus labels
+		p.HTTPRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+		p.HTTPRequestDuration.WithLabelValues(promLabelValues...).Observe(duration)
+		if reqSize >= 0 {
+			safeObserve(p.HTTPRequestSizeBytes, reqSize, promLabelValues...)
+		}
+		if respSize >= 0 {
+			safeObserve(p.HTTPResponseSizeBytes, respSize, promLabelValues...)
+		}
+	}
+}
+
 func (p *PrometheusPlugin) Cleanup() error {
+	// No-op. With a local registry, there's no need to unregister metrics.
+	// The registry and all its metrics will be garbage collected with the plugin instance.
 	return nil
 }

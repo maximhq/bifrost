@@ -24,8 +24,6 @@ import (
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
@@ -116,17 +114,6 @@ func GetDefaultConfigDir(appDir string) string {
 	return configDir
 }
 
-// RegisterCollectorSafely attempts to register a Prometheus collector,
-// handling the case where it may already be registered.
-// It logs any errors that occur during registration, except for AlreadyRegisteredError.
-func RegisterCollectorSafely(collector prometheus.Collector) {
-	if err := prometheus.Register(collector); err != nil {
-		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-			logger.Error("failed to register prometheus collector: %v", err)
-		}
-	}
-}
-
 // MarshalPluginConfig marshals the plugin configuration
 func MarshalPluginConfig[T any](source any) (*T, error) {
 	// If its a *T, then we will confirm
@@ -172,7 +159,9 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 	var zero T
 	switch name {
 	case telemetry.PluginName:
-		plugin, err := telemetry.Init(bifrostConfig.PricingManager, logger)
+		plugin, err := telemetry.Init(&telemetry.Config{
+			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
+		}, bifrostConfig.PricingManager, logger)
 		if err != nil {
 			return zero, err
 		}
@@ -345,6 +334,13 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore() error {
 	return nil
 }
 
+func (s *BifrostHTTPServer) UpdateDropExcessRequests(value bool) {
+	if s.Config == nil {
+		return
+	}
+	s.Client.UpdateDropExcessRequests(value)
+}
+
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, pluginConfig any) error {
@@ -465,7 +461,16 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
-	middlewaresWithTelemetry := append(middlewares, telemetry.PrometheusMiddleware)
+
+	middlewaresWithTelemetry := middlewares
+	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
+	if err == nil {
+		middlewaresWithTelemetry = append(middlewaresWithTelemetry, prometheusPlugin.HTTPMiddleware)
+	} else {
+		logger.Warn("prometheus plugin not found, skipping telemetry middleware")
+		middlewaresWithTelemetry = middlewares
+	}
+
 	// Chaining all middlewares
 	// lib.ChainMiddlewares chains multiple middlewares together
 	// Initialize
@@ -474,7 +479,7 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	inferenceHandler := NewInferenceHandler(s.Client, s.Config, logger)
 	mcpHandler := NewMCPHandler(s.Client, logger, s.Config)
 	integrationHandler := NewIntegrationHandler(s.Client, s.Config, logger)
-	configHandler := NewConfigHandler(s.Client, logger, s.Config, s)
+	configHandler := NewConfigHandler(s, logger, s.Config)
 	pluginsHandler := NewPluginsHandler(s, s.Config.ConfigStore, logger)
 	// Register all handler routes
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
@@ -496,22 +501,22 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	if s.WebSocketHandler != nil {
 		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)
 	}
-	//
+
 	// Add Prometheus /metrics endpoint
-	s.Router.GET("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()))
+	prometheusPlugin, err = FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
+	if err == nil && prometheusPlugin.GetRegistry() != nil {
+		// Use the plugin's dedicated registry if available
+		metricsHandler := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(prometheusPlugin.GetRegistry(), promhttp.HandlerOpts{}))
+		s.Router.GET("/metrics", metricsHandler)
+	} else {
+		logger.Warn("prometheus plugin not found or registry is nil, skipping metrics endpoint")
+	}
+
 	// 404 handler
 	s.Router.NotFound = func(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()), logger)
 	}
 	return nil
-}
-
-// InitializeTelemetry initializes Prometheus collectors for monitoring
-func (s *BifrostHTTPServer) InitializeTelemetry() {
-	RegisterCollectorSafely(collectors.NewGoCollector())
-	RegisterCollectorSafely(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	// Initialize prometheus telemetry
-	telemetry.InitPrometheusMetrics(s.Config.ClientConfig.PrometheusLabels)
 }
 
 // RegisterUIHandler registers the UI handler with the specified router
@@ -548,8 +553,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
-	s.InitializeTelemetry()
-	logger.Debug("prometheus Go/Process collectors registered.")
 	// Load plugins
 	s.Plugins, err = LoadPlugins(ctx, s.Config)
 	if err != nil {

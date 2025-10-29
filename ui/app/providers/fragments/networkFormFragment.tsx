@@ -1,6 +1,5 @@
 "use client";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -12,17 +11,15 @@ import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider, isKnownProvider } from "@/lib/types/config";
 import { networkOnlyFormSchema, type NetworkOnlyFormSchema } from "@/lib/types/schemas";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle } from "lucide-react";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
 
 interface NetworkFormFragmentProps {
 	provider: ModelProvider;
-	showRestartAlert?: boolean;
 }
 
-export function NetworkFormFragment({ provider, showRestartAlert = false }: NetworkFormFragmentProps) {
+export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	const dispatch = useAppDispatch();
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const isCustomProvider = !isKnownProvider(provider.name as string);
@@ -69,6 +66,9 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 		};
 		updateProvider(updatedProvider)
 			.unwrap()
+			.then(() => {
+				toast.success("Provider configuration updated successfully");
+			})
 			.catch((err) => {
 				toast.error("Failed to update provider configuration", {
 					description: getErrorMessage(err),
@@ -96,16 +96,6 @@ export function NetworkFormFragment({ provider, showRestartAlert = false }: Netw
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
-				{showRestartAlert && form.formState.isDirty && (
-					<Alert>
-						<AlertTriangle className="h-4 w-4" />
-						<AlertDescription>
-							The settings below require a Bifrost service restart to take effect. Current connections will continue with existing settings
-							until restart.
-						</AlertDescription>
-					</Alert>
-				)}
-
 				{/* Network Configuration */}
 				<div className="space-y-4">
 					<div className="grid grid-cols-1 gap-4">

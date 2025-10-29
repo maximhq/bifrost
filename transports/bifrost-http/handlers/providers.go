@@ -35,6 +35,14 @@ func NewProviderHandler(store *lib.Config, client *bifrost.Bifrost, logger schem
 	}
 }
 
+type ProviderStatus = string
+
+const (
+	ProviderStatusActive  ProviderStatus = "active"  // Provider is active and working
+	ProviderStatusError   ProviderStatus = "error"   // Provider failed to initialize
+	ProviderStatusDeleted ProviderStatus = "deleted" // Provider is deleted from the store
+)
+
 // ProviderResponse represents the response for provider operations
 type ProviderResponse struct {
 	Name                     schemas.ModelProvider            `json:"name"`
@@ -44,6 +52,7 @@ type ProviderResponse struct {
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                     // Proxy configuration
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
+	Status                   ProviderStatus                   `json:"status"`                           // Status of the provider
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -77,6 +86,12 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	providersInClient, err := h.client.GetConfiguredProviders()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers from client: %v", err), h.logger)
+		return
+	}
+
 	providerResponses := []ProviderResponse{}
 
 	// Sort providers alphabetically
@@ -90,12 +105,18 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 			h.logger.Warn(fmt.Sprintf("Failed to get config for provider %s: %v", provider, err))
 			// Include provider even if config fetch fails
 			providerResponses = append(providerResponses, ProviderResponse{
-				Name: provider,
+				Name:   provider,
+				Status: ProviderStatusError,
 			})
 			continue
 		}
 
-		providerResponses = append(providerResponses, h.getProviderResponseFromConfig(provider, *config))
+		providerStatus := ProviderStatusError
+		if slices.Contains(providersInClient, provider) {
+			providerStatus = ProviderStatusActive
+		}
+
+		providerResponses = append(providerResponses, h.getProviderResponseFromConfig(provider, *config, providerStatus))
 	}
 
 	response := ListProvidersResponse{
@@ -114,13 +135,24 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	providersInClient, err := h.client.GetConfiguredProviders()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers from client: %v", err), h.logger)
+		return
+	}
+
 	config, err := h.store.GetProviderConfigRedacted(provider)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err), h.logger)
 		return
 	}
 
-	response := h.getProviderResponseFromConfig(provider, *config)
+	providerStatus := ProviderStatusError
+	if slices.Contains(providersInClient, provider) {
+		providerStatus = ProviderStatusActive
+	}
+
+	response := h.getProviderResponseFromConfig(provider, *config, providerStatus)
 
 	SendJSON(ctx, response, h.logger)
 }
@@ -220,12 +252,12 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			ProxyConfig:              config.ProxyConfig,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
-		})
+		}, ProviderStatusActive)
 		SendJSON(ctx, response, h.logger)
 		return
 	}
 
-	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig)
+	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
 
 	SendJSON(ctx, response, h.logger)
 }
@@ -369,18 +401,11 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	oldConcurrencyAndBufferSize := &schemas.DefaultConcurrencyAndBufferSize
-	if oldConfigRaw.ConcurrencyAndBufferSize != nil {
-		oldConcurrencyAndBufferSize = oldConfigRaw.ConcurrencyAndBufferSize
-	}
-
-	if config.ConcurrencyAndBufferSize.Concurrency != oldConcurrencyAndBufferSize.Concurrency ||
-		config.ConcurrencyAndBufferSize.BufferSize != oldConcurrencyAndBufferSize.BufferSize {
-		// Update concurrency and queue configuration in Bifrost
-		if err := h.client.UpdateProviderConcurrency(provider); err != nil {
-			// Note: Store update succeeded, continue but log the concurrency update failure
-			h.logger.Warn(fmt.Sprintf("Failed to update concurrency for provider %s: %v", provider, err))
-		}
+	// First update the provider config in store because account interface fetched config from there in client update
+	if err := h.client.UpdateProvider(provider); err != nil {
+		h.logger.Warn(fmt.Sprintf("Failed to update provider %s: %v", provider, err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err), h.logger)
+		return
 	}
 
 	// Get redacted config for response
@@ -394,12 +419,12 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			ProxyConfig:              config.ProxyConfig,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
-		})
+		}, ProviderStatusActive)
 		SendJSON(ctx, response, h.logger)
 		return
 	}
 
-	response := h.getProviderResponseFromConfig(provider, *redactedConfig)
+	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
 
 	SendJSON(ctx, response, h.logger)
 }
@@ -580,7 +605,7 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 	return resultKeys, nil
 }
 
-func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config configstore.ProviderConfig) ProviderResponse {
+func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config configstore.ProviderConfig, status ProviderStatus) ProviderResponse {
 	if config.NetworkConfig == nil {
 		config.NetworkConfig = &schemas.DefaultNetworkConfig
 	}
@@ -596,6 +621,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		ProxyConfig:              config.ProxyConfig,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
+		Status:                   status,
 	}
 }
 

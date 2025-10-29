@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,12 +23,13 @@ import (
 type ConfigManager interface {
 	ReloadClientConfigFromConfigStore() error
 	ReloadPricingManager() error
+	UpdateDropExcessRequests(value bool)
+	ReloadPlugin(ctx context.Context, name string, pluginConfig any) error
 }
 
 // ConfigHandler manages runtime configuration updates for Bifrost.
 // It provides endpoints to update and retrieve settings persisted via the ConfigStore backed by sql database.
 type ConfigHandler struct {
-	client        *bifrost.Bifrost
 	logger        schemas.Logger
 	store         *lib.Config
 	configManager ConfigManager
@@ -35,12 +37,11 @@ type ConfigHandler struct {
 
 // NewConfigHandler creates a new handler for configuration management.
 // It requires the Bifrost client, a logger, and the config store.
-func NewConfigHandler(client *bifrost.Bifrost, logger schemas.Logger, store *lib.Config, configManager ConfigManager) *ConfigHandler {
+func NewConfigHandler(configManager ConfigManager, logger schemas.Logger, store *lib.Config) *ConfigHandler {
 	return &ConfigHandler{
-		client:        client,
+		configManager: configManager,
 		logger:        logger,
 		store:         store,
-		configManager: configManager,
 	}
 }
 
@@ -157,13 +158,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	currentConfig := h.store.ClientConfig
 	updatedConfig := currentConfig
 
+	shouldReloadTelemetryPlugin := false
+
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
-		h.client.UpdateDropExcessRequests(payload.ClientConfig.DropExcessRequests)
+		h.configManager.UpdateDropExcessRequests(payload.ClientConfig.DropExcessRequests)
 		updatedConfig.DropExcessRequests = payload.ClientConfig.DropExcessRequests
 	}
 
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
 		updatedConfig.PrometheusLabels = payload.ClientConfig.PrometheusLabels
+		shouldReloadTelemetryPlugin = true
 	}
 
 	if !slices.Equal(payload.ClientConfig.AllowedOrigins, currentConfig.AllowedOrigins) {
@@ -261,6 +265,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		// Reloading pricing manager
 		h.configManager.ReloadPricingManager()
+	}
+	if shouldReloadTelemetryPlugin {
+		//TODO: Reload telemetry plugin - solvable problem by having a reference modifier on the metrics handler, but that will lead to loss of data on update
+		// if err := h.configManager.ReloadPlugin(ctx, telemetry.PluginName, map[string]any{
+		// 	"custom_labels": updatedConfig.PrometheusLabels,
+		// }); err != nil {
+		// 	h.logger.Warn(fmt.Sprintf("failed to reload telemetry plugin: %v", err))
+		// 	SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload telemetry plugin: %v", err), h.logger)
+		// 	return
+		// }
 	}
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
