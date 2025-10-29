@@ -710,7 +710,6 @@ func TestUpdateProvider(t *testing.T) {
 	t.Run("UpdateInactiveProvider", func(t *testing.T) {
 		// Setup account with provider but don't initialize it in Bifrost
 		account := NewMockAccount()
-		account.AddProvider(schemas.Anthropic, 3, 500)
 
 		ctx := context.Background()
 		bifrost, err := Init(ctx, schemas.BifrostConfig{
@@ -720,6 +719,9 @@ func TestUpdateProvider(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to initialize Bifrost: %v", err)
 		}
+
+		// Add provider to account after bifrost initialization
+		account.AddProvider(schemas.Anthropic, 3, 500)
 
 		// Verify provider doesn't exist initially
 		if bifrost.getProviderByKey(schemas.Anthropic) != nil {
