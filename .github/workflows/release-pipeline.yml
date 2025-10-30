@@ -356,6 +356,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify bifrost-http release
+        id: verify
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
+          echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -401,6 +413,18 @@ jobs:
       steps:
         - name: Checkout repository
           uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+            fetch-tags: true
+
+        - name: Verify bifrost-http release
+          id: verify
+          continue-on-error: true
+          env:
+            GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          run: |
+            ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
+            echo "verified=true" >> $GITHUB_OUTPUT        
 
         - name: Set up Docker Buildx
           uses: docker/setup-buildx-action@v3

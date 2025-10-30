@@ -1,0 +1,117 @@
+name: PR Tests (Requires Approval)
+
+on:
+  # Manual trigger only - requires admin to click "Run workflow" button
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to test (leave empty for current branch)'
+        required: false
+        type: string
+
+# Prevent concurrent test runs on the same PR
+concurrency:
+  group: pr-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # This job shows up immediately and waits for approval
+  run-tests:
+    name: Run Tests (Awaiting Approval)
+    runs-on: ubuntu-latest
+    
+    # Environment with protection rules - requires admin approval
+    # Note: You need to configure this environment in repo settings
+    environment:
+      name: pr-testing
+      url: ${{ github.event.pull_request.html_url || github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.1'
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Add comment to PR
+        if: github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "🧪 Test run approved and starting...
+
+          **Test Suite Includes:**
+          - 📦 Core Build Validation
+          - 🔧 Core Provider Tests
+          - 🛡️ Governance Tests
+          - 🔗 Integration Tests
+
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+      
+      - name: Make test script executable
+        run: chmod +x .github/workflows/scripts/run-tests.sh
+      
+      - name: Run tests
+        env:
+          # API Keys for provider tests
+          MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
+          MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_ARN: ${{ secrets.AWS_ARN }}
+          BEDROCK_API_KEY: ${{ secrets.BEDROCK_API_KEY }}
+          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_EMB_API_KEY: ${{ secrets.AZURE_EMB_API_KEY }}
+          AZURE_EMB_ENDPOINT: ${{ secrets.AZURE_EMB_ENDPOINT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+        run: |
+          echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
+          ./.github/workflows/scripts/run-tests.sh
+      
+      - name: Report test results
+        if: always() && github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            gh pr comment ${{ github.event.pull_request.number }} --body "✅ **All tests passed successfully!**
+
+            All test suites have completed without errors. This PR is ready for review.
+
+            [View detailed results →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          else
+            gh pr comment ${{ github.event.pull_request.number }} --body "❌ **Tests failed**
+
+            One or more test suites failed. Please review the failures and update your PR.
+
+            [View detailed results →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          fi
+
+
