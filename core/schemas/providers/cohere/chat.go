@@ -178,13 +178,14 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 }
 
 // ToBifrostChatResponse converts a Cohere v2 response to Bifrost format
-func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
+func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas.BifrostChatResponse {
 	if response == nil {
 		return nil
 	}
 
 	bifrostResponse := &schemas.BifrostChatResponse{
 		ID:     response.ID,
+		Model:  model,
 		Object: "chat.completion",
 		Choices: []schemas.BifrostResponseChoice{
 			{

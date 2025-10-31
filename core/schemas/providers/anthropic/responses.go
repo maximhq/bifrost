@@ -190,7 +190,7 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 	return anthropicReq
 }
 
-// ToResponsesBifrostResponse converts an Anthropic response to BifrostResponse with Responses structure
+// ToBifrostResponsesResponse converts an Anthropic response to BifrostResponse with Responses structure
 func (response *AnthropicMessageResponse) ToBifrostResponsesResponse() *schemas.BifrostResponsesResponse {
 	if response == nil {
 		return nil

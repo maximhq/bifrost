@@ -30,6 +30,27 @@ var cohereResponsePool = sync.Pool{
 	},
 }
 
+// cohereEmbeddingResponsePool provides a pool for Cohere embedding response objects.
+var cohereEmbeddingResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &cohere.CohereEmbeddingResponse{}
+	},
+}
+
+// acquireCohereEmbeddingResponse gets a Cohere embedding response from the pool and resets it.
+func acquireCohereEmbeddingResponse() *cohere.CohereEmbeddingResponse {
+	resp := cohereEmbeddingResponsePool.Get().(*cohere.CohereEmbeddingResponse)
+	*resp = cohere.CohereEmbeddingResponse{} // Reset the struct
+	return resp
+}
+
+// releaseCohereEmbeddingResponse returns a Cohere embedding response to the pool.
+func releaseCohereEmbeddingResponse(resp *cohere.CohereEmbeddingResponse) {
+	if resp != nil {
+		cohereEmbeddingResponsePool.Put(resp)
+	}
+}
+
 // acquireCohereResponse gets a Cohere v2 response from the pool and resets it.
 func acquireCohereResponse() *cohere.CohereChatResponse {
 	resp := cohereResponsePool.Get().(*cohere.CohereChatResponse)
@@ -74,6 +95,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
 		cohereResponsePool.Put(&cohere.CohereChatResponse{})
+		cohereEmbeddingResponsePool.Put(&cohere.CohereEmbeddingResponse{})
 	}
 
 	// Set default BaseURL if not provided
@@ -95,6 +117,64 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) *C
 // GetProviderKey returns the provider identifier for Cohere.
 func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.Cohere, provider.customProviderConfig)
+}
+
+// completeRequest sends a request to Cohere's API and handles the response.
+// It constructs the API URL, sets up authentication, and processes the response.
+// Returns the response body or an error if the request fails.
+func (provider *CohereProvider) completeRequest(ctx context.Context, requestBody interface{}, url string, key string) ([]byte, time.Duration, *schemas.BifrostError) {
+	// Marshal the request body
+	jsonData, err := sonic.Marshal(requestBody)
+	if err != nil {
+		return nil, 0, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, provider.GetProviderKey())
+	}
+
+	// Create the request with the JSON body
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	req.SetBody(jsonData)
+
+	// Send the request
+	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, latency, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
+
+		var errorResp cohere.CohereError
+
+		bifrostErr := handleProviderAPIError(resp, &errorResp)
+		bifrostErr.Type = &errorResp.Type
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		bifrostErr.Error.Message = errorResp.Message
+		if errorResp.Code != nil {
+			bifrostErr.Error.Code = errorResp.Code
+		}
+
+		return nil, latency, bifrostErr
+	}
+
+	// Read the response body and copy it before releasing the response
+	// to avoid use-after-free since resp.Body() references fasthttp's internal buffer
+	bodyCopy := append([]byte(nil), resp.Body()...)
+
+	return bodyCopy, latency, nil
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -210,102 +290,34 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 		return nil, newBifrostOperationError("chat completion input is not provided", nil, providerName)
 	}
 
-	cohereResponse, rawResponse, latency, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
+	responseBody, latency, err := provider.completeRequest(ctx, reqBody, provider.networkConfig.BaseURL+"/v2/chat", key.Value)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert Cohere v2 response to Bifrost response
-	response := cohereResponse.ToBifrostChatResponse()
+	// Create response object from pool
+	response := acquireCohereResponse()
+	defer releaseCohereResponse(response)
 
-	response.Model = request.Model
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.ModelRequested = request.Model
-	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
-
-	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	return response, nil
-}
-
-func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Context, reqBody *cohere.CohereChatRequest, key schemas.Key) (*cohere.CohereChatResponse, interface{}, time.Duration, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
-	// Marshal request body
-	jsonBody, err := sonic.Marshal(reqBody)
-	if err != nil {
-		return nil, nil, time.Duration(0), &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderJSONMarshaling,
-				Error:   err,
-			},
-		}
-	}
-
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/chat")
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, nil, latency, bifrostErr
+		return nil, bifrostErr
 	}
 
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+	bifrostResponse := response.ToBifrostChatResponse(request.Model)
 
-		var errorResp cohere.CohereError
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = errorResp.Message
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
-		return nil, nil, latency, bifrostErr
-	}
-
-	// Parse Cohere v2 response
-	var cohereResponse cohere.CohereChatResponse
-	if err := sonic.Unmarshal(resp.Body(), &cohereResponse); err != nil {
-		return nil, nil, latency, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "error parsing Cohere v2 response",
-				Error:   err,
-			},
-		}
-	}
-
-	// Parse raw response for sendBackRawResponse
-	var rawResponse interface{}
+	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
-			return nil, nil, latency, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: "error parsing raw response",
-					Error:   err,
-				},
-			}
-		}
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	return &cohereResponse, rawResponse, latency, nil
+	return bifrostResponse, nil
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Cohere API.
@@ -572,24 +584,34 @@ func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, 
 		return nil, newBifrostOperationError("responses input is not provided", nil, providerName)
 	}
 
-	cohereResponse, rawResponse, latency, err := provider.handleCohereChatCompletionRequest(ctx, reqBody, key)
+	responseBody, latency, err := provider.completeRequest(ctx, reqBody, provider.networkConfig.BaseURL+"/v2/chat", key.Value)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert Cohere v2 response to Bifrost response
-	response := cohereResponse.ToResponsesBifrostResponsesResponse()
+	// Create response object from pool
+	response := acquireCohereResponse()
+	defer releaseCohereResponse(response)
 
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.ModelRequested = request.Model
-	response.ExtraFields.RequestType = schemas.ResponsesRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
-
-	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
-	return response, nil
+	bifrostResponse := response.ToBifrostResponsesResponse()
+
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
 }
 
 // ResponsesStream performs a streaming responses request to the Cohere API.
@@ -792,72 +814,34 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 		return nil, newBifrostOperationError("embedding input is not provided", nil, providerName)
 	}
 
-	// Marshal request body
-	jsonBody, err := sonic.Marshal(reqBody)
+	responseBody, latency, err := provider.completeRequest(ctx, reqBody, provider.networkConfig.BaseURL+"/v2/embed", key.Value)
 	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
+		return nil, err
 	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// Create response object from pool
+	response := acquireCohereEmbeddingResponse()
+	defer releaseCohereEmbeddingResponse(response)
 
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/embed")
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+	bifrostResponse := response.ToBifrostEmbeddingResponse()
 
-		var errorResp cohere.CohereError
-		bifrostErr := handleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = errorResp.Message
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
-		return nil, bifrostErr
-	}
-
-	// Parse response
-	var cohereResp cohere.CohereEmbeddingResponse
-	if err := sonic.Unmarshal(resp.Body(), &cohereResp); err != nil {
-		return nil, newBifrostOperationError("error parsing embedding response", err, providerName)
-	}
-
-	// Parse raw response for consistent format
-	var rawResponse interface{}
-	if err := sonic.Unmarshal(resp.Body(), &rawResponse); err != nil {
-		return nil, newBifrostOperationError("error parsing raw response for embedding", err, providerName)
-	}
-
-	// Create BifrostResponse
-	response := cohereResp.ToBifrostEmbeddingResponse()
-
-	response.Model = request.Model
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.ModelRequested = request.Model
-	response.ExtraFields.RequestType = schemas.EmbeddingRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
-
-	// Only include RawResponse if sendBackRawResponse is enabled
+	// Set raw response if enabled
 	if provider.sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	return response, nil
+	return bifrostResponse, nil
 }
 
 // Speech is not supported by the Cohere provider.

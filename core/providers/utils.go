@@ -766,6 +766,8 @@ func extractSuccessfulListModelsResponses(
 }
 
 // handleMultipleListModelsRequests handles multiple list models requests concurrently for different keys.
+// It launches concurrent requests for all keys and waits for all goroutines to complete.
+// It returns the aggregated response or an error if the request fails.
 func handleMultipleListModelsRequests(
 	ctx context.Context,
 	keys []schemas.Key,

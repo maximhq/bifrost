@@ -91,8 +91,8 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 	return cohereReq
 }
 
-// ToResponsesBifrostResponse converts CohereChatResponse to BifrostResponse (Responses structure)
-func (response *CohereChatResponse) ToResponsesBifrostResponsesResponse() *schemas.BifrostResponsesResponse {
+// ToBifrostResponsesResponse converts CohereChatResponse to BifrostResponse (Responses structure)
+func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.BifrostResponsesResponse {
 	if response == nil {
 		return nil
 	}
