@@ -227,6 +227,9 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 			},
 		}
 	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
 
 	request := &schemas.BifrostListModelsRequest{
 		Provider:    req.Provider,
@@ -258,23 +261,13 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 		baseProvider = config.CustomProviderConfig.BaseProviderType
 	}
 
-	// Get API key for the provider if required
-	key := schemas.Key{}
-	if providerRequiresKey(baseProvider) {
-		key, err = bifrost.selectKeyFromProviderForModel(&ctx, schemas.ListModelsRequest, req.Provider, "", baseProvider)
-		if err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: err.Error(),
-					Error:   err,
-				},
-			}
-		}
+	keys, err := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+	if err != nil {
+		return nil, newBifrostError(err)
 	}
 
 	response, bifrostErr := executeRequestWithRetries(config, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-		return provider.ListModels(ctx, key, request)
+		return provider.ListModels(ctx, keys, request)
 	}, schemas.ListModelsRequest, req.Provider, "")
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -285,8 +278,6 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
 func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	startTime := time.Now()
-
 	if request == nil {
 		request = &schemas.BifrostListModelsRequest{}
 	}
@@ -296,64 +287,102 @@ func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.Bifr
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "failed to get configured providers",
+				Message: err.Error(),
 				Error:   err,
 			},
 		}
 	}
 
-	// Accumulate all models from all providers
-	allModels := make([]schemas.Model, 0)
-	var firstError *schemas.BifrostError
+	startTime := time.Now()
 
+	// Result structure for collecting provider responses
+	type providerResult struct {
+		models []schemas.Model
+		err    *schemas.BifrostError
+	}
+
+	results := make(chan providerResult, len(providerKeys))
+	var wg sync.WaitGroup
+
+	// Launch concurrent requests for all providers
 	for _, providerKey := range providerKeys {
 		if strings.TrimSpace(string(providerKey)) == "" {
 			continue
 		}
 
-		// Create request for this provider with limit of 1000
-		providerRequest := &schemas.BifrostListModelsRequest{
-			Provider: providerKey,
-			PageSize: schemas.DefaultPageSize,
+		wg.Add(1)
+		go func(providerKey schemas.ModelProvider) {
+			defer wg.Done()
+
+			providerModels := make([]schemas.Model, 0)
+			var providerErr *schemas.BifrostError
+
+			// Create request for this provider with limit of 1000
+			providerRequest := &schemas.BifrostListModelsRequest{
+				Provider: providerKey,
+				PageSize: schemas.DefaultPageSize,
+			}
+
+			iterations := 0
+			for {
+				// check for context cancellation
+				select {
+					case <-ctx.Done():
+						bifrost.logger.Warn(fmt.Sprintf("context cancelled for provider %s", providerKey))
+						return
+					default:
+				}
+
+				iterations++
+				if iterations > schemas.MaxPaginationRequests {
+					bifrost.logger.Warn(fmt.Sprintf("reached maximum pagination requests (%d) for provider %s, please increase the page size", schemas.MaxPaginationRequests, providerKey))
+					break
+				}
+
+				response, bifrostErr := bifrost.ListModelsRequest(ctx, providerRequest)
+				if bifrostErr != nil {
+					// Skip logging "no keys found" and "not supported" errors as they are expected when a provider is not configured
+					if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
+						!strings.Contains(bifrostErr.Error.Message, "not supported") {
+						providerErr = bifrostErr
+						bifrost.logger.Warn(fmt.Sprintf("failed to list models for provider %s: %v", providerKey, bifrostErr.Error.Message))
+					}
+					break
+				}
+
+				if response == nil || len(response.Data) == 0 {
+					break
+				}
+
+				providerModels = append(providerModels, response.Data...)
+
+				// Check if there are more pages
+				if response.NextPageToken == "" {
+					break
+				}
+
+				// Set the page token for the next request
+				providerRequest.PageToken = response.NextPageToken
+			}
+
+			results <- providerResult{models: providerModels, err: providerErr}
+		}(providerKey)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+	close(results)
+
+	// Accumulate all models from all providers
+	allModels := make([]schemas.Model, 0)
+	var firstError *schemas.BifrostError
+
+	for result := range results {
+		if len(result.models) > 0 {
+			allModels = append(allModels, result.models...)
 		}
-
-		iterations := 0
-		for {
-			iterations++
-			if iterations > schemas.MaxPaginationRequests {
-				bifrost.logger.Warn(fmt.Sprintf("reached maximum pagination requests (%d) for provider %s", schemas.MaxPaginationRequests, providerKey))
-				break
-			}
-
-			response, bifrostErr := bifrost.ListModelsRequest(ctx, providerRequest)
-			if bifrostErr != nil {
-				// Log the error but continue with other providers
-				// Skip logging "no keys found" and "not supported" errors as they are expected when a provider is not configured
-				if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
-					!strings.Contains(bifrostErr.Error.Message, "not supported") {
-					bifrost.logger.Warn(fmt.Sprintf("failed to list models for provider %s: %v", providerKey, bifrostErr.Error.Message))
-				}
-				if firstError == nil {
-					firstError = bifrostErr
-				}
-				break
-			}
-
-			if response == nil {
-				break
-			}
-
-			if len(response.Data) > 0 {
-				allModels = append(allModels, response.Data...)
-			}
-
-			// Check if there are more pages
-			if response.NextPageToken == "" {
-				break
-			}
-
-			// Set the page token for the next request
-			providerRequest.PageToken = response.NextPageToken
+		if result.err != nil && firstError == nil {
+			firstError = result.err
 		}
 	}
 
@@ -367,15 +396,12 @@ func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.Bifr
 		return allModels[i].ID < allModels[j].ID
 	})
 
-	// Calculate total elapsed time
-	elapsedTime := time.Since(startTime).Milliseconds()
-
 	// Return aggregated response with accumulated latency
 	response := &schemas.BifrostListModelsResponse{
 		Data: allModels,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ListModelsRequest,
-			Latency:     elapsedTime,
+			Latency:     time.Since(startTime).Milliseconds(),
 		},
 	}
 
@@ -2322,6 +2348,42 @@ func (bifrost *Bifrost) getBifrostRequest() *schemas.BifrostRequest {
 func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
 	resetBifrostRequest(req)
 	bifrost.bifrostRequestPool.Put(req)
+}
+
+// getAllSupportedKeys retrieves all valid keys for a ListModels request.
+// allowing the provider to aggregate results from multiple keys.
+func (bifrost *Bifrost) getAllSupportedKeys(ctx *context.Context, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider) ([]schemas.Key, error) {
+	// Check if key has been set in the context explicitly
+	if ctx != nil {
+		key, ok := (*ctx).Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+		if ok {
+			// If a direct key is specified, return it as a single-element slice
+			return []schemas.Key{key}, nil
+		}
+	}
+
+	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no keys found for provider: %v", providerKey)
+	}
+
+	// Filter keys for ListModels - only check if key has a value
+	var supportedKeys []schemas.Key
+	for _, k := range keys {
+		if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
+			supportedKeys = append(supportedKeys, k)
+		}
+	}
+
+	if len(supportedKeys) == 0 {
+		return nil, fmt.Errorf("no valid keys found for provider: %v", providerKey)
+	}
+
+	return supportedKeys, nil
 }
 
 // selectKeyFromProviderForModel selects an appropriate API key for a given provider and model.

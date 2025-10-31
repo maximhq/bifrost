@@ -67,13 +67,13 @@ func (provider *GroqProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // ListModels performs a list models request to Groq's API.
-func (provider *GroqProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+func (provider *GroqProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return handleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
 		request,
 		provider.networkConfig.BaseURL+"/v1/models",
-		key,
+		keys,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Groq,
 		provider.sendBackRawResponse,

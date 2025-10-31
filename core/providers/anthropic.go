@@ -121,20 +121,6 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 	return getProviderName(schemas.Anthropic, provider.customProviderConfig)
 }
 
-// parseStreamAnthropicError parses Anthropic streaming error responses.
-func parseStreamAnthropicError(resp *http.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
-	statusCode := resp.StatusCode
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	var errorResp anthropic.AnthropicError
-	if err := sonic.Unmarshal(body, &errorResp); err != nil {
-		return newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerType)
-	}
-
-	return newProviderAPIError(errorResp.Error.Message, nil, statusCode, providerType, &errorResp.Error.Type, nil)
-}
-
 // completeRequest sends a request to Anthropic's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
@@ -188,14 +174,9 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	return bodyCopy, latency, nil
 }
 
-// ListModels performs a list models request to Anthropic's API.
-func (provider *AnthropicProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
-		return nil, err
-	}
-
-	providerName := provider.GetProviderKey()
-
+// listModelsByKey performs a list models request for a single key.
+// Returns the response and latency, or an error if the request fails.
+func (provider *AnthropicProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -206,8 +187,7 @@ func (provider *AnthropicProvider) ListModels(ctx context.Context, key schemas.K
 	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	requestURL := anthropic.ToAnthropicListModelsURL(request, provider.networkConfig.BaseURL+"/v1/models")
-	req.SetRequestURI(requestURL)
+	req.SetRequestURI(fmt.Sprintf("%s/v1/models?limit=%d", provider.networkConfig.BaseURL, schemas.DefaultPageSize))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("x-api-key", key.Value)
@@ -221,14 +201,10 @@ func (provider *AnthropicProvider) ListModels(ctx context.Context, key schemas.K
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
-
 		var errorResp anthropic.AnthropicError
-
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Message = errorResp.Error.Message
-
 		return nil, bifrostErr
 	}
 
@@ -240,11 +216,7 @@ func (provider *AnthropicProvider) ListModels(ctx context.Context, key schemas.K
 	}
 
 	// Create final response
-	response := anthropicResponse.ToBifrostListModelsResponse(providerName)
-
-	// Set ExtraFields
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
+	response := anthropicResponse.ToBifrostListModelsResponse(provider.GetProviderKey())
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw response if enabled
@@ -253,6 +225,23 @@ func (provider *AnthropicProvider) ListModels(ctx context.Context, key schemas.K
 	}
 
 	return response, nil
+}
+
+// ListModels performs a list models request to Anthropic's API.
+// It fetches models using all provided keys and aggregates the results.
+// Uses a best-effort approach: continues with remaining keys even if some fail.
+// Requests are made concurrently for improved performance.
+func (provider *AnthropicProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion performs a text completion request to Anthropic's API.
@@ -851,4 +840,18 @@ func (provider *AnthropicProvider) Transcription(ctx context.Context, key schema
 // TranscriptionStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "anthropic")
+}
+
+// parseStreamAnthropicError parses Anthropic streaming error responses.
+func parseStreamAnthropicError(resp *http.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
+	statusCode := resp.StatusCode
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var errorResp anthropic.AnthropicError
+	if err := sonic.Unmarshal(body, &errorResp); err != nil {
+		return newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerType)
+	}
+
+	return newProviderAPIError(errorResp.Error.Message, nil, statusCode, providerType, &errorResp.Error.Type, nil)
 }

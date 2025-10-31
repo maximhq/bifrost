@@ -123,9 +123,10 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 	return bodyCopy, latency, nil
 }
 
-// ListModels performs a list models request to Azure's API.
-// It retrieves all models accessible by the Azure OpenAI resource
-func (provider *AzureProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+// listModelsForKey performs a list models request for a single key.
+
+// Returns the response and latency, or an error if the request fails.
+func (provider *AzureProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Validate Azure key configuration
 	if key.AzureKeyConfig == nil {
 		return nil, newConfigurationError("azure key config not set", schemas.Azure)
@@ -174,8 +175,8 @@ func (provider *AzureProvider) ListModels(ctx context.Context, key schemas.Key, 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from azure provider: %s", string(resp.Body())))
-		return nil, parseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+		bifrostErr := parseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+		return nil, bifrostErr
 	}
 
 	// Read the response body and copy it before releasing the response
@@ -194,18 +195,25 @@ func (provider *AzureProvider) ListModels(ctx context.Context, key schemas.Key, 
 	if response == nil {
 		return nil, newBifrostOperationError("failed to convert Azure model list response", nil, schemas.Azure)
 	}
-
-	response = response.ApplyPagination(request.PageSize, request.PageToken)
-
-	response.ExtraFields.Provider = schemas.Azure
 	response.ExtraFields.Latency = latency.Milliseconds()
-	response.ExtraFields.RequestType = schemas.ListModelsRequest
-
 	if provider.sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	return response, nil
+}
+
+// ListModels performs a list models request to Azure's API.
+// It retrieves all models accessible by the Azure OpenAI resource
+// Requests are made concurrently for improved performance.
+func (provider *AzureProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return handleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+		provider.logger,
+	)
 }
 
 // TextCompletion performs a text completion request to Azure's API.

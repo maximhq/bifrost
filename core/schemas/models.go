@@ -9,8 +9,16 @@ import (
 
 // DefaultPageSize is the default page size for listing models
 const DefaultPageSize = 1000
+
 // MaxPaginationRequests is the maximum number of pagination requests to make
 const MaxPaginationRequests = 20
+
+// Structure to collect results from goroutines
+type ListModelsByKeyResult struct {
+	Response *BifrostListModelsResponse
+	Err      *BifrostError
+	KeyID    string
+}
 
 type BifrostListModelsRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -26,22 +34,24 @@ type BifrostListModelsRequest struct {
 }
 
 type BifrostListModelsResponse struct {
-	Data        []Model                    `json:"data"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
-	NextPageToken string `json:"next_page_token,omitempty"` // Token to retrieve next page
+	Data          []Model                    `json:"data"`
+	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
+	NextPageToken string                     `json:"next_page_token,omitempty"` // Token to retrieve next page
 
 	// Anthropic specific fields
 	FirstID *string `json:"-"`
-	LastID *string `json:"-"`
-	HasMore *bool `json:"-"`
+	LastID  *string `json:"-"`
+	HasMore *bool   `json:"-"`
 }
 
 type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
-	Created             *int64               `json:"created,omitempty"`
+	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`
+	MaxInputTokens      *int               `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens     *int               `json:"max_output_tokens,omitempty"`
 	Architecture        *Architecture      `json:"architecture,omitempty"`
 	Pricing             *Pricing           `json:"pricing,omitempty"`
 	TopProvider         *TopProvider       `json:"top_provider,omitempty"`
@@ -75,9 +85,9 @@ type Pricing struct {
 }
 
 type TopProvider struct {
-	IsModerated         *bool    `json:"is_moderated,omitempty"`
-	ContextLength       *int `json:"context_length,omitempty"`
-	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	IsModerated         *bool `json:"is_moderated,omitempty"`
+	ContextLength       *int  `json:"context_length,omitempty"`
+	MaxCompletionTokens *int  `json:"max_completion_tokens,omitempty"`
 }
 
 type PerRequestLimits struct {

@@ -6632,6 +6632,16 @@
             "example": 128000,
             "nullable": true
           },
+          "max_input_tokens": {
+            "type": "integer",
+            "description": "Maximum input tokens",
+            "nullable": true
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "description": "Maximum output tokens",
+            "nullable": true
+          },
           "architecture": {
             "$ref": "#/components/schemas/ModelArchitecture",
             "description": "Object describing the model's technical capabilities",
