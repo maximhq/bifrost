@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -18,33 +19,42 @@ type AnthropicRouter struct {
 	*GenericRouter
 }
 
-// CreateAnthropicRouteConfigs creates route configurations for Anthropic endpoints.
-func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
-	return []RouteConfig{
-		{
-			Type:   RouteConfigTypeAnthropic,
-			Path:   pathPrefix + "/v1/complete",
-			Method: "POST",
-			GetRequestTypeInstance: func() interface{} {
-				return &anthropic.AnthropicTextRequest{}
-			},
-			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
-				if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
-					return &schemas.BifrostRequest{
-						TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(),
-					}, nil
-				}
-				return nil, errors.New("invalid request type")
-			},
-			TextResponseConverter: func(resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-				return anthropic.ToAnthropicTextCompletionResponse(resp), nil
-			},
-			ErrorConverter: func(err *schemas.BifrostError) interface{} {
-				return anthropic.ToAnthropicChatCompletionError(err)
-			},
+// createAnthropicCompleteRouteConfig creates a route configuration for the `/v1/complete` endpoint.
+func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeAnthropic,
+		Path:   pathPrefix + "/v1/complete",
+		Method: "POST",
+		GetRequestTypeInstance: func() interface{} {
+			return &anthropic.AnthropicTextRequest{}
 		},
-		{
-			Path:   pathPrefix + "/v1/messages",
+		RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
+				return &schemas.BifrostRequest{
+					TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(),
+				}, nil
+			}
+			return nil, errors.New("invalid request type")
+		},
+		TextResponseConverter: func(resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+			return anthropic.ToAnthropicTextCompletionResponse(resp), nil
+		},
+		ErrorConverter: func(err *schemas.BifrostError) interface{} {
+			return anthropic.ToAnthropicChatCompletionError(err)
+		},
+	}
+}
+
+// createAnthropicMessagesRouteConfig creates a route configuration for the `/v1/messages` endpoint.
+func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
+	var routes []RouteConfig
+	for _, path := range []string{
+		"/v1/messages",
+		"/v1/messages/{path:*}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeAnthropic,
+			Path:   pathPrefix + path,
 			Method: "POST",
 			GetRequestTypeInstance: func() interface{} {
 				return &anthropic.AnthropicMessageRequest{}
@@ -71,8 +81,17 @@ func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
 			},
-		},
+			PreCallback: checkAnthropicPassthrough,
+		})
 	}
+	return routes
+}
+
+// CreateAnthropicRouteConfigs creates route configurations for Anthropic endpoints.
+func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
+	return append([]RouteConfig{
+		createAnthropicCompleteRouteConfig(pathPrefix),
+	}, createAnthropicMessagesRouteConfig(pathPrefix)...)
 }
 
 func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
@@ -101,6 +120,52 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 			PreCallback: extractAnthropicListModelsParams,
 		},
 	}
+}
+
+// checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
+// If it is, it attaches the raw request body for direct use by the provider.
+// It also checks for anthropic oauth headers and sets the bifrost context.
+func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}, rawBody []byte) error {
+	var provider schemas.ModelProvider
+	var model string
+
+	switch r := req.(type) {
+	case *anthropic.AnthropicTextRequest:
+		provider, model = schemas.ParseModelString(r.Model, "")
+		// Check if model parameter explicitly has `anthropic/` prefix
+		if after, ok := strings.CutPrefix(model, "anthropic/"); ok {
+			r.Model = after
+		}
+
+	case *anthropic.AnthropicMessageRequest:
+		provider, model = schemas.ParseModelString(r.Model, "")
+		// Check if model parameter explicitly has `anthropic/` prefix
+		if after, ok := strings.CutPrefix(model, "anthropic/"); ok {
+			r.Model = after
+		}
+	}
+
+	if !strings.Contains(model, "claude") || (provider != schemas.Anthropic && provider != "") {
+		// Not a Claude model or not an Anthropic model, so we can continue
+		return nil
+	}
+
+	// Check if anthropic oauth headers are present
+	if !isAnthropicAPIKeyAuth(ctx) {
+		headers := extractHeadersFromRequest(ctx)
+		url := extractExactPath(ctx)
+		if !strings.HasPrefix(url, "/") {
+			url = "/" + url
+		}
+
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyExtraHeaders, headers)
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
+	}
+
+	// Set the request body in the context
+	*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyRequestBody, rawBody)
+	return nil
 }
 
 // extractAnthropicListModelsParams extracts query parameters for list models request

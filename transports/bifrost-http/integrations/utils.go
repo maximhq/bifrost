@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -86,13 +87,13 @@ func extractHeadersFromRequest(ctx *fasthttp.RequestCtx) map[string][]string {
 	return headers
 }
 
-// getExactPath returns the request path *after* the integration prefix,
+// extractExactPath returns the request path *after* the integration prefix,
 // preserving the original query string exactly as sent by the client.
 //
 // Example:
 //
 //	/openai/v1/chat/completions?model=gpt-4o  ->  /chat/completions?model=gpt-4o
-func getExactPath(ctx *fasthttp.RequestCtx) string {
+func extractExactPath(ctx *fasthttp.RequestCtx) string {
 	// ctx.Path() returns only the path (no query) as a []byte backed by fasthttp’s internal buffers.
 	// Treat it as read-only; don’t append to it directly.
 	path := ctx.Path() // e.g. "/openai/v1/chat/completions"
@@ -298,4 +299,23 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 	}
 
 	return nil, nil
+}
+
+// isAnthropicAPIKeyAuth checks if the request uses standard API key authentication.
+// Returns true for API key auth (x-api-key header), false for OAuth (Bearer sk-ant-oat*).
+// This is required for Claude Code specifically, which may use OAuth authentication.
+// Default behavior is to assume API mode when neither x-api-key nor OAuth token is present.
+func isAnthropicAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
+	// If x-api-key header is present - this is definitely API mode
+	if apiKey := string(ctx.Request.Header.Peek("x-api-key")); apiKey != "" {
+		return true
+	}
+	// Check for OAuth token in Authorization header
+	if authHeader := string(ctx.Request.Header.Peek("Authorization")); authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat") {
+			return false // OAuth mode, NOT API
+		}
+	}
+	// Default to API mode
+	return true
 }

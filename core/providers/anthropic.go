@@ -157,7 +157,10 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	req.Header.Set("x-api-key", key)
+	// Can be empty in case of passthrough
+	if key != "" {
+		req.Header.Set("x-api-key", key)
+	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
 	req.SetBody(jsonData)
