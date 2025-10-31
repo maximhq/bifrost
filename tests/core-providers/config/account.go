@@ -13,6 +13,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const Concurrency = 4
+
 // ProviderOpenAICustom represents the custom OpenAI provider for testing
 const ProviderOpenAICustom = schemas.ModelProvider("openai-custom")
 
@@ -266,7 +268,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -280,7 +282,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                10 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 			CustomProviderConfig: &schemas.CustomProviderConfig{
@@ -306,7 +308,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -319,7 +321,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                40 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -332,7 +334,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                40 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -345,7 +347,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                3 * time.Minute,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 2,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -358,7 +360,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -372,7 +374,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BaseURL:                        os.Getenv("OLLAMA_BASE_URL"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -385,7 +387,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                3 * time.Minute,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 1,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -398,7 +400,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                15 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 1,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -412,7 +414,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                15 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -425,7 +427,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -438,7 +440,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                3 * time.Minute,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 2,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil
@@ -451,7 +453,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 5,
+				Concurrency: Concurrency,
 				BufferSize:  20,
 			},
 		}, nil
@@ -464,7 +466,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
+				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
 		}, nil

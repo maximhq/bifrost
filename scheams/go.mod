@@ -1,1 +1,1 @@
-module github.com/maximhq/bifrost/scheams
+module github.com/maximhq/bifrost/schemas

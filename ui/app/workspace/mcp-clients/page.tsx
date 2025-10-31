@@ -1,6 +1,6 @@
 "use client";
 
-import MCPClientsTable from "@/app/mcp-clients/views/mcpClientsTable";
+import MCPClientsTable from "@/app/workspace/mcp-clients/views/mcpClientsTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useGetMCPClientsQuery } from "@/lib/store";

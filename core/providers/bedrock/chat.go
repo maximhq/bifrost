@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/core/schemas/providers/anthropic"
 )
 
 // ToBedrockChatCompletionRequest converts a Bifrost request to Bedrock Converse API format
