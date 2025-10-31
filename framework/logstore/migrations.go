@@ -25,6 +25,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddCostAndCacheDebugColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddResponsesInputHistoryColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -269,6 +272,37 @@ func migrationAddCostAndCacheDebugColumn(ctx context.Context, db *gorm.DB) error
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding cost column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddResponsesInputHistoryColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_init_add_responses_input_history_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "responses_input_history") {
+				if err := migrator.AddColumn(&Log{}, "responses_input_history"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&Log{}, "responses_input_history"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding responses_input_history column: %s", err.Error())
 	}
 	return nil
 }

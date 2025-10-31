@@ -722,10 +722,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, config RouteCo
 				switch {
 				case chunk.BifrostTextCompletionResponse != nil:
 					convertedResponse, err = config.StreamConfig.TextStreamResponseConverter(chunk.BifrostTextCompletionResponse)
-				case chunk.BifrostResponsesStreamResponse != nil:
-					convertedResponse, err = config.StreamConfig.ResponsesStreamResponseConverter(chunk.BifrostResponsesStreamResponse)
 				case chunk.BifrostChatResponse != nil:
 					convertedResponse, err = config.StreamConfig.ChatStreamResponseConverter(chunk.BifrostChatResponse)
+				case chunk.BifrostResponsesStreamResponse != nil:
+					convertedResponse, err = config.StreamConfig.ResponsesStreamResponseConverter(chunk.BifrostResponsesStreamResponse)
 				case chunk.BifrostSpeechStreamResponse != nil:
 					convertedResponse, err = config.StreamConfig.SpeechStreamResponseConverter(chunk.BifrostSpeechStreamResponse)
 				case chunk.BifrostTranscriptionStreamResponse != nil:

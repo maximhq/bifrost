@@ -248,6 +248,7 @@ export interface LogEntry {
 	provider: string;
 	model: string;
 	input_history: ChatMessage[];
+	responses_input_history: ResponsesMessage[];
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];
