@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -31,8 +32,8 @@ type OpenAIRouter struct {
 	*GenericRouter
 }
 
-func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, req interface{}) error {
-	return func(ctx *fasthttp.RequestCtx, req interface{}) error {
+func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}, rawBody []byte) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}, rawBody []byte) error {
 		azureKey := ctx.Request.Header.Peek("authorization")
 		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
 		deploymentID := ctx.UserValue("deployment-id")
@@ -366,10 +367,10 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 func setQueryParamsAndAzureEndpointPreHook(handlerStore lib.HandlerStore) PreRequestCallback {
 	azureHook := AzureEndpointPreHook(handlerStore)
 
-	return func(ctx *fasthttp.RequestCtx, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}, rawBody []byte) error {
 		// First run the Azure endpoint pre-hook if needed
 		if azureHook != nil {
-			if err := azureHook(ctx, req); err != nil {
+			if err := azureHook(ctx, bifrostCtx, req, rawBody); err != nil {
 				return err
 			}
 		}

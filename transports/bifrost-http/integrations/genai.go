@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -105,7 +106,7 @@ var embeddingPaths = []string{
 }
 
 // extractAndSetModelFromURL extracts model from URL and sets it in the request
-func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, req interface{}) error {
+func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}, rawBody []byte) error {
 	model := ctx.UserValue("model")
 	if model == nil {
 		return fmt.Errorf("model parameter is required")
@@ -154,7 +155,7 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, req interface{}) error 
 }
 
 // extractGeminiListModelsParams extracts query parameters for list models request
-func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, req interface{}) error {
+func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}, rawBody []byte) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 		// Set provider to Gemini
 		listModelsReq.Provider = schemas.Gemini

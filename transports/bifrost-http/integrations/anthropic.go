@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -103,7 +104,7 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 }
 
 // extractAnthropicListModelsParams extracts query parameters for list models request
-func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, req interface{}) error {
+func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}, rawBody []byte) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 		// Set provider to Anthropic
 		listModelsReq.Provider = schemas.Anthropic
