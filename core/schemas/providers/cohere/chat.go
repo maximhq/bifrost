@@ -178,13 +178,14 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Cohe
 }
 
 // ToBifrostChatResponse converts a Cohere v2 response to Bifrost format
-func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
+func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas.BifrostChatResponse {
 	if response == nil {
 		return nil
 	}
 
 	bifrostResponse := &schemas.BifrostChatResponse{
 		ID:     response.ID,
+		Model:  model,
 		Object: "chat.completion",
 		Choices: []schemas.BifrostResponseChoice{
 			{
@@ -322,4 +323,157 @@ func (response *CohereChatResponse) ToBifrostChatResponse() *schemas.BifrostChat
 	}
 
 	return bifrostResponse
+}
+
+func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+	switch chunk.Type {
+	case StreamEventMessageStart:
+		if chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.Role != nil {
+			// Create streaming response for this delta
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Role: chunk.Delta.Message.Role,
+							},
+						},
+					},
+				},
+			}
+
+			return streamResponse, nil, false
+		}
+
+	case StreamEventContentDelta:
+		if chunk.Delta != nil &&
+			chunk.Delta.Message != nil &&
+			chunk.Delta.Message.Content != nil &&
+			chunk.Delta.Message.Content.CohereStreamContentObject != nil &&
+			chunk.Delta.Message.Content.CohereStreamContentObject.Text != nil {
+			// Try to cast content to CohereStreamContent
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Content: chunk.Delta.Message.Content.CohereStreamContentObject.Text,
+							},
+						},
+					},
+				},
+			}
+
+			return streamResponse, nil, false
+		}
+
+	case StreamEventToolPlanDelta:
+		if chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolPlan != nil {
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Thought: chunk.Delta.Message.ToolPlan,
+							},
+						},
+					},
+				},
+			}
+
+			return streamResponse, nil, false
+		}
+
+	case StreamEventContentStart:
+		// Content start event - just continue, actual content comes in content-delta
+		return nil, nil, false
+
+	case StreamEventToolCallStart, StreamEventToolCallDelta:
+		if chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolCalls != nil && chunk.Delta.Message.ToolCalls.CohereToolCallObject != nil {
+			// Handle single tool call object (tool-call-start/delta events)
+			cohereToolCall := chunk.Delta.Message.ToolCalls.CohereToolCallObject
+			toolCall := schemas.ChatAssistantMessageToolCall{}
+
+			if cohereToolCall.ID != nil {
+				toolCall.ID = cohereToolCall.ID
+			}
+
+			if cohereToolCall.Function != nil {
+				if cohereToolCall.Function.Name != nil {
+					toolCall.Function.Name = cohereToolCall.Function.Name
+				}
+				toolCall.Function.Arguments = cohereToolCall.Function.Arguments
+			}
+
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},
+							},
+						},
+					},
+				},
+			}
+
+			return streamResponse, nil, false
+		}
+
+	case StreamEventToolCallEnd:
+		return nil, nil, false
+
+	case StreamEventContentEnd:
+		return nil, nil, false
+
+	case StreamEventMessageEnd:
+		if chunk.Delta != nil {
+			var finishReason *string
+			usage := &schemas.BifrostLLMUsage{}
+			// Set finish reason
+			if chunk.Delta.FinishReason != nil {
+				finishReason = schemas.Ptr(string(*chunk.Delta.FinishReason))
+			}
+
+			// Set usage information
+			if chunk.Delta.Usage != nil {
+				if chunk.Delta.Usage.Tokens != nil {
+					if chunk.Delta.Usage.Tokens.InputTokens != nil {
+						usage.PromptTokens = int(*chunk.Delta.Usage.Tokens.InputTokens)
+					}
+					if chunk.Delta.Usage.Tokens.OutputTokens != nil {
+						usage.CompletionTokens = int(*chunk.Delta.Usage.Tokens.OutputTokens)
+					}
+					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				}
+			}
+
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index:        0,
+						FinishReason: finishReason,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{},
+						},
+					},
+				},
+				Usage: usage,
+			}
+
+			return streamResponse, nil, true
+		}
+		return nil, nil, false
+	}
+
+	return nil, nil, false
 }
