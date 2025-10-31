@@ -1,8 +1,8 @@
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { KnownProvider, ModelProviderName } from "@/lib/types/config";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -35,11 +35,11 @@ type FormData = z.infer<typeof formSchema>;
 
 interface Props {
 	show: boolean;
-	onSave: (id:string) => void;
+	onSave: (id: string) => void;
 	onClose: () => void;
 }
 
-export default function AddCustomProviderDialog({ show, onClose, onSave }: Props) {
+export default function AddCustomProviderSheet({ show, onClose, onSave }: Props) {
 	const [addProvider, { isLoading: isAddingProvider }] = useCreateProviderMutation();
 	const form = useForm<FormData>({
 		resolver: zodResolver(formSchema),
@@ -96,14 +96,14 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 	};
 
 	return (
-		<Dialog open={show} onOpenChange={(open) => !open && onClose()}>
-			<DialogContent className="custom-scrollbar max-h-[80vh] max-w-[600px] overflow-y-scroll">
-				<DialogHeader>
-					<DialogTitle>Add Custom Provider</DialogTitle>
-					<DialogDescription>Enter the details of your custom provider.</DialogDescription>
-				</DialogHeader>
+		<Sheet open={show} onOpenChange={(open) => !open && onClose()}>
+			<SheetContent className="custom-scrollbar dark:bg-card bg-white py-4 min-w-[600px]">
+				<SheetHeader>
+					<SheetTitle>Add Custom Provider</SheetTitle>
+					<SheetDescription>Enter the details of your custom provider.</SheetDescription>
+				</SheetHeader>
 				<Form {...form}>
-					<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+					<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 px-4">
 						<FormField
 							control={form.control}
 							name="name"
@@ -153,11 +153,7 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 									<FormLabel>Base URL</FormLabel>
 									<div>
 										<FormControl>
-										<Input
-											placeholder={"https://api.your-provider.com"}
-											{...field}
-											value={field.value || ""}
-										/>
+											<Input placeholder={"https://api.your-provider.com"} {...field} value={field.value || ""} />
 										</FormControl>
 										<FormMessage />
 									</div>
@@ -166,15 +162,17 @@ export default function AddCustomProviderDialog({ show, onClose, onSave }: Props
 						/>
 						{/* Allowed Requests Configuration */}
 						<AllowedRequestsFields control={form.control} />
-						<DialogFooter className="flex flex-row gap-2">
-							<Button type="button" variant="outline" onClick={onClose}>
-								Cancel
-							</Button>
-							<Button type="submit">Add</Button>
-						</DialogFooter>
+						<SheetFooter className="flex flex-row gap-2">
+							<div className="ml-auto flex flex-row gap-2">
+								<Button type="button" variant="outline" onClick={onClose}>
+									Cancel
+								</Button>
+								<Button type="submit">Add</Button>
+							</div>
+						</SheetFooter>
 					</form>
 				</Form>
-			</DialogContent>
-		</Dialog>
+			</SheetContent>
+		</Sheet>
 	);
 }

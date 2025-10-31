@@ -11,6 +11,24 @@ type PluginShortCircuit struct {
 	Error    *BifrostError       // If set, short-circuit with this error (can set AllowFallbacks field)
 }
 
+// PluginStatus constants
+const (
+	PluginStatusActive        = "active"
+	PluginStatusError         = "error"
+	PluginStatusDisabled      = "disabled"
+	PluginStatusLoading       = "loading"
+	PluginStatusUninitialized = "uninitialized"
+	PluginStatusUnloaded      = "unloaded"
+	PluginStatusLoaded        = "loaded"
+)
+
+// PluginStatus represents the status of a plugin.
+type PluginStatus struct {
+	Name   string   `json:"name"`
+	Status string   `json:"status"`
+	Logs   []string `json:"logs"`
+}
+
 // Plugin defines the interface for Bifrost plugins.
 // Plugins can intercept and modify requests and responses at different stages
 // of the processing pipeline.
