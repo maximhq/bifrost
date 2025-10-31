@@ -210,7 +210,7 @@ func (request *AnthropicMessageRequest) ToBifrostChatRequest() *schemas.BifrostC
 				Type: schemas.ChatToolTypeFunction,
 				Function: &schemas.ChatToolFunction{
 					Name:        tool.Name,
-					Description: schemas.Ptr(tool.Description),
+					Description: tool.Description,
 					Parameters:  &params,
 				},
 			})
@@ -407,7 +407,7 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 					Name: tool.Function.Name,
 				}
 				if tool.Function.Description != nil {
-					anthropicTool.Description = *tool.Function.Description
+					anthropicTool.Description = tool.Function.Description
 				}
 
 				// Convert function parameters to input_schema
