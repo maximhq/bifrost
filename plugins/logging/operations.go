@@ -24,11 +24,12 @@ func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID stri
 		Stream:    false,
 		CreatedAt: timestamp,
 		// Set parsed fields for serialization
-		InputHistoryParsed:       data.InputHistory,
-		ParamsParsed:             data.Params,
-		ToolsParsed:              data.Tools,
-		SpeechInputParsed:        data.SpeechInput,
-		TranscriptionInputParsed: data.TranscriptionInput,
+		InputHistoryParsed:          data.InputHistory,
+		ResponsesInputHistoryParsed: data.ResponsesInputHistory,
+		ParamsParsed:                data.Params,
+		ToolsParsed:                 data.Tools,
+		SpeechInputParsed:           data.SpeechInput,
+		TranscriptionInputParsed:    data.TranscriptionInput,
 	}
 
 	if parentRequestID != "" {

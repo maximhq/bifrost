@@ -13,7 +13,7 @@ import LogEntryDetailsView from "./logEntryDetailsView";
 import LogChatMessageView from "./logChatMessageView";
 import SpeechView from "./speechView";
 import TranscriptionView from "./transcriptionView";
-import LogResponsesOutputView from "./logResponsesOutputView";
+import LogResponsesMessageView from "./logResponsesMessageView";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -300,15 +300,23 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 					</>
 				)}
 
-				{/* Show input for chat/text completions */}
-				{log.input_history && log.input_history.length > 0 && (
-					<>
-						<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-						<LogChatMessageView message={log.input_history[log.input_history.length - 1]} />
-					</>
-				)}
+			{/* Show input for chat/text completions */}
+			{log.input_history && log.input_history.length > 0 && (
+				<>
+					<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
+					<LogChatMessageView message={log.input_history[log.input_history.length - 1]} />
+				</>
+			)}
 
-				{log.status !== "processing" && (
+			{/* Show input history for responses API */}
+			{log.responses_input_history && log.responses_input_history.length > 0 && (
+				<>
+					<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
+					<LogResponsesMessageView messages={log.responses_input_history} />
+				</>
+			)}
+
+			{log.status !== "processing" && (
 					<>
 						{log.output_message && !log.error_details?.error.message && (
 							<>
@@ -321,7 +329,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 						{log.responses_output && log.responses_output.length > 0 && !log.error_details?.error.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Response</div>
-								<LogResponsesOutputView messages={log.responses_output} />
+								<LogResponsesMessageView messages={log.responses_output} />
 							</>
 						)}
 						{log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
