@@ -86,15 +86,12 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 }
 
 // extractInputHistory extracts input history from request input
-func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) []schemas.ChatMessage {
+func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]schemas.ChatMessage, []schemas.ResponsesMessage) {
 	if request.ChatRequest != nil {
-		return request.ChatRequest.Input
+		return request.ChatRequest.Input, []schemas.ResponsesMessage{}
 	}
-	if request.ResponsesRequest != nil {
-		messages := schemas.ToChatMessages(request.ResponsesRequest.Input)
-		if len(messages) > 0 {
-			return messages
-		}
+	if request.ResponsesRequest != nil && len(request.ResponsesRequest.Input) > 0 {
+		return []schemas.ChatMessage{}, request.ResponsesRequest.Input
 	}
 	if request.TextCompletionRequest != nil {
 		var text string
@@ -114,7 +111,7 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) []sc
 					ContentStr: &text,
 				},
 			},
-		}
+		}, []schemas.ResponsesMessage{}
 	}
 	if request.EmbeddingRequest != nil {
 		texts := request.EmbeddingRequest.Input.Texts
@@ -139,7 +136,7 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) []sc
 					ContentBlocks: contentBlocks,
 				},
 			},
-		}
+		}, []schemas.ResponsesMessage{}
 	}
-	return []schemas.ChatMessage{}
+	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
 }

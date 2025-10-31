@@ -75,6 +75,7 @@ type Log struct {
 	Provider            string    `gorm:"type:varchar(255);index;not null" json:"provider"`
 	Model               string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
+	ResponsesInputHistory string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
 	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
 	ResponsesOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
 	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
@@ -103,20 +104,21 @@ type Log struct {
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
-	InputHistoryParsed        []schemas.ChatMessage                  `gorm:"-" json:"input_history,omitempty"`
-	OutputMessageParsed       *schemas.ChatMessage                   `gorm:"-" json:"output_message,omitempty"`
-	ResponsesOutputParsed     []schemas.ResponsesMessage             `gorm:"-" json:"responses_output,omitempty"`
-	EmbeddingOutputParsed     []schemas.EmbeddingData                `gorm:"-" json:"embedding_output,omitempty"`
-	ParamsParsed              interface{}                            `gorm:"-" json:"params,omitempty"`
-	ToolsParsed               []schemas.ChatTool                     `gorm:"-" json:"tools,omitempty"`
-	ToolCallsParsed           []schemas.ChatAssistantMessageToolCall `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
-	TokenUsageParsed          *schemas.BifrostLLMUsage               `gorm:"-" json:"token_usage,omitempty"`
-	ErrorDetailsParsed        *schemas.BifrostError                  `gorm:"-" json:"error_details,omitempty"`
-	SpeechInputParsed         *schemas.SpeechInput                   `gorm:"-" json:"speech_input,omitempty"`
-	TranscriptionInputParsed  *schemas.TranscriptionInput            `gorm:"-" json:"transcription_input,omitempty"`
-	SpeechOutputParsed        *schemas.BifrostSpeechResponse         `gorm:"-" json:"speech_output,omitempty"`
-	TranscriptionOutputParsed *schemas.BifrostTranscriptionResponse  `gorm:"-" json:"transcription_output,omitempty"`
-	CacheDebugParsed          *schemas.BifrostCacheDebug             `gorm:"-" json:"cache_debug,omitempty"`
+	InputHistoryParsed          []schemas.ChatMessage                  `gorm:"-" json:"input_history,omitempty"`
+	ResponsesInputHistoryParsed []schemas.ResponsesMessage             `gorm:"-" json:"responses_input_history,omitempty"`
+	OutputMessageParsed         *schemas.ChatMessage                   `gorm:"-" json:"output_message,omitempty"`
+	ResponsesOutputParsed       []schemas.ResponsesMessage             `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingOutputParsed       []schemas.EmbeddingData                `gorm:"-" json:"embedding_output,omitempty"`
+	ParamsParsed                interface{}                            `gorm:"-" json:"params,omitempty"`
+	ToolsParsed                 []schemas.ChatTool                     `gorm:"-" json:"tools,omitempty"`
+	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
+	TokenUsageParsed            *schemas.BifrostLLMUsage               `gorm:"-" json:"token_usage,omitempty"`
+	ErrorDetailsParsed          *schemas.BifrostError                  `gorm:"-" json:"error_details,omitempty"`
+	SpeechInputParsed           *schemas.SpeechInput                   `gorm:"-" json:"speech_input,omitempty"`
+	TranscriptionInputParsed    *schemas.TranscriptionInput            `gorm:"-" json:"transcription_input,omitempty"`
+	SpeechOutputParsed          *schemas.BifrostSpeechResponse         `gorm:"-" json:"speech_output,omitempty"`
+	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse  `gorm:"-" json:"transcription_output,omitempty"`
+	CacheDebugParsed            *schemas.BifrostCacheDebug             `gorm:"-" json:"cache_debug,omitempty"`
 }
 
 // TableName sets the table name for GORM
@@ -149,6 +151,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.InputHistory = string(data)
+		}
+	}
+
+	if l.ResponsesInputHistoryParsed != nil {
+		if data, err := json.Marshal(l.ResponsesInputHistoryParsed); err != nil {
+			return err
+		} else {
+			l.ResponsesInputHistory = string(data)
 		}
 	}
 
@@ -275,6 +285,13 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.ResponsesInputHistory != "" {
+		if err := json.Unmarshal([]byte(l.ResponsesInputHistory), &l.ResponsesInputHistoryParsed); err != nil {
+			// Log error but don't fail the operation - initialize as empty slice
+			l.ResponsesInputHistoryParsed = []schemas.ResponsesMessage{}
+		}
+	}
+
 	if l.OutputMessage != "" {
 		if err := json.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
@@ -387,6 +404,30 @@ func (l *Log) BuildContentSummary() string {
 					if block.Text != nil && *block.Text != "" {
 						parts = append(parts, *block.Text)
 					}
+				}
+			}
+		}
+	}
+
+	// Add responses input history
+	if l.ResponsesInputHistoryParsed != nil {
+		for _, msg := range l.ResponsesInputHistoryParsed {
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+					parts = append(parts, *msg.Content.ContentStr)
+				}
+				// If content blocks exist, extract text from them
+				if msg.Content.ContentBlocks != nil {
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							parts = append(parts, *block.Text)
+						}
+					}
+				}
+			}
+			if msg.ResponsesReasoning != nil {
+				for _, summary := range msg.ResponsesReasoning.Summary {
+					parts = append(parts, summary.Text)
 				}
 			}
 		}

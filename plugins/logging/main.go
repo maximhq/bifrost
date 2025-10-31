@@ -59,14 +59,15 @@ type LogMessage struct {
 
 // InitialLogData contains data for initial log entry creation
 type InitialLogData struct {
-	Provider           string
-	Model              string
-	Object             string
-	InputHistory       []schemas.ChatMessage
-	Params             interface{}
-	SpeechInput        *schemas.SpeechInput
-	TranscriptionInput *schemas.TranscriptionInput
-	Tools              []schemas.ChatTool
+	Provider              string
+	Model                 string
+	Object                string
+	InputHistory          []schemas.ChatMessage
+	ResponsesInputHistory []schemas.ResponsesMessage
+	Params                interface{}
+	SpeechInput           *schemas.SpeechInput
+	TranscriptionInput    *schemas.TranscriptionInput
+	Tools                 []schemas.ChatTool
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -192,7 +193,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	if bifrost.IsStreamRequestType(req.RequestType) {
 		p.accumulator.CreateStreamAccumulator(requestID, createdTimestamp)
 	}
-	inputHistory := p.extractInputHistory(req)
+	inputHistory, responsesInputHistory := p.extractInputHistory(req)
 
 	provider, model, _ := req.GetRequestFields()
 
@@ -200,7 +201,8 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		Provider:     string(provider),
 		Model:        model,
 		Object:       string(req.RequestType),
-		InputHistory: inputHistory,
+		InputHistory:          inputHistory,
+		ResponsesInputHistory: responsesInputHistory,
 	}
 
 	switch req.RequestType {
@@ -257,17 +259,18 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 			p.mu.Lock()
 			if p.logCallback != nil {
 				initialEntry := &logstore.Log{
-					ID:                 logMsg.RequestID,
-					Timestamp:          logMsg.Timestamp,
-					Object:             logMsg.InitialData.Object,
-					Provider:           logMsg.InitialData.Provider,
-					Model:              logMsg.InitialData.Model,
-					InputHistoryParsed: logMsg.InitialData.InputHistory,
-					ParamsParsed:       logMsg.InitialData.Params,
-					ToolsParsed:        logMsg.InitialData.Tools,
-					Status:             "processing",
-					Stream:             false, // Initially false, will be updated if streaming
-					CreatedAt:          logMsg.Timestamp,
+					ID:                          logMsg.RequestID,
+					Timestamp:                   logMsg.Timestamp,
+					Object:                      logMsg.InitialData.Object,
+					Provider:                    logMsg.InitialData.Provider,
+					Model:                       logMsg.InitialData.Model,
+					InputHistoryParsed:          logMsg.InitialData.InputHistory,
+					ResponsesInputHistoryParsed: logMsg.InitialData.ResponsesInputHistory,
+					ParamsParsed:                logMsg.InitialData.Params,
+					ToolsParsed:                 logMsg.InitialData.Tools,
+					Status:                      "processing",
+					Stream:                      false, // Initially false, will be updated if streaming
+					CreatedAt:                   logMsg.Timestamp,
 				}
 				p.logCallback(initialEntry)
 			}

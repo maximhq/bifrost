@@ -2,7 +2,7 @@ import { ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs
 import { CodeEditor } from "./codeEditor";
 import { isJson, cleanJson } from "@/lib/utils/validation";
 
-interface LogResponsesOutputViewProps {
+interface LogResponsesMessageViewProps {
 	messages: ResponsesMessage[];
 }
 
@@ -334,11 +334,11 @@ const renderMessage = (message: ResponsesMessage, index: number) => {
 	);
 };
 
-export default function LogResponsesOutputView({ messages }: LogResponsesOutputViewProps) {
+export default function LogResponsesMessageView({ messages }: LogResponsesMessageViewProps) {
 	if (!messages || messages.length === 0) {
 		return (
 			<div className="w-full rounded-sm border">
-				<div className="text-muted-foreground px-6 py-4 text-center text-sm">No responses output available</div>
+				<div className="text-muted-foreground px-6 py-4 text-center text-sm">No responses messages available</div>
 			</div>
 		);
 	}
