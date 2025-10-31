@@ -71,9 +71,9 @@ func (provider *OpenRouterProvider) ListModels(ctx context.Context, key schemas.
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/models")
+	req.SetRequestURI(provider.networkConfig.BaseURL + getPathFromContext(ctx, "/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
@@ -120,7 +120,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx context.Context, key sche
 	return handleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -137,7 +137,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx context.Context, po
 	return handleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
@@ -153,7 +153,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, key sche
 	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -172,7 +172,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
@@ -188,7 +188,7 @@ func (provider *OpenRouterProvider) Responses(ctx context.Context, key schemas.K
 	return handleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/alpha/responses",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/alpha/responses"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -203,7 +203,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx context.Context, postHoo
 	return handleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/alpha/responses",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/alpha/responses"),
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,

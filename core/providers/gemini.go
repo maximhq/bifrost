@@ -86,10 +86,10 @@ func (provider *GeminiProvider) ListModels(ctx context.Context, key schemas.Key,
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	requestURL := gemini.ToGeminiListModelsURL(request, provider.networkConfig.BaseURL+"/models")
+	requestURL := gemini.ToGeminiListModelsURL(request, provider.networkConfig.BaseURL+getPathFromContext(ctx, "/models"))
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
@@ -165,9 +165,9 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/openai/chat/completions")
+	req.SetRequestURI(provider.networkConfig.BaseURL + getPathFromContext(ctx, "/openai/chat/completions"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
@@ -244,7 +244,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/openai/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/openai/chat/completions"),
 		request,
 		map[string]string{"Authorization": "Bearer " + key.Value},
 		provider.networkConfig.ExtraHeaders,
@@ -293,7 +293,7 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, 
 	return handleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/openai/embeddings",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/openai/embeddings"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -374,7 +374,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+getPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"), bytes.NewReader(jsonData))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -393,7 +393,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers for streaming
 	req.Header.Set("Content-Type", "application/json")
@@ -652,7 +652,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/models/"+request.Model+":streamGenerateContent?alt=sse", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+getPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"), bytes.NewReader(jsonData))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -671,7 +671,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers for streaming
 	req.Header.Set("Content-Type", "application/json")
@@ -894,56 +894,6 @@ func extractGeminiUsageMetadata(geminiResponse *gemini.GenerateContentResponse) 
 		totalTokens = int(usageMetadata.TotalTokenCount)
 	}
 	return inputTokens, outputTokens, totalTokens
-}
-
-// completeRequest handles the common HTTP request pattern for Gemini API calls
-func (provider *GeminiProvider) completeRequest(ctx context.Context, model string, key schemas.Key, jsonBody []byte, endpoint string) (*gemini.GenerateContentResponse, interface{}, time.Duration, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-
-	// Use Gemini's generateContent endpoint
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/models/" + model + endpoint)
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
-	req.Header.Set("x-goog-api-key", key.Value)
-
-	req.SetBody(jsonBody)
-
-	// Make request
-	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, nil, latency, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, nil, latency, parseGeminiError(providerName, resp)
-	}
-
-	// Copy the response body before releasing the response
-	// to avoid use-after-free since resp.Body() references fasthttp's internal buffer
-	responseBody := append([]byte(nil), resp.Body()...)
-
-	// Parse Gemini's response
-	var geminiResponse gemini.GenerateContentResponse
-	if err := sonic.Unmarshal(responseBody, &geminiResponse); err != nil {
-		return nil, nil, latency, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
-	}
-
-	var rawResponse interface{}
-	if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-		return nil, nil, latency, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
-	}
-
-	return &geminiResponse, rawResponse, latency, nil
 }
 
 // parseStreamGeminiError parses Gemini streaming error responses

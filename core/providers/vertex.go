@@ -179,7 +179,7 @@ func (provider *VertexProvider) ListModels(ctx context.Context, key schemas.Key,
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.Header.Set("Content-Type", "application/json")
 
@@ -394,7 +394,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.Header.Set("Content-Type", "application/json")
 
@@ -701,7 +701,7 @@ func (provider *VertexProvider) handleVertexEmbedding(ctx context.Context, model
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.Header.Set("Content-Type", "application/json")
 

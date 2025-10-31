@@ -73,7 +73,17 @@ func (provider *OllamaProvider) ListModels(ctx context.Context, key schemas.Key,
 	if provider.networkConfig.BaseURL == "" {
 		return nil, newConfigurationError("base_url is not set", provider.GetProviderKey())
 	}
-	return handleOpenAIListModelsRequest(ctx, provider.client, request, provider.networkConfig.BaseURL+"/v1/models", key, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), provider.sendBackRawResponse, provider.logger)
+	return handleOpenAIListModelsRequest(
+		ctx,
+		provider.client,
+		request,
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/models"),
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
 }
 
 // TextCompletion performs a text completion request to the Ollama API.
@@ -81,7 +91,7 @@ func (provider *OllamaProvider) TextCompletion(ctx context.Context, key schemas.
 	return handleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -98,7 +108,7 @@ func (provider *OllamaProvider) TextCompletionStream(ctx context.Context, postHo
 	return handleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -114,7 +124,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx context.Context, key schemas.
 	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -133,7 +143,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -174,7 +184,7 @@ func (provider *OllamaProvider) Embedding(ctx context.Context, key schemas.Key, 
 	return handleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/embeddings",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,

@@ -74,7 +74,7 @@ func (provider *SGLProvider) ListModels(ctx context.Context, key schemas.Key, re
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+"/v1/models",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/models"),
 		key,
 		provider.networkConfig.ExtraHeaders,
 		schemas.SGL,
@@ -88,7 +88,7 @@ func (provider *SGLProvider) TextCompletion(ctx context.Context, key schemas.Key
 	return handleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -105,7 +105,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookR
 	return handleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -121,7 +121,7 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, key schemas.Key
 	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -140,7 +140,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -181,7 +181,7 @@ func (provider *SGLProvider) Embedding(ctx context.Context, key schemas.Key, req
 	return handleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/embeddings",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,

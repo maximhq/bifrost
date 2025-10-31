@@ -129,7 +129,7 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	if key.Value != "" {
@@ -237,7 +237,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, reque
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	if key.Value != "" {
@@ -382,7 +382,7 @@ func (provider *BedrockProvider) ListModels(ctx context.Context, key schemas.Key
 	}
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	if key.Value != "" {

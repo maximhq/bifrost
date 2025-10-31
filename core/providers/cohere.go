@@ -110,10 +110,10 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	requestURL := cohere.ToCohereListModelsURL(request, provider.networkConfig.BaseURL+"/v1/models")
+	requestURL := cohere.ToCohereListModelsURL(request, provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/models"))
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
@@ -230,9 +230,9 @@ func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Co
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/chat")
+	req.SetRequestURI(provider.networkConfig.BaseURL + getPathFromContext(ctx, "/v2/chat"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
@@ -308,7 +308,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v2/chat", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v2/chat"), bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -333,7 +333,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	req.Header.Set("Cache-Control", "no-cache")
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Make the request
 	resp, err := provider.streamClient.Do(req)
@@ -590,7 +590,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+"/v2/chat", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v2/chat"), bytes.NewReader(jsonBody))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
@@ -615,7 +615,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	req.Header.Set("Cache-Control", "no-cache")
 
 	// Set any extra headers from network config
-	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Make the request
 	resp, err := provider.streamClient.Do(req)
@@ -782,9 +782,9 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	setExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
+	setExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v2/embed")
+	req.SetRequestURI(provider.networkConfig.BaseURL + getPathFromContext(ctx, "/v2/embed"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)

@@ -2335,6 +2335,10 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 		}
 	}
 
+	if skipKeySelection, ok := (*ctx).Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
+		return schemas.Key{}, nil
+	}
+
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {
 		return schemas.Key{}, err
