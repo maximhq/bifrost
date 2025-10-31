@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -707,4 +708,507 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 	}
 
 	return nil, nil
+}
+
+func (request *GeminiGenerationRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
+	if request == nil {
+		return nil
+	}
+
+	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+	}
+
+	if request.GenerationConfig.Temperature != nil || request.GenerationConfig.TopP != nil || request.GenerationConfig.MaxOutputTokens > 0 {
+		params := &schemas.ResponsesParameters{
+			ExtraParams: make(map[string]interface{}),
+		}
+
+		config := request.GenerationConfig
+		if config.Temperature != nil {
+			params.Temperature = config.Temperature
+		}
+		if config.TopP != nil {
+			params.TopP = config.TopP
+		}
+		if config.MaxOutputTokens > 0 {
+			params.MaxOutputTokens = schemas.Ptr(int(config.MaxOutputTokens))
+		}
+		if config.TopK != nil {
+			params.ExtraParams["top_k"] = *config.TopK
+		}
+		if len(config.StopSequences) > 0 {
+			params.ExtraParams["stop_sequences"] = config.StopSequences
+		}
+		if config.PresencePenalty != nil {
+			params.ExtraParams["presence_penalty"] = *config.PresencePenalty
+		}
+		if config.FrequencyPenalty != nil {
+			params.ExtraParams["frequency_penalty"] = *config.FrequencyPenalty
+		}
+		if config.Seed != nil {
+			params.ExtraParams["seed"] = *config.Seed
+		}
+
+		bifrostReq.Params = params
+	}
+
+	var bifrostMessages []schemas.ResponsesMessage
+	if request.SystemInstruction != nil && len(request.SystemInstruction.Parts) > 0 {
+		var systemText string
+		for _, part := range request.SystemInstruction.Parts {
+			if part.Text != "" {
+				if systemText != "" {
+					systemText += "\n"
+				}
+				systemText += part.Text
+			}
+		}
+		if systemText != "" {
+			systemMsg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &systemText,
+				},
+			}
+			bifrostMessages = append(bifrostMessages, systemMsg)
+		}
+	}
+
+	for _, content := range request.Contents {
+		convertedMessages := convertGeminiContentToBifrostResponsesMessages(content)
+		bifrostMessages = append(bifrostMessages, convertedMessages...)
+	}
+
+	bifrostReq.Input = bifrostMessages
+
+	if len(request.Tools) > 0 {
+		tools := convertGeminiToolsToBifrostResponses(request.Tools)
+		if len(tools) > 0 {
+			if bifrostReq.Params == nil {
+				bifrostReq.Params = &schemas.ResponsesParameters{
+					ExtraParams: make(map[string]interface{}),
+				}
+			}
+			bifrostReq.Params.Tools = tools
+		}
+	}
+
+	if request.ToolConfig.FunctionCallingConfig != nil {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ResponsesParameters{
+				ExtraParams: make(map[string]interface{}),
+			}
+		}
+		toolChoice := convertGeminiToolConfigToBifrostResponses(&request.ToolConfig)
+		if toolChoice != nil {
+			bifrostReq.Params.ToolChoice = toolChoice
+		}
+	}
+
+	return bifrostReq
+}
+
+func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *GenerateContentResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	genaiResp := &GenerateContentResponse{}
+
+	if bifrostResp.CreatedAt > 0 {
+		genaiResp.CreateTime = time.Unix(int64(bifrostResp.CreatedAt), 0)
+	}
+
+	if bifrostResp.Output != nil {
+		candidates := convertBifrostResponsesOutputToGeminiCandidates(bifrostResp.Output)
+		genaiResp.Candidates = candidates
+	}
+
+	if bifrostResp.Usage != nil {
+		genaiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     int32(bifrostResp.Usage.InputTokens),
+			CandidatesTokenCount: int32(bifrostResp.Usage.OutputTokens),
+			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
+		}
+		if bifrostResp.Usage.InputTokensDetails != nil {
+			genaiResp.UsageMetadata.CachedContentTokenCount = int32(bifrostResp.Usage.InputTokensDetails.CachedTokens)
+		}
+	}
+
+	return genaiResp
+}
+
+func convertGeminiContentToBifrostResponsesMessages(content Content) []schemas.ResponsesMessage {
+	var messages []schemas.ResponsesMessage
+
+	message := schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesMessageRoleType(content.Role)),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+	}
+
+	var contentBlocks []schemas.ResponsesMessageContentBlock
+	var contentStr string
+
+	for _, part := range content.Parts {
+		switch {
+		case part.Text != "":
+			if contentStr == "" {
+				contentStr = part.Text
+			} else {
+				contentStr += "\n" + part.Text
+			}
+
+		case part.FunctionCall != nil:
+			argsStr := ""
+			if part.FunctionCall.Args != nil {
+				if argsBytes, err := json.Marshal(part.FunctionCall.Args); err == nil {
+					argsStr = string(argsBytes)
+				}
+			}
+
+			callID := part.FunctionCall.Name
+			if strings.TrimSpace(part.FunctionCall.ID) != "" {
+				callID = part.FunctionCall.ID
+			}
+
+			message.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+				CallID:    &callID,
+				Name:      &part.FunctionCall.Name,
+				Arguments: &argsStr,
+			}
+			message.Type = schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall)
+
+		case part.FunctionResponse != nil:
+			output := ""
+			if part.FunctionResponse.Response != nil {
+				if outputVal, ok := part.FunctionResponse.Response["output"]; ok {
+					if outputStr, ok := outputVal.(string); ok {
+						output = outputStr
+					}
+				}
+			}
+
+			message.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+				CallID: &part.FunctionResponse.ID,
+			}
+			message.Type = schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput)
+			contentStr = output
+
+		case part.InlineData != nil:
+			block := schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesInputMessageContentBlockTypeText,
+			}
+
+			if strings.HasPrefix(part.InlineData.MIMEType, "image/") {
+				block.Type = schemas.ResponsesInputMessageContentBlockTypeImage
+				block.ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
+					ImageURL: schemas.Ptr("data:" + part.InlineData.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(part.InlineData.Data)),
+				}
+			} else if strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
+				block.Type = schemas.ResponsesInputMessageContentBlockTypeAudio
+				format := strings.TrimPrefix(part.InlineData.MIMEType, "audio/")
+				block.Audio = &schemas.ResponsesInputMessageContentBlockAudio{
+					Format: format,
+					Data:   base64.StdEncoding.EncodeToString(part.InlineData.Data),
+				}
+			}
+
+			contentBlocks = append(contentBlocks, block)
+
+		case part.FileData != nil:
+			block := schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					FileURL: &part.FileData.FileURI,
+				},
+			}
+			contentBlocks = append(contentBlocks, block)
+		}
+	}
+
+	if contentStr != "" {
+		message.Content = &schemas.ResponsesMessageContent{
+			ContentStr: &contentStr,
+		}
+	}
+	if len(contentBlocks) > 0 {
+		if message.Content == nil {
+			message.Content = &schemas.ResponsesMessageContent{}
+		}
+		message.Content.ContentBlocks = contentBlocks
+	}
+
+	if message.Content != nil {
+		messages = append(messages, message)
+	}
+
+	return messages
+}
+
+func convertGeminiToolsToBifrostResponses(tools []Tool) []schemas.ResponsesTool {
+	var bifrostTools []schemas.ResponsesTool
+
+	for _, tool := range tools {
+		if len(tool.FunctionDeclarations) > 0 {
+			for _, fn := range tool.FunctionDeclarations {
+				bifrostTool := schemas.ResponsesTool{
+					Type:        "function",
+					Name:        &fn.Name,
+					Description: &fn.Description,
+				}
+
+				if fn.Parameters != nil {
+					params := convertGeminiSchemaToFunctionParameters(fn.Parameters)
+					bifrostTool.ResponsesToolFunction = &schemas.ResponsesToolFunction{
+						Parameters: &params,
+					}
+				}
+
+				bifrostTools = append(bifrostTools, bifrostTool)
+			}
+		}
+	}
+
+	return bifrostTools
+}
+
+func convertGeminiToolConfigToBifrostResponses(config *ToolConfig) *schemas.ResponsesToolChoice {
+	if config == nil || config.FunctionCallingConfig == nil {
+		return nil
+	}
+
+	toolChoice := &schemas.ResponsesToolChoice{
+		ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{},
+	}
+
+	funcConfig := config.FunctionCallingConfig
+	switch funcConfig.Mode {
+	case FunctionCallingConfigModeNone:
+		toolChoice.ResponsesToolChoiceStruct.Mode = schemas.Ptr("none")
+	case FunctionCallingConfigModeAuto:
+		toolChoice.ResponsesToolChoiceStruct.Mode = schemas.Ptr("auto")
+	case FunctionCallingConfigModeAny:
+		toolChoice.ResponsesToolChoiceStruct.Mode = schemas.Ptr("required")
+	}
+
+	if len(funcConfig.AllowedFunctionNames) > 0 {
+		toolChoice.ResponsesToolChoiceStruct.Name = &funcConfig.AllowedFunctionNames[0]
+	}
+
+	return toolChoice
+}
+
+func convertGeminiSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
+	params := schemas.ToolFunctionParameters{
+		Type: string(schema.Type),
+	}
+
+	if schema.Description != "" {
+		params.Description = &schema.Description
+	}
+
+	if len(schema.Required) > 0 {
+		params.Required = schema.Required
+	}
+
+	if len(schema.Properties) > 0 {
+		properties := make(map[string]interface{})
+		for key, prop := range schema.Properties {
+			properties[key] = convertGeminiSchemaToMap(prop)
+		}
+		params.Properties = &properties
+	}
+
+	if len(schema.Enum) > 0 {
+		params.Enum = schema.Enum
+	}
+
+	return params
+}
+
+func convertGeminiSchemaToMap(schema *Schema) map[string]interface{} {
+	result := map[string]interface{}{
+		"type": string(schema.Type),
+	}
+
+	if schema.Description != "" {
+		result["description"] = schema.Description
+	}
+
+	if len(schema.Properties) > 0 {
+		properties := make(map[string]interface{})
+		for key, prop := range schema.Properties {
+			properties[key] = convertGeminiSchemaToMap(prop)
+		}
+		result["properties"] = properties
+	}
+
+	if len(schema.Required) > 0 {
+		result["required"] = schema.Required
+	}
+
+	if len(schema.Enum) > 0 {
+		result["enum"] = schema.Enum
+	}
+
+	if schema.Items != nil {
+		result["items"] = convertGeminiSchemaToMap(schema.Items)
+	}
+
+	return result
+}
+
+func convertBifrostResponsesOutputToGeminiCandidates(output []schemas.ResponsesMessage) []*Candidate {
+	var candidates []*Candidate
+
+	for _, msg := range output {
+		candidate := &Candidate{}
+
+		var parts []*Part
+		if msg.Content != nil {
+			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+				parts = append(parts, &Part{Text: *msg.Content.ContentStr})
+			}
+
+			if msg.Content.ContentBlocks != nil {
+				for _, block := range msg.Content.ContentBlocks {
+					part := convertBifrostContentBlockToGeminiPart(block)
+					if part != nil {
+						parts = append(parts, part)
+					}
+				}
+			}
+		}
+
+		if msg.ResponsesToolMessage != nil {
+			switch msg.Type {
+			case schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall):
+				if msg.ResponsesToolMessage.Name != nil {
+					argsMap := make(map[string]any)
+					if msg.ResponsesToolMessage.Arguments != nil {
+						sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Arguments), &argsMap)
+					}
+					part := &Part{
+						FunctionCall: &FunctionCall{
+							Name: *msg.ResponsesToolMessage.Name,
+							Args: argsMap,
+						},
+					}
+					if msg.ResponsesToolMessage.CallID != nil {
+						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+					}
+					parts = append(parts, part)
+				}
+
+			case schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput):
+				if msg.ResponsesToolMessage.CallID != nil {
+					responseMap := make(map[string]any)
+					if msg.Content != nil && msg.Content.ContentStr != nil {
+						responseMap["output"] = *msg.Content.ContentStr
+					}
+					part := &Part{
+						FunctionResponse: &FunctionResponse{
+							ID:       *msg.ResponsesToolMessage.CallID,
+							Name:     *msg.ResponsesToolMessage.CallID,
+							Response: responseMap,
+						},
+					}
+					if msg.ResponsesToolMessage.Name != nil {
+						part.FunctionResponse.Name = *msg.ResponsesToolMessage.Name
+					}
+					parts = append(parts, part)
+				}
+			}
+		}
+
+		if len(parts) > 0 {
+			candidate.Content = &Content{
+				Parts: parts,
+				Role:  "model",
+			}
+		}
+
+		candidates = append(candidates, candidate)
+	}
+
+	return candidates
+}
+
+func convertBifrostContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock) *Part {
+	switch block.Type {
+	case schemas.ResponsesInputMessageContentBlockTypeText:
+		if block.Text != nil {
+			return &Part{Text: *block.Text}
+		}
+
+	case schemas.ResponsesInputMessageContentBlockTypeImage:
+		if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+			imageURL := *block.ResponsesInputMessageContentBlockImage.ImageURL
+			sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
+			if err != nil {
+				return nil
+			}
+
+			urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
+			mimeType := "image/jpeg"
+			if urlInfo.MediaType != nil {
+				mimeType = *urlInfo.MediaType
+			}
+
+			if urlInfo.Type == schemas.ImageContentTypeBase64 {
+				data := ""
+				if urlInfo.DataURLWithoutPrefix != nil {
+					data = *urlInfo.DataURLWithoutPrefix
+				}
+				decodedData, err := base64.StdEncoding.DecodeString(data)
+				if err != nil {
+					return nil
+				}
+				return &Part{
+					InlineData: &Blob{
+						MIMEType: mimeType,
+						Data:     decodedData,
+					},
+				}
+			} else {
+				return &Part{
+					FileData: &FileData{
+						MIMEType: mimeType,
+						FileURI:  sanitizedURL,
+					},
+				}
+			}
+		}
+
+	case schemas.ResponsesInputMessageContentBlockTypeAudio:
+		if block.Audio != nil {
+			decodedData, err := base64.StdEncoding.DecodeString(block.Audio.Data)
+			if err != nil {
+				return nil
+			}
+			return &Part{
+				InlineData: &Blob{
+					MIMEType: "audio/" + block.Audio.Format,
+					Data:     decodedData,
+				},
+			}
+		}
+
+	case schemas.ResponsesInputMessageContentBlockTypeFile:
+		if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileURL != nil {
+			return &Part{
+				FileData: &FileData{
+					MIMEType: "application/octet-stream",
+					FileURI:  *block.ResponsesInputMessageContentBlockFile.FileURL,
+				},
+			}
+		}
+	}
+
+	return nil
 }
