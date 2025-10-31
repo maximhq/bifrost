@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="16" failures="0" errors="0" time="8.760806">
+	<testsuite tests="16" failures="0" time="8.761000" name="github.com/maximhq/bifrost/tests/core-providers" timestamp="2025-10-27T22:02:42-07:00">
+		<properties>
+			<property name="go.version" value="go1.25.1 darwin/arm64"></property>
+		</properties>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ListModels" time="0.160000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/Embedding" time="0.210000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ListModelsPagination" time="0.230000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ChatCompletionStreamWithTools" time="0.850000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ResponsesStreamWithTools" time="0.890000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/MultiTurnConversation" time="0.900000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/AutomaticFunctionCalling" time="1.190000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ToolCalls" time="1.460000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/SimpleChat" time="1.690000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/MultipleToolCalls" time="2.190000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ChatCompletionStream" time="2.220000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/End2EndToolCalling" time="4.050000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ResponsesStream" time="6.240000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests/ImageBase64" time="8.500000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere/CohereTests" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestCohere" time="8.500000"></testcase>
+	</testsuite>
+</testsuites>

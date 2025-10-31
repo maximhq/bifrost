@@ -1,0 +1,34 @@
+# Configuration: SQLite for config and logs store
+# Usage: helm install bifrost ./bifrost -f values-examples/sqlite-only.yaml
+
+# Storage configuration
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    size: 10Gi
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# No PostgreSQL
+postgresql:
+  enabled: false
+
+# No vector store
+vectorStore:
+  enabled: false
+  type: none
+
+# Bifrost configuration
+bifrost:
+  client:
+    enableLogging: true
+  providers: {}
+    # Add your provider keys here
+    # openai:
+    #   keys:
+    #     - value: "sk-..."
+    #       weight: 1
+

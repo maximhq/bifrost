@@ -17,6 +17,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
@@ -155,8 +156,33 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProv
 }
 
 // LoadPlugin loads a plugin by name and returns it as type T.
-func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
+func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
 	var zero T
+	logger.Info("loading plugin %s %v %v", name, path, pluginConfig)
+	if path != nil {
+		logger.Info("loading dynamic plugin %s from path %s", name, *path)
+		// Load dynamic plugin
+		plugins, err := dynamicPlugins.LoadPlugins(&dynamicPlugins.Config{
+			Plugins: []dynamicPlugins.DynamicPluginConfig{
+				{
+					Path:    *path,
+					Name:    name,
+					Enabled: true,
+					Config:  pluginConfig,
+				},
+			},
+		})
+		if err != nil {
+			return zero, fmt.Errorf("failed to load dynamic plugin %s: %v", name, err)
+		}
+		if len(plugins) == 0 {
+			return zero, fmt.Errorf("dynamic plugin %s returned no instances", name)
+		}
+		if p, ok := any(plugins[0]).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("dynamic plugin type mismatch")
+	}
 	switch name {
 	case telemetry.PluginName:
 		plugin, err := telemetry.Init(&telemetry.Config{
@@ -240,10 +266,12 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, pluginConfig
 
 // LoadPlugins loads the plugins for the server.
 func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, error) {
+	test, _:= sonic.Marshal(config.PluginConfigs)
+	logger.Debug("loading plugins from config %s", string(test))
 	var err error
 	plugins := []schemas.Plugin{}
 	// Initialize telemetry plugin
-	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, config)
+	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, nil, config)
 	if err != nil {
 		logger.Error("failed to initialize telemetry plugin: %v", err)
 	} else {
@@ -253,7 +281,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 	var loggingPlugin *logging.LoggerPlugin
 	if config.ClientConfig.EnableLogging && config.LogsStore != nil {
 		// Use dedicated logs database with high-scale optimizations
-		loggingPlugin, err = LoadPlugin[*logging.LoggerPlugin](ctx, logging.PluginName, nil, config)
+		loggingPlugin, err = LoadPlugin[*logging.LoggerPlugin](ctx, logging.PluginName, nil, nil, config)
 		if err != nil {
 			logger.Error("failed to initialize logging plugin: %v", err)
 		} else {
@@ -264,7 +292,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 	var governancePlugin *governance.GovernancePlugin
 	if config.ClientConfig.EnableGovernance {
 		// Initialize governance plugin
-		governancePlugin, err = LoadPlugin[*governance.GovernancePlugin](ctx, governance.PluginName, &governance.Config{
+		governancePlugin, err = LoadPlugin[*governance.GovernancePlugin](ctx, governance.PluginName, nil, &governance.Config{
 			IsVkMandatory: &config.ClientConfig.EnforceGovernanceHeader,
 		}, config)
 		if err != nil {
@@ -273,13 +301,11 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, err
 			plugins = append(plugins, governancePlugin)
 		}
 	}
-	// Currently we support first party plugins only
-	// Eventually same flow will be used for third party plugins
 	for _, plugin := range config.PluginConfigs {
 		if !plugin.Enabled {
 			continue
 		}
-		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Config, config)
+		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Path, plugin.Config, config)
 		if err != nil {
 			logger.Error("failed to load plugin %s: %v", plugin.Name, err)
 		} else {
@@ -343,9 +369,9 @@ func (s *BifrostHTTPServer) UpdateDropExcessRequests(value bool) {
 
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
-func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, pluginConfig any) error {
+func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
 	logger.Debug("reloading plugin %s", name)
-	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, pluginConfig, s.Config)
+	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, path, pluginConfig, s.Config)
 	if err != nil {
 		return err
 	}

@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -84,8 +86,10 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 			}
 
 			// Call TransportInterceptor on all plugins
+			pluginCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
 			for _, plugin := range plugins {
-				modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(string(ctx.Request.URI().RequestURI()), headers, requestBody)
+				modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(&pluginCtx, string(ctx.Request.URI().RequestURI()), headers, requestBody)
 				if err != nil {
 					logger.Warn(fmt.Sprintf("TransportInterceptor: Plugin '%s' returned error: %v", plugin.GetName(), err))
 					// Continue with unmodified headers/body

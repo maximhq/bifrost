@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="19" failures="0" errors="0" time="33.539014">
+	<testsuite tests="19" failures="0" time="33.538000" name="github.com/maximhq/bifrost/tests/core-providers" timestamp="2025-10-27T19:40:41-07:00">
+		<properties>
+			<property name="go.version" value="go1.25.1 darwin/arm64"></property>
+		</properties>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/Embedding" time="0.540000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ListModels" time="0.560000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ListModelsPagination" time="0.720000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/SimpleChat" time="1.640000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/MultiTurnConversation" time="2.780000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ResponsesStreamWithTools" time="3.640000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ResponsesStream" time="4.320000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/Reasoning" time="5.860000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ChatCompletionStreamWithTools" time="4.400000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ResponsesStreamWithReasoning" time="6.910000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/MultipleToolCalls" time="7.500000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/AutomaticFunctionCalling" time="3.240000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ToolCalls" time="7.690000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ChatCompletionStream" time="5.020000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/ImageBase64" time="13.610000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/End2EndToolCalling" time="13.920000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests/CompleteEnd2End" time="32.729000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock/BedrockTests" time="0.000000"></testcase>
+		<testcase classname="github.com/maximhq/bifrost/tests/core-providers" name="TestBedrock" time="33.270000"></testcase>
+	</testsuite>
+</testsuites>
