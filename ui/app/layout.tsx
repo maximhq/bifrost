@@ -1,5 +1,4 @@
 import { Geist, Geist_Mono } from "next/font/google"
-import { ClientLayout } from "./clientLayout"
 import "./globals.css"
 
 const geistSans = Geist({
@@ -24,7 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 				<link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
 			</head>
 			<body className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}>
-				<ClientLayout>{children}</ClientLayout>
+				{children}
 			</body>
 		</html>
 	)

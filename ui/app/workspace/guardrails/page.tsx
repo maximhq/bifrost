@@ -1,4 +1,4 @@
-import GuardrailsView from "@enterprise/components/guardrails/guardrailsProviderView";
+import GuardrailsView from "@/app/_fallbacks/enterprise/components/guardrails/guardrailsProviderView";
 
 export default function GuardrailsPage() {
 	return (

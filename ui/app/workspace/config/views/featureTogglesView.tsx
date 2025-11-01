@@ -1,11 +1,9 @@
 "use client";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig } from "@/lib/types/config";
-import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import PluginsForm from "./pluginsForm";
@@ -69,15 +67,7 @@ export default function FeatureTogglesView() {
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
-			</div>
-
-			<Alert variant="destructive">
-				<AlertTriangle className="h-4 w-4" />
-				<AlertDescription>
-					These settings require a Bifrost service restart to take effect. Current connections will continue with existing settings until
-					restart.
-				</AlertDescription>
-			</Alert>
+			</div>			
 
 			<div className="space-y-4">
 				{/* Enable Logs */}

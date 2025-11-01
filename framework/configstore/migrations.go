@@ -54,6 +54,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddProviderConfigBudgetRateLimit(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddSessionsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -138,8 +141,8 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 					return err
 				}
 			}
-			if !migrator.HasTable(&tables.TableConfig{}) {
-				if err := migrator.CreateTable(&tables.TableConfig{}); err != nil {
+			if !migrator.HasTable(&tables.TableGovernanceConfig{}) {
+				if err := migrator.CreateTable(&tables.TableGovernanceConfig{}); err != nil {
 					return err
 				}
 			}
@@ -199,7 +202,7 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			if err := migrator.DropTable(&tables.TableLogStoreConfig{}); err != nil {
 				return err
 			}
-			if err := migrator.DropTable(&tables.TableConfig{}); err != nil {
+			if err := migrator.DropTable(&tables.TableGovernanceConfig{}); err != nil {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TableModelPricing{}); err != nil {
@@ -730,6 +733,36 @@ func migrationAddPluginPathColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running plugin path migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddSessionsTable adds the sessions table
+func migrationAddSessionsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_sessions_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&tables.SessionsTable{}) {
+				if err := migrator.CreateTable(&tables.SessionsTable{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropTable(&tables.SessionsTable{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
 }

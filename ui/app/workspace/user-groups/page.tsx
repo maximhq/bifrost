@@ -1,15 +1,15 @@
 "use client";
 
+import UsersView from "@/app/_fallbacks/enterprise/components/user-groups/usersView";
 import FullPageLoader from "@/components/fullPageLoader";
 import {
-	getErrorMessage,
-	useLazyGetCoreConfigQuery,
-	useLazyGetCustomersQuery,
-	useLazyGetTeamsQuery,
-	useLazyGetVirtualKeysQuery,
+    getErrorMessage,
+    useLazyGetCoreConfigQuery,
+    useLazyGetCustomersQuery,
+    useLazyGetTeamsQuery,
+    useLazyGetVirtualKeysQuery,
 } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import UsersView from "@enterprise/components/user-groups/usersView";
 import { Building, Users, WalletCards } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";

@@ -1,4 +1,4 @@
-import AlertChannelsView from "@enterprise/components/alert-channels/alertChannelsView";
+import AlertChannelsView from "@/app/_fallbacks/enterprise/components/alert-channels/alertChannelsView";
 
 export default function AlertChannelsPage() {
   return (

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -124,6 +123,105 @@ func stripExcessSpaces(str string) string {
 	return result.String()
 }
 
+// percentEncodeRFC3986 encodes a string per RFC 3986
+// Keep unreserved characters (A-Z, a-z, 0-9, -, _, ., ~) as-is
+// Percent-encode everything else as %HH using uppercase hex
+func percentEncodeRFC3986(s string) string {
+	var result strings.Builder
+	result.Grow(len(s))
+
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		// RFC 3986 unreserved characters
+		if (b >= 'A' && b <= 'Z') ||
+			(b >= 'a' && b <= 'z') ||
+			(b >= '0' && b <= '9') ||
+			b == '-' || b == '_' || b == '.' || b == '~' {
+			result.WriteByte(b)
+		} else {
+			// Percent-encode with uppercase hex
+			result.WriteByte('%')
+			result.WriteByte(uppercaseHex(b >> 4))
+			result.WriteByte(uppercaseHex(b & 0x0F))
+		}
+	}
+
+	return result.String()
+}
+
+// uppercaseHex returns the uppercase hex character for a nibble (0-15)
+func uppercaseHex(b byte) byte {
+	if b < 10 {
+		return '0' + b
+	}
+	return 'A' + (b - 10)
+}
+
+// queryPair represents a query parameter name-value pair
+type queryPair struct {
+	encodedName  string
+	encodedValue string
+}
+
+// buildCanonicalQueryString builds a canonical query string per AWS SigV4 spec
+// using proper RFC 3986 percent-encoding
+func buildCanonicalQueryString(queryString string) string {
+	if queryString == "" {
+		return ""
+	}
+
+	// Split the raw query string on '&' into pairs
+	rawPairs := strings.Split(queryString, "&")
+	pairs := make([]queryPair, 0, len(rawPairs))
+
+	for _, rawPair := range rawPairs {
+		if rawPair == "" {
+			continue
+		}
+
+		// Split on the first '=' to get name and value
+		var name, value string
+		if idx := strings.IndexByte(rawPair, '='); idx >= 0 {
+			name = rawPair[:idx]
+			value = rawPair[idx+1:]
+		} else {
+			// No '=' means name only, empty value
+			name = rawPair
+			value = ""
+		}
+
+		// Percent-encode name and value per RFC 3986
+		encodedName := percentEncodeRFC3986(name)
+		encodedValue := percentEncodeRFC3986(value)
+
+		pairs = append(pairs, queryPair{
+			encodedName:  encodedName,
+			encodedValue: encodedValue,
+		})
+	}
+
+	// Sort pairs lexicographically by encoded name, then by encoded value
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].encodedName != pairs[j].encodedName {
+			return pairs[i].encodedName < pairs[j].encodedName
+		}
+		return pairs[i].encodedValue < pairs[j].encodedValue
+	})
+
+	// Join encoded pairs with '&'
+	var result strings.Builder
+	for i, pair := range pairs {
+		if i > 0 {
+			result.WriteByte('&')
+		}
+		result.WriteString(pair.encodedName)
+		result.WriteByte('=')
+		result.WriteString(pair.encodedValue)
+	}
+
+	return result.String()
+}
+
 // signAWSRequestFastHTTP signs a fasthttp request using AWS Signature Version 4
 // This is a native implementation that avoids allocating http.Request
 func signAWSRequestFastHTTP(
@@ -191,9 +289,9 @@ func signAWSRequestFastHTTP(
 	headerMap["host"] = []string{host}
 
 	// Include content-length if body is present
-	if len(body) > 0 {
+	if cl := req.Header.ContentLength(); cl >= 0 {
 		headerNames = append(headerNames, "content-length")
-		headerMap["content-length"] = []string{strconv.Itoa(len(body))}
+		headerMap["content-length"] = []string{strconv.Itoa(cl)}
 	}
 
 	// Collect other headers
@@ -238,25 +336,8 @@ func signAWSRequestFastHTTP(
 
 	signedHeaders := strings.Join(headerNames, ";")
 
-	// Parse and normalize query string
-	var canonicalQueryString string
-	if queryString != "" {
-		values, _ := url.ParseQuery(queryString)
-		// Sort keys
-		keys := make([]string, 0, len(values))
-		for k := range values {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		// Sort values for each key
-		for _, k := range keys {
-			sort.Strings(values[k])
-		}
-
-		canonicalQueryString = values.Encode()
-		canonicalQueryString = strings.ReplaceAll(canonicalQueryString, "+", "%20")
-	}
+	// Build canonical query string using RFC 3986 encoding
+	canonicalQueryString := buildCanonicalQueryString(queryString)
 
 	// Build canonical request
 	canonicalRequest := strings.Join([]string{

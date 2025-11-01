@@ -43,6 +43,7 @@ type HandlerStore interface {
 type ConfigData struct {
 	Client            *configstore.ClientConfig             `json:"client"`
 	EncryptionKey     string                                `json:"encryption_key"`
+	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -53,7 +54,7 @@ type ConfigData struct {
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 }
 
-// UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
+// UnmarshalJSON umarshals the ConfigData from JSON using internal unmarshallers
 // for VectorStoreConfig, ConfigStoreConfig, and LogsStoreConfig to ensure proper
 // type safety and configuration parsing.
 func (cd *ConfigData) UnmarshalJSON(data []byte) error {
@@ -62,6 +63,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Client            *configstore.ClientConfig             `json:"client"`
 		EncryptionKey     string                                `json:"encryption_key"`
+		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
 		Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
@@ -79,6 +81,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	// Set simple fields
 	cd.Client = temp.Client
 	cd.EncryptionKey = temp.EncryptionKey
+	cd.AuthConfig = temp.AuthConfig
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Governance = temp.Governance
@@ -350,6 +353,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if governanceConfig != nil {
 				config.GovernanceConfig = governanceConfig
 			}
+			// Updating auth config if present in config
 			// Checking if MCP config already exists
 			mcpConfig, err := config.ConfigStore.GetMCPConfig(ctx)
 			if err != nil {
@@ -777,6 +781,21 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			}); err != nil {
 				logger.Warn("failed to update governance config: %v", err)
 			}
+		}
+	}
+
+	if configData.AuthConfig != nil {
+		if config.ConfigStore != nil {
+			configStoreAuthConfig, err := config.ConfigStore.GetAuthConfig(ctx)
+			if err == nil && configStoreAuthConfig == nil {
+				// Adding this config
+				if err := config.ConfigStore.UpdateAuthConfig(ctx, configData.AuthConfig); err != nil {
+					logger.Warn("failed to update auth config: %v", err)
+				}
+			}
+		}else if governanceConfig != nil && governanceConfig.AuthConfig == nil {
+			// Adding this config
+			governanceConfig.AuthConfig = configData.AuthConfig
 		}
 	}
 

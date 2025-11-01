@@ -198,13 +198,22 @@ export interface FrameworkConfig {
 	pricing_sync_interval: number;
 }
 
+// Auth config
+export interface AuthConfig {
+	admin_username: string;
+	admin_password: string;
+	is_enabled: boolean;
+}
+
 // Bifrost Config
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
+	auth_config?: AuthConfig;
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	auth_token?: string;
 }
 
 // Core Bifrost configuration types
