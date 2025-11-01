@@ -47,7 +47,7 @@ export default function ModelProviderConfig({ provider }: Props) {
 	const isCustomProvider = !isKnownProvider(provider.name);
 	const tabs = useMemo(() => {
 		return availableTabs(provider);
-	}, [provider.name]);
+	}, [provider.name, provider.custom_provider_config]);
 
 	const showApiKeys = keysRequired(provider.name);
 

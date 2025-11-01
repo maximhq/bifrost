@@ -2,9 +2,12 @@
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { CoreConfig } from "@/lib/types/config";
+import { AuthConfig, CoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { AlertTriangle } from "lucide-react";
@@ -30,11 +33,18 @@ export default function SecurityView() {
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(defaultConfig);
 	const [needsRestart, setNeedsRestart] = useState<boolean>(false);
+	const [authNeedsRestart, setAuthNeedsRestart] = useState<boolean>(false);
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
 	}>({
 		allowed_origins: "",
+	});
+
+	const [authConfig, setAuthConfig] = useState<AuthConfig>({
+		admin_username: "",
+		admin_password: "",
+		is_enabled: false,
 	});
 
 	useEffect(() => {
@@ -44,14 +54,24 @@ export default function SecurityView() {
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
 			});
 		}
+		if (bifrostConfig?.auth_config) {
+			setAuthConfig(bifrostConfig.auth_config);
+		}
 	}, [config, bifrostConfig]);
 
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		const localOrigins = localConfig.allowed_origins?.slice().sort().join(",");
 		const serverOrigins = config.allowed_origins?.slice().sort().join(",");
-		return localOrigins !== serverOrigins;
-	}, [config, localConfig]);
+		const originsChanged = localOrigins !== serverOrigins;
+
+		const authChanged =
+			authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
+			authConfig.admin_username !== bifrostConfig?.auth_config?.admin_username ||
+			authConfig.admin_password !== bifrostConfig?.auth_config?.admin_password;
+
+		return originsChanged || authChanged;
+	}, [config, localConfig, authConfig, bifrostConfig]);
 
 	const handleAllowedOriginsChange = useCallback((value: string) => {
 		const nextOrigins = parseArrayFromText(value);
@@ -62,6 +82,15 @@ export default function SecurityView() {
 			nextOrigins.length !== currentOrigins.length || nextOrigins.some((origin, index) => origin !== currentOrigins[index]);
 		setNeedsRestart(requiresRestart);
 	}, []);
+
+	const handleAuthToggle = useCallback(
+		(checked: boolean) => {
+			setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
+			const originalAuthEnabled = bifrostConfig?.auth_config?.is_enabled ?? false;
+			setAuthNeedsRestart(checked !== originalAuthEnabled);
+		},
+		[bifrostConfig?.auth_config?.is_enabled],
+	);
 
 	const handleSave = useCallback(async () => {
 		try {
@@ -74,12 +103,21 @@ export default function SecurityView() {
 				return;
 			}
 
-			await updateCoreConfig({ ...bifrostConfig!, client_config: localConfig }).unwrap();
+			await updateCoreConfig({
+				...bifrostConfig!,
+				client_config: localConfig,
+				auth_config:
+					authConfig.is_enabled && authConfig.admin_username && authConfig.admin_password
+						? authConfig
+						: { ...authConfig, is_enabled: false },
+			}).unwrap();
 			toast.success("Security settings updated successfully.");
+			setAuthNeedsRestart(false);
+			setNeedsRestart(false);
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, authConfig, updateCoreConfig]);
 
 	return (
 		<div className="space-y-4">
@@ -93,15 +131,54 @@ export default function SecurityView() {
 				</Button>
 			</div>
 
-			<Alert variant="destructive">
-				<AlertTriangle className="h-4 w-4" />
-				<AlertDescription>
-					These settings require a Bifrost service restart to take effect. Current connections will continue with existing settings until
-					restart.
-				</AlertDescription>
-			</Alert>
-
 			<div className="space-y-4">
+				{authNeedsRestart && <RestartWarning />}
+				{/* Password Protect the Dashboard */}
+				<div>
+					<div className="space-y-4 rounded-lg border p-4">
+						<div className="flex items-center justify-between">
+							<div className="space-y-0.5">
+								<Label htmlFor="auth-enabled" className="text-sm font-medium">
+									Password protect the dashboard
+								</Label>
+								<p className="text-muted-foreground text-sm">
+									Set up authentication credentials to protect your Bifrost dashboard. Once configured, use the generated token for all
+									admin API calls.
+								</p>
+							</div>
+							<Switch id="auth-enabled" checked={authConfig.is_enabled} onCheckedChange={handleAuthToggle} />
+						</div>
+						<div className="space-y-4">
+							<div className="space-y-2">
+								<Label htmlFor="admin-username">Username</Label>
+								<Input
+									id="admin-username"
+									type="text"
+									placeholder="Enter admin username"
+									value={authConfig.admin_username}
+									disabled={!authConfig.is_enabled}
+									onChange={(e) => {
+										setAuthConfig((prev) => ({ ...prev, admin_username: e.target.value }));
+									}}
+								/>
+							</div>
+							<div className="space-y-2">
+								<Label htmlFor="admin-password">Password</Label>
+								<Input
+									id="admin-password"
+									type="password"
+									placeholder="Enter admin password"
+									value={authConfig.admin_password}
+									disabled={!authConfig.is_enabled}
+									onChange={(e) => {
+										setAuthConfig((prev) => ({ ...prev, admin_password: e.target.value }));
+									}}
+								/>
+							</div>
+						</div>
+					</div>
+				</div>
+
 				{/* Allowed Origins */}
 				<div>
 					<div className="space-y-2 rounded-lg border p-4">
@@ -131,5 +208,10 @@ export default function SecurityView() {
 }
 
 const RestartWarning = () => {
-	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
+	return (
+		<Alert variant="destructive" className="mt-2">
+			<AlertTriangle className="h-4 w-4" />
+			<AlertDescription>Need to restart Bifrost to apply changes.</AlertDescription>
+		</Alert>
+	);
 };

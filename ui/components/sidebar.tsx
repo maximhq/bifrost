@@ -19,7 +19,7 @@ import {
 	Settings2Icon,
 	Shuffle,
 	Telescope,
-	Users
+	Users,
 } from "lucide-react";
 
 import {
@@ -38,7 +38,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -139,7 +139,7 @@ const items = [
 	{
 		title: "Plugins",
 		url: "/workspace/plugins",
-		icon: Puzzle,		
+		icon: Puzzle,
 		tag: "BETA",
 		description: "Manage custom plugins",
 	},
@@ -294,10 +294,14 @@ const SidebarItem = ({
 							onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
 						>
 							<div className="flex w-full items-center justify-between">
-								<div className="flex items-center gap-2 w-full">
+								<div className="flex w-full items-center gap-2">
 									<item.icon className={`h-4 w-4 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
 									<span className={`text-sm ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
-									{item.tag && <Badge variant="secondary" className="text-xs text-muted-foreground ml-auto">{item.tag}</Badge>}
+									{item.tag && (
+										<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+											{item.tag}
+										</Badge>
+									)}
 								</div>
 								{hasSubItems && <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />}
 								{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
@@ -389,16 +393,17 @@ export default function AppSidebar() {
 	});
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
+	const [logout] = useLogoutMutation();
 	const showNewReleaseBanner = useMemo(() => {
 		if (latestRelease && version) {
 			return compareVersions(latestRelease.name, version) > 0;
 		}
 		return false;
 	}, [latestRelease, version]);
-
 	// Get governance config from RTK Query
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isGovernanceEnabled = coreConfig?.client_config.enable_governance || false;
+	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
 	useEffect(() => {
 		setMounted(true);
@@ -478,10 +483,20 @@ export default function AppSidebar() {
 	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty;
 	// When cards are present: 13rem (header 3rem + bottom section ~10rem)
 	// When no cards: 8rem (header 3rem + bottom section without cards ~5rem)
-	const sidebarGroupHeight = hasPromoCards ? 'h-[calc(100vh-13rem)]' : 'h-[calc(100vh-8rem)]';
+	const sidebarGroupHeight = hasPromoCards ? "h-[calc(100vh-13rem)]" : "h-[calc(100vh-8rem)]";
 
 	const handleCardsEmpty = () => {
 		setAreCardsEmpty(true);
+	};
+
+	const handleLogout = async () => {
+		try {
+			await logout().unwrap();
+			router.push("/login");
+		} catch (error) {
+			// Even if logout fails on server, redirect to login
+			router.push("/login");
+		}
 	};
 
 	return (
@@ -542,16 +557,16 @@ export default function AppSidebar() {
 								</a>
 							))}
 							<ThemeToggle />
-							{IS_ENTERPRISE && (
+							{isAuthEnabled && (
 								<div>
-									<div
-										className="flex items-center space-x-3"
-										onClick={() => {
-											window.location.href = "/api/logout";
-										}}
+									<button
+										className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
+										onClick={handleLogout}
+										type="button"
+										aria-label="Logout"
 									>
-										<LogOut className="hover:text-primary text-muted-foreground h-4.5 w-4.5" size={20} strokeWidth={1.5} />
-									</div>
+										<LogOut className="hover:text-primary text-muted-foreground h-4 w-4" size={20} strokeWidth={2} />
+									</button>
 								</div>
 							)}
 						</div>

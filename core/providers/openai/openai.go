@@ -1,3 +1,4 @@
+// Package openai provides the OpenAI provider implementation for the Bifrost framework.
 package openai
 
 import (
@@ -37,7 +38,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	client := &fasthttp.Client{
 		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     10000,
+		MaxConnsPerHost:     1024,
 		MaxIdleConnDuration: 60 * time.Second,
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
@@ -372,6 +373,9 @@ func HandleOpenAITextCompletionStreaming(
 		defer fasthttp.ReleaseResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
+
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
 
@@ -730,6 +734,9 @@ func HandleOpenAIChatCompletionStreaming(
 		defer fasthttp.ReleaseResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
+
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
 
@@ -1090,6 +1097,8 @@ func HandleOpenAIResponsesStreaming(
 		defer fasthttp.ReleaseResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
 
 		startTime := time.Now()
 		lastChunkTime := startTime

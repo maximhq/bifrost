@@ -1,9 +1,10 @@
 "use client";
 
+import APIKeysView from "@/app/_fallbacks/enterprise/components/api-keys/APIKeysView";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { Gauge, Landmark, Settings, Shield, Sliders, Zap } from "lucide-react";
+import { Gauge, KeyRound, Landmark, Settings, Shield, Sliders, Zap } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect } from "react";
 import ClientSettingsView from "./views/clientSettingsView";
@@ -38,6 +39,11 @@ const tabs = [
 		id: "security",
 		label: "Security",
 		icon: <Shield className="size-4" />,
+	},
+	{
+		id: "api-keys",
+		label: "API Keys",
+		icon: <KeyRound className="size-4" />,
 	},
 	{
 		id: "performance-tuning",
@@ -86,6 +92,7 @@ export default function ConfigPage() {
 				{activeTab === "feature-toggles" && <FeatureTogglesView />}
 				{activeTab === "observability" && <ObservabilityView />}
 				{activeTab === "security" && <SecurityView />}
+				{activeTab === "api-keys" && <APIKeysView />}
 				{activeTab === "performance-tuning" && <PerformanceTuningView />}
 			</div>
 		</div>

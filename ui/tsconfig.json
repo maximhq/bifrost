@@ -27,12 +27,12 @@
 				"./*"
 			],
 			"@enterprise/*": [
-				"./app/workspace/enterprise/*",
-				"./app/workspace/_fallbacks/enterprise/*"
+				"./app/enterprise/*",
+				"./app/_fallbacks/enterprise/*"
 			],
 			"@schemas/*": [
-				"./app/workspace/enterprise/lib/schemas/*",
-				"./app/workspace/_fallbacks/enterprise/lib/schemas/*"
+				"./app/enterprise/lib/schemas/*",
+				"./app/_fallbacks/enterprise/lib/schemas/*"
 			]
 		}
 	},
