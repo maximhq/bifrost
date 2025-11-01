@@ -21,10 +21,11 @@ import (
 
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
+	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore() error
 	ReloadPricingManager() error
 	UpdateDropExcessRequests(value bool)
-	ReloadPlugin(ctx context.Context, name string,path *string, pluginConfig any) error
+	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 }
 
 // ConfigHandler manages runtime configuration updates for Bifrost.
@@ -123,6 +124,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	payload := struct {
 		ClientConfig    configstore.ClientConfig               `json:"client_config"`
 		FrameworkConfig configstoreTables.TableFrameworkConfig `json:"framework_config"`
+		AuthConfig      *configstore.AuthConfig                `json:"auth_config"`
 	}{}
 
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -244,6 +246,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncDuration time.Duration
 		if frameworkConfig.PricingSyncInterval != nil {
@@ -265,6 +268,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		// Reloading pricing manager
 		h.configManager.ReloadPricingManager()
+	}
+	// Checking auth config and trying to update if required
+	if payload.AuthConfig != nil {
+
 	}
 	if shouldReloadTelemetryPlugin {
 		//TODO: Reload telemetry plugin - solvable problem by having a reference modifier on the metrics handler, but that will lead to loss of data on update

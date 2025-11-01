@@ -50,6 +50,12 @@ type ProviderConfig struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 }
 
+// AuthConfig represents configured auth config for Bifrost dashboard
+type AuthConfig struct {
+	AdminUserName string `json:"admin_username"`
+	AdminPassword string `json:"admin_password"`
+}
+
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
@@ -59,4 +65,5 @@ type GovernanceConfig struct {
 	Customers   []tables.TableCustomer   `json:"customers"`
 	Budgets     []tables.TableBudget     `json:"budgets"`
 	RateLimits  []tables.TableRateLimit  `json:"rate_limits"`
+	AuthConfig  *AuthConfig              `json:"auth_config,omitempty"`
 }

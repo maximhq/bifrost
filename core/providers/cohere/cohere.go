@@ -25,11 +25,10 @@ var cohereResponsePool = sync.Pool{
 	},
 }
 
-
 // CohereProvider implements the Provider interface for Cohere.
 type CohereProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for API requests	
+	client               *fasthttp.Client              // HTTP client for API requests
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
@@ -42,9 +41,9 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	config.CheckAndSetDefaults()
 
 	client := &fasthttp.Client{
-		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     10000,
+		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     1024,
 		MaxIdleConnDuration: 60 * time.Second,
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
@@ -62,7 +61,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	return &CohereProvider{
 		logger:               logger,
-		client:               client,		
+		client:               client,
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
 		sendBackRawResponse:  config.SendBackRawResponse,
@@ -292,7 +291,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
 	defer fasthttp.ReleaseRequest(req)
-	
+
 	req.Header.SetMethod(http.MethodPost)
 	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
@@ -300,15 +299,13 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
-	
 	// Set headers
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
 	req.SetBody(jsonBody)
-	
+
 	// Make the request
 	err = provider.client.Do(req, resp)
 	if err != nil {
@@ -346,6 +343,9 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 		defer fasthttp.ReleaseResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
+
 		var responseID string
 		startTime := time.Now()
 		lastChunkTime := startTime
@@ -562,20 +562,18 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
 	defer fasthttp.ReleaseRequest(req)
-	
+
 	req.Header.SetMethod(http.MethodPost)
 	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
-		
+
 	// Set headers
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
 	req.SetBody(jsonBody)
-
 
 	// Make the request
 	err = provider.client.Do(req, resp)
@@ -612,6 +610,9 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 		defer fasthttp.ReleaseResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
+
 		chunkIndex := 0
 
 		startTime := time.Now()

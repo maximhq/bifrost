@@ -138,8 +138,8 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 					return err
 				}
 			}
-			if !migrator.HasTable(&tables.TableConfig{}) {
-				if err := migrator.CreateTable(&tables.TableConfig{}); err != nil {
+			if !migrator.HasTable(&tables.TableGovernanceConfig{}) {
+				if err := migrator.CreateTable(&tables.TableGovernanceConfig{}); err != nil {
 					return err
 				}
 			}
@@ -199,7 +199,7 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			if err := migrator.DropTable(&tables.TableLogStoreConfig{}); err != nil {
 				return err
 			}
-			if err := migrator.DropTable(&tables.TableConfig{}); err != nil {
+			if err := migrator.DropTable(&tables.TableGovernanceConfig{}); err != nil {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TableModelPricing{}); err != nil {

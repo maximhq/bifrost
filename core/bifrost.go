@@ -89,7 +89,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	if config.Logger == nil {
 		config.Logger = NewDefaultLogger(schemas.LogLevelInfo)
 	}
-	
+
 	providerUtils.SetLogger(config.Logger)
 
 	bifrost := &Bifrost{
@@ -317,57 +317,77 @@ func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.Bifr
 	allModels := make([]schemas.Model, 0)
 	var firstError *schemas.BifrostError
 
+	// Use unbuffered channel with concurrent consumer to avoid deadlock and large buffers
+	modelsChan := make(chan []schemas.Model)
+
+	// Start consumer goroutine to collect models concurrently while producers are running
+	var consumerWg sync.WaitGroup
+	consumerWg.Add(1)
+	go func() {
+		defer consumerWg.Done()
+		for models := range modelsChan {
+			allModels = append(allModels, models...)
+		}
+	}()
+
+	// Producer goroutines: fetch models from each provider
+	var producerWg sync.WaitGroup
 	for _, providerKey := range providerKeys {
 		if strings.TrimSpace(string(providerKey)) == "" {
 			continue
 		}
-
-		// Create request for this provider with limit of 1000
-		providerRequest := &schemas.BifrostListModelsRequest{
-			Provider: providerKey,
-			PageSize: schemas.DefaultPageSize,
-		}
-
-		iterations := 0
-		for {
-			iterations++
-			if iterations > schemas.MaxPaginationRequests {
-				bifrost.logger.Warn(fmt.Sprintf("reached maximum pagination requests (%d) for provider %s", schemas.MaxPaginationRequests, providerKey))
-				break
+		producerWg.Add(1)
+		go func(provider schemas.ModelProvider, responseChan chan<- []schemas.Model) {
+			defer producerWg.Done()
+			// Create request for this provider with limit of 1000
+			providerRequest := &schemas.BifrostListModelsRequest{
+				Provider: provider,
+				PageSize: schemas.DefaultPageSize,
 			}
-
-			response, bifrostErr := bifrost.ListModelsRequest(ctx, providerRequest)
-			if bifrostErr != nil {
-				// Log the error but continue with other providers
-				// Skip logging "no keys found" and "not supported" errors as they are expected when a provider is not configured
-				if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
-					!strings.Contains(bifrostErr.Error.Message, "not supported") {
-					bifrost.logger.Warn(fmt.Sprintf("failed to list models for provider %s: %v", providerKey, bifrostErr.Error.Message))
+			iterations := 0
+			for {
+				iterations++
+				if iterations > schemas.MaxPaginationRequests {
+					bifrost.logger.Warn(fmt.Sprintf("reached maximum pagination requests (%d) for provider %s", schemas.MaxPaginationRequests, provider))
+					break
 				}
-				if firstError == nil {
-					firstError = bifrostErr
+				response, bifrostErr := bifrost.ListModelsRequest(ctx, providerRequest)
+				if bifrostErr != nil {
+					// Log the error but continue with other providers
+					// Skip logging "no keys found" and "not supported" errors as they are expected when a provider is not configured
+					if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
+						!strings.Contains(bifrostErr.Error.Message, "not supported") {
+						bifrost.logger.Warn(fmt.Sprintf("failed to list models for provider %s: %v", provider, bifrostErr.Error.Message))
+					}
+					if firstError == nil {
+						firstError = bifrostErr
+					}
+					break
 				}
-				break
+				if response == nil {
+					break
+				}
+				if len(response.Data) > 0 {
+					bifrost.logger.Debug("got models from provider %s (%d models)", provider, len(response.Data))
+					responseChan <- response.Data
+				}
+				// Check if there are more pages
+				if response.NextPageToken == "" {
+					break
+				}
+				// Set the page token for the next request
+				providerRequest.PageToken = response.NextPageToken
 			}
-
-			if response == nil {
-				break
-			}
-
-			if len(response.Data) > 0 {
-				allModels = append(allModels, response.Data...)
-			}
-
-			// Check if there are more pages
-			if response.NextPageToken == "" {
-				break
-			}
-
-			// Set the page token for the next request
-			providerRequest.PageToken = response.NextPageToken
-		}
+		}(providerKey, modelsChan)
 	}
 
+	// Wait for all producer goroutines to finish
+	producerWg.Wait()
+	// Close channel to signal consumer that no more data is coming
+	close(modelsChan)
+	// Wait for consumer to finish collecting all models
+	consumerWg.Wait()
+	bifrost.logger.Debug("got models from all providers(%d models)", len(allModels))
 	// If we couldn't get any models from any provider, return the first error
 	if len(allModels) == 0 && firstError != nil {
 		return nil, firstError
