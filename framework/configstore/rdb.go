@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/envutils"
@@ -771,8 +772,8 @@ func (s *RDBConfigStore) UpdateEnvKeys(ctx context.Context, keys map[string][]En
 }
 
 // GetConfig retrieves a specific config from the database.
-func (s *RDBConfigStore) GetConfig(ctx context.Context, key string) (*tables.TableConfig, error) {
-	var config tables.TableConfig
+func (s *RDBConfigStore) GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error) {
+	var config tables.TableGovernanceConfig
 	if err := s.db.WithContext(ctx).First(&config, "key = ?", key).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -783,7 +784,7 @@ func (s *RDBConfigStore) GetConfig(ctx context.Context, key string) (*tables.Tab
 }
 
 // UpdateConfig updates a specific config in the database.
-func (s *RDBConfigStore) UpdateConfig(ctx context.Context, config *tables.TableConfig, tx ...*gorm.DB) error {
+func (s *RDBConfigStore) UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
 		txDB = tx[0]
@@ -831,7 +832,7 @@ func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]*tables.TablePlugin,
 	if err := s.db.WithContext(ctx).Find(&plugins).Error; err != nil {
 		return nil, err
 	}
-	return plugins, nil	
+	return plugins, nil
 }
 
 func (s *RDBConfigStore) GetPlugin(ctx context.Context, name string) (*tables.TablePlugin, error) {
@@ -1367,6 +1368,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var customers []tables.TableCustomer
 	var budgets []tables.TableBudget
 	var rateLimits []tables.TableRateLimit
+	var governanceConfigs []tables.TableGovernanceConfig
 
 	if err := s.db.WithContext(ctx).Preload("ProviderConfigs").Find(&virtualKeys).Error; err != nil {
 		return nil, err
@@ -1383,17 +1385,41 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	if err := s.db.WithContext(ctx).Find(&rateLimits).Error; err != nil {
 		return nil, err
 	}
-
-	if len(virtualKeys) == 0 && len(teams) == 0 && len(customers) == 0 && len(budgets) == 0 && len(rateLimits) == 0 {
+	// Fetching governance config for username and password
+	if err := s.db.WithContext(ctx).Find(&governanceConfigs).Error; err != nil {
+		return nil, err
+	}
+	// Check if any config is present
+	if len(virtualKeys) == 0 && len(teams) == 0 && len(customers) == 0 && len(budgets) == 0 && len(rateLimits) == 0 && len(governanceConfigs) == 0 {
 		return nil, nil
 	}
-
+	var authConfig *AuthConfig
+	if len(governanceConfigs) > 0 {
+		// Checking if username and password is present
+		var username *string
+		var password *string
+		for _, entry := range governanceConfigs {
+			switch entry.Key {
+			case "admin_username":
+				username = bifrost.Ptr(entry.Value)
+			case "admin_password":
+				password = bifrost.Ptr(entry.Value)
+			}
+		}
+		if username != nil && password != nil {
+			authConfig = &AuthConfig{
+				AdminUserName: *username,
+				AdminPassword: *password,
+			}
+		}
+	}
 	return &GovernanceConfig{
 		VirtualKeys: virtualKeys,
 		Teams:       teams,
 		Customers:   customers,
 		Budgets:     budgets,
 		RateLimits:  rateLimits,
+		AuthConfig:  authConfig,
 	}, nil
 }
 

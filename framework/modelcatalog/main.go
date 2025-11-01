@@ -16,7 +16,7 @@ import (
 // Default sync interval and config key
 const (
 	DefaultPricingSyncInterval = 24 * time.Hour
-	LastPricingSyncKey         = "LastModelPricingSync"
+	ConfigLastPricingSyncKey         = "LastModelPricingSync"
 	DefaultPricingURL          = "https://getbifrost.ai/datasheet"
 	TokenTierAbove128K         = 128000
 )
