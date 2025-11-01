@@ -1,4 +1,4 @@
-package handlers
+package main
 
 import (
 	"context"
@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
+	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
@@ -64,7 +65,7 @@ type BifrostHTTPServer struct {
 
 	Server           *fasthttp.Server
 	Router           *router.Router
-	WebSocketHandler *WebSocketHandler
+	WebSocketHandler *handlers.WebSocketHandler
 }
 
 // NewBifrostHTTPServer creates a new instance of BifrostHTTPServer.
@@ -420,6 +421,18 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore() error {
 	return nil
 }
 
+// UpdateAuthConfig updates auth config
+func (s *BifrostHTTPServer) UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error {
+	if authConfig == nil {
+		return fmt.Errorf("config store not found")
+	}
+	if authConfig.AdminUserName == "" || authConfig.AdminPassword == "" {
+		return fmt.Errorf("username and password are required")
+	}
+	return s.Config.ConfigStore.UpdateAuthConfig(ctx, authConfig)
+}
+
+// UpdateDropExcessRequests updates excess requests config
 func (s *BifrostHTTPServer) UpdateDropExcessRequests(value bool) {
 	if s.Config == nil {
 		return
@@ -557,35 +570,35 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...lib.BifrostHTTPMiddleware) error {
 	var err error
 	// Initializing plugin specific handlers
-	var loggingHandler *LoggingHandler
+	var loggingHandler *handlers.LoggingHandler
 	loggerPlugin, _ := FindPluginByName[*logging.LoggerPlugin](s.Plugins, logging.PluginName)
 	if loggerPlugin != nil {
-		loggingHandler = NewLoggingHandler(loggerPlugin.GetPluginLogManager(), logger)
+		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), logger)
 	}
-	var governanceHandler *GovernanceHandler
+	var governanceHandler *handlers.GovernanceHandler
 	governancePlugin, _ := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = NewGovernanceHandler(governancePlugin, s.Config.ConfigStore, logger)
+		governanceHandler, err = handlers.NewGovernanceHandler(governancePlugin, s.Config.ConfigStore, logger)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
 	}
-	var cacheHandler *CacheHandler
+	var cacheHandler *handlers.CacheHandler
 	semanticCachePlugin, _ := FindPluginByName[*semanticcache.Plugin](s.Plugins, semanticcache.PluginName)
 	if semanticCachePlugin != nil {
-		cacheHandler = NewCacheHandler(semanticCachePlugin, logger)
+		cacheHandler = handlers.NewCacheHandler(semanticCachePlugin, logger)
 	}
 	// Websocket handler needs to go below UI handler
 	logger.Debug("initializing websocket server")
 	if loggerPlugin != nil {
-		s.WebSocketHandler = NewWebSocketHandler(ctx, loggerPlugin.GetPluginLogManager(), logger, s.Config.ClientConfig.AllowedOrigins)
+		s.WebSocketHandler = handlers.NewWebSocketHandler(ctx, loggerPlugin.GetPluginLogManager(), logger, s.Config.ClientConfig.AllowedOrigins)
 		loggerPlugin.SetLogCallback(s.WebSocketHandler.BroadcastLogUpdate)
 	} else {
-		s.WebSocketHandler = NewWebSocketHandler(ctx, nil, logger, s.Config.ClientConfig.AllowedOrigins)
+		s.WebSocketHandler = handlers.NewWebSocketHandler(ctx, nil, logger, s.Config.ClientConfig.AllowedOrigins)
 	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
-
+	// Adding telemetry middleware
 	middlewaresWithTelemetry := middlewares
 	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
 	if err == nil {
@@ -598,13 +611,14 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	// Chaining all middlewares
 	// lib.ChainMiddlewares chains multiple middlewares together
 	// Initialize
-	healthHandler := NewHealthHandler(s.Config, logger)
-	providerHandler := NewProviderHandler(s.Config, s.Client, logger)
-	inferenceHandler := NewInferenceHandler(s.Client, s.Config, logger)
-	mcpHandler := NewMCPHandler(s.Client, logger, s.Config)
-	integrationHandler := NewIntegrationHandler(s.Client, s.Config, logger)
-	configHandler := NewConfigHandler(s, logger, s.Config)
-	pluginsHandler := NewPluginsHandler(s, s.Config.ConfigStore, logger)
+	healthHandler := handlers.NewHealthHandler(s.Config, logger)
+	providerHandler := handlers.NewProviderHandler(s.Config, s.Client, logger)
+	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config, logger)
+	mcpHandler := handlers.NewMCPHandler(s.Client, logger, s.Config)
+	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config, logger)
+	configHandler := handlers.NewConfigHandler(s, logger, s.Config)
+	pluginsHandler := handlers.NewPluginsHandler(s, s.Config.ConfigStore, logger)
+	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, logger)
 	// Register all handler routes
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
@@ -613,6 +627,7 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	integrationHandler.RegisterRoutes(s.Router, middlewaresWithTelemetry...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	pluginsHandler.RegisterRoutes(s.Router, middlewares...)
+	sessionHandler.RegisterRoutes(s.Router, middlewares...)
 	if cacheHandler != nil {
 		cacheHandler.RegisterRoutes(s.Router, middlewares...)
 	}
@@ -638,7 +653,7 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 
 	// 404 handler
 	s.Router.NotFound = func(ctx *fasthttp.RequestCtx) {
-		SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()), logger)
+		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()), logger)
 	}
 	return nil
 }
@@ -648,7 +663,7 @@ func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...lib.BifrostHTTPMidd
 	// Register UI handlers
 	// Registering UI handlers
 	// WARNING: This UI handler needs to be registered after all the other handlers
-	NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
+	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
@@ -665,7 +680,7 @@ func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...lib.BifrostHTTPMidd
 func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	var err error
 	s.ctx, s.cancel = context.WithCancel(ctx)
-	SetVersion(s.Version)
+	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
 	s.pluginStatusMutex = sync.RWMutex{}
 	// Ensure app directory exists
@@ -712,10 +727,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config.PricingManager.AddModelDataToPool(modelData)
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
+	// Initializing middlewares
+	// Checking if auth config is set; if yes we will add middleware
+	var middlewares []lib.BifrostHTTPMiddleware
+	if ctx.Value("isEnterprise") == nil {
+		middlewares = append(middlewares, handlers.AuthMiddleware(s.Config.ConfigStore))
+	}
 	// Initialize routes
 	s.Router = router.New()
 	// Register routes
-	err = s.RegisterRoutes(s.ctx)
+	err = s.RegisterRoutes(s.ctx, middlewares...)
 	// Register UI handler
 	s.RegisterUIHandler()
 	if err != nil {
@@ -723,7 +744,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            CorsMiddleware(s.Config)(TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),
+		Handler:            handlers.CorsMiddleware(s.Config)(handlers.TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 	}
 	return nil

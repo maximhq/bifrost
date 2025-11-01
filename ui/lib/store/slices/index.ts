@@ -12,4 +12,4 @@ export { default as pluginReducer } from "./pluginSlice";
 
 
 // Enterprise slice exports
-export * from "@enterprise/lib/store/slices";
+export * from "@/app/_fallbacks/enterprise/lib/store/slices";

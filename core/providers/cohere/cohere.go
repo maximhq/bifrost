@@ -81,7 +81,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client := &fasthttp.Client{
 		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     10000,
+		MaxConnsPerHost:     1024,
 		MaxIdleConnDuration: 60 * time.Second,
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
@@ -200,7 +200,9 @@ func (provider *CohereProvider) listModelsByKey(ctx context.Context, key schemas
 	req.SetRequestURI(fmt.Sprintf("%s/v1/models?%s", provider.networkConfig.BaseURL, params.Encode()))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -350,7 +352,6 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
@@ -392,8 +393,9 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 		defer fasthttp.ReleaseResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
 		chunkIndex := 0
-
 		startTime := time.Now()
 		lastChunkTime := startTime
 
@@ -552,7 +554,6 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	providerUtils.SetExtraHeaders(req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
@@ -594,6 +595,9 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 		defer fasthttp.ReleaseResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
+
 		chunkIndex := 0
 
 		startTime := time.Now()

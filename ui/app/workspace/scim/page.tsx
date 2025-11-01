@@ -1,4 +1,4 @@
-import SCIMView from "@enterprise/components/scim/scimView";
+import SCIMView from "@/app/_fallbacks/enterprise/components/scim/scimView";
 
 
 export default function SCIMPage() {

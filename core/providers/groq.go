@@ -30,7 +30,7 @@ func NewGroqProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Gr
 	client := &fasthttp.Client{
 		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     10000,
+		MaxConnsPerHost:     1024,
 		MaxIdleConnDuration: 60 * time.Second,
 		MaxConnWaitTimeout:  10 * time.Second,
 	}

@@ -89,7 +89,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	if config.Logger == nil {
 		config.Logger = NewDefaultLogger(schemas.LogLevelInfo)
 	}
-	
+
 	providerUtils.SetLogger(config.Logger)
 
 	bifrost := &Bifrost{
@@ -338,10 +338,10 @@ func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.Bifr
 			for {
 				// check for context cancellation
 				select {
-					case <-ctx.Done():
-						bifrost.logger.Warn(fmt.Sprintf("context cancelled for provider %s", providerKey))
-						return
-					default:
+				case <-ctx.Done():
+					bifrost.logger.Warn(fmt.Sprintf("context cancelled for provider %s", providerKey))
+					return
+				default:
 				}
 
 				iterations++

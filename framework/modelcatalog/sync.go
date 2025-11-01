@@ -36,7 +36,7 @@ func (mc *ModelCatalog) checkAndSyncPricing(ctx context.Context) error {
 
 // shouldSyncPricing determines if pricing data should be synced and returns the reason
 func (mc *ModelCatalog) shouldSyncPricing(ctx context.Context) (bool, string) {
-	config, err := mc.configStore.GetConfig(ctx, LastPricingSyncKey)
+	config, err := mc.configStore.GetConfig(ctx, ConfigLastPricingSyncKey)
 	if err != nil {
 		return true, "no previous sync record found"
 	}
@@ -112,8 +112,8 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 		return fmt.Errorf("failed to sync pricing data to database: %w", err)
 	}
 
-	config := &configstoreTables.TableConfig{
-		Key:   LastPricingSyncKey,
+	config := &configstoreTables.TableGovernanceConfig{
+		Key:   ConfigLastPricingSyncKey,
 		Value: time.Now().Format(time.RFC3339),
 	}
 

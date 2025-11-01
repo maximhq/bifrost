@@ -8,11 +8,13 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var encryptionKey []byte
@@ -41,6 +43,27 @@ func Init(key string, _logger schemas.Logger) {
 	// This provides strong security while maintaining reasonable performance for initialization
 	salt := []byte("bifrost-encryption-v1-salt-2024")
 	encryptionKey = argon2.IDKey([]byte(key), salt, 1, 64*1024, 4, 32)
+}
+
+// CompareHash compares a hash and a password
+func CompareHash(hash string, password string) (bool, error) {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	if err != nil {
+		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to compare hash: %w", err)
+	}
+	return true, nil
+}
+
+// Hash hashes a password using bcrypt
+func Hash(password string) (string, error) {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash password: %w", err)
+	}
+	return string(hashedPassword), nil
 }
 
 // Encrypt encrypts a plaintext string using AES-256-GCM and returns a base64-encoded ciphertext

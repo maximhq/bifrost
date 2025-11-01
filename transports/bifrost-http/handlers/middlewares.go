@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -39,6 +43,7 @@ func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	}
 }
 
+// TransportInterceptorMiddleware collects all plugin interceptors and calls them one by one
 func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
@@ -125,6 +130,95 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 			}
 
 			next(ctx)
+		}
+	}
+}
+
+// AuthMiddleware if authConfig is set, it will verify the auth cookie in the header
+// This uses basic auth style username + password based authentication
+// No session tracking is used, so this is not suitable for production environments
+// These basicauth routes are only used for the dashboard and API routes
+func AuthMiddleware(store configstore.ConfigStore) lib.BifrostHTTPMiddleware {
+	if store == nil {
+		logger.Info("auth middleware is disabled because store is nil")		
+		return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+			return next
+		}
+	}
+	authConfig, err := store.GetAuthConfig(context.Background())
+	if err != nil || authConfig == nil || !authConfig.IsEnabled {
+		return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+			return next
+		}
+	}
+	whitelistedRoutes := []string{
+		"/api/session/is-auth-enabled",
+		"/api/session/login",
+		"/api/session/logout",
+	}
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			// We skip authorization for the login route
+			if slices.Contains(whitelistedRoutes, string(ctx.Request.URI().RequestURI())) {
+				next(ctx)
+				return
+			}
+			// Get the authorization header
+			authorization := string(ctx.Request.Header.Peek("Authorization"))
+			if authorization == "" {
+				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+				return
+			}
+			// Split the authorization header into the scheme and the token
+			scheme, token, ok := strings.Cut(authorization, " ")
+			if !ok {
+				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+				return
+			}
+			// Checking basic auth for inference calls
+			if scheme == "Basic" {
+				// Decrypt the token
+				decryptedToken, err := encrypt.Decrypt(token)
+				if err != nil {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+					return
+				}
+				// Split the decrypted token into the username and password
+				username, password, ok := strings.Cut(decryptedToken, ":")
+				if !ok {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+					return
+				}
+				// Verify the username and password
+				if username != authConfig.AdminUserName || password != authConfig.AdminPassword {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+					return
+				}
+				// Continue with the next handler
+				next(ctx)
+				return
+			}
+			// Checking bearer auth for dashboard calls
+			if scheme == "Bearer" {
+				// Verify the session
+				session, err := store.GetSession(context.Background(), token)
+				if err != nil {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+					return
+				}
+				if session == nil {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+					return
+				}
+				if session.ExpiresAt.Before(time.Now()) {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
+					return
+				}
+				// Continue with the next handler
+				next(ctx)
+				return
+			}
+			SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized", logger)
 		}
 	}
 }

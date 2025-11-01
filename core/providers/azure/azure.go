@@ -33,9 +33,9 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 	config.CheckAndSetDefaults()
 
 	client := &fasthttp.Client{
-		ReadTimeout:     time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:    time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     10000,
+		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     1024,
 		MaxIdleConnDuration: 60 * time.Second,
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
@@ -471,8 +471,11 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 	if deployment == "" {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
 	}
-
-	url := fmt.Sprintf("%s/openai/v1/responses?api-version=preview", key.AzureKeyConfig.Endpoint)
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr(AzureAPIVersionPreview)
+	}
+	url := fmt.Sprintf("%s/openai/v1/responses?api-version=%s", key.AzureKeyConfig.Endpoint, *apiVersion)
 
 	// Prepare Azure-specific headers
 	authHeader := make(map[string]string)
