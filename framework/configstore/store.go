@@ -53,8 +53,8 @@ type ConfigStore interface {
 	GetEnvKeys(ctx context.Context) (map[string][]EnvKeyInfo, error)
 
 	// Config CRUD
-	GetConfig(ctx context.Context, key string) (*tables.TableConfig, error)
-	UpdateConfig(ctx context.Context, config *tables.TableConfig, tx ...*gorm.DB) error
+	GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error)
+	UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
@@ -110,7 +110,17 @@ type ConfigStore interface {
 	UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error
 
+	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)
+
+	// Auth config CRUD
+	GetAuthConfig(ctx context.Context) (*AuthConfig, error)
+	UpdateAuthConfig(ctx context.Context, config *AuthConfig) error
+
+	// Session CRUD
+	GetSession(ctx context.Context, token string) (*tables.SessionsTable, error)
+	CreateSession(ctx context.Context, session *tables.SessionsTable) error
+	DeleteSession(ctx context.Context, token string) error
 
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)

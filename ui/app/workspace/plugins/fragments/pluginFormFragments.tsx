@@ -25,43 +25,50 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 
 	return (
 		<div className="space-y-4">
-		<div className="bg-muted/50 flex items-start gap-2 rounded-md border p-3">
-			<Info className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />
-			<p className="text-muted-foreground text-sm">
-				{isEditMode
-					? 'Update your plugin configuration. Plugin name and path are read-only.'
-					: 'Install a custom plugin by providing an absolute file path or HTTP URL accessible to Bifrost deployment (.so).'
-				} <a href="https://docs.getbifrost.ai/plugins/building-bifrost-plugin" target="_blank" className="text-primary hover:underline">Learn more</a>
-			</p>
-		</div>
+			<div className="bg-muted/50 flex items-start gap-2 rounded-md border p-3">
+				<Info className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />
+				<p className="text-muted-foreground text-sm">
+					{isEditMode
+						? "Update your plugin configuration. Plugin name and path are read-only."
+						: "Install a custom plugin by providing an absolute file path or HTTP URL accessible to Bifrost deployment (.so)."}{" "}
+					<a
+						href="https://docs.getbifrost.ai/plugins/building-bifrost-plugin"
+						target="_blank"
+						rel="noopener noreferrer"
+						className="text-primary hover:underline"
+					>
+						Learn more
+					</a>
+				</p>
+			</div>
 
-		<FormField
-			control={form.control}
-			name="name"
-			render={({ field }) => (
-				<FormItem>
-					<FormLabel>Plugin Name *</FormLabel>
-					<FormControl>
-						<Input placeholder="e.g., my-custom-plugin" {...field} disabled={isEditMode} />
-					</FormControl>
-					<FormMessage />
-				</FormItem>
-			)}
-		/>
+			<FormField
+				control={form.control}
+				name="name"
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>Plugin Name *</FormLabel>
+						<FormControl>
+							<Input placeholder="e.g., my-custom-plugin" {...field} disabled={isEditMode} />
+						</FormControl>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
 
-		<FormField
-			control={form.control}
-			name="path"
-			render={({ field }) => (
-				<FormItem>
-					<FormLabel>Plugin Path/URL *</FormLabel>
-					<FormControl>
-						<Input placeholder="e.g., /path/to/plugin.so or https://example.com/plugin.so" {...field} disabled={isEditMode} />
-					</FormControl>
-					<FormMessage />
-				</FormItem>
-			)}
-		/>
+			<FormField
+				control={form.control}
+				name="path"
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>Plugin Path/URL *</FormLabel>
+						<FormControl>
+							<Input placeholder="e.g., /path/to/plugin.so or https://example.com/plugin.so" {...field} disabled={isEditMode} />
+						</FormControl>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
 
 			{!showConfig ? (
 				<Button

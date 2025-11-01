@@ -28,6 +28,7 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty }: PromoCar
 	});
 	const [removingId, setRemovingId] = useState<string | null>(null);
 	const [isAnimating, setIsAnimating] = useState(false);
+	const prevLenRef = React.useRef(items.length);
 
 	useEffect(() => {
 		const sortedCards = [...cards].sort((a, b) => {
@@ -38,6 +39,7 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty }: PromoCar
 		setItems(sortedCards);
 	}, [cards]);
 
+	// Call once when the stack transitions from non-empty to empty
 	useEffect(() => {
 		if (prevLenRef.current > 0 && items.length === 0) {
 			onCardsEmpty?.();

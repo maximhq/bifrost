@@ -1,7 +1,9 @@
 package bifrost
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"math/rand"
 	"strings"
 	"time"
@@ -70,6 +72,7 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return time.Duration(jitter)
 }
 
+// validateRequest validates the given request.
 func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
@@ -180,6 +183,7 @@ func IsStreamRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest
 }
 
+// IsFinalChunk returns true if the given context is a final chunk.
 func IsFinalChunk(ctx *context.Context) bool {
 	if ctx == nil {
 		return false
@@ -205,4 +209,18 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 	}
 
 	return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+}
+
+// MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
+// Returns empty string if marshaling fails.
+func MarshalUnsafe(v any) string {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(v)
+	if err != nil {
+		return ""
+	}
+	// Encode adds a trailing newline, trim it
+	return strings.TrimSpace(buf.String())
 }

@@ -1,4 +1,4 @@
-// Package http provides an HTTP service using FastHTTP that exposes endpoints
+// Package main provides an HTTP service using FastHTTP that exposes endpoints
 // for text and chat completions using various AI model providers (OpenAI, Anthropic, Bedrock, Mistral, Ollama, etc.).
 //
 // The HTTP service provides the following main endpoints:
@@ -71,7 +71,7 @@ var uiContent embed.FS
 var Version string
 
 var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-var server *handlers.BifrostHTTPServer
+var server *BifrostHTTPServer
 
 // init initializes command line flags and validates required configuration.
 // It sets up the following flags:
@@ -110,16 +110,16 @@ func init() {
 	// Set default host from environment variable or use localhost
 	defaultHost := os.Getenv("BIFROST_HOST")
 	if defaultHost == "" {
-		defaultHost = handlers.DefaultHost
+		defaultHost = DefaultHost
 	}
 	// Initializing server
-	server = handlers.NewBifrostHTTPServer(Version, uiContent)
+	server = NewBifrostHTTPServer(Version, uiContent)
 	// Updating server properties from flags
-	flag.StringVar(&server.Port, "port", handlers.DefaultPort, "Port to run the server on")
+	flag.StringVar(&server.Port, "port", DefaultPort, "Port to run the server on")
 	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
-	flag.StringVar(&server.AppDir, "app-dir", handlers.DefaultAppDir, "Application data directory (contains config.json and logs)")
-	flag.StringVar(&server.LogLevel, "log-level", handlers.DefaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
-	flag.StringVar(&server.LogOutputStyle, "log-style", handlers.DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
+	flag.StringVar(&server.AppDir, "app-dir", DefaultAppDir, "Application data directory (contains config.json and logs)")
+	flag.StringVar(&server.LogLevel, "log-level", DefaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
+	flag.StringVar(&server.LogOutputStyle, "log-style", DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
 	flag.Parse()
 	// Configure logger from flags
 	logger.SetOutputType(schemas.LoggerOutputType(server.LogOutputStyle))
@@ -127,7 +127,6 @@ func init() {
 	// Setting up logger
 	lib.SetLogger(logger)
 	handlers.SetLogger(logger)
-
 }
 
 // main is the entry point of the application.
