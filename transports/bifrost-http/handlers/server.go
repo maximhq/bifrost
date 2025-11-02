@@ -579,11 +579,13 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	modelData, listModelsErr := s.Client.ListAllModels(ctx, nil)
 	if listModelsErr != nil {
 		if listModelsErr.Error != nil {
-			return fmt.Errorf("failed to list all models: %s", listModelsErr.Error.Message)
+			logger.Error("failed to list all models: %s", listModelsErr.Error.Message)
+		} else {
+			logger.Error("failed to list all models: %v", listModelsErr)
 		}
-		return fmt.Errorf("failed to list all models: %v", listModelsErr)
+	} else {
+		s.Config.PricingManager.AddModelDataToPool(modelData)
 	}
-	s.Config.PricingManager.AddModelDataToPool(modelData)
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes

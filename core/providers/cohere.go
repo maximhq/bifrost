@@ -117,7 +117,9 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 
 	// Make request
 	latency, bifrostErr := makeRequestWithContext(ctx, provider.client, req, resp)
@@ -127,8 +129,6 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-
 		var errorResp cohere.CohereError
 		bifrostErr := handleProviderAPIError(resp, &errorResp)
 		bifrostErr.Error.Message = errorResp.Message
@@ -136,9 +136,14 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 		return nil, bifrostErr
 	}
 
+	body, err := checkAndDecodeBody(resp)
+	if err != nil {
+		return nil, newBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+	}
+
 	// Parse Cohere list models response
 	var cohereResponse cohere.CohereListModelsResponse
-	rawResponse, bifrostErr := handleProviderResponse(resp.Body(), &cohereResponse, provider.sendBackRawResponse)
+	rawResponse, bifrostErr := handleProviderResponse(body, &cohereResponse, provider.sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -160,14 +165,14 @@ func (provider *CohereProvider) ListModels(ctx context.Context, key schemas.Key,
 // TextCompletion is not supported by the Cohere provider.
 // Returns an error indicating that text completion is not supported.
 func (provider *CohereProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion", "cohere")
+	return nil, newUnsupportedOperationError(schemas.TextCompletionRequest, provider.GetProviderKey())
 }
 
 // TextCompletionStream performs a streaming text completion request to Cohere's API.
 // It formats the request, sends it to Cohere, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *CohereProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("text completion stream", "cohere")
+	return nil, newUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
 // ChatCompletion performs a chat completion request to the Cohere API using v2 converter.
@@ -235,7 +240,9 @@ func (provider *CohereProvider) handleCohereChatCompletionRequest(ctx context.Co
 	req.SetRequestURI(provider.networkConfig.BaseURL + getPathFromContext(ctx, "/v2/chat"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 
 	req.SetBody(jsonBody)
 
@@ -328,7 +335,9 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -610,7 +619,9 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -787,7 +798,9 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 	req.SetRequestURI(provider.networkConfig.BaseURL + getPathFromContext(ctx, "/v2/embed"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 
 	req.SetBody(jsonBody)
 
@@ -839,20 +852,20 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 
 // Speech is not supported by the Cohere provider.
 func (provider *CohereProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech", "cohere")
+	return nil, newUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
 }
 
 // SpeechStream is not supported by the Cohere provider.
 func (provider *CohereProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech stream", "cohere")
+	return nil, newUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
 // Transcription is not supported by the Cohere provider.
 func (provider *CohereProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription", "cohere")
+	return nil, newUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
 }
 
 // TranscriptionStream is not supported by the Cohere provider.
 func (provider *CohereProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription stream", "cohere")
+	return nil, newUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }

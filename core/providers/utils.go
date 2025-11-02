@@ -205,6 +205,36 @@ func getPathFromContext(ctx context.Context, defaultPath string) string {
 	return defaultPath
 }
 
+// getRequestBodyFromContext gets the request body from the context, if it exists, otherwise returns nil.
+func getRequestBodyFromContext(ctx context.Context) ([]byte, bool) {
+	if rawBody, ok := ctx.Value(schemas.BifrostContextKeyRequestBody).([]byte); ok && len(rawBody) > 0 {
+		return rawBody, true
+	}
+	return nil, false
+}
+
+type RequestBodyConverter func() (any, error)
+
+func checkContextAndGetRequestBody(ctx context.Context, requestConverter RequestBodyConverter, providerType schemas.ModelProvider) ([]byte, *schemas.BifrostError) {
+	rawBody, ok := getRequestBodyFromContext(ctx)
+	if !ok {
+		convertedBody, err := requestConverter()
+		if err != nil {
+			return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerType)
+		}
+		if convertedBody == nil {
+			return nil, newBifrostOperationError("request body is not provided", nil, providerType)
+		}
+		jsonBody, err := sonic.Marshal(convertedBody)
+		if err != nil {
+			return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerType)
+		}
+		return jsonBody, nil
+	} else {
+		return rawBody, nil
+	}
+}
+
 // setExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
@@ -319,15 +349,15 @@ func handleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 
 // newUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
-func newUnsupportedOperationError(operation string, providerName string) *schemas.BifrostError {
+func newUnsupportedOperationError(requestType schemas.RequestType, providerName schemas.ModelProvider) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
-			Message: fmt.Sprintf("%s is not supported by %s provider", operation, providerName),
+			Message: fmt.Sprintf("%s is not supported by %s provider", requestType, providerName),
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider:    schemas.ModelProvider(providerName),
-			RequestType: schemas.RequestType(operation),
+			Provider:    providerName,
+			RequestType: requestType,
 		},
 	}
 }
@@ -347,7 +377,17 @@ func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 	}
 	// Gated and not allowed
 	resolved := getProviderName(defaultProvider, config)
-	return newUnsupportedOperationError(string(operation), string(resolved))
+	return newUnsupportedOperationError(operation, resolved)
+}
+
+func checkAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
+	contentEncoding := string(resp.Header.Peek("Content-Encoding"))
+	switch contentEncoding {
+	case "gzip":
+		return resp.BodyGunzip()
+	default:
+		return resp.Body(), nil
+	}
 }
 
 // newConfigurationError creates a standardized error for configuration errors.

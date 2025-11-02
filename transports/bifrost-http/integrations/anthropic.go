@@ -68,6 +68,11 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.Anthropic {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+				}
 				return anthropic.ToAnthropicResponsesResponse(resp), nil
 			},
 			ErrorConverter: func(err *schemas.BifrostError) interface{} {

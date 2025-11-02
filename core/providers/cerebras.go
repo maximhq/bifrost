@@ -63,7 +63,17 @@ func (provider *CerebrasProvider) GetProviderKey() schemas.ModelProvider {
 
 // ListModels performs a list models request to Cerebras's API.
 func (provider *CerebrasProvider) ListModels(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return handleOpenAIListModelsRequest(ctx, provider.client, request, provider.networkConfig.BaseURL+"/v1/models", key, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), provider.sendBackRawResponse, provider.logger)
+	return handleOpenAIListModelsRequest(
+		ctx,
+		provider.client,
+		request,
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/models"),
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
 }
 
 // TextCompletion performs a text completion request to Cerebras's API.
@@ -73,7 +83,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schema
 	return handleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -87,12 +97,17 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schema
 // It formats the request, sends it to Cerebras, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	}
+	// Use shared OpenAI-compatible streaming logic
 	return handleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/completions"),
 		request,
-		map[string]string{"Authorization": "Bearer " + key.Value},
+		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		provider.sendBackRawResponse,
 		provider.GetProviderKey(),
@@ -106,7 +121,7 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schema
 	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -121,13 +136,17 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schema
 // Uses Cerebras's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	}
 	// Use shared OpenAI-compatible streaming logic
 	return handleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+getPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		map[string]string{"Authorization": "Bearer " + key.Value},
+		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		provider.sendBackRawResponse,
 		schemas.Cerebras,
@@ -162,25 +181,25 @@ func (provider *CerebrasProvider) ResponsesStream(ctx context.Context, postHookR
 
 // Embedding is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("embedding", "cerebras")
+	return nil, newUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
 // Speech is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech", "cerebras")
+	return nil, newUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
 }
 
 // SpeechStream is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("speech stream", "cerebras")
+	return nil, newUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
 // Transcription is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription", "cerebras")
+	return nil, newUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
 }
 
 // TranscriptionStream is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, newUnsupportedOperationError("transcription stream", "cerebras")
+	return nil, newUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }

@@ -219,6 +219,9 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 }
 
 func (mc *ModelCatalog) AddModelDataToPool(modelData *schemas.BifrostListModelsResponse) {
+	if modelData == nil {
+		return
+	}
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 

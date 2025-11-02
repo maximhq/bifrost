@@ -94,7 +94,7 @@ type ResponsesParameters struct {
 	ToolChoice         *ResponsesToolChoice          `json:"tool_choice,omitempty"` // Whether to call a tool
 	Tools              []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
 	Truncation         *string                       `json:"truncation,omitempty"`
-
+	User               *string                       `json:"user,omitempty"`
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`

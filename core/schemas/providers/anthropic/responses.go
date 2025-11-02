@@ -32,6 +32,9 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 	if request.TopP != nil {
 		params.TopP = request.TopP
 	}
+	if request.Metadata != nil && request.Metadata.UserID != nil {
+		params.User = request.Metadata.UserID
+	}
 	if request.TopK != nil {
 		params.ExtraParams["top_k"] = *request.TopK
 	}
@@ -127,6 +130,11 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 		}
 		if bifrostReq.Params.TopP != nil {
 			anthropicReq.TopP = bifrostReq.Params.TopP
+		}
+		if bifrostReq.Params.User != nil {
+			anthropicReq.Metadata = &AnthropicMetaData{
+				UserID: bifrostReq.Params.User,
+			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
@@ -1161,6 +1169,15 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 							},
 						},
 					},
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						Summary: []schemas.ResponsesReasoningContent{
+							{
+								Text: *block.Thinking,
+								Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+							},
+						},
+						EncryptedContent: block.Signature,
+					},
 				})
 			}
 
@@ -1326,10 +1343,12 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 			case schemas.ResponsesMessageTypeReasoning:
 				// Build thinking from ResponsesReasoning summary, else from reasoning content blocks
 				var thinking string
+				var signature *string
 				if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.Summary != nil {
 					for _, b := range msg.ResponsesReasoning.Summary {
 						thinking += b.Text
 					}
+					signature = msg.ResponsesReasoning.EncryptedContent
 				} else if msg.Content != nil && msg.Content.ContentBlocks != nil {
 					for _, b := range msg.Content.ContentBlocks {
 						if b.Type == schemas.ResponsesOutputMessageContentTypeReasoning && b.Text != nil {
@@ -1339,8 +1358,9 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 				}
 				if thinking != "" {
 					contentBlocks = append(contentBlocks, AnthropicContentBlock{
-						Type:     AnthropicContentBlockTypeThinking,
-						Thinking: &thinking,
+						Type:      AnthropicContentBlockTypeThinking,
+						Thinking:  &thinking,
+						Signature: signature,
 					})
 				}
 

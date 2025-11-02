@@ -37,6 +37,7 @@ type AnthropicMessageRequest struct {
 	Model         string               `json:"model"`
 	MaxTokens     int                  `json:"max_tokens"`
 	Messages      []AnthropicMessage   `json:"messages"`
+	Metadata      *AnthropicMetaData   `json:"metadata,omitempty"`
 	System        *AnthropicContent    `json:"system,omitempty"`
 	Temperature   *float64             `json:"temperature,omitempty"`
 	TopP          *float64             `json:"top_p,omitempty"`
@@ -46,6 +47,10 @@ type AnthropicMessageRequest struct {
 	Tools         []AnthropicTool      `json:"tools,omitempty"`
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
+}
+
+type AnthropicMetaData struct {
+	UserID *string `json:"user_id"`
 }
 
 type AnthropicThinking struct {
@@ -130,6 +135,7 @@ type AnthropicContentBlock struct {
 	Type      AnthropicContentBlockType `json:"type"`                  // "text", "image", "tool_use", "tool_result", "thinking"
 	Text      *string                   `json:"text,omitempty"`        // For text content
 	Thinking  *string                   `json:"thinking,omitempty"`    // For thinking content
+	Signature *string                   `json:"signature,omitempty"`   // For signature content
 	ToolUseID *string                   `json:"tool_use_id,omitempty"` // For tool_result content
 	ID        *string                   `json:"id,omitempty"`          // For tool_use content
 	Name      *string                   `json:"name,omitempty"`        // For tool_use content

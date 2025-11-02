@@ -6,7 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, responseModalities []string) *GeminiGenerationRequest {
+func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *GeminiGenerationRequest {
 	if bifrostReq == nil {
 		return nil
 	}
@@ -17,13 +17,7 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, responseMod
 	}
 
 	// Convert parameters to generation config
-	if len(responseModalities) > 0 {
-		var modalities []Modality
-		for _, mod := range responseModalities {
-			modalities = append(modalities, Modality(mod))
-		}
-		geminiReq.GenerationConfig.ResponseModalities = modalities
-	}
+	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityAudio}
 
 	// Convert speech input to Gemini format
 	if bifrostReq.Input.Input != "" {

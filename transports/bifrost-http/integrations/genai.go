@@ -46,9 +46,19 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		EmbeddingResponseConverter: func(resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Gemini {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
 		ChatResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Gemini {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
 			return gemini.ToGeminiChatResponse(resp), nil
 		},
 		ErrorConverter: func(err *schemas.BifrostError) interface{} {

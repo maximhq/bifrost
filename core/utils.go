@@ -59,6 +59,10 @@ func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock
 }
 
+func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
+	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex
+}
+
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
 func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration {
 	// Calculate an exponential backoff: initial * 2^attempt
