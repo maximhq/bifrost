@@ -436,11 +436,11 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 
 	case StreamEventMessageEnd:
 		if chunk.Delta != nil {
-			var finishReason *string
+			var finishReason string
 			usage := &schemas.BifrostLLMUsage{}
 			// Set finish reason
 			if chunk.Delta.FinishReason != nil {
-				finishReason = schemas.Ptr(string(*chunk.Delta.FinishReason))
+				finishReason = ConvertCohereFinishReasonToBifrost(*chunk.Delta.FinishReason)
 			}
 
 			// Set usage information
@@ -461,7 +461,7 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 				Choices: []schemas.BifrostResponseChoice{
 					{
 						Index:        0,
-						FinishReason: finishReason,
+						FinishReason: &finishReason,
 						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 							Delta: &schemas.ChatStreamResponseChoiceDelta{},
 						},

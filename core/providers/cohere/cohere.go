@@ -422,17 +422,17 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 			// Parse SSE data
 			if strings.HasPrefix(line, "data: ") {
-				jsonData := strings.TrimPrefix(line, "data: ")
+				eventData := strings.TrimPrefix(line, "data: ")
 
 				// Handle [DONE] marker
-				if strings.TrimSpace(jsonData) == "[DONE]" {
+				if strings.TrimSpace(eventData) == "[DONE]" {
 					provider.logger.Debug("Received [DONE] marker, ending stream")
 					return
 				}
 
 				// Parse the unified streaming event
 				var event CohereStreamEvent
-				if err := sonic.Unmarshal([]byte(jsonData), &event); err != nil {
+				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 					provider.logger.Warn(fmt.Sprintf("Failed to parse stream event: %v", err))
 					continue
 				}
@@ -454,17 +454,20 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 						ChunkIndex:     chunkIndex,
 						Latency:        time.Since(lastChunkTime).Milliseconds(),
 					}
+
 					lastChunkTime = time.Now()
 					chunkIndex++
 
 					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-						response.ExtraFields.RawResponse = jsonData
+						response.ExtraFields.RawResponse = eventData
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 					if isLastChunk {
+						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+						providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
 						break
 					}
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 				}
 				if bifrostErr != nil {
 					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
