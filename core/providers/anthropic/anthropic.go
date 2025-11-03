@@ -735,6 +735,10 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 		// Track minimal state needed for response format
 		var usage *schemas.ResponsesResponseUsage
 
+		// Create stream accumulator for stateful conversions
+		accumulator := NewAnthropicStreamAccumulator()
+		defer accumulator.Flush()
+
 		// Track SSE event parsing state
 		var eventType string
 		var eventData string
@@ -782,35 +786,40 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 				}
 			}
 
-			response, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(chunkIndex)
-			if response != nil {
-				response.ExtraFields = schemas.BifrostResponseExtraFields{
-					RequestType:    schemas.ResponsesStreamRequest,
-					Provider:       provider.GetProviderKey(),
-					ModelRequested: request.Model,
-					ChunkIndex:     chunkIndex,
-					Latency:        time.Since(lastChunkTime).Milliseconds(),
-				}
-				lastChunkTime = time.Now()
-				chunkIndex++
+			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(chunkIndex, accumulator)
 
-				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-					response.ExtraFields.RawResponse = eventData
-				}
+			// Handle each response in the slice
+			for _, response := range responses {
+				if response != nil {
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ResponsesStreamRequest,
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					}
+					lastChunkTime = time.Now()
+					chunkIndex++
 
-				if isLastChunk {
-					if response.Response == nil {
-						response.Response = &schemas.BifrostResponsesResponse{}
+					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+						response.ExtraFields.RawResponse = eventData
 					}
-					if usage != nil {
-						response.Response.Usage = usage
+
+					if isLastChunk {
+						if response.Response == nil {
+							response.Response = &schemas.BifrostResponsesResponse{}
+						}
+						if usage != nil {
+							response.Response.Usage = usage
+						}
+						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+						providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), postHookRunner, responseChan)
+						return
 					}
-					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-					providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), postHookRunner, responseChan)
-					break
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
 				}
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
 			}
+
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 					RequestType:    schemas.ResponsesStreamRequest,

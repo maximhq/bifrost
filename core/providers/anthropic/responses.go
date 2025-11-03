@@ -10,6 +10,26 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// AnthropicStreamAccumulator tracks state during streaming conversion for responses API
+type AnthropicStreamAccumulator struct {
+	ChunkIndex      *int   // index of the chunk in the stream
+	AccumulatedJSON string // deltas of any event
+
+	// Computer tool accumulation
+	ComputerToolID *string
+}
+
+// NewAnthropicStreamAccumulator creates a new accumulator
+func NewAnthropicStreamAccumulator() *AnthropicStreamAccumulator {
+	return &AnthropicStreamAccumulator{}
+}
+
+func (accumulator *AnthropicStreamAccumulator) Flush() {
+	accumulator.ChunkIndex = nil
+	accumulator.AccumulatedJSON = ""
+	accumulator.ComputerToolID = nil
+}
+
 // ToBifrostResponsesRequest converts an Anthropic message request to Bifrost format
 func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
 	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
@@ -320,7 +340,9 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 }
 
 // ToBifrostResponsesStream converts an Anthropic stream event to a Bifrost Responses Stream response
-func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+// It maintains state via the accumulator for handling multi-chunk conversions like computer tools
+// Returns a slice of responses to support cases where a single event produces multiple responses
+func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, accumulator *AnthropicStreamAccumulator) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
 		// Message start - create output item added event
@@ -337,17 +359,45 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 				},
 			}
 
-			return &schemas.BifrostResponsesStreamResponse{
+			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 				SequenceNumber: sequenceNumber,
 				OutputIndex:    schemas.Ptr(0), // Assuming single output for now
 				Item:           item,
-			}, nil, false
+			}}, nil, false
 		}
 
 	case AnthropicStreamEventTypeContentBlockStart:
 		// Content block start - create content part added event
 		if chunk.ContentBlock != nil && chunk.Index != nil {
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse &&
+				chunk.ContentBlock.Name != nil &&
+				*chunk.ContentBlock.Name == string(AnthropicToolNameComputer) &&
+				chunk.ContentBlock.ID != nil {
+
+				// Start accumulating computer tool
+				accumulator.ComputerToolID = chunk.ContentBlock.ID
+				accumulator.ChunkIndex = chunk.Index
+				accumulator.AccumulatedJSON = ""
+
+				// Emit output_item.added for computer_call
+				item := &schemas.ResponsesMessage{
+					ID:   chunk.ContentBlock.ID,
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: chunk.ContentBlock.ID,
+					},
+				}
+
+				return []*schemas.BifrostResponsesStreamResponse{{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				}}, nil, false
+			}
+
 			var contentType schemas.ResponsesMessageContentBlockType
 			var part *schemas.ResponsesMessageContentBlock
 
@@ -362,21 +412,21 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 				// This is a function call starting - create function call message
 
 				item := &schemas.ResponsesMessage{
-					ID:   chunk.ContentBlock.ToolUseID,
+					ID:   chunk.ContentBlock.ID,
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:    chunk.ContentBlock.ToolUseID,
+						CallID:    chunk.ContentBlock.ID,
 						Name:      chunk.ContentBlock.Name,
 						Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
 					},
 				}
 
-				return &schemas.BifrostResponsesStreamResponse{
+				return []*schemas.BifrostResponsesStreamResponse{{
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(0),
 					Item:           item,
-				}, nil, false
+				}}, nil, false
 			case AnthropicContentBlockTypeMCPToolUse:
 				// This is an MCP tool call starting - create MCP call message
 				item := &schemas.ResponsesMessage{
@@ -403,58 +453,69 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 					Item:           item,
 				}
 
-				return outputItemAddedResp, nil, false
+				return []*schemas.BifrostResponsesStreamResponse{outputItemAddedResp}, nil, false
 			}
 
 			if part != nil {
-				return &schemas.BifrostResponsesStreamResponse{
+				return []*schemas.BifrostResponsesStreamResponse{{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(0),
 					ContentIndex:   chunk.Index,
 					Part:           part,
-				}, nil, false
+				}}, nil, false
 			}
 		}
 
 	case AnthropicStreamEventTypeContentBlockDelta:
 		if chunk.Index != nil && chunk.Delta != nil {
-			// Handle different delta types
+			// Handle different delta types (non-computer tool)
 			switch chunk.Delta.Type {
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
 					// Text content delta
-					return &schemas.BifrostResponsesStreamResponse{
+					return []*schemas.BifrostResponsesStreamResponse{{
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(0),
 						ContentIndex:   chunk.Index,
 						Delta:          chunk.Delta.Text,
-					}, nil, false
+					}}, nil, false
 				}
 
 			case AnthropicStreamDeltaTypeInputJSON:
 				// Function call arguments delta
 				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
-					return &schemas.BifrostResponsesStreamResponse{
+
+					// Check if we're accumulating a computer tool
+					if accumulator.ComputerToolID != nil &&
+						chunk.Index != nil &&
+						accumulator.ChunkIndex != nil &&
+						*accumulator.ChunkIndex == *chunk.Index {
+						// Accumulate the JSON and don't emit anything
+						accumulator.AccumulatedJSON += *chunk.Delta.PartialJSON
+						return nil, nil, false
+					}
+
+					return []*schemas.BifrostResponsesStreamResponse{{
 						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(0),
 						ContentIndex:   chunk.Index,
 						Delta:          chunk.Delta.PartialJSON,
-					}, nil, false
+					}}, nil, false
 				}
 
 			case AnthropicStreamDeltaTypeThinking:
 				// Reasoning/thinking content delta
 				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
-					return &schemas.BifrostResponsesStreamResponse{
+					return []*schemas.BifrostResponsesStreamResponse{{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(0),
 						ContentIndex:   chunk.Index,
 						Delta:          chunk.Delta.Thinking,
-					}, nil, false
+					}}, nil, false
 				}
 
 			case AnthropicStreamDeltaTypeSignature:
@@ -468,31 +529,87 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 	case AnthropicStreamEventTypeContentBlockStop:
 		// Content block is complete
 		if chunk.Index != nil {
-			return &schemas.BifrostResponsesStreamResponse{
+			// Check if this is the end of a computer tool accumulation
+			if accumulator.ComputerToolID != nil &&
+				accumulator.ChunkIndex != nil &&
+				*accumulator.ChunkIndex == *chunk.Index {
+
+				// Parse accumulated JSON and convert to OpenAI format
+				var inputMap map[string]interface{}
+				var action *schemas.ResponsesComputerToolCallAction
+
+				if accumulator.AccumulatedJSON != "" {
+					if err := json.Unmarshal([]byte(accumulator.AccumulatedJSON), &inputMap); err == nil {
+						action = convertAnthropicToResponsesComputerAction(inputMap)
+					}
+				}
+
+				// Create computer_call item with action
+				item := &schemas.ResponsesMessage{
+					ID:     accumulator.ComputerToolID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: accumulator.ComputerToolID,
+						ResponsesComputerToolCall: &schemas.ResponsesComputerToolCall{
+							PendingSafetyChecks: []schemas.ResponsesComputerToolCallPendingSafetyCheck{},
+						},
+					},
+				}
+
+				// Add action if we successfully parsed it
+				if action != nil {
+					item.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+						ResponsesComputerToolCallAction: action,
+					}
+				}
+
+				// Clear accumulator
+				accumulator.Flush()
+
+				// Return both output_item.done and content_part.done
+				return []*schemas.BifrostResponsesStreamResponse{
+					{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(0),
+						ContentIndex:   chunk.Index,
+						Item:           item,
+					},
+					{
+						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+						SequenceNumber: sequenceNumber + 1,
+						OutputIndex:    schemas.Ptr(0),
+						ContentIndex:   chunk.Index,
+					},
+				}, nil, false
+			}
+
+			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 				SequenceNumber: sequenceNumber,
 				OutputIndex:    schemas.Ptr(0),
 				ContentIndex:   chunk.Index,
-			}, nil, false
+			}}, nil, false
 		}
 
 	case AnthropicStreamEventTypeMessageDelta:
 		// Message-level updates (like stop reason, usage, etc.)
 		if chunk.Delta != nil && chunk.Delta.StopReason != nil {
 			// Indicate the output item is done
-			return &schemas.BifrostResponsesStreamResponse{
+			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
 				SequenceNumber: sequenceNumber,
 				OutputIndex:    schemas.Ptr(0),
-			}, nil, false
+			}}, nil, false
 		}
 
 	case AnthropicStreamEventTypeMessageStop:
 		// Message stop - this is the final chunk indicating stream completion
-		return &schemas.BifrostResponsesStreamResponse{
+		return []*schemas.BifrostResponsesStreamResponse{{
 			Type:           schemas.ResponsesStreamResponseTypeCompleted,
 			SequenceNumber: sequenceNumber,
-		}, nil, true // Indicate stream is complete
+		}}, nil, true // Indicate stream is complete
 
 	case AnthropicStreamEventTypePing:
 		// Ping events are just keepalive, no action needed
@@ -509,11 +626,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 				},
 			}
 
-			return &schemas.BifrostResponsesStreamResponse{
+			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:           schemas.ResponsesStreamResponseTypeError,
 				SequenceNumber: sequenceNumber,
 				Message:        &chunk.Error.Message,
-			}, bifrostErr, false
+			}}, bifrostErr, false
 		}
 	}
 
@@ -531,19 +648,44 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 	// Map ResponsesStreamResponse types to Anthropic stream events
 	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-		streamResp.Type = AnthropicStreamEventTypeMessageStart
-		if bifrostResp.Item != nil {
-			// Create message start event
-			streamMessage := &AnthropicMessageResponse{
-				Type: "message",
-				Role: string(schemas.ResponsesInputMessageRoleAssistant),
-			}
-			if bifrostResp.Item.ID != nil {
-				streamMessage.ID = *bifrostResp.Item.ID
-			}
-			streamResp.Message = streamMessage
-		}
+		// Check if this is a computer tool call
+		if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeComputerCall {
 
+			// Computer tool - emit content_block_start
+			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
+
+			if bifrostResp.ContentIndex != nil {
+				streamResp.Index = bifrostResp.ContentIndex
+			} else if bifrostResp.OutputIndex != nil {
+				streamResp.Index = bifrostResp.OutputIndex
+			}
+
+			// Build the content_block
+			contentBlock := &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeToolUse,
+				ID:   bifrostResp.Item.ID,                            // The tool use ID
+				Name: schemas.Ptr(string(AnthropicToolNameComputer)), // "computer"
+			}
+
+			streamResp.ContentBlock = contentBlock
+
+		} else {
+			streamResp.Type = AnthropicStreamEventTypeMessageStart
+			if bifrostResp.Item != nil {
+				// Create message start event
+				streamMessage := &AnthropicMessageResponse{
+					Type: "message",
+					Role: string(schemas.ResponsesInputMessageRoleAssistant),
+				}
+				if bifrostResp.Item.ID != nil {
+					streamMessage.ID = *bifrostResp.Item.ID
+				}
+				streamResp.Message = streamMessage
+			}
+
+		}
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockStart
 		if bifrostResp.ContentIndex != nil {
@@ -604,13 +746,46 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 		}
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		streamResp.Type = AnthropicStreamEventTypeMessageDelta
-		// Add stop reason if available (this would need to be passed through somehow)
-		streamResp.Delta = &AnthropicStreamDelta{
-			Type: AnthropicStreamDeltaTypeText, // Use text delta type for message deltas
-			// StopReason would be set based on the completion reason
-		}
+		if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeComputerCall {
 
+			// Computer tool complete - emit content_block_delta with the action, then stop
+			// Note: We're sending the complete action JSON in one delta
+			streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+
+			if bifrostResp.ContentIndex != nil {
+				streamResp.Index = bifrostResp.ContentIndex
+			} else if bifrostResp.OutputIndex != nil {
+				streamResp.Index = bifrostResp.OutputIndex
+			}
+
+			// Convert the action to Anthropic format and marshal to JSON
+			if bifrostResp.Item.ResponsesToolMessage != nil &&
+				bifrostResp.Item.ResponsesToolMessage.Action != nil &&
+				bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
+
+				actionInput := convertResponsesToAnthropicComputerAction(
+					bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction,
+				)
+
+				// Marshal the action to JSON string
+				if jsonBytes, err := json.Marshal(actionInput); err == nil {
+					jsonStr := string(jsonBytes)
+					streamResp.Delta = &AnthropicStreamDelta{
+						Type:        AnthropicStreamDeltaTypeInputJSON,
+						PartialJSON: &jsonStr,
+					}
+				}
+			}
+		} else {
+			streamResp.Type = AnthropicStreamEventTypeMessageDelta
+			// Add stop reason if available (this would need to be passed through somehow)
+			streamResp.Delta = &AnthropicStreamDelta{
+				Type: AnthropicStreamDeltaTypeText, // Use text delta type for message deltas
+				// StopReason would be set based on the completion reason
+			}
+		}
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
 
