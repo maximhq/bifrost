@@ -40,10 +40,10 @@ echo "🔧 Running core tests..."
 cd core
 # go test -v ./...
 cd ..
-# echo "🔧 Running core provider tests..."
-# cd tests/core-providers
-# go test -v -run .
-# cd ../..
+echo "🔧 Running core provider tests..."
+cd tests/core-providers
+go test -v -run .
+cd ../..
 
 # Capturing changelog
 CHANGELOG_BODY=$(cat core/changelog.md)
