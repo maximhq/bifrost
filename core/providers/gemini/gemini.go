@@ -432,14 +432,14 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	resp.StreamBody = true
 	defer fasthttp.ReleaseRequest(req)
 
-	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", provider.networkConfig.BaseURL, request.Model)
-
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
 	req.Header.SetContentType("application/json")
 
 	// Set headers for streaming
-	req.Header.Set("x-goog-api-key", key.Value)
+	if key.Value != "" {
+		req.Header.Set("x-goog-api-key", key.Value)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -452,7 +452,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Make the request
 	err := provider.client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -471,7 +471,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamGeminiError(providerName, resp)
 	}
 
@@ -481,7 +481,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
@@ -675,8 +675,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 		return nil, bifrostErr
 	}
 
-	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", provider.networkConfig.BaseURL, request.Model)
-
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -684,14 +682,16 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
 	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers for streaming
-	req.Header.Set("x-goog-api-key", key.Value)
+	if key.Value != "" {
+		req.Header.Set("x-goog-api-key", key.Value)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -700,7 +700,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Make the request
 	err := provider.client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -719,6 +719,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamGeminiError(providerName, resp)
 	}
 
@@ -728,7 +729,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
@@ -938,7 +939,7 @@ func parseStreamGeminiError(providerName schemas.ModelProvider, resp *fasthttp.R
 		return providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 	}
 
-	return providerUtils.NewBifrostOperationError(fmt.Sprintf("Gemini streaming error (HTTP %d): %v", resp.StatusCode, rawResponse), fmt.Errorf("HTTP %d", resp.StatusCode), providerName)
+	return providerUtils.NewBifrostOperationError(fmt.Sprintf("Gemini streaming error (HTTP %d): %v", resp.StatusCode(), rawResponse), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
 }
 
 // parseGeminiError parses Gemini error responses

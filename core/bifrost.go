@@ -281,6 +281,10 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 		return provider.ListModels(ctx, keys, request)
 	}, schemas.ListModelsRequest, req.Provider, "")
 	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    req.Provider,
+		}
 		return nil, bifrostErr
 	}
 	return response, nil

@@ -284,7 +284,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 	return HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
@@ -316,7 +316,6 @@ func HandleOpenAITextCompletionStreaming(
 	}
 
 	if authHeader != nil {
-		// Copy auth header to headers
 		maps.Copy(headers, authHeader)
 	}
 
@@ -334,6 +333,7 @@ func HandleOpenAITextCompletionStreaming(
 			return reqBody, nil
 		},
 		providerName)
+		
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -357,11 +357,11 @@ func HandleOpenAITextCompletionStreaming(
 	}
 
 	req.SetBody(jsonBody)
-
+	
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -377,9 +377,10 @@ func HandleOpenAITextCompletionStreaming(
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 	}
+
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model)
 	}
 
@@ -389,7 +390,7 @@ func HandleOpenAITextCompletionStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -648,7 +649,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 	return HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
@@ -720,12 +721,13 @@ func HandleOpenAIChatCompletionStreaming(
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
+
 	req.SetBody(jsonBody)
 
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -744,7 +746,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 	}
 
@@ -754,7 +756,7 @@ func HandleOpenAIChatCompletionStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -1014,7 +1016,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 	return HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/responses",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
@@ -1094,7 +1096,7 @@ func HandleOpenAIResponsesStreaming(
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1113,7 +1115,7 @@ func HandleOpenAIResponsesStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
 	}
 
@@ -1123,7 +1125,7 @@ func HandleOpenAIResponsesStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -1440,10 +1442,13 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		"Accept":        "text/event-stream",
 		"Cache-Control": "no-cache",
 	}
-	url := fmt.Sprintf("%s/v1/audio/speech", provider.networkConfig.BaseURL)
+
+	if key.Value != "" {
+		headers["Authorization"] = "Bearer " + key.Value
+	}
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"))
 	req.Header.SetContentType("application/json")
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1459,7 +1464,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Make the request
 	err = provider.client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1478,7 +1483,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model)
 	}
 
@@ -1488,7 +1493,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
@@ -1716,13 +1721,11 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	resp.StreamBody = true
 	defer fasthttp.ReleaseRequest(req)
 
-	url := fmt.Sprintf("%s/v1/audio/transcriptions", provider.networkConfig.BaseURL)
-
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
 	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
@@ -1738,7 +1741,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Make the request
 	err := provider.client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1757,7 +1760,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
@@ -1767,7 +1770,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1

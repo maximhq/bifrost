@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -174,29 +175,38 @@ func AuthMiddleware(store configstore.ConfigStore) lib.BifrostHTTPMiddleware {
 				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 				return
 			}
-			// Checking basic auth for inference calls
-			if scheme == "Basic" {
-				// Decrypt the token
-				decryptedToken, err := encrypt.Decrypt(token)
-				if err != nil {
-					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-					return
-				}
-				// Split the decrypted token into the username and password
-				username, password, ok := strings.Cut(decryptedToken, ":")
-				if !ok {
-					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-					return
-				}
-				// Verify the username and password
-				if username != authConfig.AdminUserName || password != authConfig.AdminPassword {
-					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-					return
-				}
-				// Continue with the next handler
-				next(ctx)
+		// Checking basic auth for inference calls
+		if scheme == "Basic" {
+			// Decode the base64 token
+			decodedBytes, err := base64.StdEncoding.DecodeString(token)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 				return
 			}
+			// Split the decoded token into the username and password
+			username, password, ok := strings.Cut(string(decodedBytes), ":")
+			if !ok {
+				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+				return
+			}
+			// Verify the username and password
+			if username != authConfig.AdminUserName {
+				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+				return
+			}
+			compare, err := encrypt.CompareHash(authConfig.AdminPassword, password)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to compare password: %v", err))
+				return
+			}
+			if !compare {
+				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+				return
+			}
+			// Continue with the next handler
+			next(ctx)
+			return
+		}
 			// Checking bearer auth for dashboard calls
 			if scheme == "Bearer" {
 				// Verify the session

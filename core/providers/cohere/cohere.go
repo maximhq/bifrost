@@ -348,22 +348,22 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 		return nil, bifrostErr
 	}
 
-	url := fmt.Sprintf("%s/v2/chat", provider.networkConfig.BaseURL)
-
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v2/chat"))
 	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -372,7 +372,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Make the request
 	err := provider.client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -391,7 +391,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil)
 	}
 
@@ -401,7 +401,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -559,19 +559,20 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 		return nil, bifrostErr
 	}
 
-	url := fmt.Sprintf("%s/v2/chat", provider.networkConfig.BaseURL)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v2/chat"))
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers
-	req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -580,7 +581,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	// Make the request
 	err := provider.client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -599,7 +600,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil)
 	}
 
@@ -609,7 +610,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)

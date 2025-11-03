@@ -385,7 +385,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 	return HandleAnthropicChatCompletionStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/messages",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
@@ -431,7 +431,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// Make the request
 	err = client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -450,7 +450,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamAnthropicError(resp, providerType)
 	}
 
@@ -460,7 +460,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// Start streaming in a goroutine
 	go func() {
 		defer close(responseChan)
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -671,11 +671,13 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 
 	defer fasthttp.ReleaseRequest(req)
 
-	url := fmt.Sprintf("%s/v1/messages", provider.networkConfig.BaseURL)
-
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/messages"))
 	req.Header.SetContentType("application/json")
+	req.Header.Set("anthropic-version", provider.apiVersion)
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	// Set body
@@ -684,7 +686,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 	// Make the request
 	err := provider.client.Do(req, resp)
 	if err != nil {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -703,7 +705,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, parseStreamAnthropicError(resp, provider.GetProviderKey())
 	}
 
@@ -712,7 +714,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 
 	// Start streaming in a goroutine
 	go func() {
-		defer fasthttp.ReleaseResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer close(responseChan)
 
 		if resp.BodyStream() == nil {

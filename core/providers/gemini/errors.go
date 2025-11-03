@@ -9,7 +9,7 @@ func ToGeminiError(bifrostErr *schemas.BifrostError) *GeminiChatRequestError {
 	}
 	code := 500
 	status := ""
-	if bifrostErr.Error != nil && bifrostErr.Error.Type != nil {		
+	if bifrostErr.Error != nil && bifrostErr.Error.Type != nil {
 		status = *bifrostErr.Error.Type
 	}
 	message := ""

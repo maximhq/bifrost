@@ -9,18 +9,14 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequ
 	if bifrostReq == nil {
 		return nil
 	}
-
 	params := bifrostReq.Params
-
 	openaiReq := &OpenAITextCompletionRequest{
 		Model:  bifrostReq.Model,
 		Prompt: bifrostReq.Input,
 	}
-
 	if params != nil {
 		openaiReq.TextCompletionParameters = *params
 	}
-
 	return openaiReq
 }
 

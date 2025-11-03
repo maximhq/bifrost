@@ -200,7 +200,7 @@ test: install-gotestsum ## Run tests for bifrost-http
 		echo "$(CYAN)JUnit XML report: $(TEST_REPORTS_DIR)/bifrost-http.xml$(NC)"; \
 	fi
 
-test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=anthropic TESTCASE=SimpleChat)
+test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=openai TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo)
 	@echo "$(GREEN)Running core tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
 	@TEST_FAILED=0; \
@@ -221,12 +221,16 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=a
 	if [ -n "$(PROVIDER)" ]; then \
 		PROVIDER_TEST_NAME=$$(echo "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/sgl/SGL/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
-			echo "$(CYAN)Running Test$${PROVIDER_TEST_NAME}/$${PROVIDER_TEST_NAME}Tests/$(TESTCASE)...$(NC)"; \
-			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$(TESTCASE).xml"; \
+			CLEAN_TESTCASE="$(TESTCASE)"; \
+			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
+			CLEAN_TESTCASE=$${CLEAN_TESTCASE#$${PROVIDER_TEST_NAME}Tests/}; \
+			CLEAN_TESTCASE=$$(echo "$$CLEAN_TESTCASE" | sed 's|^Test[A-Z][A-Za-z]*/[A-Z][A-Za-z]*Tests/||'); \
+			echo "$(CYAN)Running Test$${PROVIDER_TEST_NAME}/$${PROVIDER_TEST_NAME}Tests/$$CLEAN_TESTCASE...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$$(echo $$CLEAN_TESTCASE | sed 's|/|_|g').xml"; \
 			cd tests/core-providers && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../$$REPORT_FILE \
-				-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$(TESTCASE)$$" || TEST_FAILED=1; \
+				-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
 			cd ../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
@@ -272,7 +276,7 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=a
 	else \
 		if [ -n "$(TESTCASE)" ]; then \
 			echo "$(RED)Error: TESTCASE requires PROVIDER to be specified$(NC)"; \
-			echo "$(YELLOW)Usage: make test-core PROVIDER=anthropic TESTCASE=SimpleChat$(NC)"; \
+			echo "$(YELLOW)Usage: make test-core PROVIDER=openai TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo$(NC)"; \
 			exit 1; \
 		fi; \
 		REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \

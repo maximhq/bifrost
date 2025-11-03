@@ -124,21 +124,11 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"admin_password": password,
 				"is_enabled":     authConfig.IsEnabled,
 			}
-			// Computing token
-			token, err := encrypt.Hash(authConfig.AdminPassword)
-			if err != nil {
-				logger.Warn(fmt.Sprintf("failed to hash password: %v", err))
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-				return
-			}
-
-			mapConfig["auth_token"] = string(token)
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
-
 	SendJSON(ctx, mapConfig)
 }
 

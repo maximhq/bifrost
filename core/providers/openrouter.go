@@ -192,7 +192,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
@@ -227,7 +227,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx context.Context, postHoo
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/alpha/responses",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/alpha/responses"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,

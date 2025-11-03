@@ -1,11 +1,12 @@
 // Package providers implements various LLM providers and their utility functions.
 // This file contains common utility functions used across different provider implementations.
-package providers
+package utils
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -26,7 +27,6 @@ var logger schemas.Logger
 func SetLogger(l schemas.Logger) {
 	logger = l
 }
-
 
 // MakeRequestWithContext makes a request with a context and returns the latency and error.
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
@@ -750,6 +750,16 @@ func GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.Pos
 	}
 
 	return combinedPostHookRunner
+}
+
+// ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
+func ReleaseStreamingResponse(resp *fasthttp.Response) {
+	// Drain any remaining data from the body stream before releasing
+	// This prevents "whitespace in header" errors when the response is reused
+	if resp.BodyStream() != nil {
+		io.Copy(io.Discard, resp.BodyStream())
+	}
+	fasthttp.ReleaseResponse(resp)
 }
 
 // GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.
