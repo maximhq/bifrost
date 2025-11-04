@@ -51,9 +51,6 @@ type ModelCatalog struct {
 	syncCancel context.CancelFunc
 }
 
-// PricingData represents the structure of the pricing.json file
-type PricingData map[string]PricingEntry
-
 // PricingEntry represents a single model's pricing information
 type PricingEntry struct {
 	// Basic pricing
@@ -61,16 +58,13 @@ type PricingEntry struct {
 	OutputCostPerToken float64 `json:"output_cost_per_token"`
 	Provider           string  `json:"provider"`
 	Mode               string  `json:"mode"`
-
 	// Additional pricing for media
 	InputCostPerImage          *float64 `json:"input_cost_per_image,omitempty"`
 	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
 	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
-
 	// Character-based pricing
 	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
 	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
-
 	// Pricing above 128k tokens
 	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
@@ -79,7 +73,6 @@ type PricingEntry struct {
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
 	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
-
 	// Cache and batch pricing
 	CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
 	InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
@@ -187,6 +180,28 @@ func (mc *ModelCatalog) getPricingSyncInterval() time.Duration {
 	mc.pricingMu.RLock()
 	defer mc.pricingMu.RUnlock()
 	return mc.pricingSyncInterval
+}
+
+// GetPricingData returns the pricing data
+func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	// Check all modes
+	for _, mode := range []schemas.RequestType{
+		schemas.TextCompletionRequest,
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.EmbeddingRequest,
+		schemas.SpeechRequest,
+		schemas.TranscriptionRequest,
+	} {
+		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		pricing, ok := mc.pricingData[key]
+		if ok {
+			return convertTableModelPricingToPricingData(&pricing)
+		}
+	}
+	return nil
 }
 
 // GetModelsForProvider returns all available models for a given provider (thread-safe)

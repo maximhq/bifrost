@@ -119,6 +119,31 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 	return pricing
 }
 
+// convertTableModelPricingToPricingData converts the TableModelPricing struct to a DataSheetPricingEntry struct
+func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModelPricing) *PricingEntry {
+	return &PricingEntry{
+		Provider:                                  pricing.Provider,
+		Mode:                                      pricing.Mode,
+		InputCostPerToken:                         pricing.InputCostPerToken,
+		OutputCostPerToken:                        pricing.OutputCostPerToken,
+		InputCostPerImage:                         pricing.InputCostPerImage,
+		InputCostPerVideoPerSecond:                pricing.InputCostPerVideoPerSecond,
+		InputCostPerAudioPerSecond:                pricing.InputCostPerAudioPerSecond,
+		InputCostPerCharacter:                     pricing.InputCostPerCharacter,
+		OutputCostPerCharacter:                    pricing.OutputCostPerCharacter,
+		InputCostPerTokenAbove128kTokens:          pricing.InputCostPerTokenAbove128kTokens,
+		InputCostPerCharacterAbove128kTokens:      pricing.InputCostPerCharacterAbove128kTokens,
+		InputCostPerImageAbove128kTokens:          pricing.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens: pricing.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens: pricing.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:         pricing.OutputCostPerTokenAbove128kTokens,
+		OutputCostPerCharacterAbove128kTokens:     pricing.OutputCostPerCharacterAbove128kTokens,
+		CacheReadInputTokenCost:                   pricing.CacheReadInputTokenCost,
+		InputCostPerTokenBatches:                  pricing.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                 pricing.OutputCostPerTokenBatches,
+	}
+}
+
 // getSafeFloat64 returns the value of a float64 pointer or fallback if nil
 func getSafeFloat64(ptr *float64, fallback float64) float64 {
 	if ptr != nil {

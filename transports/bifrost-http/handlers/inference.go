@@ -339,6 +339,27 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Add pricing data to the response
+	if len(resp.Data) > 0 && h.config.PricingManager != nil {
+		for i, modelEntry := range resp.Data {
+			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
+			pricingEntry := h.config.PricingManager.GetPricingEntryForModel(modelName, provider)
+			if pricingEntry != nil {
+				pricing := &schemas.Pricing{
+					Prompt:     bifrost.Ptr(fmt.Sprintf("%f", pricingEntry.InputCostPerToken)),
+					Completion: bifrost.Ptr(fmt.Sprintf("%f", pricingEntry.OutputCostPerToken)),
+				}
+				if pricingEntry.InputCostPerImage != nil {
+					pricing.Image = bifrost.Ptr(fmt.Sprintf("%f", *pricingEntry.InputCostPerImage))
+				}
+				if pricingEntry.CacheReadInputTokenCost != nil {
+					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%f", *pricingEntry.CacheReadInputTokenCost))
+				}
+				resp.Data[i].Pricing = pricing
+			}
+		}
+	}
+
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -656,7 +677,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if req.Input == "" {
+	if req.SpeechInput == nil || req.SpeechInput.Input == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for speech completion")
 		return
 	}

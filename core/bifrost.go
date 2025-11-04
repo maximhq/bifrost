@@ -825,6 +825,7 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 	}
 }
 
+// GetConfiguredProviders returns a configured providers list.
 func (bifrost *Bifrost) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 	providers := bifrost.providers.Load()
 	if providers == nil {
