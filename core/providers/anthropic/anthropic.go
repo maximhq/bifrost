@@ -557,10 +557,6 @@ func HandleAnthropicChatCompletionStreaming(
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
-
-				if isLastChunk {
-					break
-				}
 			}
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -570,6 +566,10 @@ func HandleAnthropicChatCompletionStreaming(
 				}
 
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+				break
+			}
+
+			if isLastChunk {
 				break
 			}
 

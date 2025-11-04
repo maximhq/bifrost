@@ -726,6 +726,20 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 	return defaultProvider
 }
 
+// ProviderSendsDoneMarker returns true if the provider sends the [DONE] marker in streaming responses.
+// Some OpenAI-compatible providers (like Cerebras) don't send [DONE] and instead end the stream
+// after sending the finish_reason. This function helps determine the correct stream termination logic.
+func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
+	switch providerName {
+	case schemas.Cerebras:
+		// Cerebras doesn't send [DONE] marker, ends stream after finish_reason
+		return false
+	default:
+		// Default to expecting [DONE] marker for safety
+		return true
+	}
+}
+
 // GetResponsesChunkConverterCombinedPostHookRunner gets a combined post hook runner that converts to responses stream, then runs the original post hooks.
 func GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
 	responsesChunkConverter := func(_ *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {

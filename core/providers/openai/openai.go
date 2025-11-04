@@ -517,6 +517,11 @@ func HandleOpenAITextCompletionStreaming(
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil), responseChan)
 			}
+
+			// For providers that don't send [DONE] marker break on finish_reason
+			if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+				break
+			}
 		}
 
 		// Handle scanner errors first
@@ -886,6 +891,11 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil), responseChan)
+			}
+
+			// For providers that don't send [DONE] marker break on finish_reason
+			if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+				break
 			}
 		}
 

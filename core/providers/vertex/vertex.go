@@ -167,13 +167,13 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 			requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
 		}
 
-		// Create HTTP request for streaming
+		// Create HTTP request for listing models
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
 		defer fasthttp.ReleaseResponse(resp)
 
-		req.Header.SetMethod(http.MethodPost)
+		req.Header.SetMethod(http.MethodGet)
 		req.SetRequestURI(requestURL)
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -581,10 +581,21 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		} else {
 			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
 		}
-		authHeader := map[string]string{}
-		if key.Value != "" {
-			authHeader["Authorization"] = "Bearer " + key.Value
+
+		// Getting oauth2 token
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
 		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+
+		authHeader := map[string]string{
+			"Authorization": "Bearer " + token.AccessToken,
+		}
+
 		// Use shared OpenAI streaming logic
 		return openai.HandleOpenAIChatCompletionStreaming(
 			ctx,
