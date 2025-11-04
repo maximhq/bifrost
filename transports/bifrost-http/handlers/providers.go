@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,17 +20,25 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ModelsManager defines the interface for managing provider models
+type ModelsManager interface {
+	RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error
+	DeleteModelsForProvider(provider schemas.ModelProvider) error
+}
+
 // ProviderHandler manages HTTP requests for provider operations
 type ProviderHandler struct {
-	store  *lib.Config
-	client *bifrost.Bifrost
+	store         *lib.Config
+	client        *bifrost.Bifrost
+	modelsManager ModelsManager
 }
 
 // NewProviderHandler creates a new provider handler instance
-func NewProviderHandler(store *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
+func NewProviderHandler(modelsManager ModelsManager, store *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
 	return &ProviderHandler{
-		store:  store,
-		client: client,
+		store:         store,
+		client:        client,
+		modelsManager: modelsManager,
 	}
 }
 
@@ -255,6 +264,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := h.modelsManager.RefetchModelsForProvider(ctx, payload.Provider); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", payload.Provider, err))
+	}
+
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
 
 	SendJSON(ctx, response)
@@ -422,6 +435,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := h.modelsManager.RefetchModelsForProvider(ctx, provider); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", provider, err))
+	}
+
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
 
 	SendJSON(ctx, response)
@@ -449,6 +466,10 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	logger.Info(fmt.Sprintf("Provider %s removed successfully", provider))
+
+	if err := h.modelsManager.DeleteModelsForProvider(provider); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to delete models for provider %s: %v", provider, err))
+	}
 
 	response := ProviderResponse{
 		Name: provider,

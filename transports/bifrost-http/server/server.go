@@ -537,6 +537,40 @@ func (s *BifrostHTTPServer) ReloadPricingManager() error {
 	return s.Config.PricingManager.ReloadPricing(context.Background(), s.Config.FrameworkConfig.Pricing)
 }
 
+// RefetchModelsForProvider deletes existing models for a provider and refetches them from the provider
+func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error {
+	if s.Config == nil || s.Config.PricingManager == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+	if s.Client == nil {
+		return fmt.Errorf("bifrost client not found")
+	}
+
+	s.Config.PricingManager.DeleteModelDataForProvider(provider)
+
+	allModels, err := s.Client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{
+		Provider: provider,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list all models: %v", err)
+	}
+
+	s.Config.PricingManager.AddModelDataToPool(allModels)
+
+	return nil
+}
+
+// DeleteModelsForProvider deletes all models for a specific provider from the model catalog
+func (s *BifrostHTTPServer) DeleteModelsForProvider(provider schemas.ModelProvider) error {
+	if s.Config == nil || s.Config.PricingManager == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+
+	s.Config.PricingManager.DeleteModelDataForProvider(provider)
+
+	return nil
+}
+
 // RemovePlugin removes a plugin from the server.
 // Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
 func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error {
@@ -621,7 +655,7 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	// lib.ChainMiddlewares chains multiple middlewares together
 	// Initialize
 	healthHandler := handlers.NewHealthHandler(s.Config)
-	providerHandler := handlers.NewProviderHandler(s.Config, s.Client)
+	providerHandler := handlers.NewProviderHandler(s, s.Config, s.Client)
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(s.Client, s.Config)
 	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)

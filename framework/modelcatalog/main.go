@@ -281,6 +281,14 @@ func (mc *ModelCatalog) AddModelDataToPool(modelData *schemas.BifrostListModelsR
 	}
 }
 
+// DeleteModelDataForProvider deletes all model data from the pool for a given provider
+func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvider) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	delete(mc.modelPool, provider)
+}
+
 // RefineModelForProvider refines the model for a given provider.
 // e.g. "gpt-oss-120b" for groq provider -> "openai/gpt-oss-120b"
 func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) string {
