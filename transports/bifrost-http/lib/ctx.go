@@ -143,7 +143,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 		}
 		// Handle virtual key header (x-bf-vk)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(keyStr), string(value))
+			vk := string(value)
+			// Store under both the typed constant key and the string-cast key to
+			// ensure consistent retrieval across call sites that use either form.
+			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyVirtualKey, vk)
+			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(keyStr), vk)
 			return true
 		}
 		// Handle cache key header (x-bf-cache-key)
