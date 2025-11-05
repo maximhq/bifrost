@@ -1,6 +1,10 @@
 package openai
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // ToBifrostChatRequest converts an OpenAI chat request to Bifrost format
 func (request *OpenAIChatRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
@@ -41,17 +45,14 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		return openaiReq
 	case schemas.Mistral:
 		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.applyMistralCompatibility()
+		return openaiReq
+	case schemas.Vertex:
+		openaiReq.filterOpenAISpecificParameters()
 
-		// Remove max_completion_tokens and replace with max_tokens
-		if openaiReq.MaxCompletionTokens != nil {
-			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
-			openaiReq.MaxCompletionTokens = nil
-		}
-
-		// Mistral does not support ToolChoiceStruct, only simple tool choice strings are supported.
-		if openaiReq.ToolChoice != nil && openaiReq.ToolChoice.ChatToolChoiceStruct != nil {
-			openaiReq.ToolChoice.ChatToolChoiceStr = schemas.Ptr("required")
-			openaiReq.ToolChoice.ChatToolChoiceStruct = nil
+		// Apply Mistral-specific transformations for Vertex Mistral models
+		if providerUtils.IsVertexMistralModel(bifrostReq.Model) {
+			openaiReq.applyMistralCompatibility()
 		}
 		return openaiReq
 	default:
@@ -73,5 +74,20 @@ func (request *OpenAIChatRequest) filterOpenAISpecificParameters() {
 	}
 	if request.ChatParameters.Store != nil {
 		request.ChatParameters.Store = nil
+	}
+}
+
+// applyMistralCompatibility applies Mistral-specific transformations to the request
+func (request *OpenAIChatRequest) applyMistralCompatibility() {
+	// Mistral uses max_tokens instead of max_completion_tokens
+	if request.MaxCompletionTokens != nil {
+		request.MaxTokens = request.MaxCompletionTokens
+		request.MaxCompletionTokens = nil
+	}
+
+	// Mistral does not support ToolChoiceStruct, only simple tool choice strings are supported
+	if request.ToolChoice != nil && request.ToolChoice.ChatToolChoiceStruct != nil {
+		request.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
+		request.ToolChoice.ChatToolChoiceStruct = nil
 	}
 }

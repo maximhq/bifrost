@@ -66,3 +66,15 @@ type VertexListModelsResponse struct {
 	Models        []VertexModel `json:"models"`
 	NextPageToken string        `json:"nextPageToken"`
 }
+
+// ==================== ERROR TYPES ====================
+// VertexValidationError represents validation errors
+// returned by the Vertex Mistral endpoint
+type VertexValidationError struct {
+	Detail []struct {
+		Input any    `json:"input"` // can be number, object, or array
+		Loc   []any  `json:"loc"`   // location of the error (can contain strings and numeric indices)
+		Msg   string `json:"msg"`   // error message
+		Type  string `json:"type"`  // error type (e.g., "extra_forbidden", "missing")
+	} `json:"detail"`
+}

@@ -347,14 +347,24 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
 
+	// Determine the URL based on model type
 	var url string
 	if strings.Contains(request.Model, "claude") {
+		// Claude models use Anthropic publisher
 		if region == "global" {
 			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:rawPredict", projectID, request.Model)
 		} else {
 			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:rawPredict", region, projectID, region, request.Model)
 		}
+	} else if providerUtils.IsVertexMistralModel(request.Model) {
+		// Mistral models use mistralai publisher with rawPredict
+		if region == "global" {
+			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:rawPredict", projectID, request.Model)
+		} else {
+			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:rawPredict", region, projectID, region, request.Model)
+		}
 	} else {
+		// Other models use OpenAPI endpoint
 		if region == "global" {
 			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
 		} else {
@@ -413,14 +423,22 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		var openAIErr schemas.BifrostError
 
 		var vertexErr []VertexError
-		if err := sonic.Unmarshal(resp.Body(), &openAIErr); err != nil {
-			// Try Vertex error format if OpenAI format fails
+		if err := sonic.Unmarshal(resp.Body(), &openAIErr); err != nil || openAIErr.Error == nil {
+			// Try Vertex error format if OpenAI format fails or is incomplete
 			if err := sonic.Unmarshal(resp.Body(), &vertexErr); err != nil {
 
 				//try with single Vertex error format
 				var vertexErr VertexError
 				if err := sonic.Unmarshal(resp.Body(), &vertexErr); err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+					// Try VertexValidationError format (validation errors from Mistral endpoint)
+					var validationErr VertexValidationError
+					if err := sonic.Unmarshal(resp.Body(), &validationErr); err != nil {
+						return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+					}
+					if len(validationErr.Detail) > 0 {
+						return nil, providerUtils.NewProviderAPIError(validationErr.Detail[0].Msg, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+					}
+					return nil, providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), schemas.Vertex, nil, nil)
 				}
 
 				return nil, providerUtils.NewProviderAPIError(vertexErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
@@ -429,9 +447,12 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 			if len(vertexErr) > 0 {
 				return nil, providerUtils.NewProviderAPIError(vertexErr[0].Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
 			}
-		}
 
-		return nil, providerUtils.NewProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+			return nil, providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+		} else {
+			// OpenAI error format succeeded with valid Error field
+			return nil, providerUtils.NewProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+		}
 	}
 
 	if strings.Contains(request.Model, "claude") {
@@ -575,11 +596,22 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			provider.logger,
 		)
 	} else {
+		// Use OpenAI-compatible streaming for Mistral and other models
 		var url string
-		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
+		if providerUtils.IsVertexMistralModel(request.Model) {
+			// Mistral models use mistralai publisher with streamRawPredict
+			if region == "global" {
+				url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:streamRawPredict", projectID, request.Model)
+			} else {
+				url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:streamRawPredict", region, projectID, region, request.Model)
+			}
 		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
+			// Other models use OpenAPI endpoint
+			if region == "global" {
+				url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
+			} else {
+				url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
+			}
 		}
 
 		// Getting oauth2 token
