@@ -584,6 +584,27 @@ type BifrostCost struct {
 	TotalCost        float64 `json:"total_cost,omitempty"`
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.
+func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct float
+	var costFloat float64
+	if err := sonic.Unmarshal(data, &costFloat); err == nil {
+		bc.TotalCost = costFloat
+		return nil
+	}
+
+	// Try to unmarshal as a full BifrostCost struct
+	// Use a type alias to avoid infinite recursion
+	type Alias BifrostCost
+	var costStruct Alias
+	if err := sonic.Unmarshal(data, &costStruct); err == nil {
+		*bc = BifrostCost(costStruct)
+		return nil
+	}
+
+	return fmt.Errorf("cost field is neither a float nor an object")
+}
+
 type SearchResult struct {
 	Title       string  `json:"title"`
 	URL         string  `json:"url"`
