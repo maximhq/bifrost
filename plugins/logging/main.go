@@ -222,13 +222,13 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		initialData.Params = req.TextCompletionRequest.Params
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		initialData.Params = req.ChatRequest.Params
-		if req.ChatRequest.Params != nil && req.ChatRequest.Params.Tools != nil {
+		if !p.disableContentLogging && req.ChatRequest.Params != nil && req.ChatRequest.Params.Tools != nil {
 			initialData.Tools = req.ChatRequest.Params.Tools
 		}
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		initialData.Params = req.ResponsesRequest.Params
 
-		if req.ResponsesRequest.Params != nil && req.ResponsesRequest.Params.Tools != nil {
+		if !p.disableContentLogging && req.ResponsesRequest.Params != nil && req.ResponsesRequest.Params.Tools != nil {
 			var tools []schemas.ChatTool
 			for _, tool := range req.ResponsesRequest.Params.Tools {
 				tools = append(tools, *tool.ToChatTool())

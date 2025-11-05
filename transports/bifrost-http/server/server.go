@@ -207,7 +207,11 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 		}
 		return zero, fmt.Errorf("telemetry plugin type mismatch")
 	case logging.PluginName:
-		plugin, err := logging.Init(ctx, logger, bifrostConfig.LogsStore, bifrostConfig.PricingManager)
+		loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal logging plugin config: %v", err)
+		}
+		plugin, err := logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore, bifrostConfig.PricingManager)
 		if err != nil {
 			return zero, err
 		}
