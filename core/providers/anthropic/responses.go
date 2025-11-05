@@ -170,7 +170,9 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 				anthropicReq.StopSequences = stop
 			}
 			if thinking, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
-				if thinkingMap, ok := thinking.(map[string]interface{}); ok {
+				if anthropicThinking, ok := thinking.(*AnthropicThinking); ok {
+					anthropicReq.Thinking = anthropicThinking
+				} else if thinkingMap, ok := thinking.(map[string]interface{}); ok {
 					anthropicThinking := &AnthropicThinking{}
 					if thinkingType, ok := thinkingMap["type"].(string); ok {
 						anthropicThinking.Type = thinkingType
@@ -303,6 +305,8 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 
 	if len(contentBlocks) > 0 {
 		anthropicResp.Content = contentBlocks
+	} else {
+		anthropicResp.Content = []AnthropicContentBlock{}
 	}
 
 	// Set default stop reason - could be enhanced based on additional context
@@ -375,6 +379,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   chunk.Index,
 					Item:           item,
 				}, nil, false
 			case AnthropicContentBlockTypeMCPToolUse:
@@ -400,6 +405,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int) 
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(0),
+					ContentIndex:   chunk.Index,
 					Item:           item,
 				}
 
@@ -531,17 +537,42 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 	// Map ResponsesStreamResponse types to Anthropic stream events
 	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-		streamResp.Type = AnthropicStreamEventTypeMessageStart
-		if bifrostResp.Item != nil {
-			// Create message start event
-			streamMessage := &AnthropicMessageResponse{
-				Type: "message",
-				Role: string(schemas.ResponsesInputMessageRoleAssistant),
+		// Check if this is a function call (tool use) message
+		if bifrostResp.Item != nil && bifrostResp.Item.Type != nil && *bifrostResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall {
+			// Convert function call to tool_use content_block_start event
+			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
+			if bifrostResp.ContentIndex != nil {
+				streamResp.Index = bifrostResp.ContentIndex
 			}
-			if bifrostResp.Item.ID != nil {
-				streamMessage.ID = *bifrostResp.Item.ID
+
+			contentBlock := &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeToolUse,
 			}
-			streamResp.Message = streamMessage
+
+			if bifrostResp.Item.ResponsesToolMessage != nil {
+				if bifrostResp.Item.ResponsesToolMessage.CallID != nil {
+					contentBlock.ID = bifrostResp.Item.ResponsesToolMessage.CallID
+				}
+				if bifrostResp.Item.ResponsesToolMessage.Name != nil {
+					contentBlock.Name = bifrostResp.Item.ResponsesToolMessage.Name
+				}
+			}
+
+			streamResp.ContentBlock = contentBlock
+		} else {
+			// Regular message start event
+			streamResp.Type = AnthropicStreamEventTypeMessageStart
+			if bifrostResp.Item != nil {
+				// Create message start event
+				streamMessage := &AnthropicMessageResponse{
+					Type: "message",
+					Role: string(schemas.ResponsesInputMessageRoleAssistant),
+				}
+				if bifrostResp.Item.ID != nil {
+					streamMessage.ID = *bifrostResp.Item.ID
+				}
+				streamResp.Message = streamMessage
+			}
 		}
 
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
@@ -605,11 +636,6 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		streamResp.Type = AnthropicStreamEventTypeMessageDelta
-		// Add stop reason if available (this would need to be passed through somehow)
-		streamResp.Delta = &AnthropicStreamDelta{
-			Type: AnthropicStreamDeltaTypeText, // Use text delta type for message deltas
-			// StopReason would be set based on the completion reason
-		}
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop

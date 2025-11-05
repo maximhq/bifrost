@@ -6,6 +6,87 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ToBifrostSpeechRequest converts a GeminiGenerationRequest to a BifrostSpeechRequest
+func (request *GeminiGenerationRequest) ToBifrostSpeechRequest() *schemas.BifrostSpeechRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
+	if provider == schemas.Vertex {
+		// Add google/ prefix for Bifrost if not already present
+		if !strings.HasPrefix(model, "google/") {
+			model = "google/" + model
+		}
+	}
+
+	bifrostReq := &schemas.BifrostSpeechRequest{
+		Provider: provider,
+		Model:    model,
+	}
+
+	// Extract text input from contents
+	var textInput string
+	for _, content := range request.Contents {
+		for _, part := range content.Parts {
+			if part.Text != "" {
+				textInput += part.Text
+			}
+		}
+	}
+
+	bifrostReq.Input = &schemas.SpeechInput{
+		Input: textInput,
+	}
+
+	// Convert generation config to parameters
+	if request.GenerationConfig.SpeechConfig != nil || len(request.GenerationConfig.ResponseModalities) > 0 {
+		bifrostReq.Params = &schemas.SpeechParameters{}
+
+		// Extract voice config from speech config
+		if request.GenerationConfig.SpeechConfig != nil {
+			// Handle single-speaker voice config
+			if request.GenerationConfig.SpeechConfig.VoiceConfig != nil {
+				bifrostReq.Params.VoiceConfig = &schemas.SpeechVoiceInput{}
+
+				if request.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig != nil {
+					voiceName := request.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName
+					bifrostReq.Params.VoiceConfig.Voice = &voiceName
+				}
+			} else if request.GenerationConfig.SpeechConfig.MultiSpeakerVoiceConfig != nil {
+				// Handle multi-speaker voice config
+				// Convert to Bifrost's MultiVoiceConfig format
+				if len(request.GenerationConfig.SpeechConfig.MultiSpeakerVoiceConfig.SpeakerVoiceConfigs) > 0 {
+					bifrostReq.Params.VoiceConfig = &schemas.SpeechVoiceInput{}
+					multiVoiceConfig := make([]schemas.VoiceConfig, 0, len(request.GenerationConfig.SpeechConfig.MultiSpeakerVoiceConfig.SpeakerVoiceConfigs))
+
+					for _, speakerConfig := range request.GenerationConfig.SpeechConfig.MultiSpeakerVoiceConfig.SpeakerVoiceConfigs {
+						if speakerConfig.VoiceConfig != nil && speakerConfig.VoiceConfig.PrebuiltVoiceConfig != nil {
+							multiVoiceConfig = append(multiVoiceConfig, schemas.VoiceConfig{
+								Speaker: speakerConfig.Speaker,
+								Voice:   speakerConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName,
+							})
+						}
+					}
+
+					bifrostReq.Params.VoiceConfig.MultiVoiceConfig = multiVoiceConfig
+				}
+			}
+		}
+
+		// Store response modalities in extra params if needed
+		if len(request.GenerationConfig.ResponseModalities) > 0 {
+			if bifrostReq.Params.ExtraParams == nil {
+				bifrostReq.Params.ExtraParams = make(map[string]interface{})
+			}
+			modalities := make([]string, len(request.GenerationConfig.ResponseModalities))
+			for i, mod := range request.GenerationConfig.ResponseModalities {
+				modalities[i] = string(mod)
+			}
+			bifrostReq.Params.ExtraParams["response_modalities"] = modalities
+		}
+	}
+
+	return bifrostReq
+}
+
 func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *GeminiGenerationRequest {
 	if bifrostReq == nil {
 		return nil
@@ -32,8 +113,11 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *GeminiGene
 		}
 
 		// Add speech config to generation config if voice config is provided
-		if bifrostReq.Params != nil && bifrostReq.Params.VoiceConfig != nil && bifrostReq.Params.VoiceConfig.Voice != nil {
-			addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Params.VoiceConfig)
+		if bifrostReq.Params != nil && bifrostReq.Params.VoiceConfig != nil {
+			// Handle both single voice and multi-voice configurations
+			if bifrostReq.Params.VoiceConfig.Voice != nil || len(bifrostReq.Params.VoiceConfig.MultiVoiceConfig) > 0 {
+				addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Params.VoiceConfig)
+			}
 		}
 	}
 

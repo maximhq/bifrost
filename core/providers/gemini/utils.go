@@ -60,7 +60,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *sch
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
 func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
 	params := schemas.ToolFunctionParameters{
-		Type: string(schema.Type),
+		Type: strings.ToLower(string(schema.Type)),
 	}
 
 	if schema.Description != "" {
@@ -94,7 +94,46 @@ func convertSchemaToMap(schema *Schema) map[string]interface{} {
 		return make(map[string]interface{})
 	}
 
-	return properties
+	result := convertTypeToLowerCase(properties)
+
+	// Type assert back to map[string]interface{}
+	if resultMap, ok := result.(map[string]interface{}); ok {
+		return resultMap
+	}
+	return make(map[string]interface{})
+}
+
+// convertTypeToLowerCase recursively converts all 'type' fields to lowercase in a schema
+func convertTypeToLowerCase(schema interface{}) interface{} {
+	switch v := schema.(type) {
+	case map[string]interface{}:
+		// Process map
+		newMap := make(map[string]interface{})
+		for key, value := range v {
+			if key == "type" {
+				// Convert type field to lowercase if it's a string
+				if strValue, ok := value.(string); ok {
+					newMap[key] = strings.ToLower(strValue)
+				} else {
+					newMap[key] = value
+				}
+			} else {
+				// Recursively process other fields
+				newMap[key] = convertTypeToLowerCase(value)
+			}
+		}
+		return newMap
+	case []interface{}:
+		// Process array
+		newSlice := make([]interface{}, len(v))
+		for i, item := range v {
+			newSlice[i] = convertTypeToLowerCase(item)
+		}
+		return newSlice
+	default:
+		// Return primitive values as-is (strings, numbers, booleans, etc.)
+		return v
+	}
 }
 
 // isImageMimeType checks if a MIME type represents an image format

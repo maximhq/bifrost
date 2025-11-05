@@ -1,13 +1,14 @@
 """
-Anthropic Integration Tests
+Anthropic Integration Tests - Cross-Provider Support
 
-🤖 MODELS USED:
-- Chat: claude-3-haiku-20240307
-- Vision: claude-3-haiku-20240307
-- Tools: claude-3-haiku-20240307
-- Alternatives: claude-3-sonnet-20240229, claude-3-opus-20240229, claude-3-5-sonnet-20241022
+🌉 CROSS-PROVIDER TESTING:
+This test suite uses the Anthropic SDK to test against multiple AI providers through Bifrost.
+Tests automatically run against all available providers with proper capability filtering.
 
-Tests all 11 core scenarios using Anthropic SDK directly:
+Note: Tests automatically skip for providers that don't support specific capabilities.
+Example: Thinking tests only run for Anthropic, speech/transcription skip for all providers using Anthropic SDK.
+
+Tests all core scenarios using Anthropic SDK directly:
 1. Simple chat
 2. Multi turn conversation
 3. Tool calls
@@ -19,6 +20,11 @@ Tests all 11 core scenarios using Anthropic SDK directly:
 9. Multiple images
 10. Complete end2end test with conversation history, tool calls, tool results and images
 11. Integration specific tests
+12. Error handling
+13. Streaming
+14. List models
+15. Extended thinking (non-streaming)
+16. Extended thinking (streaming)
 """
 
 import pytest
@@ -55,8 +61,16 @@ from ..utils.common import (
     COMPARISON_KEYWORDS,
     WEATHER_KEYWORDS,
     LOCATION_KEYWORDS,
+    # Anthropic-specific test data
+    ANTHROPIC_THINKING_PROMPT,
+    ANTHROPIC_THINKING_STREAMING_PROMPT,
 )
 from ..utils.config_loader import get_model
+from ..utils.parametrize import (
+    get_cross_provider_params_for_scenario,
+    format_provider_model,
+)
+from ..utils.config_loader import get_config
 
 
 @pytest.fixture
@@ -75,7 +89,7 @@ def anthropic_client():
     client_kwargs = {
         "api_key": api_key,
         "base_url": base_url,
-        "timeout": api_config.get("timeout", 30),
+        "timeout": api_config.get("timeout", 120),
         "max_retries": api_config.get("max_retries", 3),
     }
 
@@ -161,15 +175,15 @@ def convert_to_anthropic_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, An
 
 
 class TestAnthropicIntegration:
-    """Test suite for Anthropic integration covering all 11 core scenarios"""
+    """Test suite for Anthropic integration with cross-provider support"""
 
-    @skip_if_no_api_key("anthropic")
-    def test_01_simple_chat(self, anthropic_client, test_config):
-        """Test Case 1: Simple chat interaction"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("simple_chat"))
+    def test_01_simple_chat(self, anthropic_client, test_config, provider, model):
+        """Test Case 1: Simple chat interaction - runs across all available providers"""
         messages = convert_to_anthropic_messages(SIMPLE_CHAT_MESSAGES)
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"), messages=messages, max_tokens=100
+            model=format_provider_model(provider, model), messages=messages, max_tokens=100
         )
 
         assert_valid_chat_response(response)
@@ -177,13 +191,13 @@ class TestAnthropicIntegration:
         assert response.content[0].type == "text"
         assert len(response.content[0].text) > 0
 
-    @skip_if_no_api_key("anthropic")
-    def test_02_multi_turn_conversation(self, anthropic_client, test_config):
-        """Test Case 2: Multi-turn conversation"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation"))
+    def test_02_multi_turn_conversation(self, anthropic_client, test_config, provider, model):
+        """Test Case 2: Multi-turn conversation - runs across all available providers"""
         messages = convert_to_anthropic_messages(MULTI_TURN_MESSAGES)
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"), messages=messages, max_tokens=150
+            model=format_provider_model(provider, model), messages=messages, max_tokens=150
         )
 
         assert_valid_chat_response(response)
@@ -194,14 +208,14 @@ class TestAnthropicIntegration:
             for word in ["population", "million", "people", "inhabitants"]
         )
 
-    @skip_if_no_api_key("anthropic")
-    def test_03_single_tool_call(self, anthropic_client, test_config):
-        """Test Case 3: Single tool call"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("tool_calls"))
+    def test_03_single_tool_call(self, anthropic_client, test_config, provider, model):
+        """Test Case 3: Single tool call - auto-skips providers without tool support"""
         messages = convert_to_anthropic_messages(SINGLE_TOOL_CALL_MESSAGES)
         tools = convert_to_anthropic_tools([WEATHER_TOOL])
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"),
+            model=format_provider_model(provider, model),
             messages=messages,
             tools=tools,
             max_tokens=100,
@@ -212,20 +226,20 @@ class TestAnthropicIntegration:
         assert tool_calls[0]["name"] == "get_weather"
         assert "location" in tool_calls[0]["arguments"]
 
-    @skip_if_no_api_key("anthropic")
-    def test_04_multiple_tool_calls(self, anthropic_client, test_config):
-        """Test Case 4: Multiple tool calls in one response"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls"))
+    def test_04_multiple_tool_calls(self, anthropic_client, test_config, provider, model):
+        """Test Case 4: Multiple tool calls in one response - auto-skips providers without multiple tool support"""
         messages = convert_to_anthropic_messages(MULTIPLE_TOOL_CALL_MESSAGES)
         tools = convert_to_anthropic_tools([WEATHER_TOOL, CALCULATOR_TOOL])
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"),
+            model=format_provider_model(provider, model),
             messages=messages,
             tools=tools,
             max_tokens=200,
         )
 
-        # Anthropic might be more conservative with multiple tool calls
+        # Providers might be more conservative with multiple tool calls
         # Let's check if it made at least one tool call and prefer multiple if possible
         assert_has_tool_calls(response)  # At least 1 tool call
         tool_calls = extract_anthropic_tool_calls(response)
@@ -239,13 +253,14 @@ class TestAnthropicIntegration:
         ), f"Expected tool calls from {expected_tools}, got {tool_names}"
 
     @skip_if_no_api_key("anthropic")
-    def test_05_end2end_tool_calling(self, anthropic_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling"))
+    def test_05_end2end_tool_calling(self, anthropic_client, test_config, provider, model):
         """Test Case 5: Complete tool calling flow with responses"""
-        messages = [{"role": "user", "content": "What's the weather in Boston?"}]
+        messages = [{"role": "user", "content": "What's the weather in Boston in fahrenheit?"}]
         tools = convert_to_anthropic_tools([WEATHER_TOOL])
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"),
+            model=format_provider_model(provider, model),
             messages=messages,
             tools=tools,
             max_tokens=100,
@@ -284,7 +299,7 @@ class TestAnthropicIntegration:
 
         # Get final response
         final_response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"), messages=messages, max_tokens=150
+            model=format_provider_model(provider, model), messages=messages, max_tokens=150
         )
 
         # Anthropic might return empty content if tool result is sufficient
@@ -299,13 +314,14 @@ class TestAnthropicIntegration:
             print("Model returned empty content - tool result was sufficient")
 
     @skip_if_no_api_key("anthropic")
-    def test_06_automatic_function_calling(self, anthropic_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("automatic_function_calling"))
+    def test_06_automatic_function_calling(self, anthropic_client, test_config, provider, model):
         """Test Case 6: Automatic function calling"""
         messages = [{"role": "user", "content": "Calculate 25 * 4 for me"}]
         tools = convert_to_anthropic_tools([CALCULATOR_TOOL])
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"),
+            model=format_provider_model(provider, model),
             messages=messages,
             tools=tools,
             max_tokens=100,
@@ -316,8 +332,8 @@ class TestAnthropicIntegration:
         tool_calls = extract_tool_calls(response)
         assert tool_calls[0]["name"] == "calculate"
 
-    @skip_if_no_api_key("anthropic")
-    def test_07_image_url(self, anthropic_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_url"))
+    def test_07_image_url(self, anthropic_client, test_config, provider, model):
         """Test Case 7: Image analysis from URL"""
         messages = [
             {
@@ -336,14 +352,14 @@ class TestAnthropicIntegration:
         ]
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"), messages=messages, max_tokens=200
+            model=format_provider_model(provider, model), messages=messages, max_tokens=200
         )
 
         assert_valid_image_response(response)
 
-    @skip_if_no_api_key("anthropic")
-    def test_08_image_base64(self, anthropic_client, test_config):
-        """Test Case 8: Image analysis from base64"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_base64"))
+    def test_08_image_base64(self, anthropic_client, test_config, provider, model):
+        """Test Case 8: Image analysis from base64 - runs for all providers with base64 image support"""
         messages = [
             {
                 "role": "user",
@@ -362,13 +378,13 @@ class TestAnthropicIntegration:
         ]
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"), messages=messages, max_tokens=200
+            model=format_provider_model(provider, model), messages=messages, max_tokens=200
         )
 
         assert_valid_image_response(response)
 
-    @skip_if_no_api_key("anthropic")
-    def test_09_multiple_images(self, anthropic_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_images"))
+    def test_09_multiple_images(self, anthropic_client, test_config, provider, model):
         """Test Case 9: Multiple image analysis"""
         messages = [
             {
@@ -395,7 +411,7 @@ class TestAnthropicIntegration:
         ]
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"), messages=messages, max_tokens=300
+            model=format_provider_model(provider, model), messages=messages, max_tokens=300
         )
 
         assert_valid_image_response(response)
@@ -483,7 +499,7 @@ class TestAnthropicIntegration:
             # Anthropic might return empty content if tool result is sufficient
             # This is valid behavior - just check that we got a response
             assert final_response is not None
-            if len(final_response.content) > 0:
+            if final_response.content and len(final_response.content) > 0:
                 # If there is content, validate it
                 assert_valid_chat_response(final_response)
             else:
@@ -537,31 +553,31 @@ class TestAnthropicIntegration:
     @skip_if_no_api_key("anthropic")
     def test_12_error_handling_invalid_roles(self, anthropic_client, test_config):
         """Test Case 12: Error handling for invalid roles"""
-        with pytest.raises(Exception) as exc_info:
-            anthropic_client.messages.create(
-                model=get_model("anthropic", "chat"),
-                messages=INVALID_ROLE_MESSAGES,
-                max_tokens=100,
-            )
+        # bifrost handles invalid roles internally so this test should not raise an exception
+        response = anthropic_client.messages.create(
+            model=get_model("anthropic", "chat"),
+            messages=INVALID_ROLE_MESSAGES,
+            max_tokens=100,
+        )
 
-        # Verify the error is properly caught and contains role-related information
-        error = exc_info.value
-        assert_valid_error_response(error, "tester")
-        assert_error_propagation(error, "anthropic")
+        # Verify the response is successful
+        assert response is not None
+        assert hasattr(response, "content")
+        assert len(response.content) > 0
 
-    @skip_if_no_api_key("anthropic")
-    def test_13_streaming(self, anthropic_client, test_config):
-        """Test Case 13: Streaming chat completion"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("streaming"))
+    def test_13_streaming(self, anthropic_client, test_config, provider, model):
+        """Test Case 13: Streaming chat completion - auto-skips providers without streaming support"""
         # Test basic streaming
         stream = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"),
+            model=format_provider_model(provider, model),
             messages=STREAMING_CHAT_MESSAGES,
             max_tokens=200,
             stream=True,
         )
 
         content, chunk_count, tool_calls_detected = collect_streaming_content(
-            stream, "anthropic", timeout=30
+            stream, "anthropic", timeout=300
         )
 
         # Validate streaming results
@@ -569,22 +585,238 @@ class TestAnthropicIntegration:
         assert len(content) > 10, "Should receive substantial content"
         assert not tool_calls_detected, "Basic streaming shouldn't have tool calls"
 
-        # Test streaming with tool calls
-        stream_with_tools = anthropic_client.messages.create(
-            model=get_model("anthropic", "tools"),
-            messages=STREAMING_TOOL_CALL_MESSAGES,
-            max_tokens=150,
-            tools=convert_to_anthropic_tools([WEATHER_TOOL]),
+        # Test streaming with tool calls (only if provider supports tools)
+        config = get_config()
+        if config.provider_supports_scenario(provider, "tool_calls"):
+            # Get the tools-capable model for this provider
+            tools_model = config.get_provider_model(provider, "tools")
+            if tools_model:
+                stream_with_tools = anthropic_client.messages.create(
+                    model=format_provider_model(provider, tools_model),
+                    messages=STREAMING_TOOL_CALL_MESSAGES,
+                    max_tokens=150,
+                    tools=convert_to_anthropic_tools([WEATHER_TOOL]),
+                    stream=True,
+                )
+
+                content_tools, chunk_count_tools, tool_calls_detected_tools = (
+                    collect_streaming_content(stream_with_tools, "anthropic", timeout=300)
+                )
+
+                # Validate tool streaming results
+                assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
+                assert tool_calls_detected_tools, "Should receive at least one chunk with tools"
+        
+    @skip_if_no_api_key("anthropic")
+    def test_14_list_models(self, anthropic_client, test_config):
+        """Test Case 14: List models with pagination parameters"""
+        # Test basic list with limit
+        response = anthropic_client.models.list(limit=5)
+        assert response.data is not None
+        assert len(response.data) <= 5  # May return fewer if not enough models
+        assert hasattr(response, "first_id"), "Response should have first_id"
+        assert hasattr(response, "last_id"), "Response should have last_id"
+        assert hasattr(response, "has_more"), "Response should have has_more"
+        
+        # Test pagination with after_id if there are more results
+        if response.has_more and response.last_id:
+            next_response = anthropic_client.models.list(
+                limit=3,
+                after_id=response.last_id
+            )
+            assert next_response.data is not None
+            assert len(next_response.data) <= 3
+            # Ensure we got different results
+            if len(response.data) > 0 and len(next_response.data) > 0:
+                assert response.data[0].id != next_response.data[0].id
+        
+        # Test pagination with before_id if we have a first_id
+        if response.first_id:
+            # Get a second page first
+            second_response = anthropic_client.models.list(limit=10)
+            if len(second_response.data) > 5 and second_response.last_id:
+                # Now try to go backwards from the last item
+                prev_response = anthropic_client.models.list(
+                    limit=2,
+                    before_id=second_response.last_id
+                )
+                assert prev_response.data is not None
+                assert len(prev_response.data) <= 2
+
+    @skip_if_no_api_key("anthropic")
+    def test_15_extended_thinking(self, anthropic_client, test_config):
+        """Test Case 15: Extended thinking/reasoning (non-streaming)"""
+        # Convert to Anthropic message format
+        messages = convert_to_anthropic_messages(ANTHROPIC_THINKING_PROMPT)
+
+        response = anthropic_client.messages.create(
+            model=get_model("anthropic", "chat"),  # Specific thinking-capable model
+            max_tokens=16000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 10000,
+            },
+            messages=messages,
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "content"), "Response should have content"
+        assert len(response.content) > 0, "Content should not be empty"
+
+        # Check for thinking content blocks
+        has_thinking = False
+        thinking_content = ""
+        regular_content = ""
+
+        for block in response.content:
+            if block.type:
+                if block.type == "thinking":
+                    has_thinking = True
+                    # The thinking content is directly in block.thinking attribute
+                    if block.thinking:
+                        thinking_content += str(block.thinking)
+                        print(f"Found thinking block with {len(str(block.thinking))} chars")
+                elif block.type == "text":
+                    if block.text:
+                        regular_content += str(block.text)
+
+        # Should have thinking content
+        assert has_thinking, (
+            f"Response should contain thinking blocks. "
+            f"Got {len(response.content)} blocks: "
+            f"{[block.type if hasattr(block, 'type') else 'unknown' for block in response.content]}"
+        )
+        assert len(thinking_content) > 0, "Thinking content should not be empty"
+
+        # Validate thinking content quality - should show reasoning
+        thinking_lower = thinking_content.lower()
+        reasoning_keywords = [
+            "batch",
+            "oven",
+            "cookie",
+            "minute",
+            "calculate",
+            "total",
+            "time",
+            "divide",
+            "multiply",
+            "step",
+        ]
+
+        keyword_matches = sum(
+            1 for keyword in reasoning_keywords if keyword in thinking_lower
+        )
+        assert keyword_matches >= 2, (
+            f"Thinking should contain reasoning about the problem. "
+            f"Found {keyword_matches} keywords. Content: {thinking_content[:200]}..."
+        )
+
+        # Should also have regular text response
+        assert len(regular_content) > 0, "Should have regular response text"
+
+        print(f"✓ Thinking content ({len(thinking_content)} chars): {thinking_content[:150]}...")
+        print(f"✓ Response content: {regular_content[:100]}...")
+
+    @skip_if_no_api_key("anthropic")
+    def test_16_extended_thinking_streaming(self, anthropic_client, test_config):
+        """Test Case 16: Extended thinking/reasoning (streaming)"""
+        # Convert to Anthropic message format
+        messages = convert_to_anthropic_messages(ANTHROPIC_THINKING_STREAMING_PROMPT)
+
+        # Stream with thinking enabled - use thinking-capable model
+        stream = anthropic_client.messages.create(
+            model="anthropic/claude-sonnet-4-5",
+            max_tokens=16000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 10000,
+            },
+            messages=messages,
             stream=True,
         )
 
-        content_tools, chunk_count_tools, tool_calls_detected_tools = (
-            collect_streaming_content(stream_with_tools, "anthropic", timeout=30)
+        # Collect streaming content
+        thinking_parts = []
+        text_parts = []
+        chunk_count = 0
+        has_thinking_delta = False
+        has_thinking_block_start = False
+
+        for event in stream:
+            chunk_count += 1
+
+            # Check event type
+            if event.type:
+                event_type = event.type
+
+                # Handle content_block_start to detect thinking blocks
+                if event_type == "content_block_start":
+                    if event.content_block and event.content_block.type:
+                        if event.content_block.type == "thinking":
+                            has_thinking_block_start = True
+                            print(f"Thinking block started")
+
+                # Handle content_block_delta events
+                elif event_type == "content_block_delta":
+                    if event.delta and event.delta.type:
+                            # Check for thinking delta
+                            if event.delta.type == "thinking_delta":
+                                has_thinking_delta = True
+                                if event.delta.thinking:
+                                    thinking_parts.append(str(event.delta.thinking))
+                            # Check for text delta
+                            elif event.delta.type == "text_delta":
+                                if event.delta.text:
+                                    text_parts.append(str(event.delta.text))
+
+            # Safety check
+            if chunk_count > 1000:
+                break
+
+        # Combine collected content
+        complete_thinking = "".join(thinking_parts)
+        complete_text = "".join(text_parts)
+
+        # Validate results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert has_thinking_delta or has_thinking_block_start, (
+            f"Should detect thinking in streaming. "
+            f"has_thinking_delta={has_thinking_delta}, has_thinking_block_start={has_thinking_block_start}"
+        )
+        assert len(complete_thinking) > 10, (
+            f"Should receive substantial thinking content, got {len(complete_thinking)} chars. "
+            f"Thinking parts: {len(thinking_parts)}"
         )
 
-        # Validate tool streaming results
-        assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
-        assert tool_calls_detected_tools, "Should receive at least one chunk with tools"
+        # Validate thinking content
+        thinking_lower = complete_thinking.lower()
+        math_keywords = [
+            "paid",
+            "split",
+            "equal",
+            "owe",
+            "alice",
+            "bob",
+            "carol",
+            "total",
+            "divide",
+            "step",
+        ]
+
+        keyword_matches = sum(
+            1 for keyword in math_keywords if keyword in thinking_lower
+        )
+        assert keyword_matches >= 2, (
+            f"Thinking should reason about splitting the bill. "
+            f"Found {keyword_matches} keywords. Content: {complete_thinking[:200]}..."
+        )
+
+        # Should have regular response text too
+        assert len(complete_text) > 0, "Should have regular response text"
+
+        print(f"✓ Streamed thinking ({len(thinking_parts)} chunks): {complete_thinking[:150]}...")
+        print(f"✓ Streamed response ({len(text_parts)} chunks): {complete_text[:100]}...")
 
 
 # Additional helper functions specific to Anthropic

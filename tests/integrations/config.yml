@@ -28,75 +28,205 @@ api:
   max_retries: 3
   retry_delay: 1 # seconds
 
-# Model configurations for each integration
-models:
+# Provider model configurations
+# Integrations (openai, anthropic, google, litellm, langchain) map to these providers
+providers:
   openai:
-    chat: "gpt-3.5-turbo"
+    chat: "gpt-4o-mini"
     vision: "gpt-4o"
-    tools: "gpt-3.5-turbo"
+    tools: "gpt-4o-mini"
     speech: "tts-1"
     transcription: "whisper-1"
     embeddings: "text-embedding-3-small"
+    streaming: "gpt-4o-mini"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
       - "gpt-4o"
-      - "gpt-4o-mini"
-    speech_alternatives:
-      - "tts-1-hd"
-    transcription_alternatives:
-      - "whisper-1"
-    embeddings_alternatives:
-      - "text-embedding-3-large"
-      - "text-embedding-ada-002"
-
+      - "gpt-3.5-turbo"
+    
   anthropic:
-    chat: "claude-3-haiku-20240307"
-    vision: "claude-3-haiku-20240307"
-    tools: "claude-3-haiku-20240307"
-    speech: null  # Anthropic doesn't support speech synthesis
-    transcription: null  # Anthropic doesn't support transcription
+    chat: "claude-sonnet-4-20250514"
+    vision: "claude-3-7-sonnet-20250219"
+    tools: "claude-sonnet-4-20250514"
+    streaming: "claude-sonnet-4-20250514"
+    thinking: "claude-sonnet-4-20250514"
     alternatives:
       - "claude-3-sonnet-20240229"
       - "claude-3-opus-20240229"
       - "claude-3-5-sonnet-20241022"
-
-  google:
-    chat: "gemini-2.0-flash-001"
-    vision: "gemini-2.0-flash-001"
-    tools: "gemini-2.0-flash-001"
-    speech: null  # Google doesn't expose speech synthesis through Gemini API
-    transcription: null  # Google doesn't expose transcription through Gemini API
+      - "claude-3-haiku-20240307"
+    
+  gemini:
+    chat: "gemini-2.0-flash"
+    vision: "gemini-2.0-flash"
+    tools: "gemini-2.0-flash"
+    speech: "gemini-2.5-flash-preview-tts"
+    transcription: "gemini-2.5-flash"
+    embeddings: "gemini-embedding-001"
+    streaming: "gemini-2.0-flash"
     alternatives:
       - "gemini-1.5-pro"
       - "gemini-1.5-flash"
       - "gemini-1.0-pro"
-
-  litellm:
-    chat: "gpt-3.5-turbo" # Uses OpenAI by default
-    vision: "gpt-4o" # Uses OpenAI vision
-    tools: "gpt-3.5-turbo" # Uses OpenAI for tools
-    speech: "tts-1" # Uses OpenAI TTS through LiteLLM
-    transcription: "whisper-1" # Uses OpenAI Whisper through LiteLLM
-    embeddings: "text-embedding-3-small" # Uses OpenAI embeddings through LiteLLM
+      - "gemini-2.0-flash-001"
+    
+  bedrock:
+    chat: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    vision: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    tools: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    streaming: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    thinking: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    embeddings: "cohere.embed-v4:0"
+    alternatives: []
+    
+  cohere:
+    chat: "command-a-03-2025"
+    vision: "command-a-vision-07-2025"
+    tools: "command-a-03-2025"
+    embeddings: "embed-v4.0"
+    streaming: "command-a-03-2025"
     alternatives:
-      - "claude-3-haiku-20240307" # Anthropic via LiteLLM
-      - "gemini-2.0-flash-001" # Google via LiteLLM
-      - "gpt-4" # OpenAI GPT-4
-      - "mistral-7b-instruct" # Mistral via LiteLLM
-      - "command-r-plus" # Cohere via LiteLLM
+      - "command-r-plus"
 
-  langchain:
-    chat: "gpt-3.5-turbo" # OpenAI models via LangChain
-    vision: "gpt-4o" # OpenAI vision via LangChain
-    tools: "gpt-3.5-turbo" # Function calling via LangChain
-    speech: "tts-1" # OpenAI TTS via LangChain
-    transcription: "whisper-1" # OpenAI Whisper via LangChain
-    embeddings: "text-embedding-3-small" # OpenAI embeddings via LangChain
-    alternatives:
-      - "claude-3-haiku-20240307" # Anthropic via LangChain
-      - "gemini-2.0-flash-001" # Google via LangChain
-      - "gpt-4" # OpenAI GPT-4 via LangChain
+# Provider availability configuration
+# Maps provider names to their API key environment variables
+provider_api_keys:
+  openai: "OPENAI_API_KEY"
+  anthropic: "ANTHROPIC_API_KEY"
+  gemini: "GEMINI_API_KEY"
+  bedrock: "BEDROCK_API_KEY"
+  cohere: "COHERE_API_KEY"
+
+# Provider test scenarios - which tests each provider supports
+provider_scenarios:
+  openai:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: true
+    image_base64: true
+    multiple_images: true
+    speech_synthesis: true
+    speech_synthesis_streaming: true
+    transcription: true
+    transcription_streaming: true
+    embeddings: true
+    thinking: false
+    list_models: true
+    responses_api: true
+    text_completion: false
+    
+  anthropic:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: true
+    image_base64: true
+    multiple_images: true
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: false
+    thinking: true
+    list_models: true
+    responses_api: true
+    text_completion: false
+    
+  gemini:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false  # Gemini requires base64 or file upload
+    image_base64: true
+    multiple_images: false
+    speech_synthesis: true
+    speech_synthesis_streaming: true
+    transcription: true
+    transcription_streaming: true
+    embeddings: true
+    thinking: false
+    list_models: true
+    responses_api: true
+    text_completion: false
+    
+  bedrock:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false
+    image_base64: true
+    multiple_images: false
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: true
+    thinking: true
+    list_models: true
+    responses_api: true
+    text_completion: false
+    
+  cohere:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: false
+    image_url: true
+    image_base64: true
+    multiple_images: true
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: true
+    thinking: false
+    list_models: false
+    responses_api: true
+    text_completion: false
+
+# Scenario to capability mapping
+# Maps test scenario names to their corresponding capability types
+scenario_capabilities:
+  simple_chat: "chat"
+  multi_turn_conversation: "chat"
+  responses_api: "chat"
+  text_completion: "chat"
+  streaming: "streaming"
+  tool_calls: "tools"
+  multiple_tool_calls: "tools"
+  end2end_tool_calling: "tools"
+  automatic_function_calling: "tools"
+  image_url: "vision"
+  image_base64: "vision"
+  multiple_images: "vision"
+  speech_synthesis: "speech"
+  speech_synthesis_streaming: "speech"
+  transcription: "transcription"
+  transcription_streaming: "transcription"
+  embeddings: "embeddings"
+  thinking: "thinking"
+  list_models: "chat"
 
 # Model capabilities matrix
 model_capabilities:
@@ -254,6 +384,60 @@ model_capabilities:
     streaming: true
     max_tokens: 8192
     context_window: 1000000
+
+  # Gemini Transcription Models
+  "gemini-2.5-flash":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    speech: false
+    transcription: true
+    embeddings: false
+    max_tokens: 8192
+    context_window: 1000000
+    audio_max_duration: 34200  # 9.5 hours in seconds
+
+  "gemini-2.5-pro":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    speech: false
+    transcription: true
+    embeddings: false
+    max_tokens: 8192
+    context_window: 2000000
+    audio_max_duration: 34200  # 9.5 hours in seconds
+
+  # Gemini TTS Models
+  "gemini-2.5-flash-preview-tts":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: true
+    transcription: false
+    embeddings: false
+    max_tokens: 32000  # 32k token context window for TTS
+    context_window: 32000
+    audio_format: "pcm"
+    sample_rate: 24000
+    channels: 1
+
+  "gemini-2.5-pro-preview-tts":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: true
+    transcription: false
+    embeddings: false
+    max_tokens: 32000  # 32k token context window for TTS
+    context_window: 32000
+    audio_format: "pcm"
+    sample_rate: 24000
+    channels: 1
 
   # Mistral Models
   "mistral-7b-instruct":

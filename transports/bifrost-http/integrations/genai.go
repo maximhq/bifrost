@@ -38,6 +38,14 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					return &schemas.BifrostRequest{
 						EmbeddingRequest: geminiReq.ToBifrostEmbeddingRequest(),
 					}, nil
+				} else if geminiReq.IsSpeech {
+					return &schemas.BifrostRequest{
+						SpeechRequest: geminiReq.ToBifrostSpeechRequest(),
+					}, nil
+				} else if geminiReq.IsTranscription {
+					return &schemas.BifrostRequest{
+						TranscriptionRequest: geminiReq.ToBifrostTranscriptionRequest(),
+					}, nil
 				} else {
 					return &schemas.BifrostRequest{
 						ChatRequest: geminiReq.ToBifrostChatRequest(),
@@ -47,20 +55,16 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		EmbeddingResponseConverter: func(resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.Gemini {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
 		ChatResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.Gemini {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
 			return gemini.ToGeminiChatResponse(resp), nil
+		},
+		SpeechResponseConverter: func(resp *schemas.BifrostSpeechResponse) (interface{}, error) {
+			return gemini.ToGeminiSpeechResponse(resp), nil
+		},
+		TranscriptionResponseConverter: func(resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
+			return gemini.ToGeminiTranscriptionResponse(resp), nil
 		},
 		ErrorConverter: func(err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -159,10 +163,84 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 		geminiReq.Model = modelStr
 		geminiReq.Stream = isStreaming
 		geminiReq.IsEmbedding = isEmbedding
+
+		// Detect if this is a speech or transcription request by examining the request body
+		// Speech detection takes priority over transcription
+		geminiReq.IsSpeech = isSpeechRequest(geminiReq)
+		geminiReq.IsTranscription = isTranscriptionRequest(geminiReq)
+
 		return nil
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
+}
+
+// isSpeechRequest checks if the request is for speech generation (text-to-speech)
+// Speech is detected by the presence of responseModalities containing "AUDIO" or speechConfig
+func isSpeechRequest(req *gemini.GeminiGenerationRequest) bool {
+	// Check if responseModalities contains AUDIO
+	for _, modality := range req.GenerationConfig.ResponseModalities {
+		if modality == gemini.ModalityAudio {
+			return true
+		}
+	}
+
+	// Check if speechConfig is present
+	if req.GenerationConfig.SpeechConfig != nil {
+		return true
+	}
+
+	return false
+}
+
+// isTranscriptionRequest checks if the request is for audio transcription (speech-to-text)
+// Transcription is detected by the presence of audio input in parts, but NOT if it's a speech request
+func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
+	// If this is already detected as a speech request, it's not transcription
+	// This handles the edge case of bidirectional audio (input + output)
+	if isSpeechRequest(req) {
+		return false
+	}
+
+	// Check all contents for audio input
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			// Check for inline audio data
+			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
+				return true
+			}
+
+			// Check for file-based audio data
+			if part.FileData != nil && isAudioMimeType(part.FileData.MIMEType) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// isAudioMimeType checks if a MIME type represents an audio format
+// Supports: WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC (as per Gemini docs)
+func isAudioMimeType(mimeType string) bool {
+	if mimeType == "" {
+		return false
+	}
+
+	// Convert to lowercase for case-insensitive comparison
+	mimeType = strings.ToLower(mimeType)
+
+	// Remove any parameters (e.g., "audio/mp3; charset=utf-8" -> "audio/mp3")
+	if idx := strings.Index(mimeType, ";"); idx != -1 {
+		mimeType = strings.TrimSpace(mimeType[:idx])
+	}
+
+	// Check if it starts with "audio/"
+	if strings.HasPrefix(mimeType, "audio/") {
+		return true
+	}
+
+	return false
 }
 
 // extractGeminiListModelsParams extracts query parameters for list models request

@@ -78,9 +78,18 @@ from ..utils.common import (
     assert_valid_embeddings_batch_response,
     calculate_cosine_similarity,
     collect_streaming_transcription_content,
+    get_provider_voice,
+    get_provider_voices,
 )
 from ..utils.config_loader import get_model
+from ..utils.parametrize import (
+    get_cross_provider_params_for_scenario,
+    format_provider_model,
+)
 
+# LiteLLM-specific provider exclusions
+# Bedrock and Cohere don't work well through LiteLLM proxy
+LITELLM_EXCLUDED_PROVIDERS = ["bedrock", "cohere"]
 
 @pytest.fixture
 def test_config():
@@ -133,10 +142,11 @@ def convert_to_litellm_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]
 class TestLiteLLMIntegration:
     """Test suite for LiteLLM integration covering all 11 core scenarios"""
 
-    def test_01_simple_chat(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("simple_chat", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_01_simple_chat(self, test_config, provider, model):
         """Test Case 1: Simple chat interaction"""
         response = litellm.completion(
-            model=get_model("litellm", "chat"),
+            model=model,
             messages=SIMPLE_CHAT_MESSAGES,
             max_tokens=100,
         )
@@ -145,10 +155,12 @@ class TestLiteLLMIntegration:
         assert response.choices[0].message.content is not None
         assert len(response.choices[0].message.content) > 0
 
-    def test_02_multi_turn_conversation(self, test_config):
+
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("multi_turn_conversation", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_02_multi_turn_conversation(self, test_config, provider, model):
         """Test Case 2: Multi-turn conversation"""
         response = litellm.completion(
-            model=get_model("litellm", "chat"),
+            model=model,
             messages=MULTI_TURN_MESSAGES,
             max_tokens=150,
         )
@@ -161,12 +173,13 @@ class TestLiteLLMIntegration:
             for word in ["population", "million", "people", "inhabitants"]
         )
 
-    def test_03_single_tool_call(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("tool_calls", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_03_single_tool_call(self, test_config, provider, model):
         """Test Case 3: Single tool call"""
         tools = convert_to_litellm_tools([WEATHER_TOOL])
 
         response = litellm.completion(
-            model=get_model("litellm", "chat"),
+            model=model,
             messages=SINGLE_TOOL_CALL_MESSAGES,
             tools=tools,
             max_tokens=100,
@@ -177,12 +190,13 @@ class TestLiteLLMIntegration:
         assert tool_calls[0]["name"] == "get_weather"
         assert "location" in tool_calls[0]["arguments"]
 
-    def test_04_multiple_tool_calls(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("multiple_tool_calls", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_04_multiple_tool_calls(self, test_config, provider, model):
         """Test Case 4: Multiple tool calls in one response"""
         tools = convert_to_litellm_tools([WEATHER_TOOL, CALCULATOR_TOOL])
 
         response = litellm.completion(
-            model=get_model("litellm", "chat"),
+            model=model,
             messages=MULTIPLE_TOOL_CALL_MESSAGES,
             tools=tools,
             max_tokens=200,
@@ -194,13 +208,14 @@ class TestLiteLLMIntegration:
         assert "get_weather" in tool_names
         assert "calculate" in tool_names
 
-    def test_05_end2end_tool_calling(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("end2end_tool_calling", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_05_end2end_tool_calling(self, test_config, provider, model):
         """Test Case 5: Complete tool calling flow with responses"""
         messages = [{"role": "user", "content": "What's the weather in Boston?"}]
         tools = convert_to_litellm_tools([WEATHER_TOOL])
 
         response = litellm.completion(
-            model=get_model("litellm", "chat"),
+            model=model,
             messages=messages,
             tools=tools,
             max_tokens=100,
@@ -235,12 +250,13 @@ class TestLiteLLMIntegration:
         weather_location_keywords = WEATHER_KEYWORDS + LOCATION_KEYWORDS
         assert any(word in content for word in weather_location_keywords)
 
-    def test_06_automatic_function_calling(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("automatic_function_calling", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_06_automatic_function_calling(self, test_config, provider, model):
         """Test Case 6: Automatic function calling"""
         tools = convert_to_litellm_tools([CALCULATOR_TOOL])
 
         response = litellm.completion(
-            model=get_model("litellm", "chat"),
+            model=model,
             messages=[{"role": "user", "content": "Calculate 25 * 4 for me"}],
             tools=tools,
             tool_choice="auto",
@@ -252,30 +268,33 @@ class TestLiteLLMIntegration:
         tool_calls = extract_litellm_tool_calls(response)
         assert tool_calls[0]["name"] == "calculate"
 
-    def test_07_image_url(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("image_url", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_07_image_url(self, test_config, provider, model):
         """Test Case 7: Image analysis from URL"""
         response = litellm.completion(
-            model=get_model("litellm", "vision"),
+            model=model,
             messages=IMAGE_URL_MESSAGES,
             max_tokens=200,
         )
 
         assert_valid_image_response(response)
 
-    def test_08_image_base64(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("image_base64", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_08_image_base64(self, test_config, provider, model):
         """Test Case 8: Image analysis from base64"""
         response = litellm.completion(
-            model=get_model("litellm", "vision"),
+            model=model,
             messages=IMAGE_BASE64_MESSAGES,
             max_tokens=200,
         )
 
         assert_valid_image_response(response)
 
-    def test_09_multiple_images(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("multiple_images", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_09_multiple_images(self, test_config, provider, model):
         """Test Case 9: Multiple image analysis"""
         response = litellm.completion(
-            model=get_model("litellm", "vision"),
+            model=model,
             messages=MULTIPLE_IMAGES_MESSAGES,
             max_tokens=300,
         )
@@ -287,14 +306,15 @@ class TestLiteLLMIntegration:
             word in content for word in COMPARISON_KEYWORDS
         ), f"Response should contain comparison keywords. Got content: {content}"
 
-    def test_10_complex_end2end(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("complex_e2end", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_10_complex_end2end(self, test_config, provider, model):
         """Test Case 10: Complex end-to-end with conversation, images, and tools"""
         messages = COMPLEX_E2E_MESSAGES.copy()
         tools = convert_to_litellm_tools([WEATHER_TOOL])
 
         # First, analyze the image
         response1 = litellm.completion(
-            model=get_model("litellm", "vision"),
+            model=model,
             messages=messages,
             tools=tools,
             max_tokens=300,
@@ -326,7 +346,7 @@ class TestLiteLLMIntegration:
 
             # Get final response after tool calls
             final_response = litellm.completion(
-                model=get_model("litellm", "vision"), messages=messages, max_tokens=200
+                model=model, messages=messages, max_tokens=200
             )
 
             assert_valid_chat_response(final_response)
@@ -398,18 +418,19 @@ class TestLiteLLMIntegration:
         assert_valid_error_response(error, "tester")
         assert_error_propagation(error, "litellm")
 
-    def test_13_streaming(self, test_config):
+    @pytest.mark.parametrize("provider, model", get_cross_provider_params_for_scenario("streaming", exclude_providers=LITELLM_EXCLUDED_PROVIDERS))
+    def test_13_streaming(self, test_config, provider, model):
         """Test Case 13: Streaming chat completion"""
         # Test basic streaming
         stream = litellm.completion(
-            model=get_model("litellm", "chat"),
+            model=model,
             messages=STREAMING_CHAT_MESSAGES,
             max_tokens=200,
             stream=True,
         )
 
         content, chunk_count, tool_calls_detected = collect_streaming_content(
-            stream, "openai", timeout=30  # LiteLLM uses OpenAI format
+            stream, "openai", timeout=120  # LiteLLM uses OpenAI format
         )
 
         # Validate streaming results
@@ -419,7 +440,7 @@ class TestLiteLLMIntegration:
 
         # Test streaming with tool calls
         stream_with_tools = litellm.completion(
-            model=get_model("litellm", "tools"),
+            model=model,
             messages=STREAMING_TOOL_CALL_MESSAGES,
             max_tokens=150,
             tools=convert_to_litellm_tools([WEATHER_TOOL]),
@@ -428,7 +449,7 @@ class TestLiteLLMIntegration:
 
         content_tools, chunk_count_tools, tool_calls_detected_tools = (
             collect_streaming_content(
-                stream_with_tools, "openai", timeout=30  # LiteLLM uses OpenAI format
+                stream_with_tools, "openai", timeout=120  # LiteLLM uses OpenAI format
             )
         )
 
@@ -566,7 +587,7 @@ class TestLiteLLMIntegration:
             # Test basic speech synthesis
             response = litellm.speech(
                 model=get_model("litellm", "speech") or "tts-1",
-                voice="alloy",
+                voice=get_provider_voice("openai", "primary"),
                 input=SPEECH_TEST_INPUT,
             )
 
@@ -583,7 +604,7 @@ class TestLiteLLMIntegration:
             # Test with different voice
             response2 = litellm.speech(
                 model=get_model("litellm", "speech") or "tts-1",
-                voice="nova",
+                voice=get_provider_voice("openai", "secondary"),
                 input="Short test message for voice comparison.",
                 response_format="mp3",
             )

@@ -99,6 +99,10 @@ type ResponsesResponseConverter func(*schemas.BifrostResponsesResponse) (interfa
 // It takes a BifrostEmbeddingResponse and returns the format expected by the specific integration.
 type EmbeddingResponseConverter func(*schemas.BifrostEmbeddingResponse) (interface{}, error)
 
+// SpeechResponseConverter is a function that converts BifrostSpeechResponse to integration-specific format.
+// It takes a BifrostSpeechResponse and returns the format expected by the specific integration.
+type SpeechResponseConverter func(*schemas.BifrostSpeechResponse) (interface{}, error)
+
 // TranscriptionResponseConverter is a function that converts BifrostTranscriptionResponse to integration-specific format.
 // It takes a BifrostTranscriptionResponse and returns the format expected by the specific integration.
 type TranscriptionResponseConverter func(*schemas.BifrostTranscriptionResponse) (interface{}, error)
@@ -199,6 +203,7 @@ type RouteConfig struct {
 	ChatResponseConverter          ChatResponseConverter          // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
 	ResponsesResponseConverter     ResponsesResponseConverter     // Function to convert BifrostResponsesResponse to integration format (SHOULD NOT BE NIL)
 	EmbeddingResponseConverter     EmbeddingResponseConverter     // Function to convert BifrostEmbeddingResponse to integration format (SHOULD NOT BE NIL)
+	SpeechResponseConverter        SpeechResponseConverter        // Function to convert BifrostSpeechResponse to integration format (SHOULD NOT BE NIL)
 	TranscriptionResponseConverter TranscriptionResponseConverter // Function to convert BifrostTranscriptionResponse to integration format (SHOULD NOT BE NIL)
 	ErrorConverter                 ErrorConverter                 // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
 	StreamConfig                   *StreamConfig                  // Optional: Streaming configuration (if nil, streaming not supported)
@@ -504,11 +509,21 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 
-		ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-		ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
-		ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(speechResponse.Audio)))
-		ctx.Response.SetBody(speechResponse.Audio)
-		return
+		if config.SpeechResponseConverter != nil {
+			response, err = config.SpeechResponseConverter(speechResponse)
+			if err != nil {
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to convert speech response"))
+				return
+			}
+			g.sendSuccess(ctx, config.ErrorConverter, response)
+			return
+		}else {
+			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+			ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
+			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(speechResponse.Audio)))
+			ctx.Response.SetBody(speechResponse.Audio)
+			return
+		}
 	case bifrostReq.TranscriptionRequest != nil:
 		transcriptionResponse, bifrostErr := g.client.TranscriptionRequest(requestCtx, bifrostReq.TranscriptionRequest)
 		if bifrostErr != nil {

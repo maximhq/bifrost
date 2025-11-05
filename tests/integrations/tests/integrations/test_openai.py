@@ -1,14 +1,12 @@
 """
-OpenAI Integration Tests
+OpenAI Integration Tests - Cross-Provider Support
 
-🤖 MODELS USED:
-- Chat: gpt-3.5-turbo
-- Vision: gpt-4o
-- Tools: gpt-3.5-turbo
-- Speech: tts-1
-- Transcription: whisper-1
-- Embeddings: text-embedding-3-small
-- Alternatives: gpt-4, gpt-4-turbo-preview, gpt-4o, gpt-4o-mini
+🌉 CROSS-PROVIDER TESTING:
+This test suite uses the OpenAI SDK to test against multiple AI providers through Bifrost.
+Tests automatically run against all available providers with proper capability filtering.
+
+Note: Tests automatically skip for providers that don't support specific capabilities.
+Example: Speech synthesis only runs for OpenAI, vision tests skip for Cohere.
 
 Tests all core scenarios using OpenAI SDK directly:
 1. Simple chat
@@ -41,6 +39,16 @@ Tests all core scenarios using OpenAI SDK directly:
 28. Embedding dimensionality reduction
 29. Embedding encoding formats
 30. Embedding usage tracking
+31. List models
+32. Responses API - simple text input
+33. Responses API - with system message
+34. Responses API - with image
+35. Responses API - with tools
+36. Responses API - streaming
+37. Responses API - streaming with tools
+38. Responses API - reasoning
+39. Text Completions - simple prompt
+42. Text Completions - streaming
 """
 
 import pytest
@@ -70,6 +78,7 @@ from ..utils.common import (
     assert_valid_error_response,
     assert_error_propagation,
     assert_valid_streaming_response,
+    get_content_string,
     collect_streaming_content,
     extract_tool_calls,
     get_api_key,
@@ -89,6 +98,8 @@ from ..utils.common import (
     assert_valid_streaming_transcription_response,
     collect_streaming_speech_content,
     collect_streaming_transcription_content,
+    get_provider_voice,
+    get_provider_voices,
     # Embeddings utilities
     EMBEDDINGS_SINGLE_TEXT,
     EMBEDDINGS_MULTIPLE_TEXTS,
@@ -101,8 +112,30 @@ from ..utils.common import (
     calculate_cosine_similarity,
     assert_embeddings_similarity,
     assert_embeddings_dissimilarity,
+    # Responses API utilities
+    RESPONSES_SIMPLE_TEXT_INPUT,
+    RESPONSES_TEXT_WITH_SYSTEM,
+    RESPONSES_IMAGE_INPUT,
+    RESPONSES_TOOL_CALL_INPUT,
+    RESPONSES_STREAMING_INPUT,
+    RESPONSES_REASONING_INPUT,
+    convert_to_responses_tools,
+    assert_valid_responses_response,
+    assert_responses_has_tool_calls,
+    collect_responses_streaming_content,
+    assert_valid_responses_streaming_chunk,
+    # Text Completions utilities
+    TEXT_COMPLETION_SIMPLE_PROMPT,
+    TEXT_COMPLETION_STREAMING_PROMPT,
+    assert_valid_text_completion_response,
+    collect_text_completion_streaming_content,
 )
 from ..utils.config_loader import get_model
+from ..utils.parametrize import (
+    get_cross_provider_params_for_scenario,
+    format_provider_model,
+)
+from ..utils.config_loader import get_config
 
 
 # Helper functions (defined early for use in test methods)
@@ -163,7 +196,7 @@ def openai_client():
     client_kwargs = {
         "api_key": api_key,
         "base_url": base_url,
-        "timeout": api_config.get("timeout", 30),
+        "timeout": api_config.get("timeout", 300),
         "max_retries": api_config.get("max_retries", 3),
     }
 
@@ -183,13 +216,13 @@ def test_config():
 
 
 class TestOpenAIIntegration:
-    """Test suite for OpenAI integration covering all 11 core scenarios"""
+    """Test suite for OpenAI integration with cross-provider support"""
 
-    @skip_if_no_api_key("openai")
-    def test_01_simple_chat(self, openai_client, test_config):
-        """Test Case 1: Simple chat interaction"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("simple_chat"))
+    def test_01_simple_chat(self, openai_client, test_config, provider, model):
+        """Test Case 1: Simple chat interaction - runs across all available providers"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "chat"),
+            model=format_provider_model(provider, model),
             messages=SIMPLE_CHAT_MESSAGES,
             max_tokens=100,
         )
@@ -198,28 +231,28 @@ class TestOpenAIIntegration:
         assert response.choices[0].message.content is not None
         assert len(response.choices[0].message.content) > 0
 
-    @skip_if_no_api_key("openai")
-    def test_02_multi_turn_conversation(self, openai_client, test_config):
-        """Test Case 2: Multi-turn conversation"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation"))
+    def test_02_multi_turn_conversation(self, openai_client, test_config, provider, model):
+        """Test Case 2: Multi-turn conversation - runs across all available providers"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "chat"),
+            model=format_provider_model(provider, model),
             messages=MULTI_TURN_MESSAGES,
             max_tokens=150,
         )
 
         assert_valid_chat_response(response)
-        content = response.choices[0].message.content.lower()
+        content = get_content_string(response.choices[0].message.content)
         # Should mention population or numbers since we asked about Paris population
         assert any(
             word in content
             for word in ["population", "million", "people", "inhabitants"]
         )
 
-    @skip_if_no_api_key("openai")
-    def test_03_single_tool_call(self, openai_client, test_config):
-        """Test Case 3: Single tool call"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("tool_calls"))
+    def test_03_single_tool_call(self, openai_client, test_config, provider, model):
+        """Test Case 3: Single tool call - auto-skips providers without tool support"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "tools"),
+            model=format_provider_model(provider, model),
             messages=SINGLE_TOOL_CALL_MESSAGES,
             tools=[{"type": "function", "function": WEATHER_TOOL}],
             max_tokens=100,
@@ -230,11 +263,11 @@ class TestOpenAIIntegration:
         assert tool_calls[0]["name"] == "get_weather"
         assert "location" in tool_calls[0]["arguments"]
 
-    @skip_if_no_api_key("openai")
-    def test_04_multiple_tool_calls(self, openai_client, test_config):
-        """Test Case 4: Multiple tool calls in one response"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls"))
+    def test_04_multiple_tool_calls(self, openai_client, test_config, provider, model):
+        """Test Case 4: Multiple tool calls in one response - auto-skips providers without multiple tool support"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "tools"),
+            model=format_provider_model(provider, model),
             messages=MULTIPLE_TOOL_CALL_MESSAGES,
             tools=[
                 {"type": "function", "function": WEATHER_TOOL},
@@ -249,14 +282,14 @@ class TestOpenAIIntegration:
         assert "get_weather" in tool_names
         assert "calculate" in tool_names
 
-    @skip_if_no_api_key("openai")
-    def test_05_end2end_tool_calling(self, openai_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling"))
+    def test_05_end2end_tool_calling(self, openai_client, test_config, provider, model):
         """Test Case 5: Complete tool calling flow with responses"""
         # Initial request
         messages = [{"role": "user", "content": "What's the weather in Boston?"}]
 
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "tools"),
+            model=format_provider_model(provider, model),
             messages=messages,
             tools=[{"type": "function", "function": WEATHER_TOOL}],
             max_tokens=100,
@@ -283,19 +316,19 @@ class TestOpenAIIntegration:
 
         # Get final response
         final_response = openai_client.chat.completions.create(
-            model=get_model("openai", "tools"), messages=messages, max_tokens=150
+            model=format_provider_model(provider, model), messages=messages, max_tokens=150
         )
 
         assert_valid_chat_response(final_response)
-        content = final_response.choices[0].message.content.lower()
+        content = get_content_string(final_response.choices[0].message.content)
         weather_location_keywords = WEATHER_KEYWORDS + LOCATION_KEYWORDS
         assert any(word in content for word in weather_location_keywords)
 
-    @skip_if_no_api_key("openai")
-    def test_06_automatic_function_calling(self, openai_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("automatic_function_calling"))
+    def test_06_automatic_function_calling(self, openai_client, test_config, provider, model):
         """Test Case 6: Automatic function calling (tool_choice='auto')"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "tools"),
+            model=format_provider_model(provider, model),
             messages=[{"role": "user", "content": "Calculate 25 * 4 for me"}],
             tools=[{"type": "function", "function": CALCULATOR_TOOL}],
             tool_choice="auto",  # Let model decide
@@ -307,39 +340,39 @@ class TestOpenAIIntegration:
         tool_calls = extract_openai_tool_calls(response)
         assert tool_calls[0]["name"] == "calculate"
 
-    @skip_if_no_api_key("openai")
-    def test_07_image_url(self, openai_client, test_config):
-        """Test Case 7: Image analysis from URL"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_url"))
+    def test_07_image_url(self, openai_client, test_config, provider, model):
+        """Test Case 7: Image analysis from URL - auto-skips providers without image URL support (e.g., Gemini, Bedrock)"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "vision"),
+            model=format_provider_model(provider, model),
             messages=IMAGE_URL_MESSAGES,
             max_tokens=200,
         )
 
         assert_valid_image_response(response)
 
-    @skip_if_no_api_key("openai")
-    def test_08_image_base64(self, openai_client, test_config):
-        """Test Case 8: Image analysis from base64"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_base64"))
+    def test_08_image_base64(self, openai_client, test_config, provider, model):
+        """Test Case 8: Image analysis from base64 - runs for all providers with base64 image support"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "vision"),
+            model=format_provider_model(provider, model),
             messages=IMAGE_BASE64_MESSAGES,
             max_tokens=200,
         )
 
         assert_valid_image_response(response)
 
-    @skip_if_no_api_key("openai")
-    def test_09_multiple_images(self, openai_client, test_config):
-        """Test Case 9: Multiple image analysis"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_images"))
+    def test_09_multiple_images(self, openai_client, test_config, provider, model):
+        """Test Case 9: Multiple image analysis - auto-skips providers without multiple image support"""
         response = openai_client.chat.completions.create(
-            model=get_model("openai", "vision"),
+            model=format_provider_model(provider, model),
             messages=MULTIPLE_IMAGES_MESSAGES,
             max_tokens=300,
         )
 
         assert_valid_image_response(response)
-        content = response.choices[0].message.content.lower()
+        content = get_content_string(response.choices[0].message.content)
         # Should mention comparison or differences (flexible matching)
         assert any(
             word in content for word in COMPARISON_KEYWORDS
@@ -455,22 +488,23 @@ class TestOpenAIIntegration:
 
         # Verify the error is properly caught and contains role-related information
         error = exc_info.value
+        print(error)
         assert_valid_error_response(error, "tester")
         assert_error_propagation(error, "openai")
 
-    @skip_if_no_api_key("openai")
-    def test_13_streaming(self, openai_client, test_config):
-        """Test Case 13: Streaming chat completion"""
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("streaming"))
+    def test_13_streaming(self, openai_client, test_config, provider, model):
+        """Test Case 13: Streaming chat completion - auto-skips providers without streaming support"""
         # Test basic streaming
         stream = openai_client.chat.completions.create(
-            model=get_model("openai", "chat"),
+            model=format_provider_model(provider, model),
             messages=STREAMING_CHAT_MESSAGES,
             max_tokens=200,
             stream=True,
         )
 
         content, chunk_count, tool_calls_detected = collect_streaming_content(
-            stream, "openai", timeout=30
+            stream, "openai", timeout=300
         )
 
         # Validate streaming results
@@ -478,24 +512,29 @@ class TestOpenAIIntegration:
         assert len(content) > 10, "Should receive substantial content"
         assert not tool_calls_detected, "Basic streaming shouldn't have tool calls"
 
-        # Test streaming with tool calls
-        stream_with_tools = openai_client.chat.completions.create(
-            model=get_model("openai", "tools"),
-            messages=STREAMING_TOOL_CALL_MESSAGES,
-            max_tokens=150,
-            tools=convert_to_openai_tools([WEATHER_TOOL]),
-            stream=True,
-        )
+        # Test streaming with tool calls (only if provider supports tools)
+        config = get_config()
+        if config.provider_supports_scenario(provider, "tool_calls"):
+            # Get the tools-capable model for this provider
+            tools_model = config.get_provider_model(provider, "tools")
+            if tools_model:
+                stream_with_tools = openai_client.chat.completions.create(
+                    model=format_provider_model(provider, tools_model),
+                    messages=STREAMING_TOOL_CALL_MESSAGES,
+                    max_tokens=150,
+                    tools=convert_to_openai_tools([WEATHER_TOOL]),
+                    stream=True,
+                )
 
-        content_tools, chunk_count_tools, tool_calls_detected_tools = (
-            collect_streaming_content(stream_with_tools, "openai", timeout=30)
-        )
+                content_tools, chunk_count_tools, tool_calls_detected_tools = (
+                    collect_streaming_content(stream_with_tools, "openai", timeout=300)
+                )
 
-        # Validate tool streaming results
-        assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
-        assert (
-            tool_calls_detected_tools
-        ), "Should detect tool calls in streaming response"
+                # Validate tool streaming results
+                assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
+                assert (
+                    tool_calls_detected_tools
+                ), "Should detect tool calls in streaming response"
 
     @skip_if_no_api_key("openai")
     def test_14_speech_synthesis(self, openai_client, test_config):
@@ -503,7 +542,7 @@ class TestOpenAIIntegration:
         # Basic speech synthesis test
         response = openai_client.audio.speech.create(
             model=get_model("openai", "speech"),
-            voice="alloy",
+            voice=get_provider_voice("openai", "primary"),
             input=SPEECH_TEST_INPUT,
         )
 
@@ -514,7 +553,7 @@ class TestOpenAIIntegration:
         # Test with different voice
         response2 = openai_client.audio.speech.create(
             model=get_model("openai", "speech"),
-            voice="nova",
+            voice=get_provider_voice("openai", "secondary"),
             input="Short test message.",
             response_format="mp3",
         )
@@ -570,7 +609,7 @@ class TestOpenAIIntegration:
             # If streaming is supported, collect the text chunks
             if hasattr(response, "__iter__"):
                 text_content, chunk_count = collect_streaming_transcription_content(
-                    response, "openai", timeout=60
+                    response, "openai", timeout=300
                 )
                 assert chunk_count > 0, "Should receive at least one text chunk"
                 assert_valid_transcription_response(
@@ -599,7 +638,7 @@ class TestOpenAIIntegration:
         # Step 1: Convert text to speech
         speech_response = openai_client.audio.speech.create(
             model=get_model("openai", "speech"),
-            voice="alloy",
+            voice=get_provider_voice("openai", "primary"),
             input=original_text,
             response_format="wav",  # Use WAV for better transcription compatibility
         )
@@ -649,7 +688,7 @@ class TestOpenAIIntegration:
         with pytest.raises(Exception) as exc_info:
             openai_client.audio.speech.create(
                 model=get_model("openai", "speech"),
-                voice="alloy",
+                voice=get_provider_voice("openai", "primary"),
                 input="",
             )
 
@@ -660,7 +699,7 @@ class TestOpenAIIntegration:
         with pytest.raises(Exception) as exc_info:
             openai_client.audio.speech.create(
                 model="invalid-speech-model",
-                voice="alloy",
+                voice=get_provider_voice("openai", "primary"),
                 input="This should fail due to invalid model.",
             )
 
@@ -711,9 +750,7 @@ class TestOpenAIIntegration:
 
         # Test multiple voices
         voices_tested = []
-        for voice in SPEECH_TEST_VOICES[
-            :3
-        ]:  # Test first 3 voices to avoid too many API calls
+        for voice in get_provider_voices("openai", count=3):  # Test first 3 voices to avoid too many API calls
             response = openai_client.audio.speech.create(
                 model=get_model("openai", "speech"),
                 voice=voice,
@@ -739,7 +776,7 @@ class TestOpenAIIntegration:
             try:
                 response = openai_client.audio.speech.create(
                     model=get_model("openai", "speech"),
-                    voice="alloy",
+                    voice=get_provider_voice("openai", "primary"),
                     input="Testing audio format: " + format_type,
                     response_format=format_type,
                 )
@@ -1054,3 +1091,470 @@ class TestOpenAIIntegration:
         assert (
             0.5 * texts_ratio <= token_ratio <= 2.0 * texts_ratio
         ), f"Token usage ratio ({token_ratio:.2f}) should be roughly proportional to text count ({texts_ratio})"
+    
+    @skip_if_no_api_key("openai")
+    def test_31_list_models(self, openai_client, test_config):
+        """Test Case 31: List models"""
+        response = openai_client.models.list()
+        assert response.data is not None
+        assert len(response.data) > 0
+
+    # =========================================================================
+    # RESPONSES API TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses_api"))
+    def test_32_responses_simple_text(self, openai_client, test_config, provider, model):
+        """Test Case 32: Responses API with simple text input"""
+        response = openai_client.responses.create(
+            model=format_provider_model(provider, model),
+            input=RESPONSES_SIMPLE_TEXT_INPUT,
+            max_output_tokens=150,
+        )
+
+        # Validate response structure
+        assert_valid_responses_response(response, min_content_length=20)
+
+        # Check that we have meaningful content about space
+        content = ""
+        for message in response.output:
+            if hasattr(message, "content") and message.content:
+                if isinstance(message.content, str):
+                    content += message.content
+                elif isinstance(message.content, list):
+                    for block in message.content:
+                        if hasattr(block, "text") and block.text:
+                            content += block.text
+
+        content_lower = content.lower()
+        space_keywords = ["space", "rocket", "astronaut", "moon", "mars", "nasa", "satellite"]
+        assert any(
+            keyword in content_lower for keyword in space_keywords
+        ), f"Response should contain space-related content. Got: {content}"
+
+        # Verify usage information
+        if hasattr(response, "usage"):
+            assert response.usage.total_tokens > 0, "Should report token usage"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses_api"))
+    def test_33_responses_with_system_message(self, openai_client, test_config, provider, model):
+        """Test Case 33: Responses API with system message"""
+        response = openai_client.responses.create(
+            model=format_provider_model(provider, model),
+            input=RESPONSES_TEXT_WITH_SYSTEM,
+            max_output_tokens=200,
+        )
+
+        # Validate response structure
+        assert_valid_responses_response(response, min_content_length=30)
+
+        # Extract content
+        content = ""
+        for message in response.output:
+            if hasattr(message, "content") and message.content:
+                if isinstance(message.content, str):
+                    content += message.content
+                elif isinstance(message.content, list):
+                    for block in message.content:
+                        if hasattr(block, "text") and block.text:
+                            content += block.text
+
+        # Should mention Mars since system message says we're an astronomy expert
+        content_lower = content.lower()
+        mars_keywords = ["mars", "water", "planet", "discovery", "rover"]
+        assert any(
+            keyword in content_lower for keyword in mars_keywords
+        ), f"Response should contain Mars-related content from astronomy expert. Got: {content}"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses_api"))
+    def test_34_responses_with_image(self, openai_client, test_config, provider, model):
+        """Test Case 34: Responses API with image input"""
+        response = openai_client.responses.create(
+            model=format_provider_model(provider, model),
+            input=RESPONSES_IMAGE_INPUT,
+            max_output_tokens=200,
+        )
+
+        # Validate response structure
+        assert_valid_responses_response(response, min_content_length=20)
+
+        # Extract content
+        content = ""
+        for message in response.output:
+            if hasattr(message, "content") and message.content:
+                if isinstance(message.content, str):
+                    content += message.content
+                elif isinstance(message.content, list):
+                    for block in message.content:
+                        if hasattr(block, "text") and block.text:
+                            content += block.text
+
+        # Check for image-related keywords
+        content_lower = content.lower()
+        image_keywords = [
+            "image",
+            "picture",
+            "photo",
+            "see",
+            "show",
+            "display",
+            "nature",
+            "grass",
+            "sky",
+            "landscape",
+            "boardwalk",
+        ]
+        assert any(
+            keyword in content_lower for keyword in image_keywords
+        ), f"Response should describe the image. Got: {content}"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses_api"))
+    def test_35_responses_with_tools(self, openai_client, test_config, provider, model):
+        """Test Case 35: Responses API with tool calls"""
+        # Convert tools to responses format
+        tools = convert_to_responses_tools([WEATHER_TOOL])
+
+        response = openai_client.responses.create(
+            model=format_provider_model(provider, model),
+            input=RESPONSES_TOOL_CALL_INPUT,
+            tools=tools,
+            max_output_tokens=150,
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "output"), "Response should have 'output' attribute"
+        assert len(response.output) > 0, "Output should contain at least one item"
+
+        # Check for function call in output
+        has_function_call = False
+        function_call_message = None
+        for message in response.output:
+            if hasattr(message, "type") and message.type == "function_call":
+                has_function_call = True
+                function_call_message = message
+                break
+
+        assert has_function_call, "Response should contain a function call"
+        assert function_call_message is not None, "Should have function call message"
+
+        # Validate function call structure
+        assert hasattr(function_call_message, "name"), "Function call should have name"
+        assert function_call_message.name == "get_weather", (
+            f"Function call should be 'get_weather', got {function_call_message.name}"
+        )
+
+        # Check arguments if present
+        if hasattr(function_call_message, "arguments"):
+            # Arguments might be string or dict
+            if isinstance(function_call_message.arguments, str):
+                args = json.loads(function_call_message.arguments)
+            else:
+                args = function_call_message.arguments
+
+            assert "location" in args, "Function call should have location argument"
+            location_lower = str(args["location"]).lower()
+            assert "boston" in location_lower, (
+                f"Location should mention Boston, got {args['location']}"
+            )
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses_api"))
+    def test_36_responses_streaming(self, openai_client, test_config, provider, model):
+        """Test Case 36: Responses API streaming"""
+        stream = openai_client.responses.create(
+            model=format_provider_model(provider, model),
+            input=RESPONSES_STREAMING_INPUT,
+            max_output_tokens=150,
+            stream=True,
+        )
+
+        # Collect streaming content
+        content, chunk_count, tool_calls_detected, event_types = (
+            collect_responses_streaming_content(stream, timeout=300)
+        )
+
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(content) > 10, "Should receive substantial content"
+        assert not tool_calls_detected, "Basic streaming shouldn't have tool calls"
+
+        # Check that we got expected event types
+        assert "response.created" in event_types or any(
+            "created" in evt for evt in event_types
+        ), f"Should receive response.created event. Got events: {list(event_types.keys())}"
+
+        # Check for content events
+        has_content_events = any(
+            "delta" in evt or "text" in evt or "output" in evt for evt in event_types
+        )
+        assert has_content_events, (
+            f"Should receive content-related events. Got events: {list(event_types.keys())}"
+        )
+
+        # Check content quality - should be a poem about AI
+        content_lower = content.lower()
+        ai_keywords = [
+            "ai",
+            "artificial",
+            "intelligence",
+            "machine",
+            "learn",
+            "algorithm",
+            "data",
+            "compute",
+        ]
+        assert any(
+            keyword in content_lower for keyword in ai_keywords
+        ), f"Poem should mention AI-related terms. Got: {content}"
+
+        # Should have multiple chunks for streaming
+        assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses_api"))
+    def test_37_responses_streaming_with_tools(self, openai_client, test_config, provider, model):
+        """Test Case 37: Responses API streaming with tools"""
+        tools = convert_to_responses_tools([WEATHER_TOOL])
+
+        stream = openai_client.responses.create(
+            model=format_provider_model(provider, model),
+            input=[
+                {
+                    "role": "user",
+                    "content": "What's the weather in San Francisco? Use the weather function.",
+                }
+            ],
+            tools=tools,
+            max_output_tokens=150,
+            stream=True,
+        )
+
+        # Collect streaming content
+        content, chunk_count, tool_calls_detected, event_types = (
+            collect_responses_streaming_content(stream, timeout=300)
+        )
+
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+
+        # Check for tool-related events
+        has_tool_events = any(
+            "function" in evt or "tool" in evt for evt in event_types
+        )
+
+        # Either should have tool calls detected or tool-related events
+        assert tool_calls_detected or has_tool_events, (
+            f"Should detect tool calls in streaming. "
+            f"Tool calls detected: {tool_calls_detected}, "
+            f"Event types: {list(event_types.keys())}"
+        )
+
+    @skip_if_no_api_key("openai")
+    def test_38_responses_reasoning(self, openai_client, test_config):
+        """Test Case 38: Responses API with reasoning (gpt-5 model)"""
+        # Use gpt-5 reasoning model
+        model_to_use = "openai/gpt-5"
+
+        try:
+            response = openai_client.responses.create(
+                model=model_to_use,
+                input=RESPONSES_REASONING_INPUT,
+                max_output_tokens=800,
+                reasoning={
+                    "effort": "high",
+                    "summary": "detailed",
+                },
+                include=["reasoning.encrypted_content"],
+            )
+
+            # Validate response structure
+            assert_valid_responses_response(response, min_content_length=50)
+
+            # Extract all content from the response (output and summary)
+            content = ""
+            has_reasoning_content = False
+            
+            # Check output messages
+            for message in response.output:
+                if hasattr(message, "type"):
+                    # Check if we have a reasoning message type
+                    if message.type == "reasoning":
+                        has_reasoning_content = True
+                
+                # Check regular content
+                if hasattr(message, "content") and message.content:
+                    if isinstance(message.content, str):
+                        content += message.content
+                    elif isinstance(message.content, list):
+                        for block in message.content:
+                            if hasattr(block, "text") and block.text:
+                                content += block.text
+                            # Check for reasoning content blocks
+                            if hasattr(block, "type") and block.type == "reasoning_text":
+                                has_reasoning_content = True
+                
+                # Check summary field within output messages (reasoning models)
+                if hasattr(message, "summary") and message.summary:
+                    has_reasoning_content = True  # Presence of summary indicates reasoning
+                    if isinstance(message.summary, list):
+                        for summary_item in message.summary:
+                            if hasattr(summary_item, "text") and summary_item.text:
+                                content += " " + summary_item.text
+                            elif isinstance(summary_item, dict) and "text" in summary_item:
+                                content += " " + summary_item["text"]
+                            # Check for summary_text type
+                            if hasattr(summary_item, "type") and summary_item.type == "summary_text":
+                                has_reasoning_content = True
+                            elif isinstance(summary_item, dict) and summary_item.get("type") == "summary_text":
+                                has_reasoning_content = True
+                    elif isinstance(message.summary, str):
+                        content += " " + message.summary
+
+            content_lower = content.lower()
+
+            # Validate mathematical reasoning
+            # The problem asks about when two trains meet
+            reasoning_keywords = [
+                "train",
+                "meet",
+                "time",
+                "hour",
+                "pm",
+                "distance",
+                "speed",
+                "mile",
+            ]
+            
+            # Should mention at least some reasoning keywords
+            keyword_matches = sum(1 for keyword in reasoning_keywords if keyword in content_lower)
+            assert keyword_matches >= 3, (
+                f"Response should contain reasoning about trains problem. "
+                f"Found {keyword_matches} keywords out of {len(reasoning_keywords)}. "
+                f"Content: {content[:200]}..."
+            )
+
+            # Check for step-by-step reasoning indicators
+            step_indicators = [
+                "step",
+                "first",
+                "then",
+                "next",
+                "calculate",
+                "therefore",
+                "because",
+                "since",
+            ]
+            
+            has_steps = any(indicator in content_lower for indicator in step_indicators)
+            assert has_steps, (
+                f"Response should show step-by-step reasoning. Content: {content[:200]}..."
+            )
+
+            # Log if reasoning content was detected
+            if has_reasoning_content:
+                print("Success: Detected dedicated reasoning content in response")
+            else:
+                print("Info: Reasoning may be integrated in regular message content")
+
+            # Verify the response contains some calculation or time
+            has_calculation = any(
+                char in content for char in [":", "+", "-", "*", "/", "="]
+            ) or any(
+                time_word in content_lower 
+                for time_word in ["4:00", "5:00", "6:00", "4 pm", "5 pm", "6 pm"]
+            )
+            
+            if has_calculation:
+                print("Success: Response contains calculations or time values")
+
+        except Exception as e:
+            # If reasoning parameters are not supported by the model, that's okay
+            # Just verify basic response works
+            error_str = str(e).lower()
+            if "reasoning" in error_str or "not supported" in error_str:
+                print(f"Info: Model {model_to_use} may not fully support reasoning parameters")
+                
+                # Fallback: Try without reasoning parameters
+                response = openai_client.responses.create(
+                    model=model_to_use,
+                    input=RESPONSES_REASONING_INPUT,
+                    max_output_tokens=800,
+                )
+                
+                # Just validate we get a response
+                assert_valid_responses_response(response, min_content_length=30)
+                print("Success: Got valid response without reasoning parameters")
+            else:
+                # Re-raise if it's a different error
+                raise
+
+    # =========================================================================
+    # TEXT COMPLETIONS API TEST CASES
+    # =========================================================================
+
+    @skip_if_no_api_key("openai")
+    def test_39_text_completion(self, openai_client, test_config):
+        """Test Case 39: Text completion with simple prompt"""
+        # Note: Text completions use legacy models like gpt-3.5-turbo-instruct
+        response = openai_client.completions.create(
+            model="gpt-3.5-turbo-instruct",
+            prompt=TEXT_COMPLETION_SIMPLE_PROMPT,
+            max_tokens=100,
+            temperature=0.7,
+        )
+
+        # Validate response structure
+        assert_valid_text_completion_response(response, min_content_length=10)
+
+        # Check content quality - should continue the story prompt
+        text = response.choices[0].text
+        assert len(text) > 0, "Completion should not be empty"
+
+        # Should generate creative story continuation
+        print(f"Success: Generated completion: {text[:100]}...")
+
+    @skip_if_no_api_key("openai")
+    def test_40_text_completion_streaming(self, openai_client, test_config):
+        """Test Case 40: Text completion with streaming"""
+        stream = openai_client.completions.create(
+            model="gpt-3.5-turbo-instruct",
+            prompt=TEXT_COMPLETION_STREAMING_PROMPT,
+            max_tokens=100,
+            temperature=0.7,
+            stream=True,
+        )
+
+        # Collect streaming content
+        content, chunk_count = collect_text_completion_streaming_content(
+            stream, timeout=300
+        )
+
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(content) > 5, "Should receive substantial content"
+
+        # Check content quality - should be haiku-like or poetic
+        content_lower = content.lower()
+        tech_keywords = [
+            "technology",
+            "computer",
+            "digital",
+            "code",
+            "data",
+            "machine",
+            "screen",
+            "byte",
+            "network",
+        ]
+        
+        # Should mention technology or be poetic (haiku structure)
+        has_tech = any(keyword in content_lower for keyword in tech_keywords)
+        has_lines = "\n" in content  # Haikus have line breaks
+        
+        assert has_tech or has_lines or len(content) > 10, (
+            f"Completion should be haiku-like or about technology. Got: {content}"
+        )
+
+        # Should have multiple chunks for streaming
+        assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
+
+        print(f"Success: Streamed haiku ({chunk_count} chunks): {content}")

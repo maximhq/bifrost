@@ -1,6 +1,108 @@
 package gemini
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"strings"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+// ToBifrostTranscriptionRequest converts a GeminiGenerationRequest to a BifrostTranscriptionRequest
+func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas.BifrostTranscriptionRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
+	if provider == schemas.Vertex {
+		// Add google/ prefix for Bifrost if not already present
+		if !strings.HasPrefix(model, "google/") {
+			model = "google/" + model
+		}
+	}
+
+	bifrostReq := &schemas.BifrostTranscriptionRequest{
+		Provider: provider,
+		Model:    model,
+	}
+
+	// Extract audio data and prompt from contents
+	var promptText string
+	var audioData []byte
+	var audioMimeType string
+
+	for _, content := range request.Contents {
+		for _, part := range content.Parts {
+			// Extract text prompt
+			if part.Text != "" {
+				if promptText != "" {
+					promptText += " "
+				}
+				promptText += part.Text
+			}
+
+			// Extract audio data from inline data
+			if part.InlineData != nil && strings.HasPrefix(strings.ToLower(part.InlineData.MIMEType), "audio/") {
+				audioData = append(audioData, part.InlineData.Data...)
+				if audioMimeType == "" {
+					audioMimeType = part.InlineData.MIMEType
+				}
+			}
+
+			// Extract audio data from file data (would need to be fetched separately in real scenario)
+			// For now, we just note the file URI in extra params
+			if part.FileData != nil && strings.HasPrefix(strings.ToLower(part.FileData.MIMEType), "audio/") {
+				if bifrostReq.Params == nil {
+					bifrostReq.Params = &schemas.TranscriptionParameters{}
+				}
+				if bifrostReq.Params.ExtraParams == nil {
+					bifrostReq.Params.ExtraParams = make(map[string]interface{})
+				}
+				bifrostReq.Params.ExtraParams["file_uri"] = part.FileData.FileURI
+				if audioMimeType == "" {
+					audioMimeType = part.FileData.MIMEType
+				}
+			}
+		}
+	}
+
+	// Set the audio input
+	bifrostReq.Input = &schemas.TranscriptionInput{
+		File: audioData,
+	}
+
+	// Set parameters
+	if bifrostReq.Params == nil {
+		bifrostReq.Params = &schemas.TranscriptionParameters{}
+	}
+
+	// Set prompt if provided
+	if promptText != "" {
+		bifrostReq.Params.Prompt = &promptText
+	}
+
+	// Handle safety settings from request
+	if len(request.SafetySettings) > 0 {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["safety_settings"] = request.SafetySettings
+	}
+
+	// Handle cached content
+	if request.CachedContent != "" {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["cached_content"] = request.CachedContent
+	}
+
+	// Handle labels
+	if len(request.Labels) > 0 {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["labels"] = request.Labels
+	}
+
+	return bifrostReq
+}
 
 func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *GeminiGenerationRequest {
 	if bifrostReq == nil {
