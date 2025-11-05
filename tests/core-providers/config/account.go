@@ -277,7 +277,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: Concurrency,
+				Concurrency: 10,
 				BufferSize:  10,
 			},
 		}, nil

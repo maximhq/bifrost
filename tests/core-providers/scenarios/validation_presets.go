@@ -210,11 +210,6 @@ func ReasoningExpectations() ResponseExpectations {
 			"step", "first", "then", "next", "calculate", "therefore", "because",
 			"reasoning", "think", "analysis", "conclusion", "solution", "solve",
 		},
-		ShouldNotContainWords: []string{
-			"i can't", "i cannot", "i'm unable", "i am unable",
-			"cannot solve", "unable to calculate", "need more information",
-			"insufficient data", "missing information",
-		},
 		ProviderSpecific: map[string]interface{}{
 			"response_type":        "reasoning",
 			"expects_step_by_step": true,

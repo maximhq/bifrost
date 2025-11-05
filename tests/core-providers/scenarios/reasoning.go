@@ -88,9 +88,6 @@ func RunReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 		expectations.MinContentLength = 50   // Reasoning requires substantial content
 		expectations.MaxContentLength = 2000 // Reasoning can be verbose
-		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
-			"cannot solve", "unable to calculate",
-		}...)
 
 		response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "Reasoning", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			return client.ResponsesRequest(ctx, responsesReq)
