@@ -86,6 +86,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Groq,
 		schemas.SGL,
 		schemas.Parasail,
+		schemas.Perplexity,
 		schemas.Cerebras,
 		schemas.Gemini,
 		schemas.OpenRouter,
@@ -227,6 +228,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				Weight: 1.0,
 			},
 		}, nil
+	case schemas.Perplexity:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("PERPLEXITY_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
 	case schemas.Cerebras:
 		return []schemas.Key{
 			{
@@ -279,7 +288,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     4, // Higher retries for Groq (can be flaky)
 				RetryBackoffInitial:            1 * time.Second,
-				RetryBackoffMax:                10 * time.Second,				
+				RetryBackoffMax:                10 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -423,6 +432,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // Parasail can be variable
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Perplexity:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     5, // Perplexity can be variable
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
 			},

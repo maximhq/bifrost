@@ -119,6 +119,7 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, post
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Parasail,
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }

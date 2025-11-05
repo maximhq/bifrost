@@ -317,6 +317,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }

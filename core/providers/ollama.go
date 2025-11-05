@@ -146,6 +146,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Ollama,
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }

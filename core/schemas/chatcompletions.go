@@ -32,6 +32,11 @@ type BifrostChatResponse struct {
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+
+	// Perplexity-specific fields
+	SearchResults []SearchResult `json:"search_results,omitempty"`
+	Videos        []VideoResult  `json:"videos,omitempty"`
+	Citations     []string       `json:"citations,omitempty"`
 }
 
 // ToTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
@@ -555,6 +560,7 @@ type BifrostLLMUsage struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
+	Cost                    *BifrostCost                 `json:"cost,omitempty"` //Only for the providers which support cost calculation
 }
 
 type ChatPromptTokensDetails struct {
@@ -563,8 +569,34 @@ type ChatPromptTokensDetails struct {
 }
 
 type ChatCompletionTokensDetails struct {
-	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
-	AudioTokens              int `json:"audio_tokens,omitempty"`
-	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
-	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
+	AudioTokens              int  `json:"audio_tokens,omitempty"`
+	CitationTokens           *int `json:"citation_tokens,omitempty"`
+	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
+	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
+}
+
+type BifrostCost struct {
+	InputTokensCost  float64 `json:"input_tokens_cost,omitempty"`
+	OutputTokensCost float64 `json:"output_tokens_cost,omitempty"`
+	RequestCost      float64 `json:"request_cost,omitempty"`
+	TotalCost        float64 `json:"total_cost,omitempty"`
+}
+
+type SearchResult struct {
+	Title       string  `json:"title"`
+	URL         string  `json:"url"`
+	Date        *string `json:"date,omitempty"`
+	LastUpdated *string `json:"last_updated,omitempty"`
+	Snippet     *string `json:"snippet,omitempty"`
+	Source      *string `json:"source,omitempty"`
+}
+
+type VideoResult struct {
+	URL             string   `json:"url"`
+	ThumbnailURL    *string  `json:"thumbnail_url,omitempty"`
+	ThumbnailWidth  *int     `json:"thumbnail_width,omitempty"`
+	ThumbnailHeight *int     `json:"thumbnail_height,omitempty"`
+	Duration        *float64 `json:"duration,omitempty"`
 }

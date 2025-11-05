@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/perplexity"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -1289,6 +1290,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return providers.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
 		return providers.NewParasailProvider(config, bifrost.logger)
+	case schemas.Perplexity:
+		return perplexity.NewPerplexityProvider(config, bifrost.logger)
 	case schemas.Cerebras:
 		return providers.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.Gemini:

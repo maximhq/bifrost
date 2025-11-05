@@ -12,6 +12,7 @@ export const KnownProvidersNames = [
 	"openai",
 	"openrouter",
 	"parasail",
+	"perplexity",
 	"sgl",
 	"vertex",
 ] as const;
@@ -48,6 +49,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	ollama: "Ollama",
 	groq: "Groq",
 	parasail: "Parasail",
+	perplexity: "Perplexity",
 	sgl: "SGLang",
 	cerebras: "Cerebras",
 	gemini: "Gemini",

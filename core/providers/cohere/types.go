@@ -300,21 +300,21 @@ const (
 type CohereUsage struct {
 	BilledUnits  *CohereBilledUnits `json:"billed_units,omitempty"`  // Billed usage information
 	Tokens       *CohereTokenUsage  `json:"tokens,omitempty"`        // Token usage details
-	CachedTokens *float64           `json:"cached_tokens,omitempty"` // Cached tokens
+	CachedTokens *int               `json:"cached_tokens,omitempty"` // Cached tokens
 }
 
 // CohereBilledUnits represents billed usage information
 type CohereBilledUnits struct {
-	InputTokens     *float64 `json:"input_tokens,omitempty"`    // Number of billed input tokens
-	OutputTokens    *float64 `json:"output_tokens,omitempty"`   // Number of billed output tokens
-	SearchUnits     *float64 `json:"search_units,omitempty"`    // Number of billed search units
-	Classifications *float64 `json:"classifications,omitempty"` // Number of billed classification units
+	InputTokens     *int `json:"input_tokens,omitempty"`    // Number of billed input tokens
+	OutputTokens    *int `json:"output_tokens,omitempty"`   // Number of billed output tokens
+	SearchUnits     *int `json:"search_units,omitempty"`    // Number of billed search units
+	Classifications *int `json:"classifications,omitempty"` // Number of billed classification units
 }
 
 // CohereTokenUsage represents detailed token usage
 type CohereTokenUsage struct {
-	InputTokens  *float64 `json:"input_tokens"`  // Number of input tokens used
-	OutputTokens *float64 `json:"output_tokens"` // Number of output tokens produced
+	InputTokens  *int `json:"input_tokens"`  // Number of input tokens used
+	OutputTokens *int `json:"output_tokens"` // Number of output tokens produced
 }
 
 // CohereLogProb represents log probability information

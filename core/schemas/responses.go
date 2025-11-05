@@ -74,6 +74,11 @@ type BifrostResponsesResponse struct {
 	Truncation         *string                             `json:"truncation,omitempty"`
 	Usage              *ResponsesResponseUsage             `json:"usage,omitempty"`
 	ExtraFields        BifrostResponseExtraFields          `json:"extra_fields"`
+
+	// Perplexity-specific fields
+	SearchResults []SearchResult `json:"search_results,omitempty"`
+	Videos        []VideoResult  `json:"videos,omitempty"`
+	Citations     []string       `json:"citations,omitempty"`
 }
 
 type ResponsesParameters struct {
@@ -248,6 +253,7 @@ type ResponsesResponseUsage struct {
 	OutputTokens        int                            `json:"output_tokens"`         // Number of output tokens
 	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"` // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
 	TotalTokens         int                            `json:"total_tokens"`          // Total number of tokens used
+	Cost                *BifrostCost                   `json:"cost,omitempty"`        // Only for the providers which support cost calculation
 }
 
 type ResponsesResponseInputTokens struct {
@@ -256,10 +262,12 @@ type ResponsesResponseInputTokens struct {
 }
 
 type ResponsesResponseOutputTokens struct {
-	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
-	AudioTokens              int `json:"audio_tokens,omitempty"`
-	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
-	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
+	AudioTokens              int  `json:"audio_tokens,omitempty"`
+	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
+	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
+	CitationTokens           *int `json:"citation_tokens,omitempty"`
+	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
 }
 
 // =============================================================================
@@ -1431,5 +1439,10 @@ type BifrostResponsesStreamResponse struct {
 	Message *string `json:"message,omitempty"`
 	Param   *string `json:"param,omitempty"`
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+
+	// Perplexity-specific fields
+	SearchResults []SearchResult `json:"search_results,omitempty"`
+	Videos        []VideoResult  `json:"videos,omitempty"`
+	Citations     []string       `json:"citations,omitempty"`
 }

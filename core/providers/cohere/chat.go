@@ -306,14 +306,14 @@ func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas
 
 		if response.Usage.Tokens != nil {
 			if response.Usage.Tokens.InputTokens != nil {
-				usage.PromptTokens = int(*response.Usage.Tokens.InputTokens)
+				usage.PromptTokens = *response.Usage.Tokens.InputTokens
 			}
 			if response.Usage.Tokens.OutputTokens != nil {
-				usage.CompletionTokens = int(*response.Usage.Tokens.OutputTokens)
+				usage.CompletionTokens = *response.Usage.Tokens.OutputTokens
 			}
 			if response.Usage.CachedTokens != nil {
 				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-					CachedTokens: int(*response.Usage.CachedTokens),
+					CachedTokens: *response.Usage.CachedTokens,
 				}
 			}
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -447,10 +447,10 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 			if chunk.Delta.Usage != nil {
 				if chunk.Delta.Usage.Tokens != nil {
 					if chunk.Delta.Usage.Tokens.InputTokens != nil {
-						usage.PromptTokens = int(*chunk.Delta.Usage.Tokens.InputTokens)
+						usage.PromptTokens = *chunk.Delta.Usage.Tokens.InputTokens
 					}
 					if chunk.Delta.Usage.Tokens.OutputTokens != nil {
-						usage.CompletionTokens = int(*chunk.Delta.Usage.Tokens.OutputTokens)
+						usage.CompletionTokens = *chunk.Delta.Usage.Tokens.OutputTokens
 					}
 					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 				}

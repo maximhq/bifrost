@@ -142,6 +142,10 @@ func (pm *ModelCatalog) CalculateCostFromUsage(provider string, model string, us
 		return 0.0
 	}
 
+	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+		return usage.Cost.TotalCost
+	}
+
 	pm.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 	// Get pricing for the model
 	pricing, exists := pm.getPricing(model, provider, requestType)

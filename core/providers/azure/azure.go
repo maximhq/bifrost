@@ -383,6 +383,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }

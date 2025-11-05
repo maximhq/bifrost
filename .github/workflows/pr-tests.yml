@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to test (leave empty for current branch)'
+        description: "PR number to test (leave empty for current branch)"
         required: false
         type: string
 
@@ -19,34 +19,34 @@ jobs:
   run-tests:
     name: Run Tests (Awaiting Approval)
     runs-on: ubuntu-latest
-    
+
     # Environment with protection rules - requires admin approval
     # Note: You need to configure this environment in repo settings
     environment:
       name: pr-testing
       url: ${{ github.event.pull_request.html_url || github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    
+
     permissions:
       contents: read
       pull-requests: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.1'
-      
+          go-version: "1.24.1"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      
+          python-version: "3.11"
+
       - name: Add comment to PR
         if: github.event.pull_request.number
         env:
@@ -61,10 +61,10 @@ jobs:
           - 🔗 Integration Tests
 
           [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-      
+
       - name: Make test script executable
         run: chmod +x .github/workflows/scripts/run-tests.sh
-      
+
       - name: Run tests
         env:
           # API Keys for provider tests
@@ -86,6 +86,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
@@ -94,7 +95,7 @@ jobs:
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh
-      
+
       - name: Report test results
         if: always() && github.event.pull_request.number
         env:
@@ -113,5 +114,3 @@ jobs:
 
             [View detailed results →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
           fi
-
-

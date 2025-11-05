@@ -43,6 +43,7 @@ const (
 	Groq       ModelProvider = "groq"
 	SGL        ModelProvider = "sgl"
 	Parasail   ModelProvider = "parasail"
+	Perplexity ModelProvider = "perplexity"
 	Cerebras   ModelProvider = "cerebras"
 	Gemini     ModelProvider = "gemini"
 	OpenRouter ModelProvider = "openrouter"
@@ -70,6 +71,7 @@ var StandardProviders = []ModelProvider{
 	Ollama,
 	OpenAI,
 	Parasail,
+	Perplexity,
 	SGL,
 	Vertex,
 	OpenRouter,

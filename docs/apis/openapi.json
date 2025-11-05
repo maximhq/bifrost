@@ -3251,6 +3251,7 @@
           "openrouter",
           "sgl",
           "parasail",
+          "perplexity",
           "cerebras"
         ],
         "description": "AI model provider",

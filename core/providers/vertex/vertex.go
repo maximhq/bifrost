@@ -607,6 +607,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
 			postHookRunner,
+			nil,
 			provider.logger,
 		)
 	}

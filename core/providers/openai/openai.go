@@ -661,6 +661,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }
@@ -677,6 +678,7 @@ func HandleOpenAIChatCompletionStreaming(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
+	customRequestConverter func(*schemas.BifrostChatRequest) (any, error),
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	headers := map[string]string{
@@ -694,6 +696,9 @@ func HandleOpenAIChatCompletionStreaming(
 		ctx,
 		request,
 		func() (any, error) {
+			if customRequestConverter != nil {
+				return customRequestConverter(request)
+			}
 			reqBody := ToOpenAIChatRequest(request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)

@@ -126,6 +126,9 @@
         "parasail": {
           "$ref": "#/$defs/provider"
         },
+        "perplexity": {
+          "$ref": "#/$defs/provider"
+        },
         "cerebras": {
           "$ref": "#/$defs/provider"
         }
@@ -531,6 +534,7 @@
                         "vertex",
                         "cerebras",
                         "parasail",
+                        "perplexity",
                         "sgl"
                       ]
                     },

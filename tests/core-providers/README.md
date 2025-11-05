@@ -15,6 +15,7 @@ This directory contains comprehensive tests for all Bifrost AI providers, ensuri
 - **Groq** - OSS models
 - **SGLang** - OSS models
 - **Parasail** - OSS models
+- **Perplexity** - Sonar models
 - **Cerebras** - Llama, Qwen and GPT-OSS models
 - **Gemini** - Gemini models
 - **OpenRouter** - Models supported by OpenRouter

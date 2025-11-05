@@ -187,6 +187,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHook
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Groq,
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }

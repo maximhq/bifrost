@@ -15,6 +15,7 @@ export const ModelPlaceholders = {
 	openrouter: "e.g. openai/gpt-4, anthropic/claude-3-haiku",
 	sgl: "e.g. sgl-2, sgl-vision",
 	parasail: "e.g. parasail-2, parasail-vision",
+	perplexity: "e.g. sonar-pro, sonar-deep-research",
 	ollama: "e.g. llama3.1, llama2",
 	openai: "e.g. gpt-4, gpt-4o, gpt-4o-mini, gpt-3.5-turbo",
 	vertex: "e.g. gemini-1.5-pro, text-bison, chat-bison",

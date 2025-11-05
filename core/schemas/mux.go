@@ -632,6 +632,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		InputTokens:  cu.PromptTokens,
 		OutputTokens: cu.CompletionTokens,
 		TotalTokens:  cu.TotalTokens,
+		Cost:         cu.Cost,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -646,6 +647,8 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			AudioTokens:              cu.CompletionTokensDetails.AudioTokens,
 			ReasoningTokens:          cu.CompletionTokensDetails.ReasoningTokens,
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
+			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
+			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
 
@@ -661,6 +664,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		PromptTokens:     ru.InputTokens,
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
+		Cost:             ru.Cost,
 	}
 
 	if ru.InputTokensDetails != nil {
@@ -675,6 +679,8 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			AudioTokens:              ru.OutputTokensDetails.AudioTokens,
 			ReasoningTokens:          ru.OutputTokensDetails.ReasoningTokens,
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
+			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
+			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
 		}
 	}
 
@@ -763,6 +769,8 @@ func (bcr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 	}
 
+	brr.RawRequestBody = bcr.RawRequestBody
+
 	return brr
 }
 
@@ -835,6 +843,8 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 		}
 	}
 
+	bcr.RawRequestBody = brr.RawRequestBody
+
 	return bcr
 }
 
@@ -851,7 +861,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 
 	// Create new BifrostResponsesResponse from Chat fields
 	responsesResp := &BifrostResponsesResponse{
-		CreatedAt: cr.Created,
+		CreatedAt:     cr.Created,
+		Citations:     cr.Citations,
+		SearchResults: cr.SearchResults,
+		Videos:        cr.Videos,
 	}
 
 	// Convert Choices to Output messages
@@ -890,8 +903,11 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 
 	// Create new BifrostChatResponse from Responses fields
 	chatResp := &BifrostChatResponse{
-		Created: responsesResp.CreatedAt,
-		Object:  "chat.completion",
+		Created:       responsesResp.CreatedAt,
+		Object:        "chat.completion",
+		Citations:     responsesResp.Citations,
+		SearchResults: responsesResp.SearchResults,
+		Videos:        responsesResp.Videos,
 	}
 
 	// Create Choices from ResponsesResponse
@@ -923,6 +939,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	// Copy other relevant fields
 	chatResp.ExtraFields = responsesResp.ExtraFields
 	chatResp.ExtraFields.RequestType = ChatCompletionRequest
+	chatResp.ExtraFields.Provider = responsesResp.ExtraFields.Provider
 
 	return chatResp
 }
@@ -952,6 +969,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse() *BifrostRespon
 		ContentIndex:   Ptr(0),
 		OutputIndex:    &choice.Index,
 		ExtraFields:    cr.ExtraFields,
+		SearchResults:  cr.SearchResults,
+		Videos:         cr.Videos,
+		Citations:      cr.Citations,
 	}
 
 	// Handle different types of streaming content

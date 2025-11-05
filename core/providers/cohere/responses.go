@@ -108,17 +108,17 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 
 		if response.Usage.Tokens != nil {
 			if response.Usage.Tokens.InputTokens != nil {
-				usage.InputTokens = int(*response.Usage.Tokens.InputTokens)
+				usage.InputTokens = *response.Usage.Tokens.InputTokens
 			}
 			if response.Usage.Tokens.OutputTokens != nil {
-				usage.OutputTokens = int(*response.Usage.Tokens.OutputTokens)
+				usage.OutputTokens = *response.Usage.Tokens.OutputTokens
 			}
 			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 
 		if response.Usage.CachedTokens != nil {
 			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: int(*response.Usage.CachedTokens),
+				CachedTokens: *response.Usage.CachedTokens,
 			}
 		}
 
@@ -649,17 +649,17 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 
 				if chunk.Delta.Usage.Tokens != nil {
 					if chunk.Delta.Usage.Tokens.InputTokens != nil {
-						usage.InputTokens = int(*chunk.Delta.Usage.Tokens.InputTokens)
+						usage.InputTokens = *chunk.Delta.Usage.Tokens.InputTokens
 					}
 					if chunk.Delta.Usage.Tokens.OutputTokens != nil {
-						usage.OutputTokens = int(*chunk.Delta.Usage.Tokens.OutputTokens)
+						usage.OutputTokens = *chunk.Delta.Usage.Tokens.OutputTokens
 					}
 					usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 				}
 
 				if chunk.Delta.Usage.CachedTokens != nil {
 					usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-						CachedTokens: int(*chunk.Delta.Usage.CachedTokens),
+						CachedTokens: *chunk.Delta.Usage.CachedTokens,
 					}
 				}
 				response.Response.Usage = usage

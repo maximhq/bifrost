@@ -2,3 +2,4 @@
 <!-- Old changelogs are automatically attached to the GitHub releases -->
 
 - refactor: minor until changes
+- feat: added Perplexity provider support

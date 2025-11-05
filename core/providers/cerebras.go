@@ -147,6 +147,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Cerebras,
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }

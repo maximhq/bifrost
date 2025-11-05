@@ -109,6 +109,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
@@ -180,6 +181,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
@@ -255,6 +257,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
@@ -263,7 +266,14 @@ jobs:
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   bifrost-http-release:
-    needs: [check-skip, detect-changes, core-release, framework-release, plugins-release]
+    needs:
+      [
+        check-skip,
+        detect-changes,
+        core-release,
+        framework-release,
+        plugins-release,
+      ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
@@ -335,6 +345,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
@@ -391,7 +402,7 @@ jobs:
         with:
           context: .
           build-args: |
-              VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            VERSION=${{ needs.detect-changes.outputs.transport-version }}
           file: ./transports/Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.tags }}
@@ -401,83 +412,83 @@ jobs:
 
   # Docker build arm64
   docker-build-arm64:
-      needs: [check-skip, detect-changes, bifrost-http-release]
-      if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-      runs-on: ubuntu-24.04-arm
-      permissions:
-        contents: write
-      env:
-        REGISTRY: docker.io
-        ACCOUNT: maximhq
-        IMAGE_NAME: bifrost
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-          with:
-            fetch-depth: 0
-            fetch-tags: true
+    needs: [check-skip, detect-changes, bifrost-http-release]
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    env:
+      REGISTRY: docker.io
+      ACCOUNT: maximhq
+      IMAGE_NAME: bifrost
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
-        - name: Verify bifrost-http release
-          id: verify
-          continue-on-error: true
-          env:
-            GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          run: |
-            ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
-            echo "verified=true" >> $GITHUB_OUTPUT        
+      - name: Verify bifrost-http release
+        id: verify
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
+          echo "verified=true" >> $GITHUB_OUTPUT
 
-        - name: Set up Docker Buildx
-          uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-        - name: Log in to Docker Hub
-          uses: docker/login-action@v3
-          with:
-            username: ${{ secrets.DOCKER_USERNAME }}
-            password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-        - name: Determine Docker tags
-          id: tags
-          run: |
-            git pull origin ${{ github.ref_name }}
-            VERSION="${{ needs.detect-changes.outputs.transport-version }}"
-            BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-arm64"
-            echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+      - name: Determine Docker tags
+        id: tags
+        run: |
+          git pull origin ${{ github.ref_name }}
+          VERSION="${{ needs.detect-changes.outputs.transport-version }}"
+          BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-arm64"
+          echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
 
-        - name: Build and push ARM64 Docker image
-          uses: docker/build-push-action@v5
-          with:
-            context: .
-            file: ./transports/Dockerfile
-            push: true
-            build-args: |
-              VERSION=${{ needs.detect-changes.outputs.transport-version }}
-            tags: ${{ steps.tags.outputs.tags }}
-            platforms: linux/arm64
-            cache-from: type=gha
-            cache-to: type=gha,mode=max
+      - name: Build and push ARM64 Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./transports/Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ needs.detect-changes.outputs.transport-version }}
+          tags: ${{ steps.tags.outputs.tags }}
+          platforms: linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   # Docker manifest
   docker-manifest:
-      needs: [check-skip, detect-changes, docker-build-amd64, docker-build-arm64]
-      if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-amd64.result == 'success' && needs.docker-build-arm64.result == 'success'"
-      runs-on: ubuntu-latest
-      env:
-        REGISTRY: docker.io
-        ACCOUNT: maximhq
-        IMAGE_NAME: bifrost
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
+    needs: [check-skip, detect-changes, docker-build-amd64, docker-build-arm64]
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-amd64.result == 'success' && needs.docker-build-arm64.result == 'success'"
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: docker.io
+      ACCOUNT: maximhq
+      IMAGE_NAME: bifrost
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-        - name: Log in to Docker Hub
-          uses: docker/login-action@v3
-          with:
-            username: ${{ secrets.DOCKER_USERNAME }}
-            password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-        - name: Create and push multi-arch manifest
-          run: |
-            ./.github/workflows/scripts/create-docker-manifest.sh "${{ needs.detect-changes.outputs.transport-version }}"
+      - name: Create and push multi-arch manifest
+        run: |
+          ./.github/workflows/scripts/create-docker-manifest.sh "${{ needs.detect-changes.outputs.transport-version }}"
 
   # Push Mintlify changelog
   push-mintlify-changelog:
@@ -485,7 +496,7 @@ jobs:
     if: "always() && needs.check-skip.outputs.should-skip != 'true' &&  (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
-        contents: write
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -500,7 +511,16 @@ jobs:
 
   # Notification
   notify:
-    needs: [check-skip, detect-changes, core-release, framework-release, plugins-release, bifrost-http-release, docker-manifest]
+    needs:
+      [
+        check-skip,
+        detect-changes,
+        core-release,
+        framework-release,
+        plugins-release,
+        bifrost-http-release,
+        docker-manifest,
+      ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true'"
     runs-on: ubuntu-latest
     steps:
