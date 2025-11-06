@@ -35,7 +35,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bifrost
 	r.POST("/v1/mcp/tool/execute", lib.ChainMiddlewares(h.executeTool, middlewares...))
 	r.GET("/api/mcp/clients", lib.ChainMiddlewares(h.getMCPClients, middlewares...))
 	r.POST("/api/mcp/client", lib.ChainMiddlewares(h.addMCPClient, middlewares...))
-	r.PUT("/api/mcp/client/{name}", lib.ChainMiddlewares(h.editMCPClientTools, middlewares...))
+	r.PUT("/api/mcp/client/{name}", lib.ChainMiddlewares(h.editMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{name}", lib.ChainMiddlewares(h.removeMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{name}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
 }
@@ -170,17 +170,15 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// editMCPClientTools handles PUT /api/mcp/client/{name} - Edit MCP client tools
-func (h *MCPHandler) editMCPClientTools(ctx *fasthttp.RequestCtx) {
+// editMCPClient handles PUT /api/mcp/client/{name} - Edit MCP client
+func (h *MCPHandler) editMCPClient(ctx *fasthttp.RequestCtx) {
 	name, err := getNameFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid name: %v", err))
 		return
 	}
 
-	var req struct {
-		ToolsToExecute []string `json:"tools_to_execute,omitempty"`
-	}
+	var req schemas.MCPClientConfig
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return

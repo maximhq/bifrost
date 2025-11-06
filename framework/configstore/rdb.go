@@ -539,12 +539,27 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			processedConnectionString = &processedValue
 		}
 
+		// Process headers
+		var processedHeaders map[string]string
+		if dbClient.Headers != nil {
+			processedHeaders = make(map[string]string, len(dbClient.Headers))
+			for header, value := range dbClient.Headers {
+				processedValue, err := envutils.ProcessEnvValue(value)
+				if err == nil {
+					processedHeaders[header] = processedValue
+				} else {
+					processedHeaders[header] = value
+				}
+			}
+		}
+
 		clientConfigs[i] = schemas.MCPClientConfig{
 			Name:             dbClient.Name,
 			ConnectionType:   schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString: processedConnectionString,
 			StdioConfig:      dbClient.StdioConfig,
 			ToolsToExecute:   dbClient.ToolsToExecute,
+			Headers:          processedHeaders,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -591,6 +606,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			ConnectionString: clientConfigCopy.ConnectionString,
 			StdioConfig:      clientConfigCopy.StdioConfig,
 			ToolsToExecute:   clientConfigCopy.ToolsToExecute,
+			Headers:          clientConfigCopy.Headers,
 		}
 
 		return tx.WithContext(ctx).Create(&dbClient).Error
@@ -623,6 +639,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, name string,
 		existingClient.ConnectionString = clientConfigCopy.ConnectionString
 		existingClient.StdioConfig = clientConfigCopy.StdioConfig
 		existingClient.ToolsToExecute = clientConfigCopy.ToolsToExecute
+		existingClient.Headers = clientConfigCopy.Headers
 
 		return tx.WithContext(ctx).Save(&existingClient).Error
 	})

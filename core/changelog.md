@@ -4,3 +4,4 @@
 - feat: add numberOfRetries, fallbackIndex and selected key name to context
 [BREAKING] changed BifrostContextKeySelectedKey to BifrostContextKeySelectedKeyID
 - feat: send model deployment back in response extra fields
+- feat: add headers to MCP client config

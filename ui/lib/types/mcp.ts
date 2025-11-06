@@ -16,6 +16,7 @@ export interface MCPClientConfig {
 	connection_string?: string;
 	stdio_config?: MCPStdioConfig;
 	tools_to_execute?: string[];
+	headers?: Record<string, string>;
 }
 
 export interface MCPClient {
@@ -31,6 +32,7 @@ export interface CreateMCPClientRequest {
 	connection_string?: string;
 	stdio_config?: MCPStdioConfig;
 	tools_to_execute?: string[];
+	headers?: Record<string, string>;
 }
 
 export interface UpdateMCPClientRequest {

@@ -1530,6 +1530,29 @@ func (c *Config) processMCPEnvVars() error {
 			}
 			c.MCPConfig.ClientConfigs[i].ConnectionString = &newValue
 		}
+
+		// Process Headers if present
+		if clientConfig.Headers != nil {
+			for header, value := range clientConfig.Headers {
+				newValue, envVar, err := c.processEnvValue(value)
+				if err != nil {
+					logger.Warn("failed to process env vars in MCP client %s: %v", clientConfig.Name, err)
+					missingEnvVars = append(missingEnvVars, envVar)
+					continue
+				}
+				if envVar != "" {
+					c.EnvKeys[envVar] = append(c.EnvKeys[envVar], configstore.EnvKeyInfo{
+						EnvVar:     envVar,
+						Provider:   "",
+						KeyType:    "mcp_header",
+						ConfigPath: fmt.Sprintf("mcp.client_configs.%s.headers.%s", clientConfig.Name, header),
+						KeyID:      "", // Empty for MCP headers
+					})
+				}
+				clientConfig.Headers[header] = newValue
+			}
+		}
+		c.MCPConfig.ClientConfigs[i].Headers = clientConfig.Headers
 	}
 
 	if len(missingEnvVars) > 0 {
@@ -1591,6 +1614,27 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 			})
 		}
 		c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1].ConnectionString = &processedValue
+	}
+
+	// Process Headers if present
+	if clientConfig.Headers != nil {
+		for header, value := range clientConfig.Headers {
+			newValue, envVar, err := c.processEnvValue(value)
+			if err != nil {
+				return fmt.Errorf("failed to process env var in header: %w", err)
+			}
+			if envVar != "" {
+				newEnvKeys[envVar] = struct{}{}
+				c.EnvKeys[envVar] = append(c.EnvKeys[envVar], configstore.EnvKeyInfo{
+					EnvVar:     envVar,
+					Provider:   "",
+					KeyType:    "mcp_header",
+					ConfigPath: fmt.Sprintf("mcp.client_configs.%s.headers.%s", clientConfig.Name, header),
+					KeyID:      "", // Empty for MCP headers
+				})
+			}
+			clientConfig.Headers[header] = newValue
+		}
 	}
 
 	// Config with processed env vars
@@ -1737,6 +1781,31 @@ func (c *Config) RedactMCPClientConfig(config schemas.MCPClientConfig) schemas.M
 			connStr = RedactKey(connStr)
 		}
 		configCopy.ConnectionString = &connStr
+
+	}
+
+	// Redact Header values if present
+	if config.Headers != nil {
+		configCopy.Headers = make(map[string]string, len(config.Headers))
+		for header, value := range config.Headers {
+			headerValue := value
+
+			// Check if this header value came from an env var
+			for envVar, infos := range c.EnvKeys {
+				for _, info := range infos {
+					if info.Provider == "" && info.KeyType == "mcp_header" && info.ConfigPath == fmt.Sprintf("mcp.client_configs.%s.headers.%s", config.Name, header) {
+						headerValue = "env." + envVar
+						break
+					}
+				}
+			}
+
+			// If not from env var, redact it
+			if !strings.HasPrefix(headerValue, "env.") {
+				headerValue = RedactKey(headerValue)
+			}
+			configCopy.Headers[header] = headerValue
+		}
 	}
 
 	return configCopy

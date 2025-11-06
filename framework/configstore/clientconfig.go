@@ -13,13 +13,14 @@ const (
 	EnvKeyTypeVertexConfig  EnvKeyType = "vertex_config"
 	EnvKeyTypeBedrockConfig EnvKeyType = "bedrock_config"
 	EnvKeyTypeConnection    EnvKeyType = "connection_string"
+	EnvKeyTypeMCPHeader     EnvKeyType = "mcp_header"
 )
 
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
 	EnvVar     string                // The environment variable name (without env. prefix)
 	Provider   schemas.ModelProvider // The provider this key belongs to (empty for core/mcp configs)
-	KeyType    EnvKeyType            // Type of key (e.g., "api_key", "azure_config", "vertex_config", "bedrock_config", "connection_string")
+	KeyType    EnvKeyType            // Type of key (e.g., "api_key", "azure_config", "vertex_config", "bedrock_config", "connection_string", "mcp_header")
 	ConfigPath string                // Path in config where this env var is used
 	KeyID      string                // The key ID this env var belongs to (empty for non-key configs like bedrock_config, connection_string)
 }

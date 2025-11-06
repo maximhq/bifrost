@@ -57,6 +57,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddSessionsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHeadersJSONColumnIntoMCPClient(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -755,6 +758,36 @@ func migrationAddSessionsTable(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if err := migrator.DropTable(&tables.SessionsTable{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddHeadersJSONColumnIntoMCPClient adds the headers_json column to the mcp_client table
+func migrationAddHeadersJSONColumnIntoMCPClient(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_headers_json_column_into_mcp_client",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "headers_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "headers_json"); err != nil {
 				return err
 			}
 			return nil

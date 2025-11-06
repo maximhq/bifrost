@@ -18,6 +18,7 @@ type MCPClientConfig struct {
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString *string           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)
+	Headers          map[string]string `json:"headers,omitempty"`           // Headers to send with the request
 	InProcessServer  MCPServerInstance `json:"-"`                           // MCP server instance for in-process connections (Go package only)
 	ToolsToExecute   []string          `json:"tools_to_execute,omitempty"`  // Include-only list.
 	// ToolsToExecute semantics:

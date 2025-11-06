@@ -1040,7 +1040,7 @@ func (m *MCPManager) createHTTPConnection(config schemas.MCPClientConfig) (*clie
 	}
 
 	// Create StreamableHTTP transport
-	httpTransport, err := transport.NewStreamableHTTP(*config.ConnectionString)
+	httpTransport, err := transport.NewStreamableHTTP(*config.ConnectionString, transport.WithHTTPHeaders(config.Headers))
 	if err != nil {
 		return nil, MCPClientConnectionInfo{}, fmt.Errorf("failed to create HTTP transport: %w", err)
 	}
@@ -1098,7 +1098,7 @@ func (m *MCPManager) createSSEConnection(config schemas.MCPClientConfig) (*clien
 	}
 
 	// Create SSE transport
-	sseTransport, err := transport.NewSSE(*config.ConnectionString)
+	sseTransport, err := transport.NewSSE(*config.ConnectionString, transport.WithHeaders(config.Headers))
 	if err != nil {
 		return nil, MCPClientConnectionInfo{}, fmt.Errorf("failed to create SSE transport: %w", err)
 	}
