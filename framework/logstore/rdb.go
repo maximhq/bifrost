@@ -56,6 +56,12 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	if len(filters.Objects) > 0 {
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
 	}
+	if len(filters.SelectedKeyIDs) > 0 {
+		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
+	}
+	if len(filters.VirtualKeyIDs) > 0 {
+		baseQuery = baseQuery.Where("virtual_key_id IN ?", filters.VirtualKeyIDs)
+	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
 	}

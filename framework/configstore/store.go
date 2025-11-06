@@ -65,6 +65,7 @@ type ConfigStore interface {
 
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
+	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
@@ -129,6 +130,7 @@ type ConfigStore interface {
 
 	// Key management
 	GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error)
+	GetAllRedactedKeys(ctx context.Context, ids []string) ([]schemas.Key, error) // leave ids empty to get all
 
 	// Generic transaction manager
 	ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error

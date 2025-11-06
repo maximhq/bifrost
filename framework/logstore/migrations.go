@@ -28,6 +28,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddResponsesInputHistoryColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -303,6 +306,77 @@ func migrationAddResponsesInputHistoryColumn(ctx context.Context, db *gorm.DB) e
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding responses_input_history column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_init_add_number_of_retries_and_fallback_index_and_selected_key_and_virtual_key_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "number_of_retries") {
+				if err := migrator.AddColumn(&Log{}, "number_of_retries"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "fallback_index") {
+				if err := migrator.AddColumn(&Log{}, "fallback_index"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "selected_key_id") {
+				if err := migrator.AddColumn(&Log{}, "selected_key_id"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "selected_key_name") {
+				if err := migrator.AddColumn(&Log{}, "selected_key_name"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "virtual_key_id") {
+				if err := migrator.AddColumn(&Log{}, "virtual_key_id"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "virtual_key_name") {
+				if err := migrator.AddColumn(&Log{}, "virtual_key_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&Log{}, "number_of_retries"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&Log{}, "fallback_index"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&Log{}, "selected_key_id"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&Log{}, "selected_key_name"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&Log{}, "virtual_key_id"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&Log{}, "virtual_key_name"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding number_of_retries and fallback_index columns: %s", err.Error())
 	}
 	return nil
 }

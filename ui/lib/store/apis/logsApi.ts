@@ -1,5 +1,6 @@
 import { LogEntry, LogFilters, LogStats, Pagination } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
+import { DBKey, RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 
 export const logsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -36,6 +37,12 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.objects && filters.objects.length > 0) {
 					params.objects = filters.objects.join(",");
 				}
+				if (filters.selected_key_ids && filters.selected_key_ids.length > 0) {
+					params.selected_key_ids = filters.selected_key_ids.join(",");
+				}
+				if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
+					params.virtual_key_ids = filters.virtual_key_ids.join(",");
+				}
 				if (filters.start_time) params.start_time = filters.start_time;
 				if (filters.end_time) params.end_time = filters.end_time;
 				if (filters.min_latency) params.min_latency = filters.min_latency;
@@ -59,8 +66,8 @@ export const logsApi = baseApi.injectEndpoints({
 		}),
 
 		// Get available models
-		getAvailableModels: builder.query<{ models: string[] }, void>({
-			query: () => "/logs/models",
+		getAvailableFilterData: builder.query<{ models: string[]; selected_keys: RedactedDBKey[]; virtual_keys: VirtualKey[] }, void>({
+			query: () => "/logs/filterdata",
 			providesTags: ["Logs"],
 		}),
 	}),
@@ -69,8 +76,8 @@ export const logsApi = baseApi.injectEndpoints({
 export const {
 	useGetLogsQuery,
 	useGetDroppedRequestsQuery,
-	useGetAvailableModelsQuery,
+	useGetAvailableFilterDataQuery,
 	useLazyGetLogsQuery,
 	useLazyGetDroppedRequestsQuery,
-	useLazyGetAvailableModelsQuery,
+	useLazyGetAvailableFilterDataQuery,
 } = logsApi;

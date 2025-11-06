@@ -920,6 +920,23 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 
 // GOVERNANCE METHODS
 
+func (s *RDBConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) {
+	var virtualKeys []tables.TableVirtualKey
+
+	if len(ids) > 0 {
+		err := s.db.WithContext(ctx).Select("id, name, description, is_active").Where("id IN ?", ids).Find(&virtualKeys).Error
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err := s.db.WithContext(ctx).Select("id, name, description, is_active").Find(&virtualKeys).Error
+		if err != nil {
+			return nil, err
+		}
+	}
+	return virtualKeys, nil
+}
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
 	var virtualKeys []tables.TableVirtualKey
@@ -1064,6 +1081,32 @@ func (s *RDBConfigStore) GetKeysByIDs(ctx context.Context, ids []string) ([]tabl
 		return nil, err
 	}
 	return keys, nil
+}
+
+// GetAllRedactedKeys retrieves all redacted keys from the database.
+func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) ([]schemas.Key, error) {
+	var keys []tables.TableKey
+	if len(ids) > 0 {
+		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, weight").Find(&keys).Error
+		if err != nil {
+			return nil, err
+		}
+	}
+	redactedKeys := make([]schemas.Key, len(keys))
+	for i, key := range keys {
+		redactedKeys[i] = schemas.Key{
+			ID:     key.KeyID,
+			Name:   key.Name,
+			Models: key.Models,
+			Weight: key.Weight,
+		}
+	}
+	return redactedKeys, nil
 }
 
 // DeleteVirtualKey deletes a virtual key from the database.

@@ -3,12 +3,15 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -17,13 +20,20 @@ import (
 
 // LoggingHandler manages HTTP requests for logging operations
 type LoggingHandler struct {
-	logManager logging.LogManager
+	logManager          logging.LogManager
+	redactedKeysManager RedactedKeysManager
+}
+
+type RedactedKeysManager interface {
+	GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key
+	GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey
 }
 
 // NewLoggingHandler creates a new logging handler instance
-func NewLoggingHandler(logManager logging.LogManager) *LoggingHandler {
+func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager) *LoggingHandler {
 	return &LoggingHandler{
-		logManager: logManager,
+		logManager:          logManager,
+		redactedKeysManager: redactedKeysManager,
 	}
 }
 
@@ -32,7 +42,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bif
 	// Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
-	r.GET("/api/logs/models", lib.ChainMiddlewares(h.getAvailableModels, middlewares...))
+	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 }
 
 // getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
@@ -53,6 +63,12 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 	if objects := string(ctx.QueryArgs().Peek("objects")); objects != "" {
 		filters.Objects = parseCommaSeparated(objects)
+	}
+	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
+		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
+	}
+	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
+		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -146,6 +162,42 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err))
 		return
 	}
+
+	selectedKeyIDs := make(map[string]struct{})
+	virtualKeyIDs := make(map[string]struct{})
+	for _, log := range result.Logs {
+		if log.SelectedKeyID != "" {
+			selectedKeyIDs[log.SelectedKeyID] = struct{}{}
+		}
+		if log.VirtualKeyID != nil && *log.VirtualKeyID != "" {
+			virtualKeyIDs[*log.VirtualKeyID] = struct{}{}
+		}
+	}
+
+	toSlice := func(m map[string]struct{}) []string {
+		if len(m) == 0 {
+			return nil
+		}
+		out := make([]string, 0, len(m))
+		for id := range m {
+			out = append(out, id)
+		}
+		return out
+	}
+
+	redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
+	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+
+	// Add selected key and virtual key to the result
+	for i, log := range result.Logs {
+		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
+			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName)
+		}
+		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
+			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
+		}
+	}
+
 	SendJSON(ctx, result)
 }
 
@@ -155,13 +207,128 @@ func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests})
 }
 
-// getAvailableModels handles GET /api/logs/models - Get all unique models from logs
-func (h *LoggingHandler) getAvailableModels(ctx *fasthttp.RequestCtx) {
+// getAvailableFilterData handles GET /api/logs/filterdata - Get all unique filter data from logs
+func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	models := h.logManager.GetAvailableModels(ctx)
-	SendJSON(ctx, map[string]interface{}{"models": models})
+	selectedKeys := h.logManager.GetAvailableSelectedKeys(ctx)
+	virtualKeys := h.logManager.GetAvailableVirtualKeys(ctx)
+
+	// Extract IDs for redaction lookup
+	selectedKeyIDs := make([]string, len(selectedKeys))
+	for i, key := range selectedKeys {
+		selectedKeyIDs[i] = key.ID
+	}
+	virtualKeyIDs := make([]string, len(virtualKeys))
+	for i, key := range virtualKeys {
+		virtualKeyIDs[i] = key.ID
+	}
+
+	redactedSelectedKeys := make(map[string]schemas.Key)
+	for _, selectedKey := range h.redactedKeysManager.GetAllRedactedKeys(ctx, selectedKeyIDs) {
+		redactedSelectedKeys[selectedKey.ID] = selectedKey
+	}
+	redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
+	for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
+		redactedVirtualKeys[virtualKey.ID] = virtualKey
+	}
+
+	// Check if all selected key ids are present in the redacted selected keys (will not be present in case a key is deleted, but we still need to show its filter)
+	for _, selectedKey := range selectedKeys {
+		if _, ok := redactedSelectedKeys[selectedKey.ID]; !ok {
+			// Create a new key struct directly since we know it doesn't exist
+			redactedSelectedKeys[selectedKey.ID] = schemas.Key{
+				ID:   selectedKey.ID,
+				Name: selectedKey.Name + " (deleted)",
+			}
+		}
+	}
+
+	// Check if all virtual key ids are present in the redacted virtual keys (will not be present in case a virtual key is deleted, but we still need to show its filter)
+	for _, virtualKey := range virtualKeys {
+		if _, ok := redactedVirtualKeys[virtualKey.ID]; !ok {
+			// Create a new virtual key struct directly since we know it doesn't exist
+			redactedVirtualKeys[virtualKey.ID] = tables.TableVirtualKey{
+				ID:   virtualKey.ID,
+				Name: virtualKey.Name + " (deleted)",
+			}
+		}
+	}
+
+	// Convert maps to arrays for frontend consumption
+	selectedKeysArray := make([]schemas.Key, 0, len(redactedSelectedKeys))
+	for _, key := range redactedSelectedKeys {
+		selectedKeysArray = append(selectedKeysArray, key)
+	}
+
+	virtualKeysArray := make([]tables.TableVirtualKey, 0, len(redactedVirtualKeys))
+	for _, key := range redactedVirtualKeys {
+		virtualKeysArray = append(virtualKeysArray, key)
+	}
+
+	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray})
 }
 
 // Helper functions
+
+func findRedactedKey(redactedKeys []schemas.Key, id string, name string) *schemas.Key {
+	if len(redactedKeys) == 0 {
+		return &schemas.Key{
+			ID: id,
+			Name: func() string {
+				if name != "" {
+					return name + " (deleted)"
+				} else {
+					return ""
+				}
+			}(),
+		}
+	}
+	for _, key := range redactedKeys {
+		if key.ID == id {
+			return &key
+		}
+	}
+	return &schemas.Key{
+		ID: id,
+		Name: func() string {
+			if name != "" {
+				return name + " (deleted)"
+			} else {
+				return ""
+			}
+		}(),
+	}
+}
+
+func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id string, name string) *tables.TableVirtualKey {
+	if len(redactedVirtualKeys) == 0 {
+		return &tables.TableVirtualKey{
+			ID: id,
+			Name: func() string {
+				if name != "" {
+					return name + " (deleted)"
+				} else {
+					return ""
+				}
+			}(),
+		}
+	}
+	for _, virtualKey := range redactedVirtualKeys {
+		if virtualKey.ID == id {
+			return &virtualKey
+		}
+	}
+	return &tables.TableVirtualKey{
+		ID: id,
+		Name: func() string {
+			if name != "" {
+				return name + " (deleted)"
+			} else {
+				return ""
+			}
+		}(),
+	}
+}
 
 // parseCommaSeparated splits a comma-separated string into a slice
 func parseCommaSeparated(s string) []string {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 )
 
@@ -27,19 +28,21 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers     []string   `json:"providers,omitempty"`
-	Models        []string   `json:"models,omitempty"`
-	Status        []string   `json:"status,omitempty"`
-	Objects       []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
-	StartTime     *time.Time `json:"start_time,omitempty"`
-	EndTime       *time.Time `json:"end_time,omitempty"`
-	MinLatency    *float64   `json:"min_latency,omitempty"`
-	MaxLatency    *float64   `json:"max_latency,omitempty"`
-	MinTokens     *int       `json:"min_tokens,omitempty"`
-	MaxTokens     *int       `json:"max_tokens,omitempty"`
-	MinCost       *float64   `json:"min_cost,omitempty"`
-	MaxCost       *float64   `json:"max_cost,omitempty"`
-	ContentSearch string     `json:"content_search,omitempty"`
+	Providers      []string   `json:"providers,omitempty"`
+	Models         []string   `json:"models,omitempty"`
+	Status         []string   `json:"status,omitempty"`
+	Objects        []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	SelectedKeyIDs []string   `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs  []string   `json:"virtual_key_ids,omitempty"`
+	StartTime      *time.Time `json:"start_time,omitempty"`
+	EndTime        *time.Time `json:"end_time,omitempty"`
+	MinLatency     *float64   `json:"min_latency,omitempty"`
+	MaxLatency     *float64   `json:"max_latency,omitempty"`
+	MinTokens      *int       `json:"min_tokens,omitempty"`
+	MaxTokens      *int       `json:"max_tokens,omitempty"`
+	MinCost        *float64   `json:"min_cost,omitempty"`
+	MaxCost        *float64   `json:"max_cost,omitempty"`
+	ContentSearch  string     `json:"content_search,omitempty"`
 }
 
 // PaginationOptions represents pagination parameters
@@ -68,33 +71,39 @@ type SearchStats struct {
 // Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type Log struct {
-	ID                  string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	ParentRequestID     *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
-	Timestamp           time.Time `gorm:"index;not null" json:"timestamp"`
-	Object              string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	Provider            string    `gorm:"type:varchar(255);index;not null" json:"provider"`
-	Model               string    `gorm:"type:varchar(255);index;not null" json:"model"`
-	InputHistory        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
+	ID                    string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ParentRequestID       *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
+	Timestamp             time.Time `gorm:"index;not null" json:"timestamp"`
+	Object                string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
+	Provider              string    `gorm:"type:varchar(255);index;not null" json:"provider"`
+	Model                 string    `gorm:"type:varchar(255);index;not null" json:"model"`
+	NumberOfRetries       int       `gorm:"default:0" json:"number_of_retries"`
+	FallbackIndex         int       `gorm:"default:0" json:"fallback_index"`
+	SelectedKeyID         string    `gorm:"type:varchar(255)" json:"selected_key_id"`
+	SelectedKeyName       string    `gorm:"type:varchar(255)" json:"selected_key_name"`
+	VirtualKeyID          *string   `gorm:"type:varchar(255)" json:"virtual_key_id"`
+	VirtualKeyName        *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	InputHistory          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
-	OutputMessage       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
-	ResponsesOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
-	EmbeddingOutput     string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
-	Params              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
-	Tools               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
-	ToolCalls           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
-	SpeechInput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
-	TranscriptionInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
-	SpeechOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
-	TranscriptionOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
-	CacheDebug          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
-	Latency             *float64  `json:"latency,omitempty"`
-	TokenUsage          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
-	Cost                *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status              string    `gorm:"type:varchar(50);index;not null" json:"status"` // "processing", "success", or "error"
-	ErrorDetails        string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
-	Stream              bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
-	ContentSummary      string    `gorm:"type:text" json:"-"`                            // For content search
-	RawResponse         string    `gorm:"type:text" json:"raw_response"`                 // Populated when `send-back-raw-response` is on
+	OutputMessage         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
+	ResponsesOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
+	EmbeddingOutput       string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
+	Params                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
+	Tools                 string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
+	ToolCalls             string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
+	SpeechInput           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
+	TranscriptionInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
+	SpeechOutput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
+	TranscriptionOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
+	CacheDebug            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
+	Latency               *float64  `json:"latency,omitempty"`
+	TokenUsage            string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
+	Cost                  *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
+	Status                string    `gorm:"type:varchar(50);index;not null" json:"status"` // "processing", "success", or "error"
+	ErrorDetails          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
+	Stream                bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
+	ContentSummary        string    `gorm:"type:text" json:"-"`                            // For content search
+	RawResponse           string    `gorm:"type:text" json:"raw_response"`                 // Populated when `send-back-raw-response` is on
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
@@ -119,6 +128,10 @@ type Log struct {
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse         `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse  `gorm:"-" json:"transcription_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug             `gorm:"-" json:"cache_debug,omitempty"`
+
+	// Populated in handlers after find using the virtual key id and key id
+	VirtualKey  *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`  // redacted
+	SelectedKey *schemas.Key            `gorm:"-" json:"selected_key,omitempty"` // redacted
 }
 
 // TableName sets the table name for GORM

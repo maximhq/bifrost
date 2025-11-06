@@ -12,6 +12,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -49,6 +50,12 @@ type LogMessage struct {
 	Operation          LogOperation
 	RequestID          string                             // Unique ID for the request
 	ParentRequestID    string                             // Unique ID for the parent request
+	NumberOfRetries    int                                // Number of retries
+	FallbackIndex      int                                // Fallback index
+	SelectedKeyID      string                             // Selected key ID
+	SelectedKeyName    string                             // Selected key name
+	VirtualKeyID       string                             // Virtual key ID
+	VirtualKeyName     string                             // Virtual key name
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
@@ -198,9 +205,9 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 	provider, model, _ := req.GetRequestFields()
 
 	initialData := &InitialLogData{
-		Provider:     string(provider),
-		Model:        model,
-		Object:       string(req.RequestType),
+		Provider:              string(provider),
+		Model:                 model,
+		Object:                string(req.RequestType),
 		InputHistory:          inputHistory,
 		ResponsesInputHistory: responsesInputHistory,
 	}
@@ -246,12 +253,25 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 		logMsg.RequestID = requestID
 	}
 
+	numberOfRetries := getIntFromContext(*ctx, schemas.BifrostContextKeyNumberOfRetries)
+	fallbackIndex := getIntFromContext(*ctx, schemas.BifrostContextKeyFallbackIndex)
+
 	logMsg.Timestamp = createdTimestamp
 	logMsg.InitialData = initialData
+	logMsg.NumberOfRetries = numberOfRetries
+	logMsg.FallbackIndex = fallbackIndex
 
 	go func(logMsg *LogMessage) {
 		defer p.putLogMessage(logMsg) // Return to pool when done
-		if err := p.insertInitialLogEntry(p.ctx, logMsg.RequestID, logMsg.ParentRequestID, logMsg.Timestamp, logMsg.InitialData); err != nil {
+		if err := p.insertInitialLogEntry(
+			p.ctx,
+			logMsg.RequestID,
+			logMsg.ParentRequestID,
+			logMsg.Timestamp,
+			logMsg.NumberOfRetries,
+			logMsg.FallbackIndex,
+			logMsg.InitialData,
+		); err != nil {
 			p.logger.Error("failed to insert initial log entry for request %s: %v", logMsg.RequestID, err)
 		} else {
 			// Call callback for initial log creation (WebSocket "create" message)
@@ -264,6 +284,8 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 					Object:                      logMsg.InitialData.Object,
 					Provider:                    logMsg.InitialData.Provider,
 					Model:                       logMsg.InitialData.Model,
+					NumberOfRetries:             logMsg.NumberOfRetries,
+					FallbackIndex:               logMsg.FallbackIndex,
 					InputHistoryParsed:          logMsg.InitialData.InputHistory,
 					ResponsesInputHistoryParsed: logMsg.InitialData.ResponsesInputHistory,
 					ParamsParsed:                logMsg.InitialData.Params,
@@ -298,12 +320,20 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
+	selectedKeyID := getStringFromContext(*ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := getStringFromContext(*ctx, schemas.BifrostContextKeySelectedKeyName)
+	virtualKeyID := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
+	virtualKeyName := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
 
 	go func() {
 		requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
 		// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 		logMsg := p.getLogMessage()
 		logMsg.RequestID = requestID
+		logMsg.SelectedKeyID = selectedKeyID
+		logMsg.VirtualKeyID = virtualKeyID
+		logMsg.SelectedKeyName = selectedKeyName
+		logMsg.VirtualKeyName = virtualKeyName
 		defer p.putLogMessage(logMsg) // Return to pool when done
 
 		if result != nil {
@@ -324,7 +354,17 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				ErrorDetails: bifrostErr,
 			}
 			processingErr := retryOnNotFound(p.ctx, func() error {
-				return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Latency, logMsg.SemanticCacheDebug, logMsg.UpdateData)
+				return p.updateLogEntry(
+					p.ctx,
+					logMsg.RequestID,
+					logMsg.SelectedKeyID,
+					logMsg.SelectedKeyName,
+					logMsg.Latency,
+					logMsg.VirtualKeyID,
+					logMsg.VirtualKeyName,
+					logMsg.SemanticCacheDebug,
+					logMsg.UpdateData,
+				)
 			})
 			if processingErr != nil {
 				p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
@@ -353,7 +393,17 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				logMsg.Operation = LogOperationStreamUpdate
 				logMsg.StreamResponse = streamResponse
 				processingErr := retryOnNotFound(p.ctx, func() error {
-					return p.updateStreamingLogEntry(p.ctx, logMsg.RequestID, logMsg.SemanticCacheDebug, logMsg.StreamResponse, streamResponse.Type == streaming.StreamResponseTypeFinal)
+					return p.updateStreamingLogEntry(
+						p.ctx,
+						logMsg.RequestID,
+						logMsg.SelectedKeyID,
+						logMsg.SelectedKeyName,
+						logMsg.VirtualKeyID,
+						logMsg.VirtualKeyName,
+						logMsg.SemanticCacheDebug,
+						logMsg.StreamResponse,
+						streamResponse.Type == streaming.StreamResponseTypeFinal,
+					)
 				})
 				if processingErr != nil {
 					p.logger.Error("failed to process stream update for request %s: %v", logMsg.RequestID, processingErr)
@@ -466,7 +516,17 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 			}
 			// Here we pass plugin level context for background processing to avoid context cancellation
 			processingErr := retryOnNotFound(p.ctx, func() error {
-				return p.updateLogEntry(p.ctx, logMsg.RequestID, logMsg.Latency, logMsg.SemanticCacheDebug, logMsg.UpdateData)
+				return p.updateLogEntry(
+					p.ctx,
+					logMsg.RequestID,
+					logMsg.SelectedKeyID,
+					logMsg.SelectedKeyName,
+					logMsg.Latency,
+					logMsg.VirtualKeyID,
+					logMsg.VirtualKeyName,
+					logMsg.SemanticCacheDebug,
+					logMsg.UpdateData,
+				)
 			})
 			if processingErr != nil {
 				p.logger.Error("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
@@ -476,6 +536,16 @@ func (p *LoggerPlugin) PostHook(ctx *context.Context, result *schemas.BifrostRes
 				p.mu.Lock()
 				if p.logCallback != nil {
 					if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
+						updatedEntry.SelectedKey = &schemas.Key{
+							ID:   updatedEntry.SelectedKeyID,
+							Name: updatedEntry.SelectedKeyName,
+						}
+						if updatedEntry.VirtualKeyID != nil && updatedEntry.VirtualKeyName != nil {
+							updatedEntry.VirtualKey = &tables.TableVirtualKey{
+								ID:   *updatedEntry.VirtualKeyID,
+								Name: *updatedEntry.VirtualKeyName,
+							}
+						}
 						p.logCallback(updatedEntry)
 					}
 				}

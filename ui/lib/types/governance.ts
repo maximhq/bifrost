@@ -51,6 +51,13 @@ export interface DBKey {
 	provider: ModelProviderName; // Provider name
 }
 
+export interface RedactedDBKey {
+	id: string;
+	name: string;
+	models: string[];
+	weight: number;
+}
+
 export interface VirtualKey {
 	id: string;
 	name: string;

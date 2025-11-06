@@ -6,3 +6,4 @@
 - feat: add numberOfRetries, fallbackIndex and selected key name and id to context to telemetry metrics
 - feat: add used virtual key name and id to telemetry metrics
 - feat: send model deployment back in response extra fields
+- feat: add selected key and virtual key to logs filter

@@ -19,6 +19,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -617,7 +618,7 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	var loggingHandler *handlers.LoggingHandler
 	loggerPlugin, _ := FindPluginByName[*logging.LoggerPlugin](s.Plugins, logging.PluginName)
 	if loggerPlugin != nil {
-		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager())
+		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s)
 	}
 	var governanceHandler *handlers.GovernanceHandler
 	governancePlugin, _ := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
@@ -708,6 +709,30 @@ func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...lib.BifrostHTTPMidd
 	// Registering UI handlers
 	// WARNING: This UI handler needs to be registered after all the other handlers
 	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
+}
+
+func (s *BifrostHTTPServer) GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil
+	}
+	redactedKeys, err := s.Config.ConfigStore.GetAllRedactedKeys(ctx, ids)
+	if err != nil {
+		logger.Error("failed to get all redacted keys: %v", err)
+		return nil
+	}
+	return redactedKeys
+}
+
+func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil
+	}
+	virtualKeys, err := s.Config.ConfigStore.GetRedactedVirtualKeys(ctx, ids)
+	if err != nil {
+		logger.Error("failed to get all redacted virtual keys: %v", err)
+		return nil
+	}
+	return virtualKeys
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.

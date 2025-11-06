@@ -3,7 +3,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RequestTypeLabels, RequestTypes, Statuses } from "@/lib/constants/logs";
-import { useGetAvailableModelsQuery, useGetProvidersQuery } from "@/lib/store";
+import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { Check, FilterIcon, Search } from "lucide-react";
@@ -21,10 +21,16 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 
 	// Use RTK Query to fetch available models
 	const { data: providersData, isLoading: providersLoading } = useGetProvidersQuery();
-	const { data: modelsData, isLoading: modelsLoading } = useGetAvailableModelsQuery();
+	const { data: filterData, isLoading: filterDataLoading } = useGetAvailableFilterDataQuery();
 
 	const availableProviders = providersData || [];
-	const availableModels = modelsData?.models || [];
+	const availableModels = filterData?.models || [];
+	const availableSelectedKeys = filterData?.selected_keys || [];
+	const availableVirtualKeys = filterData?.virtual_keys || [];
+
+	// Create mappings from name to ID for keys and virtual keys
+	const selectedKeyNameToId = new Map(availableSelectedKeys.map((key) => [key.name, key.id]));
+	const virtualKeyNameToId = new Map(availableVirtualKeys.map((key) => [key.name, key.id]));
 
 	// Cleanup timeout on unmount
 	useEffect(() => {
@@ -58,11 +64,24 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 			Providers: "providers",
 			Type: "objects",
 			Models: "models",
+			"Selected Keys": "selected_key_ids",
+			"Virtual Keys": "virtual_key_ids",
 		};
 
 		const filterKey = filterKeyMap[category];
+		let valueToStore = value;
+
+		// Convert name to ID for keys and virtual keys
+		if (category === "Selected Keys") {
+			valueToStore = selectedKeyNameToId.get(value) || value;
+		} else if (category === "Virtual Keys") {
+			valueToStore = virtualKeyNameToId.get(value) || value;
+		}
+
 		const currentValues = (filters[filterKey] as string[]) || [];
-		const newValues = currentValues.includes(value) ? currentValues.filter((v) => v !== value) : [...currentValues, value];
+		const newValues = currentValues.includes(valueToStore)
+			? currentValues.filter((v) => v !== valueToStore)
+			: [...currentValues, valueToStore];
 
 		onFiltersChange({
 			...filters,
@@ -76,11 +95,22 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 			Providers: "providers",
 			Type: "objects",
 			Models: "models",
+			"Selected Keys": "selected_key_ids",
+			"Virtual Keys": "virtual_key_ids",
 		};
 
 		const filterKey = filterKeyMap[category];
 		const currentValues = filters[filterKey];
-		return Array.isArray(currentValues) && currentValues.includes(value);
+
+		// For keys and virtual keys, convert name to ID before checking
+		let valueToCheck = value;
+		if (category === "Selected Keys") {
+			valueToCheck = selectedKeyNameToId.get(value) || value;
+		} else if (category === "Virtual Keys") {
+			valueToCheck = virtualKeyNameToId.get(value) || value;
+		}
+
+		return Array.isArray(currentValues) && currentValues.includes(valueToCheck);
 	};
 
 	const getSelectedCount = () => {
@@ -96,7 +126,9 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 		Status: Statuses,
 		Providers: providersLoading ? ["Loading providers..."] : availableProviders.map((provider) => provider.name),
 		Type: RequestTypes,
-		Models: modelsLoading ? ["Loading models..."] : availableModels,
+		Models: filterDataLoading ? ["Loading models..."] : availableModels,
+		"Selected Keys": filterDataLoading ? ["Loading selected keys..."] : availableSelectedKeys.map((key) => key.name),
+		"Virtual Keys": filterDataLoading ? ["Loading virtual keys..."] : availableVirtualKeys.map((key) => key.name),
 	} as const;
 
 	return (

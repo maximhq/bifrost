@@ -13,16 +13,26 @@ import (
 )
 
 // insertInitialLogEntry creates a new log entry in the database using GORM
-func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID string, parentRequestID string, timestamp time.Time, data *InitialLogData) error {
+func (p *LoggerPlugin) insertInitialLogEntry(
+	ctx context.Context,
+	requestID string,
+	parentRequestID string,
+	timestamp time.Time,
+	numberOfRetries int,
+	fallbackIndex int,
+	data *InitialLogData,
+) error {
 	entry := &logstore.Log{
-		ID:        requestID,
-		Timestamp: timestamp,
-		Object:    data.Object,
-		Provider:  data.Provider,
-		Model:     data.Model,
-		Status:    "processing",
-		Stream:    false,
-		CreatedAt: timestamp,
+		ID:              requestID,
+		Timestamp:       timestamp,
+		Object:          data.Object,
+		Provider:        data.Provider,
+		Model:           data.Model,
+		NumberOfRetries: numberOfRetries,
+		FallbackIndex:   fallbackIndex,
+		Status:          "processing",
+		Stream:          false,
+		CreatedAt:       timestamp,
 		// Set parsed fields for serialization
 		InputHistoryParsed:          data.InputHistory,
 		ResponsesInputHistoryParsed: data.ResponsesInputHistory,
@@ -40,12 +50,30 @@ func (p *LoggerPlugin) insertInitialLogEntry(ctx context.Context, requestID stri
 }
 
 // updateLogEntry updates an existing log entry using GORM
-func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, latency int64, cacheDebug *schemas.BifrostCacheDebug, data *UpdateLogData) error {
+func (p *LoggerPlugin) updateLogEntry(
+	ctx context.Context,
+	requestID string,
+	selectedKeyID string,
+	selectedKeyName string,
+	latency int64,
+	virtualKeyID string,
+	virtualKeyName string,
+	cacheDebug *schemas.BifrostCacheDebug,
+	data *UpdateLogData,
+) error {
 	updates := make(map[string]interface{})
+	updates["selected_key_id"] = selectedKeyID
+	updates["selected_key_name"] = selectedKeyName
 	if latency != 0 {
 		updates["latency"] = float64(latency)
 	}
 	updates["status"] = data.Status
+	if virtualKeyID != "" {
+		updates["virtual_key_id"] = virtualKeyID
+	}
+	if virtualKeyName != "" {
+		updates["virtual_key_name"] = virtualKeyName
+	}
 	// Handle JSON fields by setting them on a temporary entry and serializing
 	tempEntry := &logstore.Log{}
 	if data.ChatOutput != nil {
@@ -143,9 +171,27 @@ func (p *LoggerPlugin) updateLogEntry(ctx context.Context, requestID string, lat
 }
 
 // updateStreamingLogEntry handles streaming updates using GORM
-func (p *LoggerPlugin) updateStreamingLogEntry(ctx context.Context, requestID string, cacheDebug *schemas.BifrostCacheDebug, streamResponse *streaming.ProcessedStreamResponse, isFinalChunk bool) error {
+func (p *LoggerPlugin) updateStreamingLogEntry(
+	ctx context.Context,
+	requestID string,
+	selectedKeyID string,
+	selectedKeyName string,
+	virtualKeyID string,
+	virtualKeyName string,
+	cacheDebug *schemas.BifrostCacheDebug,
+	streamResponse *streaming.ProcessedStreamResponse,
+	isFinalChunk bool,
+) error {
 	p.logger.Debug("[logging] updating streaming log entry %s", requestID)
 	updates := make(map[string]interface{})
+	updates["selected_key_id"] = selectedKeyID
+	updates["selected_key_name"] = selectedKeyName
+	if virtualKeyID != "" {
+		updates["virtual_key_id"] = virtualKeyID
+	}
+	if virtualKeyName != "" {
+		updates["virtual_key_name"] = virtualKeyName
+	}
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
 		tempEntry := &logstore.Log{}
@@ -273,19 +319,73 @@ func (p *LoggerPlugin) SearchLogs(ctx context.Context, filters logstore.SearchFi
 
 // GetAvailableModels returns all unique models from logs
 func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
-	modelSet := make(map[string]bool)
-	// Query distinct models from logs
 	result, err := p.store.FindAll(ctx, "model IS NOT NULL AND model != ''", "model")
 	if err != nil {
 		p.logger.Error("failed to get available models: %w", err)
 		return []string{}
 	}
-	for _, model := range result {
-		modelSet[model.Model] = true
+	return p.extractUniqueStrings(result, func(log *logstore.Log) string { return log.Model })
+}
+
+func (p *LoggerPlugin) GetAvailableSelectedKeys(ctx context.Context) []KeyPair {
+	result, err := p.store.FindAll(ctx, "selected_key_id IS NOT NULL AND selected_key_id != '' AND selected_key_name IS NOT NULL AND selected_key_name != ''", "selected_key_id, selected_key_name")
+	if err != nil {
+		p.logger.Error("failed to get available selected keys: %w", err)
+		return []KeyPair{}
 	}
-	models := make([]string, 0, len(modelSet))
-	for model := range modelSet {
-		models = append(models, model)
+	return p.extractUniqueKeyPairs(result, func(log *logstore.Log) KeyPair {
+		return KeyPair{
+			ID:   log.SelectedKeyID,
+			Name: log.SelectedKeyName,
+		}
+	})
+}
+
+func (p *LoggerPlugin) GetAvailableVirtualKeys(ctx context.Context) []KeyPair {
+	result, err := p.store.FindAll(ctx, "virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != ''", "virtual_key_id, virtual_key_name")
+	if err != nil {
+		p.logger.Error("failed to get available virtual keys: %w", err)
+		return []KeyPair{}
 	}
-	return models
+	return p.extractUniqueKeyPairs(result, func(log *logstore.Log) KeyPair {
+		if log.VirtualKeyID != nil && log.VirtualKeyName != nil {
+			return KeyPair{
+				ID:   *log.VirtualKeyID,
+				Name: *log.VirtualKeyName,
+			}
+		}
+		return KeyPair{}
+	})
+}
+
+// extractUniqueKeyPairs extracts unique non-empty key pairs from logs using the provided extractor function
+func (p *LoggerPlugin) extractUniqueKeyPairs(logs []*logstore.Log, extractor func(*logstore.Log) KeyPair) []KeyPair {
+	uniqueSet := make(map[string]KeyPair)
+	for _, log := range logs {
+		pair := extractor(log)
+		if pair.ID != "" && pair.Name != "" {
+			uniqueSet[pair.ID] = pair
+		}
+	}
+
+	result := make([]KeyPair, 0, len(uniqueSet))
+	for _, pair := range uniqueSet {
+		result = append(result, pair)
+	}
+	return result
+}
+
+// extractUniqueStrings extracts unique non-empty string values from logs using the provided extractor function
+func (p *LoggerPlugin) extractUniqueStrings(logs []*logstore.Log, extractor func(*logstore.Log) string) []string {
+	uniqueSet := make(map[string]bool)
+	for _, log := range logs {
+		if value := extractor(log); value != "" {
+			uniqueSet[value] = true
+		}
+	}
+	result := make([]string, 0, len(uniqueSet))
+	for value := range uniqueSet {
+		result = append(result, value)
+	}
+	return result
 }

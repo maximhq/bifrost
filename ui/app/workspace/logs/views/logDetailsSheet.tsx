@@ -101,6 +101,12 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 									</div>
 								}
 							/>
+							{log.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={log.selected_key.name} />}
+							{log.number_of_retries > 0 && (
+								<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
+							)}
+							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
+							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
 
 							{log.params &&
 								Object.keys(log.params).length > 0 &&
@@ -300,23 +306,23 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 					</>
 				)}
 
-			{/* Show input for chat/text completions */}
-			{log.input_history && log.input_history.length > 0 && (
-				<>
-					<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-					<LogChatMessageView message={log.input_history[log.input_history.length - 1]} />
-				</>
-			)}
+				{/* Show input for chat/text completions */}
+				{log.input_history && log.input_history.length > 0 && (
+					<>
+						<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
+						<LogChatMessageView message={log.input_history[log.input_history.length - 1]} />
+					</>
+				)}
 
-			{/* Show input history for responses API */}
-			{log.responses_input_history && log.responses_input_history.length > 0 && (
-				<>
-					<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-					<LogResponsesMessageView messages={log.responses_input_history} />
-				</>
-			)}
+				{/* Show input history for responses API */}
+				{log.responses_input_history && log.responses_input_history.length > 0 && (
+					<>
+						<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
+						<LogResponsesMessageView messages={log.responses_input_history} />
+					</>
+				)}
 
-			{log.status !== "processing" && (
+				{log.status !== "processing" && (
 					<>
 						{log.output_message && !log.error_details?.error.message && (
 							<>

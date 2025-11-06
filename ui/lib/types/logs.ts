@@ -1,5 +1,7 @@
 // Types for the logs interface based on BifrostResponse schema
 
+import { DBKey, VirtualKey } from "./governance";
+
 // Speech and Transcription types
 export interface VoiceConfig {
 	speaker: string;
@@ -247,6 +249,12 @@ export interface LogEntry {
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
 	model: string;
+	number_of_retries: number;
+	fallback_index: number;
+	selected_key_id: string;
+	virtual_key_id?: string;
+	selected_key?: DBKey;
+	virtual_key?: VirtualKey;
 	input_history: ChatMessage[];
 	responses_input_history: ResponsesMessage[];
 	output_message?: ChatMessage;
@@ -273,6 +281,8 @@ export interface LogEntry {
 export interface LogFilters {
 	providers?: string[];
 	models?: string[];
+	selected_key_ids?: string[];
+	virtual_key_ids?: string[];
 	status?: string[];
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
