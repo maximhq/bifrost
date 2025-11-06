@@ -82,8 +82,7 @@ func RunReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 
 		// Enhanced validation for reasoning scenarios
 		expectations := GetExpectationsForScenario("Reasoning", testConfig, map[string]interface{}{
-			"requires_reasoning":   true,
-			"mathematical_problem": true,
+			"requires_reasoning": true,
 		})
 		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 		expectations.MinContentLength = 50   // Reasoning requires substantial content

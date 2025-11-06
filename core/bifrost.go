@@ -278,7 +278,7 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 		return nil, newBifrostError(err)
 	}
 
-	response, bifrostErr := executeRequestWithRetries(config, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 		return provider.ListModels(ctx, keys, request)
 	}, schemas.ListModelsRequest, req.Provider, "")
 	if bifrostErr != nil {
@@ -1551,6 +1551,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
 
 	// Try the primary provider first
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, 0)
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
@@ -1577,7 +1578,8 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	}
 
 	// Try fallbacks in order
-	for _, fallback := range fallbacks {
+	for i, fallback := range fallbacks {
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug(fmt.Sprintf("Trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
@@ -1641,7 +1643,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 	}
 
 	// Try the primary provider first
-	primaryResult, primaryErr := bifrost.tryStreamRequest(req, ctx)
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, 0)
+	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
 
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
@@ -1657,7 +1660,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 	}
 
 	// Try fallbacks in order
-	for _, fallback := range fallbacks {
+	for i, fallback := range fallbacks {
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
@@ -1666,7 +1670,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 		}
 
 		// Try the fallback provider
-		result, fallbackErr := bifrost.tryStreamRequest(fallbackReq, ctx)
+		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			return result, nil
@@ -1786,7 +1790,7 @@ func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequ
 
 // tryStreamRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
-func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx context.Context) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (bifrost *Bifrost) tryStreamRequest(ctx context.Context, req *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	provider, _, _ := req.GetRequestFields()
 	queue, err := bifrost.getProviderQueue(provider)
 	if err != nil {
@@ -1935,6 +1939,7 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 // It consolidates retry logic, backoff calculation, and error handling
 // It is not a bifrost method because interface methods in go cannot be generic
 func executeRequestWithRetries[T any](
+	ctx *context.Context,
 	config *schemas.ProviderConfig,
 	requestHandler func() (T, *schemas.BifrostError),
 	requestType schemas.RequestType,
@@ -1946,6 +1951,7 @@ func executeRequestWithRetries[T any](
 	var attempts int
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
+		*ctx = context.WithValue(*ctx, schemas.BifrostContextKeyNumberOfRetries, attempts)
 		if attempts > 0 {
 			// Log retry attempt
 			var retryMsg string
@@ -2047,7 +2053,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				continue
 			}
-			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKey, key.ID)
+			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyID, key.ID)
+			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyName, key.Name)
 		}
 
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
@@ -2066,11 +2073,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		// Execute request with retries
 		if IsStreamRequestType(req.RequestType) {
-			stream, bifrostError = executeRequestWithRetries(config, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			stream, bifrostError = executeRequestWithRetries(&req.Context, config, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
 				return bifrost.handleProviderStreamRequest(provider, req, key, postHookRunner)
 			}, req.RequestType, provider.GetProviderKey(), model)
 		} else {
-			result, bifrostError = executeRequestWithRetries(config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+			result, bifrostError = executeRequestWithRetries(&req.Context, config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
 				return bifrost.handleProviderRequest(provider, req, key)
 			}, req.RequestType, provider.GetProviderKey(), model)
 		}

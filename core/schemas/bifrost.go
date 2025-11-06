@@ -104,7 +104,10 @@ const (
 	BifrostContextKeyRequestID           BifrostContextKey = "request-id"                     // string
 	BifrostContextKeyFallbackRequestID   BifrostContextKey = "fallback-request-id"            // string
 	BifrostContextKeyDirectKey           BifrostContextKey = "bifrost-direct-key"             // Key struct
-	BifrostContextKeySelectedKey         BifrostContextKey = "bifrost-key-selected"           // string (to store the selected key ID (set by bifrost))
+	BifrostContextKeySelectedKeyID       BifrostContextKey = "bifrost-selected-key-id"        // string (to store the selected key ID (set by bifrost))
+	BifrostContextKeySelectedKeyName     BifrostContextKey = "bifrost-selected-key-name"      // string (to store the selected key name (set by bifrost))
+	BifrostContextKeyNumberOfRetries     BifrostContextKey = "bifrost-number-of-retries"      // int (to store the number of retries (set by bifrost))
+	BifrostContextKeyFallbackIndex       BifrostContextKey = "bifrost-fallback-index"         // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyStreamEndIndicator  BifrostContextKey = "bifrost-stream-end-indicator"   // bool (set by bifrost)
 	BifrostContextKeySkipKeySelection    BifrostContextKey = "bifrost-skip-key-selection"     // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders        BifrostContextKey = "bifrost-extra-headers"          // map[string]string
@@ -276,13 +279,14 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	RequestType    RequestType        `json:"request_type"`
-	Provider       ModelProvider      `json:"provider,omitempty"`
-	ModelRequested string             `json:"model_requested,omitempty"`
-	Latency        int64              `json:"latency"`     // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawResponse    interface{}        `json:"raw_response,omitempty"`
-	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	RequestType     RequestType        `json:"request_type"`
+	Provider        ModelProvider      `json:"provider,omitempty"`
+	ModelRequested  string             `json:"model_requested,omitempty"`
+	ModelDeployment string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
+	Latency         int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex      int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawResponse     interface{}        `json:"raw_response,omitempty"`
+	CacheDebug      *BifrostCacheDebug `json:"cache_debug,omitempty"`
 }
 
 // BifrostCacheDebug represents debug information about the cache.

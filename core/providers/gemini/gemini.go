@@ -318,6 +318,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }

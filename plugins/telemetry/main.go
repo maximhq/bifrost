@@ -56,6 +56,9 @@ type PrometheusPlugin struct {
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
 	customLabels                   []string
+
+	defaultHTTPLabels    []string
+	defaultBifrostLabels []string
 }
 
 type Config struct {
@@ -85,8 +88,18 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		return nil, fmt.Errorf("failed to register process collector: %v", err)
 	}
 
-	httpDefaultLabels := []string{"path", "method", "status"}
-	bifrostDefaultLabels := []string{"provider", "model", "method"}
+	defaultHTTPLabels := []string{"path", "method", "status"}
+	defaultBifrostLabels := []string{
+		"provider",
+		"model",
+		"method",
+		"virtual_key_id",
+		"virtual_key_name",
+		"selected_key_id",
+		"selected_key_name",
+		"number_of_retries",
+		"fallback_index",
+	}
 
 	factory := promauto.With(registry)
 
@@ -98,7 +111,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "http_requests_total",
 			Help: "Total number of HTTP requests.",
 		},
-		append(httpDefaultLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, config.CustomLabels...),
 	)
 
 	// httpRequestDuration tracks the duration of HTTP requests
@@ -108,7 +121,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Duration of HTTP requests.",
 			Buckets: prometheus.DefBuckets,
 		},
-		append(httpDefaultLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, config.CustomLabels...),
 	)
 
 	// httpRequestSizeBytes tracks the size of incoming HTTP requests
@@ -118,7 +131,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Size of HTTP requests.",
 			Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
 		},
-		append(httpDefaultLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, config.CustomLabels...),
 	)
 
 	// httpResponseSizeBytes tracks the size of outgoing HTTP responses
@@ -128,7 +141,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Size of HTTP responses.",
 			Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
 		},
-		append(httpDefaultLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, config.CustomLabels...),
 	)
 
 	// Bifrost Upstream Metrics
@@ -137,7 +150,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_upstream_requests_total",
 			Help: "Total number of requests forwarded to upstream providers by Bifrost.",
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, config.CustomLabels...),
 	)
 
 	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
@@ -146,7 +159,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of requests forwarded to upstream providers by Bifrost.",
 			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(append(defaultBifrostLabels, "is_success"), config.CustomLabels...),
 	)
 
 	bifrostSuccessRequestsTotal := factory.NewCounterVec(
@@ -154,7 +167,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_success_requests_total",
 			Help: "Total number of successful requests forwarded to upstream providers by Bifrost.",
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, config.CustomLabels...),
 	)
 
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
@@ -162,7 +175,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_error_requests_total",
 			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
 		},
-		append(append(bifrostDefaultLabels, "reason"), config.CustomLabels...),
+		append(append(defaultBifrostLabels, "reason"), config.CustomLabels...),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -170,7 +183,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_input_tokens_total",
 			Help: "Total number of input tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, config.CustomLabels...),
 	)
 
 	bifrostOutputTokensTotal := factory.NewCounterVec(
@@ -178,7 +191,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_output_tokens_total",
 			Help: "Total number of output tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, config.CustomLabels...),
 	)
 
 	bifrostCacheHitsTotal := factory.NewCounterVec(
@@ -186,7 +199,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_hits_total",
 			Help: "Total number of cache hits forwarded to upstream providers by Bifrost, separated by cache type (direct/semantic).",
 		},
-		append(append(bifrostDefaultLabels, "cache_type"), config.CustomLabels...),
+		append(append(defaultBifrostLabels, "cache_type"), config.CustomLabels...),
 	)
 
 	bifrostCostTotal := factory.NewCounterVec(
@@ -194,7 +207,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cost_total",
 			Help: "Total cost in USD for requests to upstream providers.",
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, config.CustomLabels...),
 	)
 
 	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
@@ -202,7 +215,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_stream_inter_token_latency_seconds",
 			Help: "Latency of the intermediate tokens of a stream response.",
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, config.CustomLabels...),
 	)
 
 	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
@@ -210,7 +223,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_stream_first_token_latency_seconds",
 			Help: "Latency of the first token of a stream response.",
 		},
-		append(bifrostDefaultLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, config.CustomLabels...),
 	)
 
 	return &PrometheusPlugin{
@@ -233,6 +246,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
 		customLabels:                   config.CustomLabels,
+		defaultHTTPLabels:              defaultHTTPLabels,
+		defaultBifrostLabels:           defaultBifrostLabels,
 	}, nil
 }
 
@@ -271,12 +286,27 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		return result, bifrostErr, nil
 	}
 
+	virtualKeyID := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
+	virtualKeyName := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+
+	selectedKeyID := getStringFromContext(*ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := getStringFromContext(*ctx, schemas.BifrostContextKeySelectedKeyName)
+
+	numberOfRetries := getIntFromContext(*ctx, schemas.BifrostContextKeyNumberOfRetries)
+	fallbackIndex := getIntFromContext(*ctx, schemas.BifrostContextKeyFallbackIndex)
+
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
 	go func() {
 		labelValues := map[string]string{
-			"provider": string(provider),
-			"model":    model,
-			"method":   string(requestType),
+			"provider":          string(provider),
+			"model":             model,
+			"method":            string(requestType),
+			"virtual_key_id":    virtualKeyID,
+			"virtual_key_name":  virtualKeyName,
+			"selected_key_id":   selectedKeyID,
+			"selected_key_name": selectedKeyName,
+			"number_of_retries": strconv.Itoa(numberOfRetries),
+			"fallback_index":    strconv.Itoa(fallbackIndex),
 		}
 
 		// Get all prometheus labels from context
@@ -289,7 +319,7 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		}
 
 		// Get label values in the correct order (cache_type will be handled separately for cache hits)
-		promLabelValues := getPrometheusLabelValues(append([]string{"provider", "model", "method"}, p.customLabels...), labelValues)
+		promLabelValues := getPrometheusLabelValues(append(p.defaultBifrostLabels, p.customLabels...), labelValues)
 
 		// For streaming requests, handle per-token metrics for intermediate chunks
 		if bifrost.IsStreamRequestType(requestType) {
@@ -318,9 +348,15 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 			cost = p.pricingManager.CalculateCostWithCacheDebug(result)
 		}
 
-		duration := time.Since(startTime).Seconds()
-		p.UpstreamLatencySeconds.WithLabelValues(promLabelValues...).Observe(duration)
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+
+		// Record latency
+		duration := time.Since(startTime).Seconds()
+		latencyLabelValues := make([]string, 0, len(promLabelValues)+1)
+		latencyLabelValues = append(latencyLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
+		latencyLabelValues = append(latencyLabelValues, strconv.FormatBool(bifrostErr == nil))            // is_success
+		latencyLabelValues = append(latencyLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+		p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
 
 		// Record cost using the dedicated cost counter
 		if cost > 0 {
@@ -331,9 +367,9 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 		if bifrostErr != nil {
 			// Add reason to label values (create new slice to avoid modifying original)
 			errorPromLabelValues := make([]string, 0, len(promLabelValues)+1)
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:3]...)   // provider, model, method
-			errorPromLabelValues = append(errorPromLabelValues, bifrostErr.Error.Message) // reason
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[3:]...)   // then custom labels
+			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
+			errorPromLabelValues = append(errorPromLabelValues, bifrostErr.Error.Message)                         // reason
+			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
 		} else {
@@ -392,9 +428,9 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 
 				// Add cache_type to label values (create new slice to avoid modifying original)
 				cacheHitLabelValues := make([]string, 0, len(promLabelValues)+1)
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[:3]...) // provider, model, method
-				cacheHitLabelValues = append(cacheHitLabelValues, cacheType)              // cache_type
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[3:]...) // then custom labels
+				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
+				cacheHitLabelValues = append(cacheHitLabelValues, cacheType)                                        // cache_type
+				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
 				p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
 			}

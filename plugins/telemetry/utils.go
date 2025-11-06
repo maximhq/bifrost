@@ -4,6 +4,7 @@
 package telemetry
 
 import (
+	"context"
 	"log"
 	"math"
 	"strings"
@@ -65,4 +66,24 @@ func safeObserve(histogram *prometheus.HistogramVec, value float64, labels ...st
 			metric.Observe(value)
 		}
 	}
+}
+
+// getStringFromContext safely extracts a string value from context
+func getStringFromContext(ctx context.Context, key any) string {
+	if value := ctx.Value(key); value != nil {
+		if str, ok := value.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+// getIntFromContext safely extracts an int value from context
+func getIntFromContext(ctx context.Context, key any) int {
+	if value := ctx.Value(key); value != nil {
+		if intValue, ok := value.(int); ok {
+			return intValue
+		}
+	}
+	return 0
 }

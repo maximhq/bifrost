@@ -298,7 +298,7 @@ func GetExpectationsForScenario(scenarioName string, testConfig config.Comprehen
 	case "Reasoning":
 		expectations := ReasoningExpectations()
 		if requiresReasoning, ok := customParams["requires_reasoning"].(bool); ok && requiresReasoning {
-			expectations.ShouldContainAnyOf = []string{"step", "first", "then", "calculate", "therefore", "because", "solve"}
+			expectations.ShouldContainAnyOf = append(expectations.ShouldContainAnyOf, []string{"step", "first", "then", "calculate", "therefore", "because", "solve"}...)
 		}
 		return expectations
 

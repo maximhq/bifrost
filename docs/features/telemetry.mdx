@@ -28,12 +28,18 @@ The telemetry plugin operates asynchronously to ensure metrics collection doesn'
 
 These metrics track all incoming HTTP requests to Bifrost:
 
-| Metric | Type | Description | Labels |
-|--------|------|-------------|---------|
-| `http_requests_total` | Counter | Total number of HTTP requests | `path`, `method`, `status`, custom labels |
-| `http_request_duration_seconds` | Histogram | Duration of HTTP requests | `path`, `method`, `status`, custom labels |
-| `http_request_size_bytes` | Histogram | Size of incoming HTTP requests | `path`, `method`, `status`, custom labels |
-| `http_response_size_bytes` | Histogram | Size of outgoing HTTP responses | `path`, `method`, `status`, custom labels |
+| Metric | Type | Description |
+|--------|------|-------------|
+| `http_requests_total` | Counter | Total number of HTTP requests |
+| `http_request_duration_seconds` | Histogram | Duration of HTTP requests |
+| `http_request_size_bytes` | Histogram | Size of incoming HTTP requests |
+| `http_response_size_bytes` | Histogram | Size of outgoing HTTP responses |
+
+Labels:
+- `path`: HTTP endpoint path
+- `method`: HTTP verb (e.g., `GET`, `POST`, `PUT`, `DELETE`)
+- `status`: HTTP status code
+- custom labels: Custom labels configured in the Bifrost configuration
 
 ### Upstream Provider Metrics
 
@@ -41,14 +47,26 @@ These metrics track requests forwarded to AI providers:
 
 | Metric | Type | Description | Labels |
 |--------|------|-------------|---------|
-| `bifrost_upstream_requests_total` | Counter | Total requests forwarded to upstream providers | `provider`, `model`, `method`, custom labels |
-| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests | `provider`, `model`, `method`, custom labels |
-| `bifrost_success_requests_total` | Counter | Total successful requests to upstream providers | `provider`, `model`, `method`, custom labels |
-| `bifrost_error_requests_total` | Counter | Total failed requests to upstream providers | `provider`, `model`, `method`, custom labels |
-| `bifrost_input_tokens_total` | Counter | Total input tokens sent to upstream providers | `provider`, `model`, `method`, custom labels |
-| `bifrost_output_tokens_total` | Counter | Total output tokens received from upstream providers | `provider`, `model`, `method`, custom labels |
-| `bifrost_cache_hits_total` | Counter | Total cache hits by type (direct/semantic) | `provider`, `model`, `method`, `cache_type`, custom labels |
-| `bifrost_cost_total` | Counter | Total cost in USD for upstream provider requests | `provider`, `model`, `method`, custom labels |
+| `bifrost_upstream_requests_total` | Counter | Total requests forwarded to upstream providers | Base Labels, custom labels |
+| `bifrost_success_requests_total` | Counter | Total successful requests to upstream providers | Base Labels, custom labels |
+| `bifrost_error_requests_total` | Counter | Total failed requests to upstream providers | Base Labels, `reason`, custom labels |
+| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests | Base Labels, `is_success`, custom labels |
+| `bifrost_input_tokens_total` | Counter | Total input tokens sent to upstream providers | Base Labels, custom labels |
+| `bifrost_output_tokens_total` | Counter | Total output tokens received from upstream providers | Base Labels, custom labels |
+| `bifrost_cache_hits_total` | Counter | Total cache hits by type (direct/semantic) | Base Labels, `cache_type`, custom labels |
+| `bifrost_cost_total` | Counter | Total cost in USD for upstream provider requests | Base Labels, custom labels |
+
+Base Labels:
+- `provider`: AI provider name (e.g., `openai`, `anthropic`, `azure`)
+- `model`: Model name (e.g., `gpt-4o-mini`, `claude-3-sonnet`)
+- `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
+- `virtual_key_id`: Virtual key ID
+- `virtual_key_name`: Virtual key name
+- `selected_key_id`: Selected key ID
+- `selected_key_name`: Selected key name
+- `number_of_retries`: Number of retries
+- `fallback_index`: Fallback index (0 for first attempt, 1 for second attempt, etc.)
+- custom labels: Custom labels configured in the Bifrost configuration
 
 ### Streaming Metrics
 
@@ -56,17 +74,8 @@ These metrics capture latency characteristics specific to streaming responses:
 
 | Metric | Type | Description | Labels |
 |--------|------|-------------|---------|
-| `bifrost_stream_first_token_latency_seconds` | Histogram | Time from request start to first streamed token | `provider`, `model`, `method`, custom labels |
-| `bifrost_stream_inter_token_latency_seconds` | Histogram | Latency between subsequent streamed tokens | `provider`, `model`, `method`, custom labels |
-
-**Label Definitions:**
-- `provider`: AI provider name (e.g., `openai`, `anthropic`, `azure`)
-- `model`: Model name (e.g., `gpt-4o-mini`, `claude-3-sonnet`)
-- `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
-- `cache_type`: Cache hit type (`direct`, `semantic`) - only for cache hits metric
-- `reason`: Error reason string - only for `bifrost_error_requests_total`
-- `path`: HTTP endpoint path
-- `status`: HTTP status code
+| `bifrost_stream_first_token_latency_seconds` | Histogram | Time from request start to first streamed token | Base Labels |
+| `bifrost_stream_inter_token_latency_seconds` | Histogram | Latency between subsequent streamed tokens | Base Labels |
 
 ---
 

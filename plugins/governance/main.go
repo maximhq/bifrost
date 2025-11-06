@@ -316,9 +316,9 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	// Extract governance headers and virtual key using utility functions
 	headers := extractHeadersFromContext(*ctx)
-	virtualKey := getStringFromContext(*ctx, schemas.BifrostContextKeyVirtualKey)
+	virtualKeyValue := getStringFromContext(*ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := getStringFromContext(*ctx, schemas.BifrostContextKeyRequestID)
-	if virtualKey == "" {
+	if virtualKeyValue == "" {
 		if p.isVkMandatory != nil && *p.isVkMandatory {
 			return req, &schemas.PluginShortCircuit{
 				Error: &schemas.BifrostError{
@@ -338,7 +338,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
-		VirtualKey: virtualKey,
+		VirtualKey: virtualKeyValue,
 		Provider:   provider,
 		Model:      model,
 		Headers:    headers,

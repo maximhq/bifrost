@@ -108,6 +108,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookR
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }
@@ -143,6 +144,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.SGL,
 		postHookRunner,
+		nil,
 		nil,
 		provider.logger,
 	)

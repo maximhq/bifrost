@@ -189,15 +189,15 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, jsonData [
 // makeStreamingRequest creates a streaming request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and returns the response.
 // Returns the response body and an error if the request fails.
-func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, jsonData []byte, key schemas.Key, model string) (*http.Response, *schemas.BifrostError) {
+func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, jsonData []byte, key schemas.Key, model string) (*http.Response, string, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if key.BedrockKeyConfig == nil {
-		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
+		return nil, "", providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
 	// Format the path with proper model identifier for streaming
-	path := provider.getModelPath("converse-stream", model, key)
+	path, deployment := provider.getModelPath("converse-stream", model, key)
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil {
@@ -207,7 +207,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, jsonD
 	// Create HTTP request for streaming
 	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewReader(jsonData))
 	if reqErr != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr, providerName)
+		return nil, deployment, providerUtils.NewBifrostOperationError("error creating request", reqErr, providerName)
 	}
 
 	// Set any extra headers from network config
@@ -221,7 +221,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, jsonD
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 		// Sign the request using either explicit credentials or IAM role authentication
 		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, region, "bedrock", providerName); err != nil {
-			return nil, err
+			return nil, deployment, err
 		}
 	}
 
@@ -229,7 +229,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, jsonD
 	resp, respErr := provider.client.Do(req)
 	if respErr != nil {
 		if errors.Is(respErr, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, deployment, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
@@ -238,17 +238,17 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, jsonD
 				},
 			}
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, respErr, providerName)
+		return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, respErr, providerName)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, providerName, nil, nil)
+		return nil, deployment, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, providerName, nil, nil)
 	}
 
-	return resp, nil
+	return resp, deployment, nil
 }
 
 // signAWSRequest signs an HTTP request using AWS Signature Version 4.
@@ -509,7 +509,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas
 		return nil, bifrostErr
 	}
 
-	path := provider.getModelPath("invoke", request.Model, key)
+	path, deployment := provider.getModelPath("invoke", request.Model, key)
 	body, latency, err := provider.completeRequest(ctx, jsonData, path, key)
 	if err != nil {
 		return nil, err
@@ -539,6 +539,7 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = providerName
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
@@ -586,7 +587,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, key schemas
 	}
 
 	// Format the path with proper model identifier
-	path := provider.getModelPath("converse", request.Model, key)
+	path, deployment := provider.getModelPath("converse", request.Model, key)
 
 	// Create the signed request
 	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
@@ -612,6 +613,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, key schemas
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = providerName
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
@@ -645,7 +647,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		return nil, bifrostErr
 	}
 
-	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model)
+	resp, deployment, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -724,11 +726,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					response.ID = messageID
 					response.Model = request.Model
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.ChatCompletionStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						ChunkIndex:     chunkIndex,
-						Latency:        time.Since(lastChunkTime).Milliseconds(),
+						RequestType:     schemas.ChatCompletionStreamRequest,
+						Provider:        providerName,
+						ModelRequested:  request.Model,
+						ModelDeployment: deployment,
+						ChunkIndex:      chunkIndex,
+						Latency:         time.Since(lastChunkTime).Milliseconds(),
 					}
 					chunkIndex++
 					lastChunkTime = time.Now()
@@ -753,6 +756,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 		// Send final response
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+		response.ExtraFields.ModelDeployment = deployment
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
 	}()
@@ -785,7 +789,7 @@ func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key,
 	}
 
 	// Format the path with proper model identifier
-	path := provider.getModelPath("converse", request.Model, key)
+	path, deployment := provider.getModelPath("converse", request.Model, key)
 
 	// Create the signed request
 	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
@@ -811,6 +815,7 @@ func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key,
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = providerName
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
@@ -844,7 +849,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 		return nil, bifrostErr
 	}
 
-	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model)
+	resp, deployment, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -922,11 +927,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 				if response != nil {
 
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.ResponsesStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						ChunkIndex:     chunkIndex,
-						Latency:        time.Since(lastChunkTime).Milliseconds(),
+						RequestType:     schemas.ResponsesStreamRequest,
+						Provider:        providerName,
+						ModelRequested:  request.Model,
+						ModelDeployment: deployment,
+						ChunkIndex:      chunkIndex,
+						Latency:         time.Since(lastChunkTime).Milliseconds(),
 					}
 					chunkIndex++
 					lastChunkTime = time.Now()
@@ -957,11 +963,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 				Usage: usage,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesStreamRequest,
-				Provider:       providerName,
-				ModelRequested: request.Model,
-				ChunkIndex:     chunkIndex + 1,
-				Latency:        time.Since(startTime).Milliseconds(),
+				RequestType:     schemas.ResponsesStreamRequest,
+				Provider:        providerName,
+				ModelRequested:  request.Model,
+				ModelDeployment: deployment,
+				ChunkIndex:      chunkIndex + 1,
+				Latency:         time.Since(startTime).Milliseconds(),
 			},
 		}
 		providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), postHookRunner, responseChan)
@@ -992,6 +999,8 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key,
 	var rawResponse []byte
 	var bifrostError *schemas.BifrostError
 	var latency time.Duration
+	var path string
+	var deployment string
 
 	switch modelType {
 	case "titan":
@@ -1003,7 +1012,7 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key,
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		path := provider.getModelPath("invoke", request.Model, key)
+		path, deployment = provider.getModelPath("invoke", request.Model, key)
 		rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 
 	case "cohere":
@@ -1015,7 +1024,7 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key,
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		path := provider.getModelPath("invoke", request.Model, key)
+		path, deployment = provider.getModelPath("invoke", request.Model, key)
 		rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 
 	default:
@@ -1049,6 +1058,7 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, key schemas.Key,
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = providerName
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
@@ -1083,17 +1093,19 @@ func (provider *BedrockProvider) TranscriptionStream(ctx context.Context, postHo
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, schemas.Bedrock)
 }
 
-func (provider *BedrockProvider) getModelPath(basePath string, model string, key schemas.Key) string {
+func (provider *BedrockProvider) getModelPath(basePath string, model string, key schemas.Key) (string, string) {
 	// Format the path with proper model identifier for streaming
 	path := fmt.Sprintf("%s/%s", model, basePath)
 
+	var deployment string
 	if key.BedrockKeyConfig.Deployments != nil {
 		if inferenceProfileID, ok := key.BedrockKeyConfig.Deployments[model]; ok {
 			if key.BedrockKeyConfig.ARN != nil {
+				deployment = inferenceProfileID
 				encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, inferenceProfileID))
 				path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 			}
 		}
 	}
-	return path
+	return path, deployment
 }

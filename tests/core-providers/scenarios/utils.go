@@ -44,7 +44,7 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		case "secondary":
 			return "aoede"
 		case "tertiary":
-			return "despina"
+			return "erinome"
 		default:
 			return "achernar"
 		}

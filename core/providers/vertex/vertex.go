@@ -640,6 +640,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			providerName,
 			postHookRunner,
 			nil,
+			nil,
 			provider.logger,
 		)
 	}

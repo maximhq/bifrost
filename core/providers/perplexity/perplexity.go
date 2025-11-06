@@ -187,6 +187,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx context.Context, po
 		schemas.Perplexity,
 		postHookRunner,
 		customRequestConverter,
+		nil,
 		provider.logger,
 	)
 }

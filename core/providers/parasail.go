@@ -120,6 +120,7 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, post
 		schemas.Parasail,
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }

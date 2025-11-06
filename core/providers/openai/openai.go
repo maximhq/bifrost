@@ -291,6 +291,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }
@@ -307,6 +308,7 @@ func HandleOpenAITextCompletionStreaming(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
+	postResponseConverter func(*schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	headers := map[string]string{
@@ -461,6 +463,14 @@ func HandleOpenAITextCompletionStreaming(
 				continue
 			}
 
+			if postResponseConverter != nil {
+				if converted := postResponseConverter(&response); converted != nil {
+					response = *converted
+				} else {
+					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+				}
+			}
+
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if response.Usage != nil {
 				// Collect usage information and send at the end of the stream
@@ -530,6 +540,9 @@ func HandleOpenAITextCompletionStreaming(
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, logger)
 		} else {
 			response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
+			if postResponseConverter != nil {
+				response = postResponseConverter(response)
+			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), postHookRunner, responseChan)
 		}
@@ -662,6 +675,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -679,6 +693,7 @@ func HandleOpenAIChatCompletionStreaming(
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	customRequestConverter func(*schemas.BifrostChatRequest) (any, error),
+	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	headers := map[string]string{
@@ -838,6 +853,14 @@ func HandleOpenAIChatCompletionStreaming(
 				continue
 			}
 
+			if postResponseConverter != nil {
+				if converted := postResponseConverter(&response); converted != nil {
+					response = *converted
+				} else {
+					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+				}
+			}
+
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if response.Usage != nil {
 				// Collect usage information and send at the end of the stream
@@ -910,6 +933,9 @@ func HandleOpenAIChatCompletionStreaming(
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, logger)
 		} else {
 			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+			if postResponseConverter != nil {
+				response = postResponseConverter(response)
+			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
 		}
@@ -1039,6 +1065,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -1056,6 +1083,7 @@ func HandleOpenAIResponsesStreaming(
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
+	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
@@ -1192,6 +1220,14 @@ func HandleOpenAIResponsesStreaming(
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
+			}
+
+			if postResponseConverter != nil {
+				if converted := postResponseConverter(&response); converted != nil {
+					response = *converted
+				} else {
+					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+				}
 			}
 
 			if response.Type == schemas.ResponsesStreamResponseTypeError {

@@ -160,6 +160,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx context.Context, po
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		provider.logger,
 	)
 }
@@ -200,6 +201,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 		schemas.OpenRouter,
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -235,6 +237,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx context.Context, postHoo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		provider.logger,
 	)

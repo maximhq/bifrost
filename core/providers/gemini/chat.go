@@ -33,9 +33,7 @@ func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostC
 	if request.SystemInstruction != nil {
 		allGenAiMessages = append(allGenAiMessages, *request.SystemInstruction)
 	}
-	for _, content := range request.Contents {
-		allGenAiMessages = append(allGenAiMessages, content)
-	}
+	allGenAiMessages = append(allGenAiMessages, request.Contents...)
 
 	for _, content := range allGenAiMessages {
 		if len(content.Parts) == 0 {

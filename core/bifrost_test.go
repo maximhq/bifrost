@@ -49,6 +49,7 @@ func createBifrostError(message string, statusCode *int, errorType *string, isBi
 // Test executeRequestWithRetries - success scenarios
 func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	config := createTestConfig(3, 100*time.Millisecond, 1*time.Second)
+	ctx := context.Background()
 
 	// Test immediate success
 	t.Run("ImmediateSuccess", func(t *testing.T) {
@@ -59,6 +60,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 		}
 
 		result, err := executeRequestWithRetries(
+			&ctx,
 			config,
 			handler,
 			schemas.ChatCompletionRequest,
@@ -91,6 +93,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 		}
 
 		result, err := executeRequestWithRetries(
+			&ctx,
 			config,
 			handler,
 			schemas.ChatCompletionRequest,
@@ -113,7 +116,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 // Test executeRequestWithRetries - retry limits
 func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	config := createTestConfig(2, 100*time.Millisecond, 1*time.Second)
-
+	ctx := context.Background()
 	t.Run("ExceedsMaxRetries", func(t *testing.T) {
 		callCount := 0
 		handler := func() (string, *schemas.BifrostError) {
@@ -123,6 +126,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 		}
 
 		result, err := executeRequestWithRetries(
+			&ctx,
 			config,
 			handler,
 			schemas.ChatCompletionRequest,
@@ -152,7 +156,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 // Test executeRequestWithRetries - non-retryable errors
 func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 	config := createTestConfig(3, 100*time.Millisecond, 1*time.Second)
-
+	ctx := context.Background()
 	testCases := []struct {
 		name  string
 		error *schemas.BifrostError
@@ -184,6 +188,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 			}
 
 			result, err := executeRequestWithRetries(
+				&ctx,
 				config,
 				handler,
 				schemas.ChatCompletionRequest,
@@ -207,7 +212,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 // Test executeRequestWithRetries - retryable conditions
 func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 	config := createTestConfig(1, 100*time.Millisecond, 1*time.Second)
-
+	ctx := context.Background()
 	testCases := []struct {
 		name  string
 		error *schemas.BifrostError
@@ -255,6 +260,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 			}
 
 			result, err := executeRequestWithRetries(
+				&ctx,
 				config,
 				handler,
 				schemas.ChatCompletionRequest,
@@ -464,6 +470,7 @@ func TestIsRateLimitError_EdgeCases(t *testing.T) {
 // Test retry logging and attempt counting
 func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	config := createTestConfig(2, 50*time.Millisecond, 1*time.Second)
+	ctx := context.Background()
 
 	// Capture calls and timing for verification
 	var attemptCounts []int
@@ -482,6 +489,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	}
 
 	result, err := executeRequestWithRetries(
+		&ctx,
 		config,
 		handler,
 		schemas.ChatCompletionRequest,

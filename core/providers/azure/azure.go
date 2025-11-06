@@ -58,10 +58,11 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Azure's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
-func (provider *AzureProvider) completeRequest(ctx context.Context, jsonData []byte, path string, key schemas.Key, model string, requestType schemas.RequestType) ([]byte, time.Duration, *schemas.BifrostError) {
-	deployment := key.AzureKeyConfig.Deployments[model]
-	if deployment == "" {
-		return nil, 0, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", model), provider.GetProviderKey())
+func (provider *AzureProvider) completeRequest(ctx context.Context, jsonData []byte, path string, key schemas.Key, model string, requestType schemas.RequestType) ([]byte, string, time.Duration, *schemas.BifrostError) {
+	var deployment string
+	var ok bool
+	if deployment, ok = key.AzureKeyConfig.Deployments[model]; !ok || deployment == "" {
+		return nil, "", 0, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", model), provider.GetProviderKey())
 	}
 
 	apiVersion := key.AzureKeyConfig.APIVersion
@@ -97,24 +98,24 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, jsonData []b
 	// Send the request and measure latency
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
-		return nil, latency, bifrostErr
+		return nil, deployment, latency, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, openai.ParseOpenAIError(resp, requestType, provider.GetProviderKey(), model)
+		return nil, deployment, latency, openai.ParseOpenAIError(resp, requestType, provider.GetProviderKey(), model)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+		return nil, deployment, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
 	}
 
 	// Read the response body and copy it before releasing the response
 	// to avoid use-after-free since body references fasthttp's internal buffer
 	bodyCopy := append([]byte(nil), body...)
 
-	return bodyCopy, latency, nil
+	return bodyCopy, deployment, latency, nil
 }
 
 // listModelsForKey performs a list models request for a single key.
@@ -229,7 +230,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, key schemas.K
 		return nil, bifrostErr
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, "completions", key, request.Model, schemas.TextCompletionRequest)
+	responseBody, deployment, latency, err := provider.completeRequest(ctx, jsonData, "completions", key, request.Model, schemas.TextCompletionRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +244,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, key schemas.K
 
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
 	response.ExtraFields.RequestType = schemas.TextCompletionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 
@@ -284,6 +286,11 @@ func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHoo
 		authHeader["api-key"] = key.Value
 	}
 
+	customPostResponseConverter := func(response *schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse {
+		response.ExtraFields.ModelDeployment = deployment
+		return response
+	}
+
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.client,
@@ -294,6 +301,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHoo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		customPostResponseConverter,
 		provider.logger,
 	)
 }
@@ -316,7 +324,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, key schemas.K
 		return nil, bifrostErr
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, "chat/completions", key, request.Model, schemas.ChatCompletionRequest)
+	responseBody, deployment, latency, err := provider.completeRequest(ctx, jsonData, "chat/completions", key, request.Model, schemas.ChatCompletionRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -329,8 +337,9 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, key schemas.K
 	}
 
 	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
+	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
 
 	// Set raw response if enabled
@@ -372,6 +381,11 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 		authHeader["api-key"] = key.Value
 	}
 
+	customPostResponseConverter := func(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+		response.ExtraFields.ModelDeployment = deployment
+		return response
+	}
+
 	// Use shared streaming logic from OpenAI
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
@@ -384,6 +398,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
+		customPostResponseConverter,
 		provider.logger,
 	)
 }
@@ -465,6 +480,7 @@ func (provider *AzureProvider) Responses(ctx context.Context, key schemas.Key, r
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 
 	// Set raw response if enabled
@@ -506,6 +522,11 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 		return req
 	}
 
+	postResponseConverter := func(response *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse {
+		response.ExtraFields.ModelDeployment = deployment
+		return response
+	}
+
 	// Use shared streaming logic from OpenAI
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
@@ -518,6 +539,7 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 		provider.GetProviderKey(),
 		postHookRunner,
 		postRequestConverter,
+		postResponseConverter,
 		provider.logger,
 	)
 }
@@ -540,7 +562,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, key schemas.Key, r
 		return nil, bifrostErr
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, "embeddings", key, request.Model, schemas.EmbeddingRequest)
+	responseBody, deployment, latency, err := provider.completeRequest(ctx, jsonData, "embeddings", key, request.Model, schemas.EmbeddingRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -556,6 +578,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, key schemas.Key, r
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
 	response.ExtraFields.RequestType = schemas.EmbeddingRequest
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {

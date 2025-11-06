@@ -29,7 +29,7 @@ const (
 
 // EvaluationRequest contains the context for evaluating a request
 type EvaluationRequest struct {
-	VirtualKey string                `json:"virtual_key"`
+	VirtualKey string                `json:"virtual_key"` // Virtual key value
 	Provider   schemas.ModelProvider `json:"provider"`
 	Model      string                `json:"model"`
 	Headers    map[string]string     `json:"headers"`
@@ -86,6 +86,10 @@ func (r *BudgetResolver) EvaluateRequest(ctx *context.Context, evaluationRequest
 			Reason:   "Virtual key not found",
 		}
 	}
+
+	// Set virtual key id and name in context
+	*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"), vk.ID)
+	*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"), vk.Name)
 
 	if !vk.IsActive {
 		return &EvaluationResult{
