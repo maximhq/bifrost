@@ -18,7 +18,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
-import { Edit, Key, Plus, Trash2, Users } from "lucide-react";
+import { Edit, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import CustomerDialog from "./customerDialog";
@@ -120,7 +120,6 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
 											<TableCell>
 												{teams?.length > 0 ? (
 													<div className="flex items-center gap-2">
-														<Users className="h-4 w-4" />
 														<TooltipProvider>
 															<Tooltip>
 																<TooltipTrigger>
@@ -160,7 +159,6 @@ export default function CustomersTable({ customers, teams, virtualKeys, onRefres
 											<TableCell>
 												{vks?.length > 0 ? (
 													<div className="flex items-center gap-2">
-														<Key className="h-4 w-4" />
 														<TooltipProvider>
 															<Tooltip>
 																<TooltipTrigger>

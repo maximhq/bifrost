@@ -153,9 +153,6 @@ llm = ChatOpenAI(
     openai_api_base="http://localhost:8080/langchain",
     default_headers={
         "x-bf-vk": "your-virtual-key",          # Virtual key for governance
-        "x-bf-user-id": "user123",              # User tracking
-        "x-bf-team-id": "team-ai",              # Team tracking  
-        "x-bf-trace-id": "trace-456"            # Custom trace ID
     }
 )
 
@@ -176,9 +173,6 @@ const llm = new ChatOpenAI({
     baseURL: "http://localhost:8080/langchain",
     defaultHeaders: {
       "x-bf-vk": "your-virtual-key",          // Virtual key for governance
-      "x-bf-user-id": "user123",              // User tracking
-      "x-bf-team-id": "team-ai",              // Team tracking  
-      "x-bf-trace-id": "trace-456"            // Custom trace ID
     }
   }
 });

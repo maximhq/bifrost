@@ -297,7 +297,7 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 		if err != nil {
 			return zero, fmt.Errorf("failed to marshal otel plugin config: %v", err)
 		}
-		plugin, err := otel.Init(ctx, otelConfig, logger, bifrostConfig.PricingManager)
+		plugin, err := otel.Init(ctx, otelConfig, logger, bifrostConfig.PricingManager, handlers.GetVersion())
 		if err != nil {
 			return zero, err
 		}

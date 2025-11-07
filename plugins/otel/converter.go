@@ -368,7 +368,7 @@ func getResponsesRequestParams(req *schemas.BifrostResponsesRequest) []*KeyValue
 }
 
 // createResourceSpan creates a new resource span for a Bifrost request
-func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
+func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest, bifrostVersion string) *ResourceSpan {
 	provider, model, _ := req.GetRequestFields()
 
 	// preparing parameters
@@ -402,7 +402,7 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 		Resource: &resourcepb.Resource{
 			Attributes: []*commonpb.KeyValue{
 				kvStr("service.name", "bifrost"),
-				kvStr("service.version", "1.0.0"),
+				kvStr("service.version", bifrostVersion),
 			},
 		},
 		ScopeSpans: []*ScopeSpan{
@@ -439,6 +439,10 @@ func completeResourceSpan(
 	selectedKeyName string,
 	numberOfRetries int,
 	fallbackIndex int,
+	teamID string,
+	teamName string,
+	customerID string,
+	customerName string,
 ) *ResourceSpan {
 	params := []*KeyValue{}
 
@@ -679,6 +683,14 @@ func completeResourceSpan(
 	if selectedKeyID != "" {
 		params = append(params, kvStr("gen_ai.selected_key_id", selectedKeyID))
 		params = append(params, kvStr("gen_ai.selected_key_name", selectedKeyName))
+	}
+	if teamID != "" {
+		params = append(params, kvStr("gen_ai.team_id", teamID))
+		params = append(params, kvStr("gen_ai.team_name", teamName))
+	}
+	if customerID != "" {
+		params = append(params, kvStr("gen_ai.customer_id", customerID))
+		params = append(params, kvStr("gen_ai.customer_name", customerName))
 	}
 	params = append(params, kvInt("gen_ai.number_of_retries", int64(numberOfRetries)))
 	params = append(params, kvInt("gen_ai.fallback_index", int64(fallbackIndex)))

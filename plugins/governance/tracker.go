@@ -21,8 +21,6 @@ type UsageUpdate struct {
 	TokensUsed int64                 `json:"tokens_used"`
 	Cost       float64               `json:"cost"` // Cost in dollars
 	RequestID  string                `json:"request_id"`
-	TeamID     *string               `json:"team_id,omitempty"`     // For audit trail
-	CustomerID *string               `json:"customer_id,omitempty"` // For audit trail
 
 	// Streaming optimization fields
 	IsStreaming  bool `json:"is_streaming"`   // Whether this is a streaming response

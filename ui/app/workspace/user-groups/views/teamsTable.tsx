@@ -19,7 +19,7 @@ import { getErrorMessage, useDeleteTeamMutation } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
-import { Edit, Key, Plus, Trash2 } from "lucide-react";
+import { Edit, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import TeamDialog from "./teamDialog";
@@ -146,8 +146,6 @@ export default function TeamsTable({ teams, customers, virtualKeys, onRefresh }:
 												<TableCell>
 													{vks.length > 0 ? (
 														<div className="flex items-center gap-2">
-															<Key className="h-4 w-4" />
-
 															<Tooltip>
 																<TooltipTrigger>
 																	<Badge variant="outline" className="text-xs">

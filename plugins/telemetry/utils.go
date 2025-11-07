@@ -87,3 +87,27 @@ func getIntFromContext(ctx context.Context, key any) int {
 	}
 	return 0
 }
+
+// containsLabel checks if a string slice contains a specific label, ignoring differences
+// between underscores and hyphens. It checks for:
+// - Direct match
+// - Match after removing underscores
+// - Match after replacing hyphens with underscores
+// - Match after replacing underscores with hyphens
+func containsLabel(slice []string, label string) bool {
+	for _, s := range slice {
+		// Direct match
+		if s == label {
+			return true
+		}
+		// Match after replacing hyphens with underscores
+		if strings.ReplaceAll(s, "-", "_") == strings.ReplaceAll(label, "-", "_") {
+			return true
+		}
+		// Match after replacing underscores with hyphens
+		if strings.ReplaceAll(s, "_", "-") == strings.ReplaceAll(label, "_", "-") {
+			return true
+		}
+	}
+	return false
+}

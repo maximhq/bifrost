@@ -99,6 +99,21 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		"selected_key_name",
 		"number_of_retries",
 		"fallback_index",
+		"team_id",
+		"team_name",
+		"customer_id",
+		"customer_name",
+	}
+
+	var filteredCustomLabels []string
+	if len(config.CustomLabels) > 0 {
+		for _, label := range config.CustomLabels {
+			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) {
+				filteredCustomLabels = append(filteredCustomLabels, label)
+			} else {
+				logger.Info("custom label %s is already a default label, it will be ignored", label)
+			}
+		}
 	}
 
 	factory := promauto.With(registry)
@@ -111,7 +126,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "http_requests_total",
 			Help: "Total number of HTTP requests.",
 		},
-		append(defaultHTTPLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, filteredCustomLabels...),
 	)
 
 	// httpRequestDuration tracks the duration of HTTP requests
@@ -121,7 +136,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Duration of HTTP requests.",
 			Buckets: prometheus.DefBuckets,
 		},
-		append(defaultHTTPLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, filteredCustomLabels...),
 	)
 
 	// httpRequestSizeBytes tracks the size of incoming HTTP requests
@@ -131,7 +146,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Size of HTTP requests.",
 			Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
 		},
-		append(defaultHTTPLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, filteredCustomLabels...),
 	)
 
 	// httpResponseSizeBytes tracks the size of outgoing HTTP responses
@@ -141,7 +156,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Size of HTTP responses.",
 			Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
 		},
-		append(defaultHTTPLabels, config.CustomLabels...),
+		append(defaultHTTPLabels, filteredCustomLabels...),
 	)
 
 	// Bifrost Upstream Metrics
@@ -150,7 +165,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_upstream_requests_total",
 			Help: "Total number of requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
@@ -159,7 +174,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of requests forwarded to upstream providers by Bifrost.",
 			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
 		},
-		append(append(defaultBifrostLabels, "is_success"), config.CustomLabels...),
+		append(append(defaultBifrostLabels, "is_success"), filteredCustomLabels...),
 	)
 
 	bifrostSuccessRequestsTotal := factory.NewCounterVec(
@@ -167,7 +182,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_success_requests_total",
 			Help: "Total number of successful requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
@@ -175,7 +190,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_error_requests_total",
 			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
 		},
-		append(append(defaultBifrostLabels, "reason"), config.CustomLabels...),
+		append(append(defaultBifrostLabels, "reason"), filteredCustomLabels...),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -183,7 +198,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_input_tokens_total",
 			Help: "Total number of input tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostOutputTokensTotal := factory.NewCounterVec(
@@ -191,7 +206,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_output_tokens_total",
 			Help: "Total number of output tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostCacheHitsTotal := factory.NewCounterVec(
@@ -199,7 +214,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_hits_total",
 			Help: "Total number of cache hits forwarded to upstream providers by Bifrost, separated by cache type (direct/semantic).",
 		},
-		append(append(defaultBifrostLabels, "cache_type"), config.CustomLabels...),
+		append(append(defaultBifrostLabels, "cache_type"), filteredCustomLabels...),
 	)
 
 	bifrostCostTotal := factory.NewCounterVec(
@@ -207,7 +222,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cost_total",
 			Help: "Total cost in USD for requests to upstream providers.",
 		},
-		append(defaultBifrostLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
@@ -215,7 +230,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_stream_inter_token_latency_seconds",
 			Help: "Latency of the intermediate tokens of a stream response.",
 		},
-		append(defaultBifrostLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
@@ -223,7 +238,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_stream_first_token_latency_seconds",
 			Help: "Latency of the first token of a stream response.",
 		},
-		append(defaultBifrostLabels, config.CustomLabels...),
+		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	return &PrometheusPlugin{
@@ -245,7 +260,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CostTotal:                      bifrostCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
-		customLabels:                   config.CustomLabels,
+		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
 	}, nil
@@ -295,6 +310,11 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	numberOfRetries := getIntFromContext(*ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := getIntFromContext(*ctx, schemas.BifrostContextKeyFallbackIndex)
 
+	teamID := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-team-id"))
+	teamName := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-team-name"))
+	customerID := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
+	customerName := getStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
+
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
 	go func() {
 		labelValues := map[string]string{
@@ -307,6 +327,10 @@ func (p *PrometheusPlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 			"selected_key_name": selectedKeyName,
 			"number_of_retries": strconv.Itoa(numberOfRetries),
 			"fallback_index":    strconv.Itoa(fallbackIndex),
+			"team_id":           teamID,
+			"team_name":         teamName,
+			"customer_id":       customerID,
+			"customer_name":     customerName,
 		}
 
 		// Get all prometheus labels from context
