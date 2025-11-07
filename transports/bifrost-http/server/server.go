@@ -547,14 +547,14 @@ func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provid
 		return fmt.Errorf("bifrost client not found")
 	}
 
-	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-
 	allModels, err := s.Client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{
 		Provider: provider,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to list all models: %v", err)
+		return fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(err))
 	}
+
+	s.Config.PricingManager.DeleteModelDataForProvider(provider)
 
 	s.Config.PricingManager.AddModelDataToPool(allModels)
 

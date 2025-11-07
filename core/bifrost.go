@@ -361,7 +361,7 @@ func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.Bifr
 					if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
 						!strings.Contains(bifrostErr.Error.Message, "not supported") {
 						providerErr = bifrostErr
-						bifrost.logger.Warn(fmt.Sprintf("failed to list models for provider %s: %v", providerKey, bifrostErr.Error.Message))
+						bifrost.logger.Warn(fmt.Sprintf("failed to list models for provider %s: %s", providerKey, GetErrorMessage(bifrostErr)))
 					}
 					break
 				}

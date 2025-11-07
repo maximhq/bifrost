@@ -228,3 +228,18 @@ func MarshalUnsafe(v any) string {
 	// Encode adds a trailing newline, trim it
 	return strings.TrimSpace(buf.String())
 }
+
+func GetErrorMessage(err *schemas.BifrostError) string {
+	if err == nil {
+		return ""
+	}
+	if err.StatusCode != nil && (*err.StatusCode == 401 || *err.StatusCode == 403) {
+		return "key invalid or unauthorized or forbidden"
+	} else if err.Error != nil && err.Error.Message != "" {
+		return err.Error.Message
+	} else if err.Type != nil {
+		return *err.Type
+	} else {
+		return "unknown error"
+	}
+}

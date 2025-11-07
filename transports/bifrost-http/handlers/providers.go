@@ -435,8 +435,14 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.modelsManager.RefetchModelsForProvider(ctx, provider); err != nil {
-		logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", provider, err))
+	if len(redactedConfig.Keys) > 0 {
+		if err := h.modelsManager.RefetchModelsForProvider(ctx, provider); err != nil {
+			logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", provider, err))
+		}
+	} else {
+		if err := h.modelsManager.DeleteModelsForProvider(provider); err != nil {
+			logger.Warn(fmt.Sprintf("Failed to delete models for provider %s: %v", provider, err))
+		}
 	}
 
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
