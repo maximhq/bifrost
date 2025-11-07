@@ -538,6 +538,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																			"flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
 																			optionProps.isFocused && "bg-accent dark:!bg-card",
 																			"hover:bg-accent",
+																			optionProps.isSelected && "bg-accent dark:!bg-card",
 																		)}
 																	>
 																		<RenderProviderIcon
