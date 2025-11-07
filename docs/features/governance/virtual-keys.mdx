@@ -545,8 +545,6 @@ Include additional headers for enhanced tracking and audit trails:
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "x-bf-vk: vk-engineering-main" \
-  -H "x-bf-team: team-eng-001" \
-  -H "x-bf-customer: customer-acme-corp" \
   -H "x-bf-user-id: user-alice" \
   -d '{
     "model": "gpt-4o-mini", 
@@ -556,9 +554,6 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 **Header Definitions:**
 - `x-bf-vk` - **Required** virtual key for access control
-- `x-bf-team` - Optional team identifier for audit trails
-- `x-bf-customer` - Optional customer identifier for audit trails  
-- `x-bf-user-id` - Optional user identifier for detailed tracking
 
 ### Error Responses
 

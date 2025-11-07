@@ -837,6 +837,11 @@
                   "type": "object",
                   "description": "Configuration for the OpenTelemetry plugin",
                   "properties": {
+                    "service_name": {
+                      "type": "string",
+                      "description": "Service name to be used for tracing",
+                      "default": "bifrost"
+                    },
                     "collector_url": {
                       "type": "string",
                       "description": "URL of the OpenTelemetry collector",

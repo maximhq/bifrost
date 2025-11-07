@@ -317,7 +317,6 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 // PreHook intercepts requests before they are processed (governance decision point)
 func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	// Extract governance headers and virtual key using utility functions
-	headers := extractHeadersFromContext(*ctx)
 	virtualKeyValue := getStringFromContext(*ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := getStringFromContext(*ctx, schemas.BifrostContextKeyRequestID)
 	if virtualKeyValue == "" {
@@ -343,7 +342,6 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 		VirtualKey: virtualKeyValue,
 		Provider:   provider,
 		Model:      model,
-		Headers:    headers,
 		RequestID:  requestID,
 	}
 
@@ -416,7 +414,6 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	}
 
 	// Extract governance information
-	headers := extractHeadersFromContext(*ctx)
 	virtualKey := getStringFromContext(*ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := getStringFromContext(*ctx, schemas.BifrostContextKeyRequestID)
 
@@ -445,7 +442,7 @@ func (p *GovernancePlugin) PostHook(ctx *context.Context, result *schemas.Bifros
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, headers, isCacheRead, isBatch, bifrost.IsFinalChunk(ctx))
+		p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, isCacheRead, isBatch, bifrost.IsFinalChunk(ctx))
 	}()
 
 	return result, err, nil
@@ -464,18 +461,9 @@ func (p *GovernancePlugin) Cleanup() error {
 	return nil
 }
 
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, headers map[string]string, isCacheRead, isBatch bool, isFinalChunk bool) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, isCacheRead, isBatch bool, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
-
-	// Extract team/customer info for audit trail
-	var teamID, customerID *string
-	if teamIDValue := headers["x-bf-team"]; teamIDValue != "" {
-		teamID = &teamIDValue
-	}
-	if customerIDValue := headers["x-bf-customer"]; customerIDValue != "" {
-		customerID = &customerIDValue
-	}
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
@@ -517,8 +505,6 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			TokensUsed:   int64(tokensUsed),
 			Cost:         cost,
 			RequestID:    requestID,
-			TeamID:       teamID,
-			CustomerID:   customerID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
 			HasUsageData: tokensUsed > 0,

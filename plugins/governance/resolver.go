@@ -32,7 +32,6 @@ type EvaluationRequest struct {
 	VirtualKey string                `json:"virtual_key"` // Virtual key value
 	Provider   schemas.ModelProvider `json:"provider"`
 	Model      string                `json:"model"`
-	Headers    map[string]string     `json:"headers"`
 	RequestID  string                `json:"request_id"`
 }
 
@@ -90,6 +89,18 @@ func (r *BudgetResolver) EvaluateRequest(ctx *context.Context, evaluationRequest
 	// Set virtual key id and name in context
 	*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"), vk.ID)
 	*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"), vk.Name)
+	if vk.Team != nil {
+		*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-team-id"), vk.Team.ID)
+		*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-team-name"), vk.Team.Name)
+		if vk.Team.Customer != nil {
+			*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-customer-id"), vk.Team.Customer.ID)
+			*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-customer-name"), vk.Team.Customer.Name)
+		}
+	}
+	if vk.Customer != nil {
+		*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-customer-id"), vk.Customer.ID)
+		*ctx = context.WithValue(*ctx, schemas.BifrostContextKey("bf-governance-customer-name"), vk.Customer.Name)
+	}
 
 	if !vk.IsActive {
 		return &EvaluationResult{

@@ -41,9 +41,6 @@ import (
 //
 // 4. Governance Headers:
 //   - x-bf-vk: Virtual key for governance (required for governance to work)
-//   - x-bf-team: Team identifier for team-based governance rules
-//   - x-bf-user: User identifier for user-based governance rules
-//   - x-bf-customer: Customer identifier for customer-based governance rules
 //
 // 5. API Key Headers:
 //   - Authorization: Bearer token format only (e.g., "Bearer sk-...") - OpenAI style
@@ -136,11 +133,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
 				return true
 			}
-		}
-		// Handle governance headers (x-bf-team, x-bf-user, x-bf-customer)
-		if keyStr == "x-bf-team" || keyStr == "x-bf-user" || keyStr == "x-bf-customer" {
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(keyStr), string(value))
-			return true
 		}
 		// Handle virtual key header (x-bf-vk, authorization, x-api-key headers)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {

@@ -15,6 +15,7 @@ import { useForm, type Resolver } from "react-hook-form";
 interface OtelFormFragmentProps {
 	currentConfig?: {
 		enabled?: boolean;
+		service_name?: string;
 		collector_url?: string;
 		headers?: Record<string, string>;
 		trace_type?: "otel" | "genai_extension" | "vercel" | "arize_otel";
@@ -33,6 +34,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 		defaultValues: {
 			enabled: initialConfig?.enabled ?? false,
 			otel_config: {
+				service_name: initialConfig?.service_name ?? "bifrost",
 				collector_url: initialConfig?.collector_url ?? "",
 				headers: initialConfig?.headers ?? {},
 				trace_type: initialConfig?.trace_type ?? "otel",
@@ -59,6 +61,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 		form.reset({
 			enabled: initialConfig?.enabled || false,
 			otel_config: {
+				service_name: initialConfig?.service_name ?? "bifrost",
 				collector_url: initialConfig?.collector_url || "",
 				headers: initialConfig?.headers || {},
 				trace_type: initialConfig?.trace_type || "otel",
@@ -81,6 +84,19 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 				{/* OTEL Configuration */}
 				<div className="space-y-4">
 					<div className="flex flex-col gap-4">
+						<FormField
+							control={form.control}
+							name="otel_config.service_name"
+							render={({ field }) => (
+								<FormItem className="w-full">
+									<FormLabel>Service Name</FormLabel>
+									<FormControl>
+										<Input placeholder="bifrost" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
 						<FormField
 							control={form.control}
 							name="otel_config.collector_url"
@@ -116,7 +132,6 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 								</FormItem>
 							)}
 						/>
-
 						<div className="flex flex-row gap-4">
 							<FormField
 								control={form.control}
