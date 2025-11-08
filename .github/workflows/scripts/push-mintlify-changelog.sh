@@ -36,10 +36,19 @@ append_section () {
   label=$1
   path=$2
   if [ -f "$path" ]; then
-    content=$(get_changelog_content "$path")
-    if [ -n "$content" ]; then
-      CHANGELOG_BODY+=$'\n'"<Update label=\"$label\" description=\"$VERSION\">"$'\n'"$content"$'\n\n'"</Update>"
+    # Get changelog content
+    content=$(get_file_content "$path")
+    # If changelog is empty, skip
+    if [ -z "$content" ]; then
+      echo "❌ Changelog is empty"
+      return
     fi
+    # Remove /changelog.md from the path and add /version
+    version_file_path="${path%/changelog.md}/version"
+    # Get version content
+    version_body=$(get_file_content "$version_file_path")
+    # Build the changelog section
+    CHANGELOG_BODY+=$'\n'"<Update label=\"$label\" description=\"$version_body\">"$'\n'"$content"$'\n\n'"</Update>"
     # Clear the changelog file after processing
     printf '' > "$path"
     # Track this file for git commit
