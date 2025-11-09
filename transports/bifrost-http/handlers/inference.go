@@ -274,6 +274,7 @@ const (
 func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
 	// Model endpoints
 	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/openai/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 
 	// Completion endpoints
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, middlewares...))
@@ -337,6 +338,59 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
+	}
+
+	// Governance-aware filtering when a Virtual Key (VK) is presented
+	if h.config != nil && h.config.ClientConfig.EnableGovernance {
+		// Extract VK from context
+		if vkValue, _ := (*bifrostCtx).Value(schemas.BifrostContextKeyVirtualKey).(string); vkValue != "" && h.config.ConfigStore != nil {
+			// Load VK with provider configs
+			if vk, err := h.config.ConfigStore.GetVirtualKeyByValue(*bifrostCtx, vkValue); err == nil && vk != nil && vk.IsActive {
+				// If VK has provider configs, apply filtering; empty means no restrictions
+				if len(vk.ProviderConfigs) > 0 && resp != nil && len(resp.Data) > 0 {
+					// Build allowed map: provider -> set(models) (empty set means all models allowed)
+					type void struct{}
+					var sentinel void
+					allowed := make(map[string]map[string]void, len(vk.ProviderConfigs))
+					for _, pc := range vk.ProviderConfigs {
+						// Normalize provider name to lowercase for comparison
+						providerName := strings.ToLower(pc.Provider)
+						if len(pc.AllowedModels) == 0 {
+							allowed[providerName] = nil // nil set => all models allowed for this provider
+							continue
+						}
+						modelSet := make(map[string]void, len(pc.AllowedModels))
+						for _, m := range pc.AllowedModels {
+							modelSet[m] = sentinel
+						}
+						allowed[providerName] = modelSet
+					}
+
+					// Apply filtering
+					filtered := make([]schemas.Model, 0, len(resp.Data))
+					for _, model := range resp.Data {
+						providerParsed, modelName := schemas.ParseModelString(model.ID, "")
+						providerKey := strings.ToLower(string(providerParsed))
+						allowedSet, ok := allowed[providerKey]
+						if !ok {
+							// Provider not allowed
+							continue
+						}
+						// If nil => all models for this provider allowed
+						if allowedSet == nil {
+							filtered = append(filtered, model)
+							continue
+						}
+						// Otherwise require explicit model allow
+						if _, ok := allowedSet[modelName]; ok {
+							filtered = append(filtered, model)
+						}
+					}
+					resp.Data = filtered
+					// Note: We intentionally do not recompute pagination tokens here to keep surface minimal.
+				}
+			}
+		}
 	}
 
 	// Send successful response
