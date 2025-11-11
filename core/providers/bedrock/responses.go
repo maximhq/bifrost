@@ -430,7 +430,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 			bedrockBlock := BedrockContentBlock{}
 
 			switch block.Type {
-			case schemas.ResponsesInputMessageContentBlockTypeText:
+			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 				bedrockBlock.Text = block.Text
 			case schemas.ResponsesInputMessageContentBlockTypeImage:
 				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
