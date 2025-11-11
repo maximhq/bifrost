@@ -26,6 +26,7 @@ type TestScenarios struct {
 	CompletionStream      bool
 	MultiTurnConversation bool
 	ToolCalls             bool
+	ToolCallsStreaming    bool // Streaming tool calls functionality
 	MultipleToolCalls     bool
 	End2EndToolCalling    bool
 	AutomaticFunctionCall bool

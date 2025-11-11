@@ -1,5 +1,11 @@
 package schemas
 
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
 // =============================================================================
 // BIDIRECTIONAL CONVERSION METHODS
 // =============================================================================
@@ -952,10 +958,129 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	return chatResp
 }
 
+// ChatToResponsesStreamState tracks state during Chat-to-Responses streaming conversion
+type ChatToResponsesStreamState struct {
+	ToolArgumentBuffers   map[string]string // Maps tool call ID to accumulated argument JSON
+	ItemIDs               map[string]string // Maps tool call ID to item ID
+	ToolCallNames         map[string]string // Maps tool call ID to tool name
+	ToolCallIndexToID     map[uint16]string // Maps tool call index to tool call ID (for lookups when ID is missing)
+	MessageID             *string           // Message ID from first chunk
+	Model                 *string           // Model name
+	CreatedAt             int               // Timestamp for created_at consistency
+	HasEmittedCreated     bool              // Whether we've emitted response.created
+	HasEmittedInProgress  bool              // Whether we've emitted response.in_progress
+	TextItemAdded         bool              // Whether text item has been added
+	TextItemClosed        bool              // Whether text item has been closed
+	TextItemHasContent    bool              // Whether text item has received any content deltas
+	CurrentOutputIndex    int               // Current output index counter
+	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
+	SequenceNumber        int               // Monotonic sequence number across all chunks
+}
+
+// chatToResponsesStreamStatePool provides a pool for ChatToResponsesStreamState objects.
+var chatToResponsesStreamStatePool = sync.Pool{
+	New: func() interface{} {
+		return &ChatToResponsesStreamState{
+			ToolArgumentBuffers:   make(map[string]string),
+			ItemIDs:               make(map[string]string),
+			ToolCallNames:         make(map[string]string),
+			ToolCallIndexToID:     make(map[uint16]string),
+			CreatedAt:             int(time.Now().Unix()),
+			CurrentOutputIndex:    0,
+			ToolCallOutputIndices: make(map[string]int),
+			SequenceNumber:        0,
+			HasEmittedCreated:     false,
+			HasEmittedInProgress:  false,
+			TextItemAdded:         false,
+			TextItemClosed:        false,
+			TextItemHasContent:    false,
+		}
+	},
+}
+
+// AcquireChatToResponsesStreamState gets a ChatToResponsesStreamState from the pool.
+func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
+	state := chatToResponsesStreamStatePool.Get().(*ChatToResponsesStreamState)
+	// Clear maps (they're already initialized from New or previous flush)
+	// Only initialize if nil (shouldn't happen, but defensive)
+	if state.ToolArgumentBuffers == nil {
+		state.ToolArgumentBuffers = make(map[string]string)
+	} else {
+		clear(state.ToolArgumentBuffers)
+	}
+	if state.ItemIDs == nil {
+		state.ItemIDs = make(map[string]string)
+	} else {
+		clear(state.ItemIDs)
+	}
+	if state.ToolCallNames == nil {
+		state.ToolCallNames = make(map[string]string)
+	} else {
+		clear(state.ToolCallNames)
+	}
+	if state.ToolCallIndexToID == nil {
+		state.ToolCallIndexToID = make(map[uint16]string)
+	} else {
+		clear(state.ToolCallIndexToID)
+	}
+	if state.ToolCallOutputIndices == nil {
+		state.ToolCallOutputIndices = make(map[string]int)
+	} else {
+		clear(state.ToolCallOutputIndices)
+	}
+	// Reset other fields
+	state.CurrentOutputIndex = 0
+	state.MessageID = nil
+	state.Model = nil
+	state.CreatedAt = int(time.Now().Unix())
+	state.HasEmittedCreated = false
+	state.HasEmittedInProgress = false
+	state.TextItemAdded = false
+	state.TextItemClosed = false
+	state.TextItemHasContent = false
+	state.SequenceNumber = 0
+	return state
+}
+
+// ReleaseChatToResponsesStreamState returns a ChatToResponsesStreamState to the pool.
+func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
+	if state != nil {
+		// Clear maps before returning to pool
+		if state.ToolArgumentBuffers != nil {
+			clear(state.ToolArgumentBuffers)
+		}
+		if state.ItemIDs != nil {
+			clear(state.ItemIDs)
+		}
+		if state.ToolCallNames != nil {
+			clear(state.ToolCallNames)
+		}
+		if state.ToolCallIndexToID != nil {
+			clear(state.ToolCallIndexToID)
+		}
+		if state.ToolCallOutputIndices != nil {
+			clear(state.ToolCallOutputIndices)
+		}
+		// Reset other fields
+		state.CurrentOutputIndex = 0
+		state.MessageID = nil
+		state.Model = nil
+		state.CreatedAt = int(time.Now().Unix())
+		state.HasEmittedCreated = false
+		state.HasEmittedInProgress = false
+		state.TextItemAdded = false
+		state.TextItemClosed = false
+		state.TextItemHasContent = false
+		state.SequenceNumber = 0
+		chatToResponsesStreamStatePool.Put(state)
+	}
+}
+
 // ToBifrostResponsesStreamResponse converts the BifrostChatResponse from Chat streaming format to Responses streaming format
 // This converts Chat stream chunks (Choices with Deltas) to BifrostResponsesStreamResponse format
-func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse() *BifrostResponsesStreamResponse {
-	if cr == nil {
+// Returns a slice of responses to support cases where a single event produces multiple responses
+func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToResponsesStreamState) []*BifrostResponsesStreamResponse {
+	if cr == nil || state == nil {
 		return nil
 	}
 
@@ -972,121 +1097,340 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse() *BifrostRespon
 	}
 
 	delta := choice.ChatStreamResponseChoice.Delta
-	streamResp := &BifrostResponsesStreamResponse{
-		SequenceNumber: cr.ExtraFields.ChunkIndex,
-		ContentIndex:   Ptr(0),
-		OutputIndex:    &choice.Index,
-		ExtraFields:    cr.ExtraFields,
-		SearchResults:  cr.SearchResults,
-		Videos:         cr.Videos,
-		Citations:      cr.Citations,
+	var responses []*BifrostResponsesStreamResponse
+
+	// Store message ID and model from first chunk
+	if state.MessageID == nil && cr.ID != "" {
+		state.MessageID = &cr.ID
+	}
+	if state.Model == nil && cr.Model != "" {
+		state.Model = &cr.Model
+	}
+
+	// Emit lifecycle events on first chunk with role
+	if delta.Role != nil && !state.HasEmittedCreated {
+		// Emit response.created
+		response := &BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+		}
+		responses = append(responses, &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeCreated,
+			SequenceNumber: state.SequenceNumber,
+			Response:       response,
+			ExtraFields:    cr.ExtraFields,
+		})
+		state.SequenceNumber++
+		state.HasEmittedCreated = true
+
+		// Emit response.in_progress
+		response = &BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+		}
+		responses = append(responses, &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeInProgress,
+			SequenceNumber: state.SequenceNumber,
+			Response:       response,
+			ExtraFields:    cr.ExtraFields,
+		})
+		state.SequenceNumber++
+		state.HasEmittedInProgress = true
 	}
 
 	// Handle different types of streaming content
-	switch {
-	case len(delta.ToolCalls) > 0:
+	if delta.Content != nil && *delta.Content != "" {
+		// Text content delta
+		if !state.TextItemAdded {
+			// Add text item if not already added
+			outputIndex := 0
+			// Generate stable ID for text item
+			var itemID string
+			if state.MessageID == nil {
+				itemID = fmt.Sprintf("item_%d", outputIndex)
+			} else {
+				itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
+			}
+			state.ItemIDs["text"] = itemID
+
+			messageType := ResponsesMessageTypeMessage
+			role := ResponsesInputMessageRoleAssistant
+
+			item := &ResponsesMessage{
+				ID:   &itemID,
+				Type: &messageType,
+				Role: &role,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{},
+				},
+			}
+
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ContentIndex:   Ptr(0),
+				Item:           item,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+			state.TextItemAdded = true
+		}
+
+		// Emit text delta
+		itemID := state.ItemIDs["text"]
+		response := &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeOutputTextDelta,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(0),
+			ContentIndex:   Ptr(0),
+			Delta:          delta.Content,
+			ExtraFields:    cr.ExtraFields,
+		}
+		if itemID != "" {
+			response.ItemID = &itemID
+		}
+		responses = append(responses, response)
+		state.SequenceNumber++
+		state.TextItemHasContent = true
+	}
+
+	if len(delta.ToolCalls) > 0 {
 		// Tool call delta - handle function call arguments
 		toolCall := delta.ToolCalls[0] // Take first tool call
+		contentIndex := 1              // Tool calls use content_index:1
 
-		if toolCall.Function.Arguments != "" {
-			streamResp.Type = ResponsesStreamResponseTypeFunctionCallArgumentsDelta
-			streamResp.Arguments = &toolCall.Function.Arguments
+		// Determine tool call ID: use ID if present, otherwise look up by index
+		var toolCallID string
+		if toolCall.ID != nil && *toolCall.ID != "" {
+			toolCallID = *toolCall.ID
+		} else {
+			// Look up ID by index for subsequent chunks that don't include the ID
+			if id, exists := state.ToolCallIndexToID[toolCall.Index]; exists {
+				toolCallID = id
+			} else {
+				// No ID and no mapping found - skip this chunk
+				// This can happen if the stream is malformed or out of order
+				return responses
+			}
+		}
 
-			// Set item for function call metadata if this is a new tool call
-			if toolCall.ID != nil || toolCall.Function.Name != nil {
-				messageType := ResponsesMessageTypeFunctionCall
-				streamResp.Item = &ResponsesMessage{
-					Type: &messageType,
-					Role: Ptr(ResponsesInputMessageRoleAssistant),
+		// Check if this is a new tool call (only when ID is present)
+		if toolCall.ID != nil && *toolCall.ID != "" {
+			if _, exists := state.ToolCallOutputIndices[toolCallID]; !exists {
+				// Close text item if still open and has content
+				if state.TextItemAdded && !state.TextItemClosed && state.TextItemHasContent {
+					outputIndex := 0
+					statusCompleted := "completed"
+					itemID := state.ItemIDs["text"]
+					doneItem := &ResponsesMessage{
+						Status: &statusCompleted,
+					}
+					if itemID != "" {
+						doneItem.ID = &itemID
+					}
+					responses = append(responses, &BifrostResponsesStreamResponse{
+						Type:           ResponsesStreamResponseTypeOutputItemDone,
+						SequenceNumber: state.SequenceNumber,
+						OutputIndex:    Ptr(outputIndex),
+						ContentIndex:   Ptr(0),
+						Item:           doneItem,
+						ExtraFields:    cr.ExtraFields,
+					})
+					state.SequenceNumber++
+					state.TextItemClosed = true
+				}
+
+				// Assign new output index for tool call
+				outputIndex := state.CurrentOutputIndex
+				if outputIndex == 0 {
+					outputIndex = 1 // Skip 0 if text is using it
+				}
+				state.CurrentOutputIndex = outputIndex + 1
+				state.ToolCallOutputIndices[toolCallID] = outputIndex
+
+				// Store tool call info and index mapping
+				state.ItemIDs[toolCallID] = toolCallID
+				state.ToolCallIndexToID[toolCall.Index] = toolCallID
+				if toolCall.Function.Name != nil {
+					state.ToolCallNames[toolCallID] = *toolCall.Function.Name
+				}
+
+				// Initialize argument buffer
+				state.ToolArgumentBuffers[toolCallID] = ""
+
+				// Emit output_item.added for function call
+				statusInProgress := "in_progress"
+				item := &ResponsesMessage{
+					ID:     &toolCallID,
+					Type:   Ptr(ResponsesMessageTypeFunctionCall),
+					Status: &statusInProgress,
 					ResponsesToolMessage: &ResponsesToolMessage{
-						CallID: toolCall.ID,
-						Name:   toolCall.Function.Name,
+						CallID:    &toolCallID,
+						Name:      toolCall.Function.Name,
+						Arguments: Ptr(""), // Arguments will be filled by deltas
 					},
 				}
+
+				responses = append(responses, &BifrostResponsesStreamResponse{
+					Type:           ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: state.SequenceNumber,
+					OutputIndex:    Ptr(outputIndex),
+					ContentIndex:   Ptr(contentIndex),
+					Item:           item,
+					ExtraFields:    cr.ExtraFields,
+				})
+				state.SequenceNumber++
 			}
 		}
 
-	case delta.Role != nil:
-		// Role initialization - typically the first chunk
-		streamResp.Type = ResponsesStreamResponseTypeOutputItemAdded
-		streamResp.Item = &ResponsesMessage{
-			Type: Ptr(ResponsesMessageTypeMessage),
-			Role: Ptr(ResponsesInputMessageRoleAssistant),
-		}
-		if *delta.Role == "assistant" {
-			streamResp.Item.Role = Ptr(ResponsesInputMessageRoleAssistant)
-		}
-		fallthrough
+		// Accumulate and emit function call arguments delta
+		// This works for both chunks with ID and chunks without ID (using looked-up ID)
+		if toolCall.Function.Arguments != "" {
+			outputIndex := state.ToolCallOutputIndices[toolCallID]
+			state.ToolArgumentBuffers[toolCallID] += toolCall.Function.Arguments
 
-	case delta.Content != nil && *delta.Content != "":
-		if delta.Content != nil && *delta.Content != "" { // Need this check again because of the fallthrough
-			// Text content delta
-			streamResp.Type = ResponsesStreamResponseTypeOutputTextDelta
-			streamResp.Delta = delta.Content
+			itemID := state.ItemIDs[toolCallID]
+			response := &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ContentIndex:   Ptr(contentIndex),
+				Delta:          &toolCall.Function.Arguments,
+				ExtraFields:    cr.ExtraFields,
+			}
+			if itemID != "" {
+				response.ItemID = &itemID
+			}
+			responses = append(responses, response)
+			state.SequenceNumber++
 		}
+	}
 
-	case delta.Thought != nil && *delta.Thought != "":
+	if delta.Thought != nil && *delta.Thought != "" {
 		// Reasoning/thought content delta (for models that support reasoning)
-		streamResp.Type = ResponsesStreamResponseTypeReasoningSummaryTextDelta
-		streamResp.Delta = delta.Thought
+		response := &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(0),
+			Delta:          delta.Thought,
+			ExtraFields:    cr.ExtraFields,
+		}
+		responses = append(responses, response)
+		state.SequenceNumber++
+	}
 
-	case delta.Refusal != nil && *delta.Refusal != "":
+	if delta.Refusal != nil && *delta.Refusal != "" {
 		// Refusal delta
-		streamResp.Type = ResponsesStreamResponseTypeRefusalDelta
-		streamResp.Refusal = delta.Refusal
+		response := &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeRefusalDelta,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(0),
+			Refusal:        delta.Refusal,
+			ExtraFields:    cr.ExtraFields,
+		}
+		responses = append(responses, response)
+		state.SequenceNumber++
+	}
 
-	default:
-		// Check if this is a completion chunk with finish_reason and/or usage
-		if choice.FinishReason != nil {
-			// Handle completion events based on finish_reason
-			switch *choice.FinishReason {
-			case "stop":
-				streamResp.Type = ResponsesStreamResponseTypeCompleted
-			case "length":
-				streamResp.Type = ResponsesStreamResponseTypeIncomplete
-			case "tool_calls":
-				streamResp.Type = ResponsesStreamResponseTypeOutputItemDone
-			default:
-				// For other finish reasons, mark as completed
-				streamResp.Type = ResponsesStreamResponseTypeCompleted
+	// Check if this is a completion chunk with finish_reason
+	if choice.FinishReason != nil {
+		// Close text item if still open and has content
+		if state.TextItemAdded && !state.TextItemClosed && state.TextItemHasContent {
+			outputIndex := 0
+			statusCompleted := "completed"
+			itemID := state.ItemIDs["text"]
+			doneItem := &ResponsesMessage{
+				Status: &statusCompleted,
 			}
+			if itemID != "" {
+				doneItem.ID = &itemID
+			}
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ContentIndex:   Ptr(0),
+				Item:           doneItem,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+			state.TextItemClosed = true
+		}
 
-			// Add usage information if present in the response
-			if cr.Usage != nil {
-				streamResp.Response = &BifrostResponsesResponse{
-					Usage: cr.Usage.ToResponsesResponseUsage(),
+		// Close any open tool call items and emit function_call_arguments.done
+		for toolCallID, args := range state.ToolArgumentBuffers {
+			if args != "" {
+				outputIndex := state.ToolCallOutputIndices[toolCallID]
+				itemID := state.ItemIDs[toolCallID]
+				contentIndex := 1 // Tool calls use content_index:1
+				argsCopy := args
+				// Emit function_call_arguments.done with full arguments (no item field, just item_id and arguments)
+				response := &BifrostResponsesStreamResponse{
+					Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+					SequenceNumber: state.SequenceNumber,
+					OutputIndex:    Ptr(outputIndex),
+					ContentIndex:   Ptr(contentIndex),
+					Arguments:      &argsCopy,
+					ExtraFields:    cr.ExtraFields,
 				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				responses = append(responses, response)
+				state.SequenceNumber++
+
+				// Emit output_item.done for function call
+				statusCompleted := "completed"
+				outputItemDone := &ResponsesMessage{
+					Status: &statusCompleted,
+				}
+				if itemID != "" {
+					outputItemDone.ID = &itemID
+				}
+				responses = append(responses, &BifrostResponsesStreamResponse{
+					Type:           ResponsesStreamResponseTypeOutputItemDone,
+					SequenceNumber: state.SequenceNumber,
+					OutputIndex:    Ptr(outputIndex),
+					ContentIndex:   Ptr(contentIndex),
+					Item:           outputItemDone,
+					ExtraFields:    cr.ExtraFields,
+				})
+				state.SequenceNumber++
 			}
-		} else {
-			// Fallback for unknown delta types - treat as text delta if there's any content
-			if delta.Content != nil {
-				streamResp.Type = ResponsesStreamResponseTypeOutputTextDelta
-				streamResp.Delta = delta.Content
-			} else {
-				// Unknown delta type, return without setting ResponsesStreamResponse
-				return nil
-			}
+		}
+
+		// Emit response.completed
+		var usage *ResponsesResponseUsage
+		if cr.Usage != nil {
+			usage = cr.Usage.ToResponsesResponseUsage()
+		}
+
+		response := &BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+			Usage:     usage,
+		}
+
+		responses = append(responses, &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: state.SequenceNumber,
+			Response:       response,
+			ExtraFields:    cr.ExtraFields,
+		})
+		state.SequenceNumber++
+	}
+
+	// Set RequestType for all responses
+	for _, resp := range responses {
+		if resp != nil {
+			resp.ExtraFields.RequestType = ResponsesStreamRequest
+			// Copy other extra fields
+			resp.SearchResults = cr.SearchResults
+			resp.Videos = cr.Videos
+			resp.Citations = cr.Citations
 		}
 	}
 
-	// Override with finish_reason handling if not already processed in default case
-	if choice.FinishReason != nil && streamResp.Type != ResponsesStreamResponseTypeCompleted &&
-		streamResp.Type != ResponsesStreamResponseTypeIncomplete && streamResp.Type != ResponsesStreamResponseTypeOutputItemDone {
-		switch *choice.FinishReason {
-		case "stop":
-			streamResp.Type = ResponsesStreamResponseTypeCompleted
-		case "length":
-			streamResp.Type = ResponsesStreamResponseTypeIncomplete
-		case "tool_calls":
-			streamResp.Type = ResponsesStreamResponseTypeOutputItemDone
-		default:
-			// For other finish reasons, mark as completed
-			streamResp.Type = ResponsesStreamResponseTypeCompleted
-		}
-	}
-
-	streamResp.ExtraFields.RequestType = ResponsesStreamRequest
-
-	// Return the created stream response
-	return streamResp
+	return responses
 }

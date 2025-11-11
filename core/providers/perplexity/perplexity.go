@@ -209,9 +209,10 @@ func (provider *PerplexityProvider) Responses(ctx context.Context, key schemas.K
 
 // ResponsesStream performs a streaming responses request to the Perplexity API.
 func (provider *PerplexityProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
-		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		postHookRunner,
 		key,
 		request.ToChatRequest(),
 	)

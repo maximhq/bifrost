@@ -3,10 +3,130 @@ package bedrock
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// BedrockResponsesStreamState tracks state during streaming conversion for responses API
+type BedrockResponsesStreamState struct {
+	ContentIndexToOutputIndex map[int]int    // Maps Bedrock contentBlockIndex to OpenAI output_index
+	ToolArgumentBuffers       map[int]string // Maps output_index to accumulated tool argument JSON
+	ItemIDs                   map[int]string // Maps output_index to item ID for stable IDs
+	ToolCallIDs               map[int]string // Maps output_index to tool call ID (callID)
+	ToolCallNames             map[int]string // Maps output_index to tool call name
+	CurrentOutputIndex        int            // Current output index counter
+	MessageID                 *string        // Message ID (generated)
+	Model                     *string        // Model name
+	CreatedAt                 int            // Timestamp for created_at consistency
+	HasEmittedCreated         bool           // Whether we've emitted response.created
+	HasEmittedInProgress      bool           // Whether we've emitted response.in_progress
+	TextItemClosed            bool           // Whether text item has been closed
+}
+
+// bedrockResponsesStreamStatePool provides a pool for Bedrock responses stream state objects.
+var bedrockResponsesStreamStatePool = sync.Pool{
+	New: func() interface{} {
+		return &BedrockResponsesStreamState{
+			ContentIndexToOutputIndex: make(map[int]int),
+			ToolArgumentBuffers:       make(map[int]string),
+			ItemIDs:                   make(map[int]string),
+			ToolCallIDs:               make(map[int]string),
+			ToolCallNames:             make(map[int]string),
+			CurrentOutputIndex:        0,
+			CreatedAt:                 int(time.Now().Unix()),
+			HasEmittedCreated:         false,
+			HasEmittedInProgress:      false,
+			TextItemClosed:            false,
+		}
+	},
+}
+
+// acquireBedrockResponsesStreamState gets a Bedrock responses stream state from the pool.
+func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
+	state := bedrockResponsesStreamStatePool.Get().(*BedrockResponsesStreamState)
+	// Clear maps (they're already initialized from New or previous flush)
+	// Only initialize if nil (shouldn't happen, but defensive)
+	if state.ContentIndexToOutputIndex == nil {
+		state.ContentIndexToOutputIndex = make(map[int]int)
+	} else {
+		clear(state.ContentIndexToOutputIndex)
+	}
+	if state.ToolArgumentBuffers == nil {
+		state.ToolArgumentBuffers = make(map[int]string)
+	} else {
+		clear(state.ToolArgumentBuffers)
+	}
+	if state.ItemIDs == nil {
+		state.ItemIDs = make(map[int]string)
+	} else {
+		clear(state.ItemIDs)
+	}
+	if state.ToolCallIDs == nil {
+		state.ToolCallIDs = make(map[int]string)
+	} else {
+		clear(state.ToolCallIDs)
+	}
+	if state.ToolCallNames == nil {
+		state.ToolCallNames = make(map[int]string)
+	} else {
+		clear(state.ToolCallNames)
+	}
+	// Reset other fields
+	state.CurrentOutputIndex = 0
+	state.MessageID = nil
+	state.Model = nil
+	state.CreatedAt = int(time.Now().Unix())
+	state.HasEmittedCreated = false
+	state.HasEmittedInProgress = false
+	state.TextItemClosed = false
+	return state
+}
+
+// releaseBedrockResponsesStreamState returns a Bedrock responses stream state to the pool.
+func releaseBedrockResponsesStreamState(state *BedrockResponsesStreamState) {
+	if state != nil {
+		state.flush() // Clean before returning to pool
+		bedrockResponsesStreamStatePool.Put(state)
+	}
+}
+
+func (state *BedrockResponsesStreamState) flush() {
+	// Clear maps (reuse if already initialized, otherwise initialize)
+	if state.ContentIndexToOutputIndex == nil {
+		state.ContentIndexToOutputIndex = make(map[int]int)
+	} else {
+		clear(state.ContentIndexToOutputIndex)
+	}
+	if state.ToolArgumentBuffers == nil {
+		state.ToolArgumentBuffers = make(map[int]string)
+	} else {
+		clear(state.ToolArgumentBuffers)
+	}
+	if state.ItemIDs == nil {
+		state.ItemIDs = make(map[int]string)
+	} else {
+		clear(state.ItemIDs)
+	}
+	if state.ToolCallIDs == nil {
+		state.ToolCallIDs = make(map[int]string)
+	} else {
+		clear(state.ToolCallIDs)
+	}
+	if state.ToolCallNames == nil {
+		state.ToolCallNames = make(map[int]string)
+	} else {
+		clear(state.ToolCallNames)
+	}
+	state.CurrentOutputIndex = 0
+	state.MessageID = nil
+	state.Model = nil
+	state.CreatedAt = int(time.Now().Unix())
+	state.HasEmittedCreated = false
+	state.HasEmittedInProgress = false
+	state.TextItemClosed = false
+}
 
 // ToBedrockResponsesRequest converts a BifrostRequest (Responses structure) back to BedrockConverseRequest
 func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*BedrockConverseRequest, error) {
@@ -539,15 +659,68 @@ func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schem
 }
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
-func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
-	// event with metrics/usage is the last and with stop reason is the second last
+// Returns a slice of responses to support cases where a single event produces multiple responses
+func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, state *BedrockResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch {
 	case chunk.Role != nil:
-		// Message start - create output item added event
+		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
+		var responses []*schemas.BifrostResponsesStreamResponse
+
+		// Generate message ID if not already set
+		if state.MessageID == nil {
+			messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
+			state.MessageID = &messageID
+		}
+
+		// Emit response.created
+		if !state.HasEmittedCreated {
+			response := &schemas.BifrostResponsesResponse{
+				ID:        state.MessageID,
+				CreatedAt: state.CreatedAt,
+			}
+			if state.Model != nil {
+				// Note: Model field doesn't exist in BifrostResponsesResponse schema
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeCreated,
+				SequenceNumber: sequenceNumber,
+				Response:       response,
+			})
+			state.HasEmittedCreated = true
+		}
+
+		// Emit response.in_progress
+		if !state.HasEmittedInProgress {
+			response := &schemas.BifrostResponsesResponse{
+				ID:        state.MessageID,
+				CreatedAt: state.CreatedAt, // Use same timestamp
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeInProgress,
+				SequenceNumber: sequenceNumber + len(responses),
+				Response:       response,
+			})
+			state.HasEmittedInProgress = true
+		}
+
+		// Emit output_item.added for text message
+		outputIndex := 0
+		state.ContentIndexToOutputIndex[0] = outputIndex // Text is at content index 0
+
+		// Generate stable ID for text item
+		var itemID string
+		if state.MessageID == nil {
+			itemID = fmt.Sprintf("item_%d", outputIndex)
+		} else {
+			itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
+		}
+		state.ItemIDs[outputIndex] = itemID
+
 		messageType := schemas.ResponsesMessageTypeMessage
 		role := schemas.ResponsesInputMessageRoleAssistant
 
 		item := &schemas.ResponsesMessage{
+			ID:   &itemID,
 			Type: &messageType,
 			Role: &role,
 			Content: &schemas.ResponsesMessageContent{
@@ -555,12 +728,17 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 			},
 		}
 
-		return &schemas.BifrostResponsesStreamResponse{
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-			SequenceNumber: sequenceNumber,
-			OutputIndex:    schemas.Ptr(0), // Assuming single output for now
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   schemas.Ptr(0),
 			Item:           item,
-		}, nil, false
+		})
+
+		if len(responses) > 0 {
+			return responses, nil, false
+		}
 
 	case chunk.Start != nil:
 		// Handle content block start (text content or tool use)
@@ -571,55 +749,94 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 
 		// Check if this is a tool use start
 		if chunk.Start.ToolUse != nil {
-			// This is a function call starting - create function call message
+			// Close text item if it's still open
+			var responses []*schemas.BifrostResponsesStreamResponse
+			if !state.TextItemClosed {
+				outputIndex := 0
+				statusCompleted := "completed"
+				itemID := state.ItemIDs[outputIndex]
+				doneItem := &schemas.ResponsesMessage{
+					Status: &statusCompleted,
+				}
+				if itemID != "" {
+					doneItem.ID = &itemID
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   schemas.Ptr(0),
+					Item:           doneItem,
+				})
+				state.TextItemClosed = true
+			}
+
+			// This is a function call starting - use output_index 1
+			outputIndex := 1
+			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
+			state.CurrentOutputIndex = 2 // Next available index
+
+			// Store tool use ID as item ID and call ID
+			toolUseID := chunk.Start.ToolUse.ToolUseID
+			toolName := chunk.Start.ToolUse.Name
+			state.ItemIDs[outputIndex] = toolUseID
+			state.ToolCallIDs[outputIndex] = toolUseID
+			state.ToolCallNames[outputIndex] = toolName
+
+			statusInProgress := "in_progress"
 			item := &schemas.ResponsesMessage{
-				ID:   &chunk.Start.ToolUse.ToolUseID,
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ID:     &toolUseID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status: &statusInProgress,
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID:    &chunk.Start.ToolUse.ToolUseID,
-					Name:      &chunk.Start.ToolUse.Name,
+					CallID:    &toolUseID,
+					Name:      &toolName,
 					Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
 				},
 			}
 
-			return &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-				Item:           item,
-			}, nil, false
-		} else {
-			// This is text content - create content part added event
-			part := &schemas.ResponsesMessageContentBlock{
-				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: schemas.Ptr(""), // Empty initially
-			}
+			// Initialize argument buffer for this tool call
+			state.ToolArgumentBuffers[outputIndex] = ""
 
-			return &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-				ContentIndex:   &contentBlockIndex,
-				Part:           part,
-			}, nil, false
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   schemas.Ptr(contentBlockIndex),
+				Item:           item,
+			})
+
+			return responses, nil, false
 		}
+		// Text content start is handled by Role event, so we can ignore Start for text
 
 	case chunk.ContentBlockIndex != nil && chunk.Delta != nil:
 		// Handle contentBlockDelta event
 		contentBlockIndex := *chunk.ContentBlockIndex
+		outputIndex, exists := state.ContentIndexToOutputIndex[contentBlockIndex]
+		if !exists {
+			// Default to 0 for text if not mapped
+			outputIndex = 0
+			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
+		}
 
 		switch {
 		case chunk.Delta.Text != nil:
 			// Handle text delta
 			text := *chunk.Delta.Text
 			if text != "" {
-				return &schemas.BifrostResponsesStreamResponse{
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   &contentBlockIndex,
 					Delta:          &text,
-				}, nil, false
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 			}
 
 		case chunk.Delta.ToolUse != nil:
@@ -627,24 +844,123 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*
 			toolUseDelta := chunk.Delta.ToolUse
 
 			if toolUseDelta.Input != "" {
-				return &schemas.BifrostResponsesStreamResponse{
+				// Accumulate argument deltas
+				state.ToolArgumentBuffers[outputIndex] += toolUseDelta.Input
+
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
 					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   &contentBlockIndex,
 					Delta:          &toolUseDelta.Input,
-				}, nil, false
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 			}
 		}
 
 	case chunk.StopReason != nil:
-		// Handle end of message - create output item done event
-		return &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-			SequenceNumber: sequenceNumber,
-			OutputIndex:    schemas.Ptr(0),
-		}, nil, false
+		// Stop reason - don't use it to close items, just return nil
+		// Items should be closed explicitly when content blocks end
+		return nil, nil, false
 	}
 
 	return nil, nil, false
+}
+
+// FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
+func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	// Close text item if still open
+	if !state.TextItemClosed {
+		outputIndex := 0
+		statusCompleted := "completed"
+		itemID := state.ItemIDs[outputIndex]
+		doneItem := &schemas.ResponsesMessage{
+			Status: &statusCompleted,
+		}
+		if itemID != "" {
+			doneItem.ID = &itemID
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   schemas.Ptr(0),
+			Item:           doneItem,
+		})
+		state.TextItemClosed = true
+	}
+
+	// Close any open tool call items and emit function_call_arguments.done
+	for outputIndex, args := range state.ToolArgumentBuffers {
+		if args != "" {
+			itemID := state.ItemIDs[outputIndex]
+			callID := state.ToolCallIDs[outputIndex]
+			toolName := state.ToolCallNames[outputIndex]
+
+			// Create item with tool message info for the done event
+			var doneItem *schemas.ResponsesMessage
+			if callID != "" || toolName != "" {
+				doneItem = &schemas.ResponsesMessage{
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{},
+				}
+				if callID != "" {
+					doneItem.ResponsesToolMessage.CallID = &callID
+				}
+				if toolName != "" {
+					doneItem.ResponsesToolMessage.Name = &toolName
+				}
+			}
+
+			// Emit function_call_arguments.done with full arguments
+			response := &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				Arguments:      &args,
+			}
+			if itemID != "" {
+				response.ItemID = &itemID
+			}
+			if doneItem != nil {
+				response.Item = doneItem
+			}
+			responses = append(responses, response)
+
+			// Emit output_item.done for function call
+			statusCompleted := "completed"
+			outputItemDone := &schemas.ResponsesMessage{
+				Status: &statusCompleted,
+			}
+			if itemID != "" {
+				outputItemDone.ID = &itemID
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				Item:           outputItemDone,
+			})
+		}
+	}
+
+	// Emit response.completed
+	response := &schemas.BifrostResponsesResponse{
+		ID:        state.MessageID,
+		CreatedAt: state.CreatedAt,
+		Usage:     usage,
+	}
+
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		SequenceNumber: sequenceNumber + len(responses),
+		Response:       response,
+	})
+
+	return responses
 }

@@ -702,7 +702,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 		return nil, nil, true
 
 	case AnthropicStreamEventTypeContentBlockStart:
-		// Emit tool-call metadata when starting a tool_use content block		
+		// Emit tool-call metadata when starting a tool_use content block
 		if chunk.Index != nil && chunk.ContentBlock != nil && chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse {
 			// Create streaming response with tool call metadata
 			streamResponse := &schemas.BifrostChatResponse{
@@ -715,7 +715,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{
 									{
 										Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
-										ID:   chunk.ContentBlock.ToolUseID,
+										ID:   chunk.ContentBlock.ID,
 										Function: schemas.ChatAssistantMessageToolCallFunction{
 											Name:      chunk.ContentBlock.Name,
 											Arguments: "", // Empty arguments initially, will be filled by subsequent deltas

@@ -167,9 +167,10 @@ func (provider *SGLProvider) Responses(ctx context.Context, key schemas.Key, req
 
 // ResponsesStream performs a streaming responses request to the SGL API.
 func (provider *SGLProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
-		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		postHookRunner,
 		key,
 		request.ToChatRequest(),
 	)

@@ -34,8 +34,9 @@ func TestOpenRouter(t *testing.T) {
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
+			ToolCallsStreaming:    false, // OpenRouter's responses API is in Beta
 			MultipleToolCalls:     true,
-			End2EndToolCalling:    false, // OpenRouter's responses API is in Beta
+			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false, // OpenRouter's responses API is in Beta
 			ImageBase64:           false, // OpenRouter's responses API is in Beta

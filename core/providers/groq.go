@@ -210,9 +210,10 @@ func (provider *GroqProvider) Responses(ctx context.Context, key schemas.Key, re
 
 // ResponsesStream performs a streaming responses request to the Groq API.
 func (provider *GroqProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
-		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		postHookRunner,
 		key,
 		request.ToChatRequest(),
 	)

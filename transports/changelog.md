@@ -1,2 +1,3 @@
 - chore: update core version to 1.2.22 and framework version to 1.1.27
-- feat: Adds input message in logs table for easier navigation
+- feat: added unified streaming lifecycle events across all providers to fully align with OpenAI’s streaming response types.
+- chore: shift from `alpha/responses` to `v1/responses` in openrouter provider for responses API

@@ -549,7 +549,8 @@ func HandleOpenAITextCompletionStreaming(
 				response = postResponseConverter(response)
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), postHookRunner, responseChan)
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), responseChan)
 		}
 	}()
 
@@ -701,6 +702,18 @@ func HandleOpenAIChatCompletionStreaming(
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	// Check if the request is a redirect from ResponsesStream to ChatCompletionStream
+	isResponsesToChatCompletionsFallback := false
+	var responsesStreamState *schemas.ChatToResponsesStreamState
+	if ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback) != nil {
+		isResponsesToChatCompletionsFallbackValue, ok := ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback).(bool)
+		if ok && isResponsesToChatCompletionsFallbackValue {
+			isResponsesToChatCompletionsFallback = true
+			responsesStreamState = schemas.AcquireChatToResponsesStreamState()
+			defer schemas.ReleaseChatToResponsesStreamState(responsesStreamState)
+		}
+	}
+
 	headers := map[string]string{
 		"Content-Type":  "application/json",
 		"Accept":        "text/event-stream",
@@ -858,77 +871,130 @@ func HandleOpenAIChatCompletionStreaming(
 				continue
 			}
 
-			if postResponseConverter != nil {
-				if converted := postResponseConverter(&response); converted != nil {
-					response = *converted
-				} else {
-					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+			if isResponsesToChatCompletionsFallback {
+				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
+				for _, response := range spreadResponses {
+					if response.Type == schemas.ResponsesStreamResponseTypeError {
+						bifrostErr := &schemas.BifrostError{
+							Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
+							IsBifrostError: false,
+							Error:          &schemas.ErrorField{},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								RequestType:    schemas.ResponsesStreamRequest,
+								Provider:       providerName,
+								ModelRequested: request.Model,
+							},
+						}
+
+						if response.Message != nil {
+							bifrostErr.Error.Message = *response.Message
+						}
+						if response.Param != nil {
+							bifrostErr.Error.Param = *response.Param
+						}
+						if response.Code != nil {
+							bifrostErr.Error.Code = response.Code
+						}
+
+						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+						return
+					}
+
+					response.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+					response.ExtraFields.Provider = providerName
+					response.ExtraFields.ModelRequested = request.Model
+					response.ExtraFields.ChunkIndex = response.SequenceNumber
+
+					if sendBackRawResponse {
+						response.ExtraFields.RawResponse = jsonData
+					}
+
+					if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+						return
+					}
+
+					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+					lastChunkTime = time.Now()
+
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
 				}
-			}
-
-			// Handle usage-only chunks (when stream_options include_usage is true)
-			if response.Usage != nil {
-				// Collect usage information and send at the end of the stream
-				// Here in some cases usage comes before final message
-				// So we need to check if the response.Usage is nil and then if usage != nil
-				// then add up all tokens
-				if response.Usage.PromptTokens > usage.PromptTokens {
-					usage.PromptTokens = response.Usage.PromptTokens
-				}
-				if response.Usage.CompletionTokens > usage.CompletionTokens {
-					usage.CompletionTokens = response.Usage.CompletionTokens
-				}
-				if response.Usage.TotalTokens > usage.TotalTokens {
-					usage.TotalTokens = response.Usage.TotalTokens
-				}
-				calculatedTotal := usage.PromptTokens + usage.CompletionTokens
-				if calculatedTotal > usage.TotalTokens {
-					usage.TotalTokens = calculatedTotal
-				}
-				response.Usage = nil
-			}
-
-			// Skip empty responses or responses without choices
-			if len(response.Choices) == 0 {
-				continue
-			}
-
-			// Handle finish reason, usually in the final chunk
-			choice := response.Choices[0]
-			if choice.FinishReason != nil && *choice.FinishReason != "" {
-				// Collect finish reason and send at the end of the stream
-				finishReason = choice.FinishReason
-				response.Choices[0].FinishReason = nil
-			}
-
-			if response.ID != "" && messageID == "" {
-				messageID = response.ID
-			}
-
-			// Handle regular content chunks
-			if choice.ChatStreamResponseChoice != nil &&
-				choice.ChatStreamResponseChoice.Delta != nil &&
-				(choice.ChatStreamResponseChoice.Delta.Content != nil ||
-					len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
-				chunkIndex++
-
-				response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
-				response.ExtraFields.Provider = providerName
-				response.ExtraFields.ModelRequested = request.Model
-				response.ExtraFields.ChunkIndex = chunkIndex
-				response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
-				lastChunkTime = time.Now()
-
-				if sendBackRawResponse {
-					response.ExtraFields.RawResponse = jsonData
+			} else {
+				if postResponseConverter != nil {
+					if converted := postResponseConverter(&response); converted != nil {
+						response = *converted
+					} else {
+						logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+					}
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil), responseChan)
-			}
+				// Handle usage-only chunks (when stream_options include_usage is true)
+				if response.Usage != nil {
+					// Collect usage information and send at the end of the stream
+					// Here in some cases usage comes before final message
+					// So we need to check if the response.Usage is nil and then if usage != nil
+					// then add up all tokens
+					if response.Usage.PromptTokens > usage.PromptTokens {
+						usage.PromptTokens = response.Usage.PromptTokens
+					}
+					if response.Usage.CompletionTokens > usage.CompletionTokens {
+						usage.CompletionTokens = response.Usage.CompletionTokens
+					}
+					if response.Usage.TotalTokens > usage.TotalTokens {
+						usage.TotalTokens = response.Usage.TotalTokens
+					}
+					calculatedTotal := usage.PromptTokens + usage.CompletionTokens
+					if calculatedTotal > usage.TotalTokens {
+						usage.TotalTokens = calculatedTotal
+					}
+					response.Usage = nil
+				}
 
-			// For providers that don't send [DONE] marker break on finish_reason
-			if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
-				break
+				// Skip empty responses or responses without choices
+				if len(response.Choices) == 0 {
+					continue
+				}
+
+				// Handle finish reason, usually in the final chunk
+				choice := response.Choices[0]
+				if choice.FinishReason != nil && *choice.FinishReason != "" {
+					// Collect finish reason and send at the end of the stream
+					finishReason = choice.FinishReason
+					response.Choices[0].FinishReason = nil
+				}
+
+				if response.ID != "" && messageID == "" {
+					messageID = response.ID
+				}
+
+				// Handle regular content chunks
+				if choice.ChatStreamResponseChoice != nil &&
+					choice.ChatStreamResponseChoice.Delta != nil &&
+					(choice.ChatStreamResponseChoice.Delta.Content != nil ||
+						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
+					chunkIndex++
+
+					response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+					response.ExtraFields.Provider = providerName
+					response.ExtraFields.ModelRequested = request.Model
+					response.ExtraFields.ChunkIndex = chunkIndex
+					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+					lastChunkTime = time.Now()
+
+					if sendBackRawResponse {
+						response.ExtraFields.RawResponse = jsonData
+					}
+
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil), responseChan)
+				}
+
+				// For providers that don't send [DONE] marker break on finish_reason
+				if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+					break
+				}
 			}
 		}
 
@@ -936,13 +1002,14 @@ func HandleOpenAIChatCompletionStreaming(
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, logger)
-		} else {
+		} else if !isResponsesToChatCompletionsFallback {
 			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 		}
 	}()
 
@@ -1272,8 +1339,8 @@ func HandleOpenAIResponsesStreaming(
 			}
 
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
 				return
 			}
@@ -1640,8 +1707,8 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			}
 
 			if response.Usage != nil {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
 				return
 			}
@@ -1912,8 +1979,8 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			}
 
 			if response.Usage != nil {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
 				return
 			}

@@ -23,7 +23,7 @@ func TestOllama(t *testing.T) {
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:       schemas.Ollama,
-		ChatModel:      "llama3.2",
+		ChatModel:      "llama3.1:latest",
 		TextModel:      "", // Ollama doesn't support text completion in newer models
 		EmbeddingModel: "", // Ollama doesn't support embedding
 		Scenarios: config.TestScenarios{
@@ -32,6 +32,7 @@ func TestOllama(t *testing.T) {
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
+			ToolCallsStreaming:    true,
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,

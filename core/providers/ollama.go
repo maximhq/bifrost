@@ -170,9 +170,10 @@ func (provider *OllamaProvider) Responses(ctx context.Context, key schemas.Key, 
 
 // ResponsesStream performs a streaming responses request to the Ollama API.
 func (provider *OllamaProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
-		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		postHookRunner,
 		key,
 		request.ToChatRequest(),
 	)

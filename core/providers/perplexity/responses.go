@@ -182,13 +182,3 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 
 	return perplexityReq
 }
-
-// ToBifrostResponsesResponse converts PerplexityChatResponse to BifrostResponsesResponse
-func (response *PerplexityChatResponse) ToBifrostResponsesResponse() *schemas.BifrostResponsesResponse {
-	if response == nil {
-		return nil
-	}
-
-	chatCompletionResponse := response.ToBifrostChatResponse(response.Model)
-	return chatCompletionResponse.ToBifrostResponsesResponse()
-}

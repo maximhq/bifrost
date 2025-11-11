@@ -5,29 +5,130 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// AnthropicStreamAccumulator tracks state during streaming conversion for responses API
-type AnthropicStreamAccumulator struct {
+// AnthropicResponsesStreamState tracks state during streaming conversion for responses API
+type AnthropicResponsesStreamState struct {
 	ChunkIndex      *int   // index of the chunk in the stream
 	AccumulatedJSON string // deltas of any event
 
 	// Computer tool accumulation
 	ComputerToolID *string
+
+	// OpenAI Responses API mapping state
+	ContentIndexToOutputIndex map[int]int    // Maps Anthropic content_index to OpenAI output_index
+	ToolArgumentBuffers       map[int]string // Maps output_index to accumulated tool argument JSON
+	MCPCallOutputIndices      map[int]bool   // Tracks which output indices are MCP calls
+	ItemIDs                   map[int]string // Maps output_index to item ID for stable IDs
+	CurrentOutputIndex        int            // Current output index counter
+	MessageID                 *string        // Message ID from message_start
+	Model                     *string        // Model name from message_start
+	CreatedAt                 int            // Timestamp for created_at consistency
+	HasEmittedCreated         bool           // Whether we've emitted response.created
+	HasEmittedInProgress      bool           // Whether we've emitted response.in_progress
 }
 
-// NewAnthropicStreamAccumulator creates a new accumulator
-func NewAnthropicStreamAccumulator() *AnthropicStreamAccumulator {
-	return &AnthropicStreamAccumulator{}
+// anthropicResponsesStreamStatePool provides a pool for Anthropic responses stream state objects.
+var anthropicResponsesStreamStatePool = sync.Pool{
+	New: func() interface{} {
+		return &AnthropicResponsesStreamState{
+			ContentIndexToOutputIndex: make(map[int]int),
+			ToolArgumentBuffers:       make(map[int]string),
+			MCPCallOutputIndices:      make(map[int]bool),
+			ItemIDs:                   make(map[int]string),
+			CurrentOutputIndex:        0,
+			CreatedAt:                 int(time.Now().Unix()),
+			HasEmittedCreated:         false,
+			HasEmittedInProgress:      false,
+		}
+	},
 }
 
-func (accumulator *AnthropicStreamAccumulator) Flush() {
-	accumulator.ChunkIndex = nil
-	accumulator.AccumulatedJSON = ""
-	accumulator.ComputerToolID = nil
+// acquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
+func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
+	state := anthropicResponsesStreamStatePool.Get().(*AnthropicResponsesStreamState)
+	// Clear maps (they're already initialized from New or previous flush)
+	// Only initialize if nil (shouldn't happen, but defensive)
+	if state.ContentIndexToOutputIndex == nil {
+		state.ContentIndexToOutputIndex = make(map[int]int)
+	} else {
+		clear(state.ContentIndexToOutputIndex)
+	}
+	if state.ToolArgumentBuffers == nil {
+		state.ToolArgumentBuffers = make(map[int]string)
+	} else {
+		clear(state.ToolArgumentBuffers)
+	}
+	if state.MCPCallOutputIndices == nil {
+		state.MCPCallOutputIndices = make(map[int]bool)
+	} else {
+		clear(state.MCPCallOutputIndices)
+	}
+	if state.ItemIDs == nil {
+		state.ItemIDs = make(map[int]string)
+	} else {
+		clear(state.ItemIDs)
+	}
+	// Reset other fields
+	state.ChunkIndex = nil
+	state.AccumulatedJSON = ""
+	state.ComputerToolID = nil
+	state.CurrentOutputIndex = 0
+	state.MessageID = nil
+	state.Model = nil
+	state.CreatedAt = int(time.Now().Unix())
+	state.HasEmittedCreated = false
+	state.HasEmittedInProgress = false
+	return state
+}
+
+// releaseAnthropicResponsesStreamState returns an Anthropic responses stream state to the pool.
+func releaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) {
+	if state != nil {
+		state.flush() // Clean before returning to pool
+		anthropicResponsesStreamStatePool.Put(state)
+	}
+}
+
+// flush resets the state of the stream state to its initial values
+func (state *AnthropicResponsesStreamState) flush() {
+	state.ChunkIndex = nil
+	state.AccumulatedJSON = ""
+	state.ComputerToolID = nil
+	state.ContentIndexToOutputIndex = make(map[int]int)
+	state.ToolArgumentBuffers = make(map[int]string)
+	state.MCPCallOutputIndices = make(map[int]bool)
+	state.ItemIDs = make(map[int]string)
+	state.CurrentOutputIndex = 0
+	state.MessageID = nil
+	state.Model = nil
+	state.CreatedAt = int(time.Now().Unix())
+	state.HasEmittedCreated = false
+	state.HasEmittedInProgress = false
+}
+
+// getOrCreateOutputIndex returns the output index for a given content index, creating a new one if needed
+func (state *AnthropicResponsesStreamState) getOrCreateOutputIndex(contentIndex *int) int {
+	if contentIndex == nil {
+		// If no content index, create a new output index
+		outputIndex := state.CurrentOutputIndex
+		state.CurrentOutputIndex++
+		return outputIndex
+	}
+
+	if outputIndex, exists := state.ContentIndexToOutputIndex[*contentIndex]; exists {
+		return outputIndex
+	}
+
+	// Create new output index for this content index
+	outputIndex := state.CurrentOutputIndex
+	state.CurrentOutputIndex++
+	state.ContentIndexToOutputIndex[*contentIndex] = outputIndex
+	return outputIndex
 }
 
 // ToBifrostResponsesRequest converts an Anthropic message request to Bifrost format
@@ -340,45 +441,72 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 }
 
 // ToBifrostResponsesStream converts an Anthropic stream event to a Bifrost Responses Stream response
-// It maintains state via the accumulator for handling multi-chunk conversions like computer tools
+// It maintains state via the state for handling multi-chunk conversions like computer tools
 // Returns a slice of responses to support cases where a single event produces multiple responses
-func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, accumulator *AnthropicStreamAccumulator) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, state *AnthropicResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
-		// Message start - create output item added event
+		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
 		if chunk.Message != nil {
-			messageType := schemas.ResponsesMessageTypeMessage
-			role := schemas.ResponsesInputMessageRoleAssistant
-
-			item := &schemas.ResponsesMessage{
-				ID:   &chunk.Message.ID,
-				Type: &messageType,
-				Role: &role,
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
-				},
+			state.MessageID = &chunk.Message.ID
+			state.Model = &chunk.Message.Model
+			// Use the state's CreatedAt for consistency
+			if state.CreatedAt == 0 {
+				state.CreatedAt = int(time.Now().Unix())
 			}
 
-			return []*schemas.BifrostResponsesStreamResponse{{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0), // Assuming single output for now
-				Item:           item,
-			}}, nil, false
+			var responses []*schemas.BifrostResponsesStreamResponse
+
+			// Emit response.created
+			if !state.HasEmittedCreated {
+				response := &schemas.BifrostResponsesResponse{
+					ID:        state.MessageID,
+					CreatedAt: state.CreatedAt,
+				}
+				if state.Model != nil {
+					// Note: Model field doesn't exist in BifrostResponsesResponse, but we can add other fields
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeCreated,
+					SequenceNumber: sequenceNumber,
+					Response:       response,
+				})
+				state.HasEmittedCreated = true
+			}
+
+			// Emit response.in_progress
+			if !state.HasEmittedInProgress {
+				response := &schemas.BifrostResponsesResponse{
+					ID:        state.MessageID,
+					CreatedAt: state.CreatedAt, // Use same timestamp
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeInProgress,
+					SequenceNumber: sequenceNumber + len(responses),
+					Response:       response,
+				})
+				state.HasEmittedInProgress = true
+			}
+
+			if len(responses) > 0 {
+				return responses, nil, false
+			}
 		}
 
 	case AnthropicStreamEventTypeContentBlockStart:
-		// Content block start - create content part added event
+		// Content block start - emit output_item.added (OpenAI-style)
 		if chunk.ContentBlock != nil && chunk.Index != nil {
+			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+
 			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse &&
 				chunk.ContentBlock.Name != nil &&
 				*chunk.ContentBlock.Name == string(AnthropicToolNameComputer) &&
 				chunk.ContentBlock.ID != nil {
 
 				// Start accumulating computer tool
-				accumulator.ComputerToolID = chunk.ContentBlock.ID
-				accumulator.ChunkIndex = chunk.Index
-				accumulator.AccumulatedJSON = ""
+				state.ComputerToolID = chunk.ContentBlock.ID
+				state.ChunkIndex = chunk.Index
+				state.AccumulatedJSON = ""
 
 				// Emit output_item.added for computer_call
 				item := &schemas.ResponsesMessage{
@@ -392,28 +520,56 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 				return []*schemas.BifrostResponsesStreamResponse{{
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					Item:           item,
 				}}, nil, false
 			}
 
-			var contentType schemas.ResponsesMessageContentBlockType
-			var part *schemas.ResponsesMessageContentBlock
-
 			switch chunk.ContentBlock.Type {
 			case AnthropicContentBlockTypeText:
-				contentType = schemas.ResponsesOutputMessageContentTypeText
-				part = &schemas.ResponsesMessageContentBlock{
-					Type: contentType,
-					Text: schemas.Ptr(""), // Empty text initially
+				// Text block - emit output_item.added with type "message"
+				messageType := schemas.ResponsesMessageTypeMessage
+				role := schemas.ResponsesInputMessageRoleAssistant
+
+				// Generate stable ID for text item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("item_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
 				}
-			case AnthropicContentBlockTypeToolUse:
-				// This is a function call starting - create function call message
+				state.ItemIDs[outputIndex] = itemID
 
 				item := &schemas.ResponsesMessage{
-					ID:   chunk.ContentBlock.ID,
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
+					},
+				}
+
+				return []*schemas.BifrostResponsesStreamResponse{{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				}}, nil, false
+
+			case AnthropicContentBlockTypeToolUse:
+				// Function call starting - emit output_item.added with type "function_call" and status "in_progress"
+				statusInProgress := "in_progress"
+				itemID := ""
+				if chunk.ContentBlock.ID != nil {
+					itemID = *chunk.ContentBlock.ID
+					state.ItemIDs[outputIndex] = itemID
+				}
+				item := &schemas.ResponsesMessage{
+					ID:     chunk.ContentBlock.ID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					Status: &statusInProgress,
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID:    chunk.ContentBlock.ID,
 						Name:      chunk.ContentBlock.Name,
@@ -421,14 +577,23 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 					},
 				}
 
+				// Initialize argument buffer for this tool call
+				state.ToolArgumentBuffers[outputIndex] = ""
+
 				return []*schemas.BifrostResponsesStreamResponse{{
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					Item:           item,
 				}}, nil, false
+
 			case AnthropicContentBlockTypeMCPToolUse:
-				// This is an MCP tool call starting - create MCP call message
+				// MCP tool call starting - emit output_item.added
+				itemID := ""
+				if chunk.ContentBlock.ID != nil {
+					itemID = *chunk.ContentBlock.ID
+					state.ItemIDs[outputIndex] = itemID
+				}
 				item := &schemas.ResponsesMessage{
 					ID:   chunk.ContentBlock.ID,
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
@@ -445,65 +610,80 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 					}
 				}
 
-				// First emit output_item.added
-				outputItemAddedResp := &schemas.BifrostResponsesStreamResponse{
+				// Initialize argument buffer for this MCP call and mark as MCP
+				state.ToolArgumentBuffers[outputIndex] = ""
+				state.MCPCallOutputIndices[outputIndex] = true
+
+				return []*schemas.BifrostResponsesStreamResponse{{
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					Item:           item,
-				}
-
-				return []*schemas.BifrostResponsesStreamResponse{outputItemAddedResp}, nil, false
-			}
-
-			if part != nil {
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
-					ContentIndex:   chunk.Index,
-					Part:           part,
 				}}, nil, false
 			}
 		}
 
 	case AnthropicStreamEventTypeContentBlockDelta:
 		if chunk.Index != nil && chunk.Delta != nil {
-			// Handle different delta types (non-computer tool)
+			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+
+			// Handle different delta types
 			switch chunk.Delta.Type {
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
-					// Text content delta
-					return []*schemas.BifrostResponsesStreamResponse{{
+					// Text content delta - emit output_text.delta with item ID
+					itemID := state.ItemIDs[outputIndex]
+					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
+						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
 						Delta:          chunk.Delta.Text,
-					}}, nil, false
+					}
+					if itemID != "" {
+						response.ItemID = &itemID
+					}
+					return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 				}
 
 			case AnthropicStreamDeltaTypeInputJSON:
 				// Function call arguments delta
 				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
-
 					// Check if we're accumulating a computer tool
-					if accumulator.ComputerToolID != nil &&
-						chunk.Index != nil &&
-						accumulator.ChunkIndex != nil &&
-						*accumulator.ChunkIndex == *chunk.Index {
+					if state.ComputerToolID != nil &&
+						state.ChunkIndex != nil &&
+						*state.ChunkIndex == *chunk.Index {
 						// Accumulate the JSON and don't emit anything
-						accumulator.AccumulatedJSON += *chunk.Delta.PartialJSON
+						state.AccumulatedJSON += *chunk.Delta.PartialJSON
 						return nil, nil, false
 					}
 
-					return []*schemas.BifrostResponsesStreamResponse{{
-						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+					// Accumulate tool arguments in buffer
+					if _, exists := state.ToolArgumentBuffers[outputIndex]; !exists {
+						state.ToolArgumentBuffers[outputIndex] = ""
+					}
+					state.ToolArgumentBuffers[outputIndex] += *chunk.Delta.PartialJSON
+
+					// Emit appropriate delta type based on whether this is an MCP call
+					var deltaType schemas.ResponsesStreamResponseType
+					if state.MCPCallOutputIndices[outputIndex] {
+						deltaType = schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta
+					} else {
+						deltaType = schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta
+					}
+
+					itemID := state.ItemIDs[outputIndex]
+					response := &schemas.BifrostResponsesStreamResponse{
+						Type:           deltaType,
 						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
+						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
 						Delta:          chunk.Delta.PartialJSON,
-					}}, nil, false
+					}
+					if itemID != "" {
+						response.ItemID = &itemID
+					}
+					return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 				}
 
 			case AnthropicStreamDeltaTypeThinking:
@@ -512,7 +692,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 					return []*schemas.BifrostResponsesStreamResponse{{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
+						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
 						Delta:          chunk.Delta.Thinking,
 					}}, nil, false
@@ -527,30 +707,33 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 		}
 
 	case AnthropicStreamEventTypeContentBlockStop:
-		// Content block is complete
+		// Content block is complete - emit output_item.done (OpenAI-style)
 		if chunk.Index != nil {
+			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+
 			// Check if this is the end of a computer tool accumulation
-			if accumulator.ComputerToolID != nil &&
-				accumulator.ChunkIndex != nil &&
-				*accumulator.ChunkIndex == *chunk.Index {
+			if state.ComputerToolID != nil &&
+				state.ChunkIndex != nil &&
+				*state.ChunkIndex == *chunk.Index {
 
 				// Parse accumulated JSON and convert to OpenAI format
 				var inputMap map[string]interface{}
 				var action *schemas.ResponsesComputerToolCallAction
 
-				if accumulator.AccumulatedJSON != "" {
-					if err := json.Unmarshal([]byte(accumulator.AccumulatedJSON), &inputMap); err == nil {
+				if state.AccumulatedJSON != "" {
+					if err := json.Unmarshal([]byte(state.AccumulatedJSON), &inputMap); err == nil {
 						action = convertAnthropicToResponsesComputerAction(inputMap)
 					}
 				}
 
 				// Create computer_call item with action
+				statusCompleted := "completed"
 				item := &schemas.ResponsesMessage{
-					ID:     accumulator.ComputerToolID,
+					ID:     state.ComputerToolID,
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
-					Status: schemas.Ptr("completed"),
+					Status: &statusCompleted,
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: accumulator.ComputerToolID,
+						CallID: state.ComputerToolID,
 						ResponsesComputerToolCall: &schemas.ResponsesComputerToolCall{
 							PendingSafetyChecks: []schemas.ResponsesComputerToolCallPendingSafetyCheck{},
 						},
@@ -564,51 +747,91 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 					}
 				}
 
-				// Clear accumulator
-				accumulator.Flush()
+				// Clear computer tool state
+				state.ComputerToolID = nil
+				state.ChunkIndex = nil
+				state.AccumulatedJSON = ""
 
-				// Return both output_item.done and content_part.done
+				// Return output_item.done
 				return []*schemas.BifrostResponsesStreamResponse{
 					{
 						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
 						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(0),
+						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
 						Item:           item,
-					},
-					{
-						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-						SequenceNumber: sequenceNumber + 1,
-						OutputIndex:    schemas.Ptr(0),
-						ContentIndex:   chunk.Index,
 					},
 				}, nil, false
 			}
 
-			return []*schemas.BifrostResponsesStreamResponse{{
-				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
+			// Check if this is a tool call (function_call or MCP call)
+			// If we have accumulated arguments, emit appropriate arguments.done first
+			var responses []*schemas.BifrostResponsesStreamResponse
+			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs && accumulatedArgs != "" {
+				// Emit appropriate arguments.done based on whether this is an MCP call
+				var doneType schemas.ResponsesStreamResponseType
+				if state.MCPCallOutputIndices[outputIndex] {
+					doneType = schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone
+				} else {
+					doneType = schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone
+				}
+
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
+					Type:           doneType,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Arguments:      &accumulatedArgs,
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				responses = append(responses, response)
+				// Clear the buffer and MCP tracking
+				delete(state.ToolArgumentBuffers, outputIndex)
+				delete(state.MCPCallOutputIndices, outputIndex)
+			}
+
+			// Emit output_item.done for all content blocks (text, tool, etc.)
+			statusCompleted := "completed"
+			itemID := state.ItemIDs[outputIndex]
+			doneItem := &schemas.ResponsesMessage{
+				Status: &statusCompleted,
+			}
+			if itemID != "" {
+				doneItem.ID = &itemID
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   chunk.Index,
-			}}, nil, false
+				Item:           doneItem,
+			})
+
+			return responses, nil, false
 		}
 
 	case AnthropicStreamEventTypeMessageDelta:
 		// Message-level updates (like stop reason, usage, etc.)
-		if chunk.Delta != nil && chunk.Delta.StopReason != nil {
-			// Indicate the output item is done
-			return []*schemas.BifrostResponsesStreamResponse{{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-			}}, nil, false
-		}
+		// Note: We don't emit output_item.done here because items are already closed
+		// by content_block_stop. This event is informational only.
+		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageStop:
-		// Message stop - this is the final chunk indicating stream completion
+		// Message stop - emit response.completed (OpenAI-style)
+		response := &schemas.BifrostResponsesResponse{
+			CreatedAt: state.CreatedAt,
+		}
+		if state.MessageID != nil {
+			response.ID = state.MessageID
+		}
+
 		return []*schemas.BifrostResponsesStreamResponse{{
 			Type:           schemas.ResponsesStreamResponseTypeCompleted,
 			SequenceNumber: sequenceNumber,
+			Response:       response,
 		}}, nil, true // Indicate stream is complete
 
 	case AnthropicStreamEventTypePing:

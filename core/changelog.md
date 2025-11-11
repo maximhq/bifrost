@@ -1,2 +1,2 @@
-- chore: Adds index to ChatAssistantMessageToolCall
-- fix: responses text output standardization to content blocks
+- feat: added unified streaming lifecycle events across all providers to fully align with OpenAI’s streaming response types.
+- chore: shift from `alpha/responses` to `v1/responses` in openrouter provider for responses API
