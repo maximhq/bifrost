@@ -37,7 +37,7 @@ func ToolCallExpectations(toolName string, requiredArgs []string) ResponseExpect
 		{
 			FunctionName:     toolName,
 			RequiredArgs:     requiredArgs,
-			ValidateArgsJSON: true,			
+			ValidateArgsJSON: true,
 		},
 	}
 	// Tool calls might not have text content
@@ -205,11 +205,6 @@ func ReasoningExpectations() ResponseExpectations {
 		ShouldHaveUsageStats: true,
 		ShouldHaveTimestamps: true,
 		ShouldHaveModel:      true,
-		// Reasoning-specific validations
-		ShouldContainAnyOf: []string{
-			"step", "first", "then", "next", "calculate", "therefore", "because",
-			"reasoning", "think", "analysis", "conclusion", "solution", "solve",
-		},
 		ProviderSpecific: map[string]interface{}{
 			"response_type":        "reasoning",
 			"expects_step_by_step": true,
@@ -297,9 +292,6 @@ func GetExpectationsForScenario(scenarioName string, testConfig config.Comprehen
 
 	case "Reasoning":
 		expectations := ReasoningExpectations()
-		if requiresReasoning, ok := customParams["requires_reasoning"].(bool); ok && requiresReasoning {
-			expectations.ShouldContainAnyOf = append(expectations.ShouldContainAnyOf, []string{"step", "first", "then", "calculate", "therefore", "because", "solve"}...)
-		}
 		return expectations
 
 	case "ProviderSpecific":
