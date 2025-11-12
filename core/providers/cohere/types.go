@@ -394,7 +394,7 @@ type CohereStreamDelta struct {
 
 type CohereStreamToolCallStruct struct {
 	CohereToolCallObject *CohereToolCall
-	CohereToolCallArray  *[]CohereToolCall
+	CohereToolCallArray  []CohereToolCall
 }
 
 // JSON marshaling for CohereStreamToolCall
@@ -415,7 +415,7 @@ func (c *CohereStreamToolCallStruct) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as array first
 	var toolCallArray []CohereToolCall
 	if err := sonic.Unmarshal(data, &toolCallArray); err == nil {
-		c.CohereToolCallArray = &toolCallArray
+		c.CohereToolCallArray = toolCallArray
 		return nil
 	}
 
@@ -431,7 +431,7 @@ func (c *CohereStreamToolCallStruct) UnmarshalJSON(data []byte) error {
 
 type CohereStreamContentStruct struct {
 	CohereStreamContentObject *CohereStreamContent
-	CohereStreamContentArray  *[]CohereStreamContent
+	CohereStreamContentArray  []CohereStreamContent
 }
 
 func (c *CohereStreamContentStruct) MarshalJSON() ([]byte, error) {
@@ -451,7 +451,7 @@ func (c *CohereStreamContentStruct) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as array first
 	var contentArray []CohereStreamContent
 	if err := sonic.Unmarshal(data, &contentArray); err == nil {
-		c.CohereStreamContentArray = &contentArray
+		c.CohereStreamContentArray = contentArray
 		return nil
 	}
 
@@ -467,7 +467,7 @@ func (c *CohereStreamContentStruct) UnmarshalJSON(data []byte) error {
 
 type CohereStreamCitationStruct struct {
 	CohereStreamCitationObject *CohereCitation
-	CohereStreamCitationArray  *[]CohereCitation
+	CohereStreamCitationArray  []CohereCitation
 }
 
 func (c *CohereStreamCitationStruct) MarshalJSON() ([]byte, error) {
@@ -487,7 +487,7 @@ func (c *CohereStreamCitationStruct) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as array first
 	var citationArray []CohereCitation
 	if err := sonic.Unmarshal(data, &citationArray); err == nil {
-		c.CohereStreamCitationArray = &citationArray
+		c.CohereStreamCitationArray = citationArray
 		return nil
 	}
 

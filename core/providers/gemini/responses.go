@@ -450,7 +450,7 @@ func convertFunctionParametersToGeminiSchema(params schemas.ToolFunctionParamete
 		}
 	}
 
-	if params.Required != nil {
+	if len(params.Required) > 0 {
 		schema.Required = params.Required
 	}
 

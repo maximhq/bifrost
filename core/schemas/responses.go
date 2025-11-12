@@ -130,7 +130,7 @@ type ResponsesTextConfigFormat struct {
 type ResponsesTextConfigFormatJSONSchema struct {
 	AdditionalProperties *bool           `json:"additionalProperties,omitempty"`
 	Properties           *map[string]any `json:"properties,omitempty"`
-	Required             *[]string       `json:"required,omitempty"`
+	Required             []string        `json:"required,omitempty"`
 	Type                 *string         `json:"type,omitempty"`
 }
 

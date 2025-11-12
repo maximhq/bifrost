@@ -84,7 +84,7 @@ func (provider *OpenAIProvider) ListModels(ctx context.Context, keys []schemas.K
 	providerName := provider.GetProviderKey()
 
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
-		return listModelsByKeyOpenAI(
+		return listModelsByKey(
 			ctx,
 			provider.client,
 			provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
@@ -107,9 +107,9 @@ func (provider *OpenAIProvider) ListModels(ctx context.Context, keys []schemas.K
 	)
 }
 
-// listModelsByKeyOpenAI performs a list models request for a single key.
+// listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
-func listModelsByKeyOpenAI(
+func listModelsByKey(
 	ctx context.Context,
 	client *fasthttp.Client,
 	url string,
@@ -160,6 +160,8 @@ func listModelsByKeyOpenAI(
 
 	response := openaiResponse.ToBifrostListModelsResponse(providerName)
 
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.ListModelsRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
@@ -180,14 +182,17 @@ func HandleOpenAIListModelsRequest(
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	listModelsByKey := func(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-		return listModelsByKeyOpenAI(ctx, client, url, key, extraHeaders, providerName, sendBackRawResponse)
+	if len(keys) == 0 {
+		return listModelsByKey(ctx, client, url, schemas.Key{}, extraHeaders, providerName, sendBackRawResponse)
+	}
+	listModelsByKeyWrapper := func(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		return listModelsByKey(ctx, client, url, key, extraHeaders, providerName, sendBackRawResponse)
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
 		request,
-		listModelsByKey,
+		listModelsByKeyWrapper,
 		logger,
 	)
 }

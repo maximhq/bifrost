@@ -1,5 +1,5 @@
-- chore: update core version to 1.2.22 and framework version to 1.1.27
+- chore: update core version to 1.2.23 and framework version to 1.1.28
 - feat: added unified streaming lifecycle events across all providers to fully align with OpenAI’s streaming response types.
 - chore: shift from `alpha/responses` to `v1/responses` in openrouter provider for responses API
 - feat: send back pricing data for models in list models response
-- fix: custom keyless providers initial list models request fixes
+- fix: add support for keyless providers in list models request
