@@ -35,14 +35,18 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
 	project_id: string;
+	project_number?: string;
 	region: string;
-	auth_credentials: string; // Always string - JSON string or env var
+	auth_credentials?: string; // Always string - JSON string or env var
+	deployments?: Record<string, string> | string; // Allow string during editing
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_id: "",
+	project_number: "",
 	region: "",
 	auth_credentials: "",
+	deployments: {},
 } as const satisfies Required<VertexKeyConfig>;
 
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig

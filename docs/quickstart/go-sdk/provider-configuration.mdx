@@ -69,7 +69,7 @@ Set up your API keys for the providers you want to use:
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
-export CEREBRA_API_KEY="your-cerebras-api-key"
+export CEREBRAS_API_KEY="your-cerebras-api-key"
 export MISTRAL_API_KEY="your-mistral-api-key"
 export GROQ_API_KEY="your-groq-api-key"
 export COHERE_API_KEY="your-cohere-api-key"
@@ -355,13 +355,17 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Vertex:
         return []schemas.Key{
             {
-                Value:  os.Getenv("VERTEX_API_KEY"), // Optional if using service account
+                Value:  os.Getenv("VERTEX_API_KEY"), // only when using gemini or fine-tuned models
                 Models: []string{"gemini-pro", "gemini-pro-vision"},
                 Weight: 1.0,
                 VertexKeyConfig: &schemas.VertexKeyConfig{
                     ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),       // GCP project ID
+                    ProjectNumber:   os.Getenv("VERTEX_PROJECT_NUMBER"),   // GCP project number (only when using fine-tuned models)
                     Region:          "us-central1",                        // GCP region
-                    AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),      // Service account JSON or path
+                    AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),      // Service account JSON
+                     Deployments: map[string]string{
+                        "fine-tuned-gemini-2.5-pro": "123456789"
+                    },
                 },
             },
         }, nil
@@ -369,6 +373,16 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     return nil, fmt.Errorf("provider %s not supported", provider)
 }
 ```
+
+**Notes:**
+- You can leave both API Key and Auth Credentials empty to use service account authentication from the environment.
+- You must set Project Number if using fine-tuned models.
+- API Key Authentication is only supported for Gemini and fine-tuned models.
+- You can use custom fine-tuned models by passing `vertex/<your-fine-tuned-model-id>` or `vertex/<model-deployment-alias>` if you have set the deployments in the key config.
+
+<Note>
+Vertex AI support for fine-tuned models is currently in beta. Requests to non-Gemini fine-tuned models may fail, so please test and report any issues.
+</Note>
 
 </Tab>
 

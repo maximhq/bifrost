@@ -846,19 +846,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												<SelectValue placeholder="Select an MCP client to add" />
 											</SelectTrigger>
 											<SelectContent>
-												{mcpClientsData.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.name)).length >
-												0 ? (
+												{mcpClientsData.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
+													.length > 0 ? (
 													mcpClientsData
-														.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.name))
+														.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
 														.map((client, index) => {
 															const client_tools = client.tools || [];
 															const totalTools = client.config.tools_to_execute?.includes("*")
 																? client_tools.length
 																: client_tools.filter((tool) => client.config.tools_to_execute?.includes(tool.name)).length;
 															return (
-																<SelectItem key={index} value={client.name}>
+																<SelectItem key={index} value={client.config.name}>
 																	<div className="flex items-center gap-2">
-																		{client.name}
+																		{client.config.name}
 																		<span className="text-muted-foreground text-xs">
 																			({totalTools} {totalTools === 1 ? "enabled tool" : "enabled tools"})
 																		</span>
@@ -887,7 +887,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 											</TableHeader>
 											<TableBody>
 												{mcpConfigs.map((config, index) => {
-													const mcpClient = mcpClientsData?.find((client) => client.name === config.mcp_client_name);
+													const mcpClient = mcpClientsData?.find((client) => client.config.name === config.mcp_client_name);
 
 													// Handle new wildcard semantics for client-level filtering
 													const clientToolsToExecute = mcpClient?.config?.tools_to_execute;

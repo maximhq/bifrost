@@ -699,6 +699,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -716,6 +717,7 @@ func HandleOpenAIChatCompletionStreaming(
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	customRequestConverter func(*schemas.BifrostChatRequest) (any, error),
+	postRequestConverter func(*OpenAIChatRequest) *OpenAIChatRequest,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
@@ -754,6 +756,9 @@ func HandleOpenAIChatCompletionStreaming(
 				reqBody.Stream = schemas.Ptr(true)
 				reqBody.StreamOptions = &schemas.ChatStreamOptions{
 					IncludeUsage: schemas.Ptr(true),
+				}
+				if postRequestConverter != nil {
+					reqBody = postRequestConverter(reqBody)
 				}
 			}
 			return reqBody, nil
@@ -1193,10 +1198,10 @@ func HandleOpenAIResponsesStreaming(
 		func() (any, error) {
 			reqBody := ToOpenAIResponsesRequest(request)
 			if reqBody != nil {
+				reqBody.Stream = schemas.Ptr(true)
 				if postRequestConverter != nil {
 					reqBody = postRequestConverter(reqBody)
 				}
-				reqBody.Stream = schemas.Ptr(true)
 			}
 			return reqBody, nil
 		},

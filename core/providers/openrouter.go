@@ -202,6 +202,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }

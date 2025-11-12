@@ -42,6 +42,16 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					</AlertDescription>
 				</Alert>
 			)}
+			{isVertex && (
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>Authentication Methods</AlertTitle>
+					<AlertDescription>
+						You can either use service account authentication or API key authentication. Please leave API Key empty when using service
+						account authentication.
+					</AlertDescription>
+				</Alert>
+			)}
 			<div className="flex items-start gap-4">
 				<div className="flex-1">
 					<FormField
@@ -107,21 +117,19 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			{!isVertex && (
-				<FormField
-					control={control}
-					name={`key.value`}
-					render={({ field }) => (
-						<FormItem>
-							<FormLabel>API Key</FormLabel>
-							<FormControl>
-								<Input placeholder="API Key or env.MY_KEY" type="text" {...field} />
-							</FormControl>
-							<FormMessage />
-						</FormItem>
-					)}
-				/>
-			)}
+			<FormField
+				control={control}
+				name={`key.value`}
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : ""}</FormLabel>
+						<FormControl>
+							<Input placeholder="API Key or env.MY_KEY" type="text" {...field} value={field.value ?? ""} />
+						</FormControl>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
 			<FormField
 				control={control}
 				name={`key.models`}
@@ -220,6 +228,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			)}
 			{isVertex && (
 				<div className="space-y-4">
+					<Separator className="my-6" />
 					<FormField
 						control={control}
 						name={`key.vertex_key_config.project_id`}
@@ -228,6 +237,19 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormLabel>Project ID (Required)</FormLabel>
 								<FormControl>
 									<Input placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.project_number`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Project Number (Required only for fine-tuned models)</FormLabel>
+								<FormControl>
+									<Input placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} value={field.value ?? ""} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -246,17 +268,24 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
+					<Alert variant="default" className="-z-10">
+						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+						<AlertTitle>Service Account Authentication</AlertTitle>
+						<AlertDescription>
+							Leave both API Key and Auth Credentials empty to use service account attached to your environment.
+						</AlertDescription>
+					</Alert>
 					<FormField
 						control={control}
 						name={`key.vertex_key_config.auth_credentials`}
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>Auth Credentials (Required)</FormLabel>
+								<FormLabel>Auth Credentials</FormLabel>
 								<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
 								<FormControl>
 									<Textarea
 										placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										value={typeof field.value === "string" ? field.value : field.value ? JSON.stringify(field.value || {}, null, 2) : ""}
 										onChange={(e) => field.onChange(e.target.value)}
 										onBlur={(e) => {
 											const value = e.target.value.trim();
@@ -284,6 +313,44 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										<span>Credentials are stored securely. Edit to update.</span>
 									</div>
 								)}
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.deployments`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Deployments (Optional)</FormLabel>
+								<FormDescription>JSON object mapping model names to custom fine-tuned model deployment ids</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"custom-gemini-2.5-pro": "123456789", "custom-gemini-2.0-flash-001": "987654321"}'
+										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										onChange={(e) => {
+											// Store as string during editing to allow intermediate invalid states
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											// Try to parse as JSON on blur, but keep as string if invalid
+											const value = e.target.value.trim();
+											if (value) {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
+												}
+											}
+											field.onBlur();
+										}}
+										rows={3}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								<FormMessage />
 							</FormItem>
 						)}
 					/>
@@ -359,7 +426,6 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
-					<Separator className="my-6" />
 					<FormField
 						control={control}
 						name={`key.bedrock_key_config.region`}

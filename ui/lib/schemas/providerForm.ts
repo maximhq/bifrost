@@ -77,10 +77,18 @@ const AzureKeyConfigSchema = z.object({
 
 const VertexKeyConfigSchema = z.object({
 	project_id: z.string().min(1, "Project ID is required for Vertex AI keys"),
+	project_number: z.string().optional(),
 	region: z.string().min(1, "Region is required for Vertex AI keys"),
-	auth_credentials: z.string().refine((value) => isValidVertexAuthCredentials(value), {
-		message: "Valid Auth Credentials (JSON object or env.VAR) are required for Vertex AI keys",
-	}),
+	auth_credentials: z
+		.string()
+		.optional()
+		.refine((value) => !value || isValidVertexAuthCredentials(value), {
+			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
+		}),
+	deployments: z
+		.union([z.record(z.string(), z.string()), z.string()])
+		.optional()
+		.refine((value) => !value || isValidDeployments(value), { message: "Valid Deployments (JSON object) are required for Vertex AI keys" }),
 });
 
 const BedrockKeyConfigSchema = z

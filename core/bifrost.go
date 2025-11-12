@@ -828,7 +828,19 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.Plugin) error {
 	}
 }
 
-// GetConfiguredProviders returns a configured providers list.
+// GetConfiguredProviders returns the configured providers.
+//
+// Returns:
+//   - []schemas.ModelProvider: List of configured providers
+//   - error: Any error that occurred during the retrieval process
+//
+// Example:
+//
+//	providers, err := bifrost.GetConfiguredProviders()
+//	if err != nil {
+//		return nil, err
+//	}
+//	fmt.Println(providers)
 func (bifrost *Bifrost) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 	providers := bifrost.providers.Load()
 	if providers == nil {
@@ -2082,7 +2094,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			// Use the custom provider name for actual key selection, but pass base provider type for key validation
 			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
 			if err != nil {
-				bifrost.logger.Warn("error selecting key for model %s: %v", model, err)
+				bifrost.logger.Debug("error selecting key for model %s: %v", model, err)
 				req.Err <- schemas.BifrostError{
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
@@ -2486,7 +2498,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 		for _, key := range keys {
 			modelSupported := (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType))) || len(key.Models) == 0
 
-			// Additional deployment checks for Azure and Bedrock
+			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {
 				// For Azure, check if deployment exists for this model
@@ -2498,6 +2510,11 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 				if len(key.BedrockKeyConfig.Deployments) > 0 {
 					_, deploymentSupported = key.BedrockKeyConfig.Deployments[model]
 				}
+			} else if baseProviderType == schemas.Vertex && key.VertexKeyConfig != nil {
+				// For Vertex, check if deployment exists for this model
+				if len(key.VertexKeyConfig.Deployments) > 0 {
+					_, deploymentSupported = key.VertexKeyConfig.Deployments[model]
+				}
 			}
 
 			if modelSupported && deploymentSupported {
@@ -2506,7 +2523,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 		}
 	}
 	if len(supportedKeys) == 0 {
-		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock {
+		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex {
 			return schemas.Key{}, fmt.Errorf("no keys found that support model/deployment: %s", model)
 		}
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)

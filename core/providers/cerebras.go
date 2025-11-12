@@ -150,6 +150,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }

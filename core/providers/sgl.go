@@ -146,6 +146,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }

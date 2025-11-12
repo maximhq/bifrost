@@ -199,7 +199,7 @@ Retrieve a list of all models supported by a specific provider.
 ```go
 openaiModels := modelCatalog.GetModelsForProvider(schemas.OpenAI)
 for _, model := range openaiModels {
-    logger.Info("Found OpenAI model: %s", model)
+    logger.Info("Found OpenAI model: %s", model.ID)
 }
 ```
 

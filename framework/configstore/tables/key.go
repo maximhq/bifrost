@@ -29,8 +29,10 @@ type TableKey struct {
 
 	// Vertex config fields (embedded)
 	VertexProjectID       *string `gorm:"type:varchar(255)" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber   *string `gorm:"type:varchar(255)" json:"vertex_project_number,omitempty"`
 	VertexRegion          *string `gorm:"type:varchar(100)" json:"vertex_region,omitempty"`
 	VertexAuthCredentials *string `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Bedrock config fields (embedded)
 	BedrockAccessKey       *string `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
@@ -91,6 +93,11 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.VertexProjectID = nil
 		}
+		if k.VertexKeyConfig.ProjectNumber != "" {
+			k.VertexProjectNumber = &k.VertexKeyConfig.ProjectNumber
+		} else {
+			k.VertexProjectNumber = nil
+		}
 		if k.VertexKeyConfig.Region != "" {
 			k.VertexRegion = &k.VertexKeyConfig.Region
 		} else {
@@ -101,10 +108,22 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.VertexAuthCredentials = nil
 		}
+		if k.VertexKeyConfig.Deployments != nil {
+			data, err := json.Marshal(k.VertexKeyConfig.Deployments)
+			if err != nil {
+				return err
+			}
+			s := string(data)
+			k.VertexDeploymentsJSON = &s
+		} else {
+			k.VertexDeploymentsJSON = nil
+		}
 	} else {
 		k.VertexProjectID = nil
+		k.VertexProjectNumber = nil
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
+		k.VertexDeploymentsJSON = nil
 	}
 
 	if k.BedrockKeyConfig != nil {
@@ -174,11 +193,15 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	}
 
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || (k.VertexDeploymentsJSON != nil && *k.VertexDeploymentsJSON != "") {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
 			config.ProjectID = *k.VertexProjectID
+		}
+
+		if k.VertexProjectNumber != nil {
+			config.ProjectNumber = *k.VertexProjectNumber
 		}
 
 		if k.VertexRegion != nil {
@@ -186,6 +209,15 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.VertexAuthCredentials != nil {
 			config.AuthCredentials = *k.VertexAuthCredentials
+		}
+		if k.VertexDeploymentsJSON != nil {
+			var deployments map[string]string
+			if err := json.Unmarshal([]byte(*k.VertexDeploymentsJSON), &deployments); err != nil {
+				return err
+			}
+			config.Deployments = deployments
+		} else {
+			config.Deployments = nil
 		}
 
 		k.VertexKeyConfig = config
@@ -213,6 +245,8 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 				return err
 			}
 			bedrockConfig.Deployments = deployments
+		} else {
+			bedrockConfig.Deployments = nil
 		}
 
 		k.BedrockKeyConfig = bedrockConfig

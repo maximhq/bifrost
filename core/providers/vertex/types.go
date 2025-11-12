@@ -54,17 +54,31 @@ type VertexEmbeddingResponse struct {
 const MaxPageSize = 100
 
 type VertexModel struct {
-	Name              string    `json:"name"`
-	VersionId         string    `json:"versionId"`
-	VersionAliases    []string  `json:"versionAliases"`
-	VersionCreateTime time.Time `json:"versionCreateTime"`
-	DisplayName       string    `json:"displayName"`
-	Description       string    `json:"description"`
+	Name              string                `json:"name"`
+	VersionId         string                `json:"versionId"`
+	VersionAliases    []string              `json:"versionAliases"`
+	VersionCreateTime time.Time             `json:"versionCreateTime"`
+	DisplayName       string                `json:"displayName"`
+	Description       string                `json:"description"`
+	DeployedModels    []VertexDeployedModel `json:"deployedModels"`
+	Labels            VertexModelLabels     `json:"labels"`
 }
 
 type VertexListModelsResponse struct {
 	Models        []VertexModel `json:"models"`
 	NextPageToken string        `json:"nextPageToken"`
+}
+
+type VertexDeployedModel struct {
+	CheckpointID string `json:"checkpointId"`
+	DeploymentID string `json:"deploymentId"`
+	Endpoint     string `json:"endpoint"`
+}
+
+type VertexModelLabels struct {
+	GoogleVertexLLMTuningBaseModelId string `json:"google-vertex-llm-tuning-base-model-id"`
+	GoogleVertexLLMTuningJobId       string `json:"google-vertex-llm-tuning-job-id"`
+	TuneType                         string `json:"tune-type"`
 }
 
 // ==================== ERROR TYPES ====================

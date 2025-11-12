@@ -1187,7 +1187,9 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 
 		// Redact Vertex key config if present
 		if key.VertexKeyConfig != nil {
-			vertexConfig := &schemas.VertexKeyConfig{}
+			vertexConfig := &schemas.VertexKeyConfig{
+				Deployments: key.VertexKeyConfig.Deployments,
+			}
 
 			// Redact ProjectID
 			path = fmt.Sprintf("providers.%s.keys[%s].vertex_key_config.project_id", provider, key.ID)
@@ -1195,6 +1197,14 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 				vertexConfig.ProjectID = "env." + envVar
 			} else if !strings.HasPrefix(key.VertexKeyConfig.ProjectID, "env.") {
 				vertexConfig.ProjectID = RedactKey(key.VertexKeyConfig.ProjectID)
+			}
+
+			// Redact ProjectNumber
+			path = fmt.Sprintf("providers.%s.keys[%s].vertex_key_config.project_number", provider, key.ID)
+			if envVar, ok := envVarsByPath[path]; ok {
+				vertexConfig.ProjectNumber = "env." + envVar
+			} else if !strings.HasPrefix(key.VertexKeyConfig.ProjectNumber, "env.") {
+				vertexConfig.ProjectNumber = RedactKey(key.VertexKeyConfig.ProjectNumber)
 			}
 
 			// Region is not sensitive, handle env vars only
@@ -2231,6 +2241,10 @@ func (c *Config) getFieldValue(key schemas.Key, fieldName string) string {
 		if key.VertexKeyConfig != nil {
 			return key.VertexKeyConfig.ProjectID
 		}
+	case "project_number":
+		if key.VertexKeyConfig != nil {
+			return key.VertexKeyConfig.ProjectNumber
+		}
 	case "region":
 		if key.VertexKeyConfig != nil {
 			return key.VertexKeyConfig.Region
@@ -2403,6 +2417,23 @@ func (c *Config) processVertexKeyConfigEnvVars(key *schemas.Key, provider schema
 		})
 	}
 	vertexConfig.ProjectID = processedProjectID
+
+	// Process ProjectNumber
+	processedProjectNumber, envVar, err := c.processEnvValue(vertexConfig.ProjectNumber)
+	if err != nil {
+		return err
+	}
+	if envVar != "" {
+		newEnvKeys[envVar] = struct{}{}
+		c.EnvKeys[envVar] = append(c.EnvKeys[envVar], configstore.EnvKeyInfo{
+			EnvVar:     envVar,
+			Provider:   provider,
+			KeyType:    "vertex_config",
+			ConfigPath: fmt.Sprintf("providers.%s.keys[%s].vertex_key_config.project_number", provider, key.ID),
+			KeyID:      key.ID,
+		})
+	}
+	vertexConfig.ProjectNumber = processedProjectNumber
 
 	// Process Region
 	processedRegion, envVar, err := c.processEnvValue(vertexConfig.Region)

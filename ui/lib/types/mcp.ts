@@ -21,7 +21,6 @@ export interface MCPClientConfig {
 }
 
 export interface MCPClient {
-	name: string;
 	config: MCPClientConfig;
 	tools: ToolFunction[];
 	state: MCPConnectionState;

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -98,13 +97,13 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	if authCredentials == "" {
 		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
 		if err != nil {
-			return nil, fmt.Errorf("failed to find default credentials: %w", err)
+			return nil, fmt.Errorf("failed to find default credentials in environment: %w", err)
 		}
 		tokenSource = creds.TokenSource
 	} else {
 		conf, err := google.JWTConfigFromJSON([]byte(authCredentials), cloudPlatformScope)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create JWT config: %w", err)
+			return nil, fmt.Errorf("failed to create JWT config from auth credentials: %w", err)
 		}
 		tokenSource = conf.TokenSource(context.Background())
 	}
@@ -145,18 +144,17 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 
 	// Accumulate all models from paginated requests
 	var allModels []VertexModel
-	var totalLatency time.Duration
 	var rawResponses []interface{}
 	pageToken := ""
 
 	// Getting oauth2 token
 	tokenSource, err := getAuthTokenSource(key)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		return nil, providerUtils.NewBifrostOperationError("error creating auth token source (api key auth not supported for list models)", err, schemas.Vertex)
 	}
 	token, err := tokenSource.Token()
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		return nil, providerUtils.NewBifrostOperationError("error getting token (api key auth not supported for list models)", err, schemas.Vertex)
 	}
 
 	// Loop through all pages until no nextPageToken is returned
@@ -181,20 +179,7 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 
 		_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 		if bifrostErr != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
-			}
-			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
-			}
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
+			return nil, bifrostErr
 		}
 
 		// Handle error response
@@ -235,7 +220,6 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 		Models: allModels,
 	}
 	response := aggregatedResponse.ToBifrostListModelsResponse()
-	response.ExtraFields.Latency = totalLatency.Milliseconds()
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponses
@@ -247,13 +231,36 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 // ListModels performs a list models request to Vertex's API.
 // Requests are made concurrently for improved performance.
 func (provider *VertexProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return providerUtils.HandleMultipleListModelsRequests(
+	finalResponse, bifrostErr := providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
 		request,
 		provider.listModelsByKey,
 		provider.logger,
 	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Add deployment aliases to the response
+	for i, model := range finalResponse.Data {
+		for _, key := range keys {
+			if key.VertexKeyConfig == nil {
+				continue
+			}
+			for keyDeploymentAlias, keyDeploymentName := range key.VertexKeyConfig.Deployments {
+				if strings.TrimPrefix(model.ID, string(providerName)+"/") == keyDeploymentName {
+					finalResponse.Data[i].ID = string(providerName) + "/" + keyDeploymentAlias
+					finalResponse.Data[i].Deployment = schemas.Ptr(keyDeploymentName)
+					break
+				}
+			}
+		}
+	}
+
+	return finalResponse, nil
 }
 
 // TextCompletion is not supported by the Vertex provider.
@@ -279,6 +286,8 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
 	}
 
+	deployment := provider.getModelDeployment(key, request.Model)
+
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -287,12 +296,14 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 			// Format messages for Vertex API
 			var requestBody map[string]interface{}
 
-			if strings.Contains(request.Model, "claude") {
+			if providerUtils.IsVertexAnthropicModel(deployment) {
 				// Use centralized Anthropic converter
 				reqBody := anthropic.ToAnthropicChatCompletionRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
+
+				reqBody.Model = deployment
 
 				// Convert struct to map for Vertex API
 				reqBytes, err := sonic.Marshal(reqBody)
@@ -309,6 +320,8 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 
+				reqBody.Model = deployment
+
 				// Convert struct to map for Vertex API
 				reqBytes, err := sonic.Marshal(reqBody)
 				if err != nil {
@@ -319,7 +332,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 				}
 			}
 
-			if strings.Contains(request.Model, "claude") {
+			if providerUtils.IsVertexAnthropicModel(deployment) {
 				if _, exists := requestBody["anthropic_version"]; !exists {
 					requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
 				}
@@ -347,28 +360,47 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
 
+	// Auth query is used for fine-tuned models to pass the API key in the query string
+	authQuery := ""
 	// Determine the URL based on model type
-	var url string
-	if strings.Contains(request.Model, "claude") {
+	var completeURL string
+	if schemas.IsAllDigitsASCII(deployment) {
+		// Custom Fine-tuned models use OpenAPI endpoint
+		projectNumber := key.VertexKeyConfig.ProjectNumber
+		if projectNumber == "" {
+			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
+		}
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s/chat/completions", projectNumber, deployment)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s/chat/completions", region, projectNumber, region, deployment)
+		}
+	} else if providerUtils.IsVertexAnthropicModel(deployment) {
 		// Claude models use Anthropic publisher
 		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:rawPredict", projectID, request.Model)
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:rawPredict", projectID, deployment)
 		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:rawPredict", region, projectID, region, request.Model)
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:rawPredict", region, projectID, region, deployment)
 		}
-	} else if providerUtils.IsVertexMistralModel(request.Model) {
+	} else if providerUtils.IsVertexMistralModel(deployment) {
 		// Mistral models use mistralai publisher with rawPredict
 		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:rawPredict", projectID, request.Model)
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:rawPredict", projectID, deployment)
 		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:rawPredict", region, projectID, region, request.Model)
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:rawPredict", region, projectID, region, deployment)
 		}
 	} else {
-		// Other models use OpenAPI endpoint
+		// Other models use OpenAPI endpoint for gemini models
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
 		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
 		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
 		}
 	}
 
@@ -379,39 +411,33 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	defer fasthttp.ReleaseResponse(resp)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Getting oauth2 token
-	tokenSource, err := getAuthTokenSource(key)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+	// If auth query is set, add it to the URL
+	// Otherwise, get the oauth2 token and set the Authorization header
+	if authQuery != "" {
+		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
+	} else {
+		// Getting oauth2 token
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	}
-	token, err := tokenSource.Token()
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
-	}
-	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
+	req.SetRequestURI(completeURL)
 	req.SetBody(jsonBody)
 
 	// Make the request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
+		return nil, bifrostErr
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
@@ -455,7 +481,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		}
 	}
 
-	if strings.Contains(request.Model, "claude") {
+	if providerUtils.IsVertexAnthropicModel(deployment) {
 		// Create response object from pool
 		anthropicChatResponse := anthropic.AcquireAnthropicChatResponse()
 		defer anthropic.ReleaseAnthropicChatResponse(anthropicChatResponse)
@@ -469,10 +495,11 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		response := anthropicChatResponse.ToBifrostChatResponse()
 
 		response.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.ChatCompletionRequest,
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			Latency:        latency.Milliseconds(),
+			RequestType:     schemas.ChatCompletionRequest,
+			Provider:        providerName,
+			ModelRequested:  request.Model,
+			ModelDeployment: deployment,
+			Latency:         latency.Milliseconds(),
 		}
 
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -492,6 +519,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		response.ExtraFields.RequestType = schemas.ChatCompletionRequest
 		response.ExtraFields.Provider = providerName
 		response.ExtraFields.ModelRequested = request.Model
+		response.ExtraFields.ModelDeployment = deployment
 		response.ExtraFields.Latency = latency.Milliseconds()
 
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -521,7 +549,9 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
 
-	if strings.Contains(request.Model, "claude") {
+	deployment := provider.getModelDeployment(key, request.Model)
+
+	if providerUtils.IsVertexAnthropicModel(deployment) {
 		// Use Anthropic-style streaming for Claude models
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -532,6 +562,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 
+				reqBody.Model = deployment
 				reqBody.Stream = schemas.Ptr(true)
 
 				// Convert struct to map for Vertex API
@@ -557,11 +588,11 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			return nil, bifrostErr
 		}
 
-		var url string
+		var completeURL string
 		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:streamRawPredict", projectID, request.Model)
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:streamRawPredict", projectID, deployment)
 		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, request.Model)
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, deployment)
 		}
 
 		// Prepare headers for Vertex Anthropic
@@ -586,7 +617,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
 			provider.client,
-			url,
+			completeURL,
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
@@ -596,43 +627,76 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			provider.logger,
 		)
 	} else {
-		// Use OpenAI-compatible streaming for Mistral and other models
-		var url string
-		if providerUtils.IsVertexMistralModel(request.Model) {
+		var authHeader map[string]string
+		// Auth query is used for fine-tuned models to pass the API key in the query string
+		authQuery := ""
+		// Determine the URL based on model type
+		var completeURL string
+		if schemas.IsAllDigitsASCII(deployment) {
+			// Custom Fine-tuned models use OpenAPI endpoint
+			projectNumber := key.VertexKeyConfig.ProjectNumber
+			if projectNumber == "" {
+				return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
+			}
+			if key.Value != "" {
+				authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+			}
+			if region == "global" {
+				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s/chat/completions", projectNumber, deployment)
+			} else {
+				completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s/chat/completions", region, projectNumber, region, deployment)
+			}
+		} else if providerUtils.IsVertexMistralModel(deployment) {
 			// Mistral models use mistralai publisher with streamRawPredict
 			if region == "global" {
-				url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:streamRawPredict", projectID, request.Model)
+				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:streamRawPredict", projectID, deployment)
 			} else {
-				url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:streamRawPredict", region, projectID, region, request.Model)
+				completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:streamRawPredict", region, projectID, region, deployment)
 			}
 		} else {
-			// Other models use OpenAPI endpoint
+			// Other models use OpenAPI endpoint for gemini models
+			if key.Value != "" {
+				authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+			}
 			if region == "global" {
-				url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
+				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
 			} else {
-				url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
+				completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
 			}
 		}
 
-		// Getting oauth2 token
-		tokenSource, err := getAuthTokenSource(key)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
-		}
-		token, err := tokenSource.Token()
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		if authQuery != "" {
+			completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
+		} else {
+			// Getting oauth2 token
+			tokenSource, err := getAuthTokenSource(key)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+			}
+			token, err := tokenSource.Token()
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+			}
+			authHeader = map[string]string{
+				"Authorization": "Bearer " + token.AccessToken,
+			}
 		}
 
-		authHeader := map[string]string{
-			"Authorization": "Bearer " + token.AccessToken,
+		customPostRequestConverter := func(reqBody *openai.OpenAIChatRequest) *openai.OpenAIChatRequest {
+			reqBody.Model = deployment
+			return reqBody
+		}
+
+		customPostResponseConverter := func(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+			response.ExtraFields.ModelDeployment = deployment
+			return response
 		}
 
 		// Use shared OpenAI streaming logic
 		return openai.HandleOpenAIChatCompletionStreaming(
 			ctx,
 			provider.client,
-			url,
+			completeURL,
 			request,
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
@@ -640,7 +704,8 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			providerName,
 			postHookRunner,
 			nil,
-			nil,
+			customPostRequestConverter,
+			customPostResponseConverter,
 			provider.logger,
 		)
 	}
@@ -653,10 +718,13 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 		return nil, err
 	}
 
+	deployment := provider.getModelDeployment(key, request.Model)
+
 	response := chatResponse.ToBifrostResponsesResponse()
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
 
 	return response, nil
 }
@@ -701,9 +769,11 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 		return nil, bifrostErr
 	}
 
+	deployment := provider.getModelDeployment(key, request.Model)
+
 	// Build the native Vertex embedding API endpoint
 	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
-		key.VertexKeyConfig.Region, key.VertexKeyConfig.ProjectID, key.VertexKeyConfig.Region, request.Model)
+		key.VertexKeyConfig.Region, key.VertexKeyConfig.ProjectID, key.VertexKeyConfig.Region, deployment)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -736,20 +806,7 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 	// Make the request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
+		return nil, bifrostErr
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
@@ -791,6 +848,7 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = providerName
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
@@ -824,4 +882,17 @@ func (provider *VertexProvider) Transcription(ctx context.Context, key schemas.K
 // TranscriptionStream is not supported by the Vertex provider.
 func (provider *VertexProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
+}
+
+func (provider *VertexProvider) getModelDeployment(key schemas.Key, model string) string {
+	if key.VertexKeyConfig == nil {
+		return model
+	}
+
+	if key.VertexKeyConfig.Deployments != nil {
+		if deployment, ok := key.VertexKeyConfig.Deployments[model]; ok {
+			return deployment
+		}
+	}
+	return model
 }

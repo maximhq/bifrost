@@ -110,7 +110,7 @@ Set up your API keys for the providers you want to use. Bifrost supports both di
 export OPENAI_API_KEY="your-openai-api-key"
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 export MISTRAL_API_KEY="your-mistral-api-key"
-export CEREBRA_API_KEY="your-cerebras-api-key"
+export CEREBRAS_API_KEY="your-cerebras-api-key"
 export GROQ_API_KEY="your-groq-api-key"
 export COHERE_API_KEY="your-cohere-api-key"
 ```
@@ -856,7 +856,6 @@ Google Vertex requires project configuration and authentication credentials:
 4. Set **Region**: e.g., `us-central1`
 5. Set **Auth Credentials**: Service account credentials JSON
 6. Save configuration
-
 </Tab>
 
 <Tab title="Using API">
@@ -874,7 +873,10 @@ curl --location 'http://localhost:8080/api/providers' \
             "vertex_key_config": {
                 "project_id": "env.VERTEX_PROJECT_ID",
                 "region": "us-central1",
-                "auth_credentials": "env.VERTEX_CREDENTIALS"
+                "auth_credentials": "env.VERTEX_CREDENTIALS",
+                "deployments": {
+                    "fine-tuned-gemini-2.5-pro": "123456789"
+                }
             }
         }
     ]
@@ -897,7 +899,10 @@ curl --location 'http://localhost:8080/api/providers' \
                     "vertex_key_config": {
                         "project_id": "env.VERTEX_PROJECT_ID",
                         "region": "us-central1",
-                        "auth_credentials": "env.VERTEX_CREDENTIALS"
+                        "auth_credentials": "env.VERTEX_CREDENTIALS",
+                        "deployments": {
+                            "fine-tuned-gemini-2.5-pro": "123456789"
+                        }
                     }
                 }
             ]
@@ -909,6 +914,16 @@ curl --location 'http://localhost:8080/api/providers' \
 </Tab>
 
 </Tabs>
+
+**Notes:**
+- You can leave both API Key and Auth Credentials empty to use service account authentication from the environment.
+- You must set Project Number in Key config if using fine-tuned models.
+- API Key Authentication is only supported for Gemini and fine-tuned models.
+- You can use custom fine-tuned models by passing `vertex/<your-fine-tuned-model-id>` or `vertex/<model-deployment-alias>` if you have set the deployments in the key config.
+
+<Note>
+Vertex AI support for fine-tuned models is currently in beta. Requests to non-Gemini fine-tuned models may fail, so please test and report any issues.
+</Note>
 
 ## Next Steps
 

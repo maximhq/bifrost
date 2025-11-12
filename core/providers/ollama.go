@@ -149,6 +149,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }

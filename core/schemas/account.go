@@ -27,9 +27,11 @@ type AzureKeyConfig struct {
 // VertexKeyConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
 type VertexKeyConfig struct {
-	ProjectID       string `json:"project_id,omitempty"`
-	Region          string `json:"region,omitempty"`
-	AuthCredentials string `json:"auth_credentials,omitempty"`
+	ProjectID       string            `json:"project_id,omitempty"`
+	ProjectNumber   string            `json:"project_number,omitempty"`
+	Region          string            `json:"region,omitempty"`
+	AuthCredentials string            `json:"auth_credentials,omitempty"`
+	Deployments     map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to inference profiles
 }
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.

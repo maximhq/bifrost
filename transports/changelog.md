@@ -3,3 +3,7 @@
 - chore: shift from `alpha/responses` to `v1/responses` in openrouter provider for responses API
 - feat: send back pricing data for models in list models response
 - fix: add support for keyless providers in list models request
+- feat: add support for custom fine-tuned models in vertex provider
+- feat: send deployment aliases in list models response for supported providers
+- feat: support for API Key auth in vertex provider
+- feat: support for system account in environment for vertex provider

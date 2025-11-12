@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -191,7 +192,20 @@ func (provider *AzureProvider) listModelsByKey(ctx context.Context, key schemas.
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Azure model list response", nil, schemas.Azure)
 	}
+
+	// Add deployment aliases to the response
+	for i, model := range response.Data {
+		for keyDeploymentAlias, keyDeploymentName := range key.AzureKeyConfig.Deployments {
+			if strings.TrimPrefix(model.ID, string(schemas.Azure)+"/") == keyDeploymentName {
+				response.Data[i].ID = string(schemas.Azure) + "/" + keyDeploymentAlias
+				response.Data[i].Deployment = schemas.Ptr(keyDeploymentName)
+				break
+			}
+		}
+	}
+
 	response.ExtraFields.Latency = latency.Milliseconds()
+
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -397,6 +411,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		customPostResponseConverter,
 		provider.logger,

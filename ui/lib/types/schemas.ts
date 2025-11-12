@@ -49,11 +49,42 @@ export const azureKeyConfigSchema = z
 	);
 
 // Vertex key config schema
-export const vertexKeyConfigSchema = z.object({
-	project_id: z.string().min(1, "Project ID is required"),
-	region: z.string().min(1, "Region is required"),
-	auth_credentials: z.string().min(1, "Auth credentials are required"),
-});
+export const vertexKeyConfigSchema = z
+	.object({
+		project_id: z.string().min(1, "Project ID is required"),
+		project_number: z.string().optional(),
+		region: z.string().min(1, "Region is required"),
+		auth_credentials: z.string().optional(),
+		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+	})
+	.refine(
+		(data) => {
+			// If deployments is not provided, it's valid
+			if (!data.deployments) return true;
+			// If it's already an object, it's valid
+			if (typeof data.deployments === "object") return true;
+			// If it's a string, check if it's valid JSON or an env variable
+			if (typeof data.deployments === "string") {
+				const trimmed = data.deployments.trim();
+				// Allow empty string
+				if (trimmed === "") return true;
+				// Allow env variables
+				if (trimmed.startsWith("env.")) return true;
+				// Validate JSON format
+				try {
+					const parsed = JSON.parse(trimmed);
+					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+				} catch {
+					return false;
+				}
+			}
+			return false;
+		},
+		{
+			message: "Deployments must be a valid JSON object or an environment variable reference",
+			path: ["deployments"],
+		},
+	);
 
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z

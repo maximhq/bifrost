@@ -97,6 +97,7 @@ func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 
 			// Clear all Vertex-related sensitive fields
 			key.VertexProjectID = nil
+			key.VertexProjectNumber = nil
 			key.VertexRegion = nil
 			key.VertexAuthCredentials = nil
 			key.VertexKeyConfig = nil

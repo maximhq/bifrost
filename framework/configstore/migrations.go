@@ -67,6 +67,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientIDColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVertexProjectNumberColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddVertexDeploymentsJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -843,7 +849,7 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB) error {
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
-			
+
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "client_id") {
 				// Add the column as nullable first
 				if err := tx.Exec("ALTER TABLE config_mcp_clients ADD COLUMN client_id VARCHAR(255)").Error; err != nil {
@@ -883,23 +889,81 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB) error {
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
-			
+
 			// Drop the unique index first to avoid orphaned index artifacts
 			if err := tx.Exec("DROP INDEX IF EXISTS idx_mcp_client_id").Error; err != nil {
 				return fmt.Errorf("failed to drop client_id index: %w", err)
 			}
-			
+
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "client_id"); err != nil {
 				return fmt.Errorf("failed to drop client_id column: %w", err)
 			}
-			
+
 			return nil
 		},
 	}})
-	
+
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running MCP client_id migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vertex_project_number_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "vertex_project_number") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "vertex_project_number"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableKey{}, "vertex_project_number"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running vertex project number migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vertex_deployments_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "vertex_deployments_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableKey{}, "vertex_deployments_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running vertex deployments JSON migration: %s", err.Error())
 	}
 	return nil
 }

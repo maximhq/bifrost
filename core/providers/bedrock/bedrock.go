@@ -461,6 +461,17 @@ func (provider *BedrockProvider) listModelsByKey(ctx context.Context, key schema
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil, providerName)
 	}
 
+	// Add deployment aliases to the response
+	for i, model := range response.Data {
+		for keyDeploymentAlias, keyDeploymentName := range key.BedrockKeyConfig.Deployments {
+			if strings.TrimPrefix(model.ID, string(providerName)+"/") == keyDeploymentName {
+				response.Data[i].ID = string(providerName) + "/" + keyDeploymentAlias
+				response.Data[i].Deployment = schemas.Ptr(keyDeploymentName)
+				break
+			}
+		}
+	}
+
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {

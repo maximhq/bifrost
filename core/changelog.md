@@ -1,3 +1,7 @@
 - feat: added unified streaming lifecycle events across all providers to fully align with OpenAI’s streaming response types.
 - chore: shift from `alpha/responses` to `v1/responses` in openrouter provider for responses API
 - fix: add support for keyless providers in list models request
+- feat: add support for custom fine-tuned models in vertex provider
+- fix: vertex provider list models now correctly returns the custom fine-tuned model ids in the response
+- feat: send deployment aliases in list models response for supported providers
+- feat: support for API Key auth in vertex provider

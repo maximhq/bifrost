@@ -189,6 +189,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHook
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }

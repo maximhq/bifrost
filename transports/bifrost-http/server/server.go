@@ -709,8 +709,6 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, middlewares .
 
 // RegisterUIRoutes registers the UI handler with the specified router
 func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...lib.BifrostHTTPMiddleware) {
-	// Register UI handlers
-	// Registering UI handlers
 	// WARNING: This UI handler needs to be registered after all the other handlers
 	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
@@ -853,9 +851,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Register UI handler
 	s.RegisterUIRoutes()
-	if err != nil {
-		return fmt.Errorf("failed to initialize routes: %v", err)
-	}
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.CorsMiddleware(s.Config)(handlers.TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),

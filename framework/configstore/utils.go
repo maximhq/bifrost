@@ -99,6 +99,9 @@ func substituteEnvVars(config *ProviderConfig, provider schemas.ModelProvider, e
 			if envVar, exists := envVarMap[fmt.Sprintf("%s.vertex.project_id", keyPrefix)]; exists {
 				config.Keys[i].VertexKeyConfig.ProjectID = fmt.Sprintf("env.%s", envVar)
 			}
+			if envVar, exists := envVarMap[fmt.Sprintf("%s.vertex.project_number", keyPrefix)]; exists {
+				config.Keys[i].VertexKeyConfig.ProjectNumber = fmt.Sprintf("env.%s", envVar)
+			}
 			if envVar, exists := envVarMap[fmt.Sprintf("%s.vertex.region", keyPrefix)]; exists {
 				config.Keys[i].VertexKeyConfig.Region = fmt.Sprintf("env.%s", envVar)
 			}

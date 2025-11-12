@@ -33,6 +33,20 @@ func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvide
 	return defaultProvider, model
 }
 
+// IsAllDigitsASCII checks if a string contains only ASCII digits (0-9).
+func IsAllDigitsASCII(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 //* IMAGE UTILS *//
 
 // dataURIRegex is a precompiled regex for matching data URI format patterns.

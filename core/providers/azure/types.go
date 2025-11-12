@@ -18,14 +18,14 @@ type AzureModelDeprecation struct {
 }
 
 type AzureModel struct {
+	ID              string                 `json:"id"`
 	Status          string                 `json:"status"`
 	Model           string                 `json:"model,omitempty"`
 	FineTune        string                 `json:"fine_tune,omitempty"`
 	Capabilities    AzureModelCapabilities `json:"capabilities,omitempty"`
 	LifecycleStatus string                 `json:"lifecycle_status"`
 	Deprecation     *AzureModelDeprecation `json:"deprecation,omitempty"`
-	ID              string                 `json:"id"`
-	CreatedAt       int64                    `json:"created_at"`
+	CreatedAt       int64                  `json:"created_at"`
 	Object          string                 `json:"object"`
 }
 

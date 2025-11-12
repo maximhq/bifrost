@@ -156,6 +156,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				// Handle Vertex config
 				if key.VertexKeyConfig != nil {
 					dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+					dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 					dbKey.VertexRegion = &key.VertexKeyConfig.Region
 					dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 				}
@@ -267,6 +268,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			// Handle Vertex config
 			if key.VertexKeyConfig != nil {
 				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 			}
@@ -366,6 +368,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			// Handle Vertex config
 			if key.VertexKeyConfig != nil {
 				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 			}
@@ -457,6 +460,9 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 				vertexConfigCopy := *vertexConfig
 				if processedProjectID, err := envutils.ProcessEnvValue(vertexConfig.ProjectID); err == nil {
 					vertexConfigCopy.ProjectID = processedProjectID
+				}
+				if processedProjectNumber, err := envutils.ProcessEnvValue(vertexConfig.ProjectNumber); err == nil {
+					vertexConfigCopy.ProjectNumber = processedProjectNumber
 				}
 				if processedRegion, err := envutils.ProcessEnvValue(vertexConfig.Region); err == nil {
 					vertexConfigCopy.Region = processedRegion
@@ -1549,9 +1555,9 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 		return nil, nil
 	}
 	return &AuthConfig{
-		AdminUserName: *username,
-		AdminPassword: *password,
-		IsEnabled:     isEnabled,
+		AdminUserName:          *username,
+		AdminPassword:          *password,
+		IsEnabled:              isEnabled,
 		DisableAuthOnInference: disableAuthOnInference,
 	}, nil
 }

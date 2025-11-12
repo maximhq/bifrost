@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"strings"
 	"time"
@@ -237,8 +238,32 @@ func GetErrorMessage(err *schemas.BifrostError) string {
 	if err == nil {
 		return ""
 	}
-	if err.StatusCode != nil && (*err.StatusCode == 401 || *err.StatusCode == 403) {
-		return "key invalid or unauthorized or forbidden"
+	if err.StatusCode != nil {
+		switch *err.StatusCode {
+		case 401:
+			return "unauthorized"
+		case 403:
+			return "forbidden"
+		case 404:
+			return "endpoint not found"
+		case 405:
+			return "method not allowed"
+		case 429:
+			return "rate limit exceeded"
+		case 500:
+			return "internal server error"
+		case 502:
+			return "bad gateway"
+		case 503:
+			return "service unavailable"
+		case 504:
+			return "gateway timeout"
+		default:
+			if err.Error != nil && err.Error.Message != "" {
+				return err.Error.Message
+			}
+			return fmt.Sprintf("HTTP %d error", *err.StatusCode)
+		}
 	} else if err.Error != nil && err.Error.Message != "" {
 		return err.Error.Message
 	} else if err.Type != nil {

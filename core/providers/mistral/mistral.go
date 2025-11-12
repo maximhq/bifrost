@@ -179,6 +179,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postH
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
