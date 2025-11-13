@@ -3,11 +3,13 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 )
 
 // Mock time.Sleep to avoid real delays in tests
@@ -958,4 +960,89 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Test context cancellation cleanup - verifies goroutines exit properly.
+// Based on reproduction case from https://github.com/maximhq/bifrost/issues/828
+func TestBifrostContextCancellationCleanup(t *testing.T) {
+	cases := []struct {
+		name        string
+		timeout     time.Duration
+		description string
+	}{
+		{
+			name:        "ContextTimeoutDuringStream",
+			timeout:     2 * time.Second,
+			description: "Goroutines should exit when context times out during streaming",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Force garbage collection and measure baseline goroutines.
+			runtime.GC()
+			time.Sleep(100 * time.Millisecond)
+			beforeGoroutines := runtime.NumGoroutine()
+
+			// Create context with timeout.
+			ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+			defer cancel()
+
+			// Setup mock account and initialize bifrost.
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 2, 100)
+
+			bifrost, err := Init(ctx, schemas.BifrostConfig{
+				Account: account,
+				Logger:  NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatalf("Failed to initialize Bifrost: %v", err)
+			}
+
+			// Make a streaming request that will timeout.
+			// The mock provider won't actually stream, but this tests the worker loop.
+			contentStr := "Hello"
+			stream, _ := bifrost.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4",
+				Input: []schemas.ChatMessage{
+					{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: &contentStr},
+					},
+				},
+			})
+
+			// Consume stream or wait for timeout.
+			if stream != nil {
+				select {
+				case <-stream:
+					// Stream data received.
+				case <-ctx.Done():
+					// Context cancelled.
+				}
+			} else {
+				// Wait for context timeout.
+				<-ctx.Done()
+			}
+
+			// Shutdown bifrost.
+			bifrost.Shutdown()
+
+			// Allow time for goroutines to clean up.
+			time.Sleep(2 * time.Second)
+			runtime.GC()
+			time.Sleep(100 * time.Millisecond)
+
+			// Measure goroutines after cleanup.
+			afterGoroutines := runtime.NumGoroutine()
+			leaked := afterGoroutines - beforeGoroutines
+
+			// Allow for small variance (±2 goroutines) due to runtime internals.
+			assert.LessOrEqualf(t, leaked, 2,
+				"Goroutine leak detected: started with %d, ended with %d, leaked %d goroutines",
+				beforeGoroutines, afterGoroutines, leaked)
+		})
+	}
 }
