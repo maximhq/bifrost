@@ -1,12 +1,5 @@
 package elevenlabs
 
-/*import (
-	"fmt"
-
-	"github.com/bytedance/sonic"
-	"github.com/maximhq/bifrost/core/schemas"
-)*/
-
 // REQUEST TYPES
 type TextNormalization string
 
@@ -18,12 +11,6 @@ const (
 	// TextNormalizationOff corresponds to "off"
 	TextNormalizationOff TextNormalization = "off"
 )
-
-type ElevenlabsQueryRequest struct {
-	EnableLogging            bool   `json:"enable_logging"`
-	OptimizeStreamingLatency bool   `json:"optimize_streaming_latency"`
-	OutputFormat             string `json:"output_format"` // TODO :: https://elevenlabs.io/docs/api-reference/text-to-speech/convert
-}
 
 type ElevenlabsSpeechRequest struct {
 	Text                            string                                     `json:"text"`
