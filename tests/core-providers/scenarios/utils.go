@@ -186,7 +186,7 @@ func GetLionBase64Image() (string, error) {
 	return "data:image/png;base64," + string(data), nil
 }
 
-// CreateSpeechInput creates a basic speech input for testing
+// CreateSpeechRequest creates a basic speech request for testing
 func CreateSpeechRequest(text, voice, format string) *schemas.BifrostSpeechRequest {
 	return &schemas.BifrostSpeechRequest{
 		Input: &schemas.SpeechInput{
