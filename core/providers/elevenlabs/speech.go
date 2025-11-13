@@ -5,17 +5,17 @@ import (
 )
 
 func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *ElevenlabsSpeechRequest {
-	if bifrostReq == nil {
+	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
 
 	elevenlabsReq := &ElevenlabsSpeechRequest{
-		ModelID: schemas.Ptr(bifrostReq.Model),
+		ModelID: bifrostReq.Model,
 		Text:    bifrostReq.Input.Input,
 	}
 
 	if bifrostReq.Params != nil {
-		voiceSettings := ElevenLabsVoiceSettings{}
+		voiceSettings := ElevenlabsVoiceSettings{}
 		hasVoiceSettings := false
 
 		if bifrostReq.Params.Speed != nil {
