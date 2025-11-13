@@ -2,7 +2,6 @@ package elevenlabs
 
 import (
 	"errors"
-	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -19,8 +18,7 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 	}
 
 	if bifrostReq.Input != nil && len(bifrostReq.Input.File) > 0 {
-		req.File = make([]byte, len(bifrostReq.Input.File))
-		copy(req.File, bifrostReq.Input.File)
+		req.File = bifrostReq.Input.File
 	}
 
 	if bifrostReq.Params == nil {
@@ -165,24 +163,8 @@ func convertChunksToBifrost(chunks []ElevenlabsSpeechToTextChunkResponse) (strin
 	var language *string
 	var overallDuration *float64
 
-	for idx, chunk := range chunks {
-		partText := chunk.Text
-
-		if len(chunks) > 1 {
-			prefix := ""
-			if chunk.ChannelIndex != nil {
-				prefix = "Channel " + strconv.Itoa(*chunk.ChannelIndex) + ": "
-			} else {
-				prefix = "Chunk " + strconv.Itoa(idx+1) + ": "
-			}
-			if partText != "" {
-				partText = prefix + partText
-			} else {
-				partText = prefix
-			}
-		}
-
-		textParts = append(textParts, partText)
+	for _, chunk := range chunks {
+		textParts = append(textParts, chunk.Text)
 
 		words, logProbs, chunkDuration := convertWords(chunk.Words)
 		allWords = append(allWords, words...)
