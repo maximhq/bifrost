@@ -487,6 +487,17 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
+
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
 		buf := make([]byte, 0, 1024*1024) // 1MB initial buffer
@@ -734,6 +745,17 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	go func() {
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)

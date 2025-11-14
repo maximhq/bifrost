@@ -702,7 +702,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 		return nil, nil, true
 
 	case AnthropicStreamEventTypeContentBlockStart:
-		// Emit tool-call metadata when starting a tool_use content block		
+		// Emit tool-call metadata when starting a tool_use content block
 		if chunk.Index != nil && chunk.ContentBlock != nil && chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse {
 			// Create streaming response with tool call metadata
 			streamResponse := &schemas.BifrostChatResponse{

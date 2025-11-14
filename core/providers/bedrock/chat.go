@@ -87,8 +87,8 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(model string) (*s
 
 					toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
 						Index: uint16(len(toolCalls)),
-						Type: schemas.Ptr("function"),
-						ID:   &toolUseID,
+						Type:  schemas.Ptr("function"),
+						ID:    &toolUseID,
 						Function: schemas.ChatAssistantMessageToolCallFunction{
 							Name:      &toolUseName,
 							Arguments: arguments,
@@ -185,7 +185,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 		toolUseStart := chunk.Start.ToolUse
 
 		// Create tool call structure for start event
-		var toolCall schemas.ChatAssistantMessageToolCall		
+		var toolCall schemas.ChatAssistantMessageToolCall
 		toolCall.ID = schemas.Ptr(toolUseStart.ToolUseID)
 		toolCall.Type = schemas.Ptr("function")
 		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)

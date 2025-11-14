@@ -399,6 +399,17 @@ func HandleOpenAITextCompletionStreaming(
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
+
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
@@ -788,6 +799,17 @@ func HandleOpenAIChatCompletionStreaming(
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
+
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
@@ -1175,6 +1197,17 @@ func HandleOpenAIResponsesStreaming(
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
+
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
@@ -1561,6 +1594,17 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
+
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
 
@@ -1834,6 +1878,17 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	go func() {
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1

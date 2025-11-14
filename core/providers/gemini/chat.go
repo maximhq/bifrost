@@ -75,8 +75,8 @@ func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostC
 					}
 					toolCall := schemas.ChatAssistantMessageToolCall{
 						Index: uint16(len(toolCalls)),
-						ID:   schemas.Ptr(callID),
-						Type: schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
+						ID:    schemas.Ptr(callID),
+						Type:  schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
 						Function: schemas.ChatAssistantMessageToolCallFunction{
 							Name:      &name,
 							Arguments: string(jsonArgs),

@@ -466,6 +466,17 @@ func HandleAnthropicChatCompletionStreaming(
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
+
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				"Provider returned an empty response",
@@ -720,6 +731,17 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 	go func() {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer close(responseChan)
+
+		// Monitor context cancellation and force-close response body to unblock scanner.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.CloseBodyStream()
+			case <-done:
+			}
+		}()
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
