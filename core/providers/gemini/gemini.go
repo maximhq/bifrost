@@ -608,11 +608,12 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 			}
 		}
 
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
+		// Handle scanner errors.
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, provider.logger)
-		} else {
+		} else if ctx.Err() == nil {
 			response := &schemas.BifrostSpeechStreamResponse{
 				Type:  schemas.SpeechStreamResponseTypeDone,
 				Usage: usage,
@@ -876,11 +877,12 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 			}
 		}
 
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
+		// Handle scanner errors.
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
-		} else {
+		} else if ctx.Err() == nil {
 			response := &schemas.BifrostTranscriptionStreamResponse{
 				Type: schemas.TranscriptionStreamResponseTypeDone,
 				Text: fullTranscriptionText,

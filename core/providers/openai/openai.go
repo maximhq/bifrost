@@ -550,11 +550,12 @@ func HandleOpenAITextCompletionStreaming(
 			}
 		}
 
-		// Handle scanner errors first
-		if err := scanner.Err(); err != nil {
+		// Handle scanner errors first.
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, logger)
-		} else {
+		} else if ctx.Err() == nil {
 			response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
@@ -954,11 +955,12 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 		}
 
-		// Handle scanner errors first
-		if err := scanner.Err(); err != nil {
+		// Handle scanner errors first.
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, logger)
-		} else {
+		} else if ctx.Err() == nil {
 			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
@@ -1316,8 +1318,9 @@ func HandleOpenAIResponsesStreaming(
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
 		}
-		// Handle scanner errors first
-		if err := scanner.Err(); err != nil {
+		// Handle scanner errors first.
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, logger)
 		}
@@ -1693,8 +1696,9 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
 		}
 
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
+		// Handle scanner errors.
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, provider.logger)
 		}
@@ -1976,8 +1980,9 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
 		}
 
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
+		// Handle scanner errors.
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
 		}

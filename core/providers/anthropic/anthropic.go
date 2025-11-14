@@ -594,10 +594,11 @@ func HandleAnthropicChatCompletionStreaming(
 			eventData = ""
 		}
 
-		if err := scanner.Err(); err != nil {
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerType, err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerType, modelName, logger)
-		} else {
+		} else if ctx.Err() == nil {
 			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerType, modelName)
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
@@ -863,7 +864,8 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 			eventData = ""
 		}
 
-		if err := scanner.Err(); err != nil {
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading %s stream: %v", provider.GetProviderKey(), err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, provider.GetProviderKey(), request.Model, provider.logger)
 		}

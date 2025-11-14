@@ -498,7 +498,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
 		}
@@ -732,7 +733,8 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
+		// If context was cancelled, scanner errors are expected (from force-closed body stream).
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			provider.logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerName, err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
 		}
