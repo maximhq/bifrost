@@ -397,6 +397,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 		provider.GetProviderKey(),
 		postHookRunner,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 
@@ -413,6 +414,7 @@ func HandleAnthropicChatCompletionStreaming(
 	providerType schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	logger schemas.Logger,
+	inactivityTimeoutSeconds int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var err error
 	req := fasthttp.AcquireRequest()
@@ -463,6 +465,15 @@ func HandleAnthropicChatCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
@@ -475,6 +486,35 @@ func HandleAnthropicChatCompletionStreaming(
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 			return
 		}
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(inactivityTimeoutSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -496,6 +536,11 @@ func HandleAnthropicChatCompletionStreaming(
 		var eventData string
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -719,6 +764,15 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					provider.logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer close(responseChan)
 
@@ -731,6 +785,35 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 			return
 		}
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(inactivityTimeoutSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := 0
@@ -750,6 +833,11 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 		var eventData string
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			line := scanner.Text()
 
 			// Skip empty lines and comments

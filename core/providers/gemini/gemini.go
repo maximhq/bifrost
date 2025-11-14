@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -484,8 +485,46 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					provider.logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
@@ -497,6 +536,11 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			line := scanner.Text()
 
 			// Skip empty lines
@@ -733,8 +777,46 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					provider.logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
@@ -748,6 +830,11 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 		var fullTranscriptionText string
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			line := scanner.Text()
 
 			// Skip empty lines

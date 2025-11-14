@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -396,8 +397,46 @@ func HandleOpenAITextCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -412,6 +451,11 @@ func HandleOpenAITextCompletionStreaming(
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			// Check if context is done before processing
 			select {
 			case <-ctx.Done():
@@ -786,8 +830,46 @@ func HandleOpenAIChatCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -803,6 +885,11 @@ func HandleOpenAIChatCompletionStreaming(
 		var messageID string
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			// Check if context is done before processing
 			select {
 			case <-ctx.Done():
@@ -1174,8 +1261,41 @@ func HandleOpenAIResponsesStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if ctx.Err() == nil {
+					logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > 60*time.Second {
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -1185,6 +1305,10 @@ func HandleOpenAIResponsesStreaming(
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			// Check if context is done before processing
 			select {
 			case <-ctx.Done():
@@ -1561,8 +1685,46 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					provider.logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
@@ -1571,6 +1733,11 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			// Check if context is done before processing
 			select {
 			case <-ctx.Done():
@@ -1836,8 +2003,46 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic from force-closed stream due to inactivity timeout is expected.
+				// Only re-panic if context wasn't cancelled (unexpected panic).
+				if ctx.Err() == nil {
+					provider.logger.Warn(fmt.Sprintf("Stream panic (expected from inactivity timeout): %v", r))
+				}
+			}
+		}()
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		// Track last activity time for inactivity timeout detection
+		lastActivity := time.Now()
+		activityMutex := &sync.Mutex{}
+		done := make(chan struct{})
+		defer close(done)
+
+		// Monitor stream inactivity and force-close if stream hangs
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					activityMutex.Lock()
+					inactive := time.Since(lastActivity)
+					activityMutex.Unlock()
+					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+						// Stream has been inactive, force close to unblock scanner
+						resp.CloseBodyStream()
+						return
+					}
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
@@ -1846,6 +2051,11 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			// Update activity time on successful scan
+			activityMutex.Lock()
+			lastActivity = time.Now()
+			activityMutex.Unlock()
+
 			// Check if context is done before processing
 			select {
 			case <-ctx.Done():
