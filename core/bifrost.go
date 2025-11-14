@@ -2551,20 +2551,22 @@ func WeightedRandomKeySelector(ctx *context.Context, keys []schemas.Key, provide
 // It closes all request channels and waits for workers to exit.
 func (bifrost *Bifrost) Shutdown() {
 	bifrost.logger.Info("closing all request channels...")
-	// Check if the context is done
-	if bifrost.ctx.Err() != nil {
-		bifrost.logger.Warn("context already done, skipping cancel")
-		return
-	}
 
-	// Cancel the context first to signal provider goroutines to stop.
-	if bifrost.cancel != nil {
+	// Cancel the context if not already cancelled to signal provider goroutines to stop.
+	if bifrost.cancel != nil && bifrost.ctx.Err() == nil {
 		bifrost.cancel()
 	}
 
 	// Close all provider queues to signal workers to stop.
+	// This must happen even if context is already cancelled - workers in drain mode need this signal.
 	bifrost.requestQueues.Range(func(key, value interface{}) bool {
-		close(value.(chan *ChannelMessage))
+		queue := value.(chan *ChannelMessage)
+		select {
+		case <-queue:
+			// Queue already closed.
+		default:
+			close(queue)
+		}
 		return true
 	})
 
