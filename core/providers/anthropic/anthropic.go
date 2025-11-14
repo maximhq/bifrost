@@ -235,6 +235,9 @@ func (provider *AnthropicProvider) ListModels(ctx context.Context, keys []schema
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
 	}
+	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
+		return provider.listModelsByKey(ctx, schemas.Key{}, request)
+	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,

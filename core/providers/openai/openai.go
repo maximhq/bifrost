@@ -83,6 +83,18 @@ func (provider *OpenAIProvider) ListModels(ctx context.Context, keys []schemas.K
 
 	providerName := provider.GetProviderKey()
 
+	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
+		return listModelsByKeyOpenAI(
+			ctx,
+			provider.client,
+			provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
+			schemas.Key{},
+			provider.networkConfig.ExtraHeaders,
+			providerName,
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		)
+	}
+
 	return HandleOpenAIListModelsRequest(ctx,
 		provider.client,
 		request,

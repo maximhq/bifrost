@@ -2,3 +2,4 @@
 - feat: added unified streaming lifecycle events across all providers to fully align with OpenAI’s streaming response types.
 - chore: shift from `alpha/responses` to `v1/responses` in openrouter provider for responses API
 - feat: send back pricing data for models in list models response
+- fix: custom keyless providers initial list models request fixes

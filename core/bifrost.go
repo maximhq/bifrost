@@ -275,9 +275,12 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 		baseProvider = config.CustomProviderConfig.BaseProviderType
 	}
 
-	keys, err := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
-	if err != nil {
-		return nil, newBifrostError(err)
+	var keys []schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, err = bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if err != nil {
+			return nil, newBifrostError(err)
+		}
 	}
 
 	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -1416,6 +1419,40 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 		}
 	}
 
+	// Could happen when provider is not initialized yet, check if provider config exists in account and if so, initialize it
+	config, err := bifrost.account.GetConfigForProvider(providerKey)
+	if err != nil || config == nil {
+		return nil
+	}
+
+	// Lock the provider mutex to avoid races
+	providerMutex := bifrost.getProviderMutex(providerKey)
+	providerMutex.Lock()
+	defer providerMutex.Unlock()
+
+	// Double-check after acquiring the lock
+	providers = bifrost.providers.Load()
+	if providers != nil {
+		for _, p := range *providers {
+			if p.GetProviderKey() == providerKey {
+				return p
+			}
+		}
+	}
+
+	if err := bifrost.prepareProvider(providerKey, config); err != nil {
+		return nil
+	}
+
+	// Return newly prepared provider without recursion
+	providers = bifrost.providers.Load()
+	if providers != nil {
+		for _, p := range *providers {
+			if p.GetProviderKey() == providerKey {
+				return p
+			}
+		}
+	}
 	return nil
 }
 
