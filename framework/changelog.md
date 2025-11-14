@@ -1,0 +1,3 @@
+- chore: update core version to 1.2.23
+- feat: expose method to get pricing data for a model in model catalog
+- feat: add project number and deployments to vertex key config
