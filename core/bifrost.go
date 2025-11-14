@@ -2034,34 +2034,30 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 			bifrost.processRequest(provider, config, req)
 		case <-bifrost.ctx.Done():
-			// Context cancelled, drain remaining queue items before exiting.
-			// This prevents goroutine leaks while ensuring queued requests get responses.
-		drainLoop:
+			// Context cancelled, drain all remaining queue items until queue is closed.
+			// Use blocking receive to ensure we don't miss items enqueued between
+			// context cancellation and queue closure.
 			for {
+				req, ok := <-queue
+				if !ok {
+					// Queue closed, exit.
+					return
+				}
+				// Send cancellation error with timeout to prevent blocking.
 				select {
-				case req, ok := <-queue:
-					if !ok {
-						// Queue closed.
-						return
-					}
-					// Send cancellation error to prevent caller from hanging.
-					select {
-					case req.Err <- schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: "bifrost context cancelled",
-							Error:   context.Canceled,
-						},
-					}:
-					default:
-						// Channel full or client not listening, skip.
-					}
-				default:
-					// Queue is empty, exit.
-					break drainLoop
+				case req.Err <- schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: "bifrost context cancelled",
+						Error:   context.Canceled,
+					},
+				}:
+				case <-req.Context.Done():
+					// Client context cancelled, skip.
+				case <-time.After(100 * time.Millisecond):
+					// Timeout sending error, continue draining.
 				}
 			}
-			return
 		}
 	}
 }
