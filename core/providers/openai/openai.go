@@ -311,6 +311,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 
@@ -328,6 +329,7 @@ func HandleOpenAITextCompletionStreaming(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse,
 	logger schemas.Logger,
+	inactivityTimeoutSeconds int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -437,7 +439,7 @@ func HandleOpenAITextCompletionStreaming(
 					activityMutex.Lock()
 					inactive := time.Since(lastActivity)
 					activityMutex.Unlock()
-					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+					if inactive > time.Duration(inactivityTimeoutSeconds)*time.Second {
 						// Stream has been inactive, force close to unblock scanner
 						resp.CloseBodyStream()
 						return
@@ -740,6 +742,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 
@@ -758,6 +761,7 @@ func HandleOpenAIChatCompletionStreaming(
 	customRequestConverter func(*schemas.BifrostChatRequest) (any, error),
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
+	inactivityTimeoutSeconds int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if the request is a redirect from ResponsesStream to ChatCompletionStream
 	isResponsesToChatCompletionsFallback := false
@@ -883,7 +887,7 @@ func HandleOpenAIChatCompletionStreaming(
 					activityMutex.Lock()
 					inactive := time.Since(lastActivity)
 					activityMutex.Unlock()
-					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
+					if inactive > time.Duration(inactivityTimeoutSeconds)*time.Second {
 						// Stream has been inactive, force close to unblock scanner
 						resp.CloseBodyStream()
 						return
@@ -1240,6 +1244,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 
@@ -1258,6 +1263,7 @@ func HandleOpenAIResponsesStreaming(
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
+	inactivityTimeoutSeconds int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{
@@ -1364,7 +1370,7 @@ func HandleOpenAIResponsesStreaming(
 					activityMutex.Lock()
 					inactive := time.Since(lastActivity)
 					activityMutex.Unlock()
-					if inactive > 60*time.Second {
+					if inactive > time.Duration(inactivityTimeoutSeconds)*time.Second {
 						resp.CloseBodyStream()
 						return
 					}

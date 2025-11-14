@@ -808,7 +808,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 					activityMutex.Lock()
 					inactive := time.Since(lastActivity)
 					activityMutex.Unlock()
-					if inactive > time.Duration(inactivityTimeoutSeconds)*time.Second {
+					if inactive > time.Duration(provider.networkConfig.StreamInactivityTimeoutInSeconds)*time.Second {
 						// Stream has been inactive, force close to unblock scanner
 						resp.CloseBodyStream()
 						return

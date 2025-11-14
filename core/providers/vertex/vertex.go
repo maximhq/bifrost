@@ -594,6 +594,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			providerName,
 			postHookRunner,
 			provider.logger,
+			provider.networkConfig.StreamInactivityTimeoutInSeconds,
 		)
 	} else {
 		// Use OpenAI-compatible streaming for Mistral and other models
@@ -642,6 +643,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			nil,
 			nil,
 			provider.logger,
+			provider.networkConfig.StreamInactivityTimeoutInSeconds,
 		)
 	}
 }
