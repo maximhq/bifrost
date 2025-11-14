@@ -2025,18 +2025,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 	}()
 
-	for {
-		select {
-		case req, ok := <-queue:
-			if !ok {
-				// Queue closed, exit worker.
-				return
-			}
-			bifrost.processRequest(provider, config, req)
-		case <-bifrost.ctx.Done():
-			// Context cancelled, exit worker.
-			return
-		}
+	for req := range queue {
+		bifrost.processRequest(provider, config, req)
 	}
 }
 
@@ -2074,6 +2064,7 @@ func (bifrost *Bifrost) processRequest(provider schemas.Provider, config *schema
 		req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyName, key.Name)
 	}
 	// Create plugin pipeline for streaming requests outside retry loop to prevent leaks.
+	// Do not release the pipeline for streaming requests to avoid data race with provider goroutines.
 	var postHookRunner schemas.PostHookRunner
 	var pipeline *PluginPipeline
 	if IsStreamRequestType(req.RequestType) {
@@ -2098,9 +2089,9 @@ func (bifrost *Bifrost) processRequest(provider schemas.Provider, config *schema
 		}, req.RequestType, provider.GetProviderKey(), model)
 	}
 
-	if pipeline != nil {
-		bifrost.releasePluginPipeline(pipeline)
-	}
+	// Do not release the pipeline for streaming requests to avoid data race.
+	// The pipeline will be garbage collected when no longer referenced.
+	// This is a trade-off: we avoid the data race but don't reuse pipelines for streaming requests.
 
 	if bifrostError != nil {
 		bifrostError.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -2532,16 +2523,20 @@ func (bifrost *Bifrost) Shutdown() {
 	if bifrost.ctx.Err() != nil {
 		bifrost.logger.Warn("context already done, skipping cancel")
 		return
-	} else if bifrost.cancel != nil {
+	}
+
+	// Cancel the context first to signal provider goroutines to stop.
+	if bifrost.cancel != nil {
 		bifrost.cancel()
 	}
-	// Close all provider queues to signal workers to stop
+
+	// Close all provider queues to signal workers to stop.
 	bifrost.requestQueues.Range(func(key, value interface{}) bool {
 		close(value.(chan *ChannelMessage))
 		return true
 	})
 
-	// Wait for all workers to exit
+	// Wait for all workers to exit.
 	bifrost.waitGroups.Range(func(key, value interface{}) bool {
 		waitGroup := value.(*sync.WaitGroup)
 		waitGroup.Wait()
