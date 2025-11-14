@@ -246,7 +246,6 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 			Args:    []string{"-y", "serper-search-scrape-mcp-server"},
 			Envs:    []string{"SERPER_API_KEY"},
 		},
-		ToolsToSkip: []string{}, // No tools to skip for this client
 	},
 		schemas.MCPClientConfig{
 			Name:             "gmail-mcp",
@@ -263,7 +262,6 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 			Command: "npx",
 			Args:    []string{"-y", "@upstash/context7-mcp"},
 		},
-		ToolsToSkip: []string{}, // No tools to skip for this client
 	})
 
 	// Initialize Bifrost with MCP configuration
@@ -291,9 +289,9 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 	// Add system message to history
 	if session.systemPrompt != "" {
 		session.history = append(session.history, schemas.ChatMessage{
-			Role: schemas.ModelChatMessageRoleSystem,
-			Content: schemas.ChatMessageContent{
-				ContentStr: &session.systemPrompt,
+			Role: schemas.ChatMessageRoleSystem,
+			Content: &schemas.ChatMessageContent{
+				ContentStr: bifrost.Ptr(session.systemPrompt),
 			},
 		})
 	}
@@ -459,8 +457,8 @@ func (s *ChatSession) showCurrentConfig() {
 func (s *ChatSession) AddUserMessage(message string) {
 	userMessage := schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleUser,
-		Content: schemas.ChatMessageContent{
-			ContentStr: &message,
+		Content: &schemas.ChatMessageContent{
+			ContentStr: bifrost.Ptr(message),
 		},
 	}
 	s.history = append(s.history, userMessage)
@@ -472,25 +470,23 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 	s.AddUserMessage(message)
 
 	// Prepare model parameters
-	params := &schemas.ModelParameters{}
+	params := &schemas.ChatParameters{}
 	if s.config.Temperature != nil {
 		params.Temperature = s.config.Temperature
 	}
 	if s.config.MaxTokens != nil {
-		params.MaxTokens = s.config.MaxTokens
+		params.MaxCompletionTokens = s.config.MaxTokens
 	}
-	params.ToolChoice = &schemas.ToolChoice{
-		ToolChoiceStr: stringPtr("auto"),
+	params.ToolChoice = &schemas.ChatToolChoice{
+		ChatToolChoiceStr: bifrost.Ptr("auto"),
 	}
 
 	// Create request
-	request := &schemas.BifrostRequest{
+	request := &schemas.BifrostChatRequest{
 		Provider: s.config.Provider,
 		Model:    s.config.Model,
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &s.history,
-		},
-		Params: params,
+		Input:    s.history,
+		Params:   params,
 	}
 
 	// Start loading animation
@@ -515,20 +511,20 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 	assistantMessage := choice.Message
 
 	// Add assistant message to history
-	s.history = append(s.history, assistantMessage)
+	s.history = append(s.history, *assistantMessage)
 
 	// Check if assistant wants to use tools
-	if assistantMessage.ToolCalls != nil && len(*assistantMessage.ToolCalls) > 0 {
-		return s.handleToolCalls(assistantMessage)
+	if assistantMessage.ToolCalls != nil && len(assistantMessage.ToolCalls) > 0 {
+		return s.handleToolCalls(*assistantMessage)
 	}
 
 	// Extract text content for regular responses
 	var responseText string
 	if assistantMessage.Content.ContentStr != nil {
 		responseText = *assistantMessage.Content.ContentStr
-	} else if assistantMessage.Content.ContentBlocks != nil {
+	} else if assistantMessage.Content.ContentBlocks != nil && len(assistantMessage.Content.ContentBlocks) > 0 {
 		var textParts []string
-		for _, block := range *assistantMessage.Content.ContentBlocks {
+		for _, block := range assistantMessage.Content.ContentBlocks {
 			if block.Text != nil {
 				textParts = append(textParts, *block.Text)
 			}
@@ -541,7 +537,7 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 
 // handleToolCalls handles tool execution using the new Bifrost MCP integration
 func (s *ChatSession) handleToolCalls(assistantMessage schemas.ChatMessage) (string, error) {
-	toolCalls := *assistantMessage.ToolCalls
+	toolCalls := assistantMessage.ToolCalls
 
 	// Display tools to user for approval
 	fmt.Println("\n🔧 Assistant wants to use the following tools:")
@@ -583,11 +579,11 @@ func (s *ChatSession) handleToolCalls(assistantMessage schemas.ChatMessage) (str
 			fmt.Printf("❌ Error executing tool %s: %v\n", *toolCall.Function.Name, err)
 			// Create error message for this tool
 			errorResult := schemas.ChatMessage{
-				Role: schemas.ModelChatMessageRoleTool,
-				Content: schemas.ChatMessageContent{
-					ContentStr: stringPtr(fmt.Sprintf("Error executing tool: %v", err)),
+				Role: schemas.ChatMessageRoleTool,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr(fmt.Sprintf("Error executing tool: %v", err)),					
 				},
-				ToolMessage: &schemas.ToolMessage{
+				ChatToolMessage: &schemas.ChatToolMessage{
 					ToolCallID: toolCall.ID,
 				},
 			}
@@ -624,7 +620,7 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 	// Add synthesis prompt
 	synthesisPrompt := schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleUser,
-		Content: schemas.ChatMessageContent{
+		Content: &schemas.ChatMessageContent{
 			ContentStr: stringPtr("Please provide a comprehensive response based on the tool results above."),
 		},
 	}
@@ -633,15 +629,11 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 	conversationWithSynthesis := append(s.history, synthesisPrompt)
 
 	// Create synthesis request
-	synthesisRequest := &schemas.BifrostRequest{
-		Provider: s.config.Provider,
-		Model:    s.config.Model,
-		Input: schemas.RequestInput{
-			ChatCompletionInput: &conversationWithSynthesis,
-		},
-		Params: &schemas.ModelParameters{
+	synthesisRequest := &schemas.BifrostChatRequest{
+		Input:    conversationWithSynthesis,
+		Params:   &schemas.ChatParameters{
 			Temperature: s.config.Temperature,
-			MaxTokens:   s.config.MaxTokens,
+			MaxCompletionTokens: s.config.MaxTokens,
 		},
 	}
 
@@ -664,7 +656,7 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 
 		// Get tool results from history (last few messages that are tool messages)
 		for i := len(s.history) - 1; i >= 0; i-- {
-			if s.history[i].Role == schemas.ModelChatMessageRoleTool {
+			if s.history[i].Role == schemas.ChatMessageRoleTool {
 				if s.history[i].Content.ContentStr != nil {
 					responseText.WriteString(fmt.Sprintf("Tool result: %s\n", *s.history[i].Content.ContentStr))
 				}
@@ -684,7 +676,7 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 	synthesizedMessage := synthesisResponse.Choices[0].Message
 
 	// Add synthesized response to history (replace the temporary synthesis prompt effect)
-	s.history = append(s.history, synthesizedMessage)
+	s.history = append(s.history, *synthesizedMessage)
 
 	// Extract text content
 	var responseText string
@@ -692,7 +684,7 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 		responseText = *synthesizedMessage.Content.ContentStr
 	} else if synthesizedMessage.Content.ContentBlocks != nil {
 		var textParts []string
-		for _, block := range *synthesizedMessage.Content.ContentBlocks {
+		for _, block := range synthesizedMessage.Content.ContentBlocks {
 			if block.Text != nil {
 				textParts = append(textParts, *block.Text)
 			}
@@ -709,7 +701,7 @@ func (s *ChatSession) PrintHistory() {
 	fmt.Println("========================")
 
 	for i, msg := range s.history {
-		if msg.Role == schemas.ModelChatMessageRoleSystem {
+		if msg.Role == schemas.ChatMessageRoleSystem {
 			continue // Skip system messages in history display
 		}
 
@@ -718,7 +710,7 @@ func (s *ChatSession) PrintHistory() {
 			content = *msg.Content.ContentStr
 		} else if msg.Content.ContentBlocks != nil {
 			var textParts []string
-			for _, block := range *msg.Content.ContentBlocks {
+			for _, block := range msg.Content.ContentBlocks {
 				if block.Text != nil {
 					textParts = append(textParts, *block.Text)
 				}

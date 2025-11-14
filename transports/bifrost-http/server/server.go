@@ -813,9 +813,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		} else {
 			logger.Error("failed to list all models: %v", listModelsErr)
 		}
-	} else {
+	} else if s.Config.PricingManager != nil {
 		s.Config.PricingManager.AddModelDataToPool(modelData)
 	}
+	// Add pricing data to the client
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes

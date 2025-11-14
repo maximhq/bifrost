@@ -157,6 +157,48 @@ func uppercaseHex(b byte) byte {
 	return 'A' + (b - 10)
 }
 
+// percentDecode decodes percent-encoded sequences in a string without treating + as space
+// This differs from url.QueryUnescape which uses form encoding (+ becomes space)
+func percentDecode(s string) string {
+	// Quick check if there are any percent signs
+	if !strings.Contains(s, "%") {
+		return s
+	}
+
+	var result strings.Builder
+	result.Grow(len(s))
+
+	for i := 0; i < len(s); {
+		if s[i] == '%' && i+2 < len(s) {
+			// Try to decode the hex sequence
+			if h1 := unhex(s[i+1]); h1 >= 0 {
+				if h2 := unhex(s[i+2]); h2 >= 0 {
+					result.WriteByte(byte(h1<<4 | h2))
+					i += 3
+					continue
+				}
+			}
+		}
+		result.WriteByte(s[i])
+		i++
+	}
+
+	return result.String()
+}
+
+// unhex converts a hex character to its value, or -1 if not a hex char
+func unhex(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c - 'a' + 10)
+	case 'A' <= c && c <= 'F':
+		return int(c - 'A' + 10)
+	}
+	return -1
+}
+
 // queryPair represents a query parameter name-value pair
 type queryPair struct {
 	encodedName  string
@@ -190,9 +232,16 @@ func buildCanonicalQueryString(queryString string) string {
 			value = ""
 		}
 
+		// Decode percent-encoded sequences first to normalize (handles already-encoded values)
+		// then encode per RFC 3986 to ensure consistent encoding
+		// Note: We use percentDecode instead of url.QueryUnescape because the latter
+		// treats + as space (form encoding), but we need + to encode as %2B
+		decodedName := percentDecode(name)
+		decodedValue := percentDecode(value)
+
 		// Percent-encode name and value per RFC 3986
-		encodedName := percentEncodeRFC3986(name)
-		encodedValue := percentEncodeRFC3986(value)
+		encodedName := percentEncodeRFC3986(decodedName)
+		encodedValue := percentEncodeRFC3986(decodedValue)
 
 		pairs = append(pairs, queryPair{
 			encodedName:  encodedName,

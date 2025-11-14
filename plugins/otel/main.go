@@ -84,6 +84,9 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		return nil, fmt.Errorf("config is required")
 	}
 	logger = _logger
+	if pricingManager == nil {
+		logger.Warn("otel plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
+	}
 	var err error
 	// If headers are present , and any of them start with env., we will replace the value with the environment variable
 	if config.Headers != nil {

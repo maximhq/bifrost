@@ -20,11 +20,52 @@ services:
     networks:
       - bifrost_network
 
+  redis:
+    image: redis/redis-stack:latest
+    container_name: bifrost-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - bifrost_network
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.25.0
+    container_name: bifrost-weaviate
+    ports:
+      - "9000:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'none'
+      CLUSTER_HOSTNAME: 'node1'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - bifrost_network
+
 networks:
   bifrost_network:
     driver: bridge
 
 volumes:
   postgres_data:
+    driver: local
+  weaviate_data:
+    driver: local
+  redis_data:
     driver: local
 

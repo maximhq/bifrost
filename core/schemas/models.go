@@ -44,6 +44,68 @@ type BifrostListModelsResponse struct {
 	HasMore *bool   `json:"-"`
 }
 
+// ApplyPagination applies offset-based pagination to a BifrostListModelsResponse.
+// Uses opaque tokens with LastID validation to ensure cursor integrity.
+// Returns the paginated response with properly set NextPageToken.
+func (response *BifrostListModelsResponse) ApplyPagination(pageSize int, pageToken string) *BifrostListModelsResponse {
+	if response == nil {
+		return nil
+	}
+
+	totalItems := len(response.Data)
+
+	if pageSize <= 0 {
+		return response
+	}
+
+	cursor := decodePaginationCursor(pageToken)
+	offset := cursor.Offset
+
+	// Validate cursor integrity if LastID is present
+	if cursor.LastID != "" && !validatePaginationCursor(cursor, response.Data) {
+		// Invalid cursor: reset to beginning
+		offset = 0
+	}
+
+	if offset >= totalItems {
+		// Return empty page, no next token
+		return &BifrostListModelsResponse{
+			Data:          []Model{},
+			ExtraFields:   response.ExtraFields,
+			NextPageToken: "",
+		}
+	}
+
+	endIndex := offset + pageSize
+	if endIndex > totalItems {
+		endIndex = totalItems
+	}
+
+	paginatedData := response.Data[offset:endIndex]
+
+	paginatedResponse := &BifrostListModelsResponse{
+		Data:        paginatedData,
+		ExtraFields: response.ExtraFields,
+	}
+
+	if endIndex < totalItems {
+		// Get the last item ID for cursor validation
+		var lastID string
+		if len(paginatedData) > 0 {
+			lastID = paginatedData[len(paginatedData)-1].ID
+		}
+
+		nextToken, err := encodePaginationCursor(endIndex, lastID)
+		if err == nil {
+			paginatedResponse.NextPageToken = nextToken
+		}
+	} else {
+		paginatedResponse.NextPageToken = ""
+	}
+
+	return paginatedResponse
+}
+
 type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
@@ -171,66 +233,4 @@ func validatePaginationCursor(cursor paginationCursor, data []Model) bool {
 	}
 
 	return true
-}
-
-// ApplyPagination applies offset-based pagination to a BifrostListModelsResponse.
-// Uses opaque tokens with LastID validation to ensure cursor integrity.
-// Returns the paginated response with properly set NextPageToken.
-func (response *BifrostListModelsResponse) ApplyPagination(pageSize int, pageToken string) *BifrostListModelsResponse {
-	if response == nil {
-		return nil
-	}
-
-	totalItems := len(response.Data)
-
-	if pageSize <= 0 {
-		return response
-	}
-
-	cursor := decodePaginationCursor(pageToken)
-	offset := cursor.Offset
-
-	// Validate cursor integrity if LastID is present
-	if cursor.LastID != "" && !validatePaginationCursor(cursor, response.Data) {
-		// Invalid cursor: reset to beginning
-		offset = 0
-	}
-
-	if offset >= totalItems {
-		// Return empty page, no next token
-		return &BifrostListModelsResponse{
-			Data:          []Model{},
-			ExtraFields:   response.ExtraFields,
-			NextPageToken: "",
-		}
-	}
-
-	endIndex := offset + pageSize
-	if endIndex > totalItems {
-		endIndex = totalItems
-	}
-
-	paginatedData := response.Data[offset:endIndex]
-
-	paginatedResponse := &BifrostListModelsResponse{
-		Data:        paginatedData,
-		ExtraFields: response.ExtraFields,
-	}
-
-	if endIndex < totalItems {
-		// Get the last item ID for cursor validation
-		var lastID string
-		if len(paginatedData) > 0 {
-			lastID = paginatedData[len(paginatedData)-1].ID
-		}
-
-		nextToken, err := encodePaginationCursor(endIndex, lastID)
-		if err == nil {
-			paginatedResponse.NextPageToken = nextToken
-		}
-	} else {
-		paginatedResponse.NextPageToken = ""
-	}
-
-	return paginatedResponse
 }

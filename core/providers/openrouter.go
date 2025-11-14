@@ -211,7 +211,7 @@ func (provider *OpenRouterProvider) Responses(ctx context.Context, key schemas.K
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/alpha/responses"),
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -230,7 +230,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx context.Context, postHoo
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/alpha/responses"),
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,

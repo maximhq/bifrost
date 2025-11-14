@@ -234,16 +234,16 @@ The Model Catalog handles missing pricing data gracefully with intelligent fallb
 
 ```go
 // getPricing returns pricing information for a model (thread-safe)
-func (pm *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
 
-	pricing, ok := pm.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
+	pricing, ok := mc.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
 	if !ok {
 		// Example fallback: if a gemini model is not found, try looking it up under the vertex provider
 		if provider == string(schemas.Gemini) {
-			pm.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-			pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
+			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
+			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
 			if ok {
 				return &pricing, true
 			}

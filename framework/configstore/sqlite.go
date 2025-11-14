@@ -8,7 +8,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	gormLogger "gorm.io/gorm/logger"
 )
 
 // SQLiteConfig represents the configuration for a SQLite database.
@@ -29,7 +28,7 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000&_foreign_keys=1", config.Path)
 	logger.Debug("opening DB with dsn: %s", dsn)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
-		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
+		Logger: newGormLogger(logger),
 	})
 
 	if err != nil {

@@ -1,11 +1,129 @@
 package cohere
 
 import (
+	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// CohereResponsesStreamState tracks state during streaming conversion for responses API
+type CohereResponsesStreamState struct {
+	ContentIndexToOutputIndex map[int]int    // Maps Cohere content_index to OpenAI output_index
+	ToolArgumentBuffers       map[int]string // Maps output_index to accumulated tool argument JSON
+	ItemIDs                   map[int]string // Maps output_index to item ID for stable IDs
+	CurrentOutputIndex        int            // Current output index counter
+	MessageID                 *string        // Message ID from message_start
+	Model                     *string        // Model name from message_start
+	CreatedAt                 int            // Timestamp for created_at consistency
+	HasEmittedCreated         bool           // Whether we've emitted response.created
+	HasEmittedInProgress      bool           // Whether we've emitted response.in_progress
+	ToolPlanOutputIndex       *int           // Output index for tool plan text item (if created)
+}
+
+// cohereResponsesStreamStatePool provides a pool for Cohere responses stream state objects.
+var cohereResponsesStreamStatePool = sync.Pool{
+	New: func() interface{} {
+		return &CohereResponsesStreamState{
+			ContentIndexToOutputIndex: make(map[int]int),
+			ToolArgumentBuffers:       make(map[int]string),
+			ItemIDs:                   make(map[int]string),
+			CurrentOutputIndex:        0,
+			CreatedAt:                 int(time.Now().Unix()),
+			HasEmittedCreated:         false,
+			HasEmittedInProgress:      false,
+			ToolPlanOutputIndex:       nil,
+		}
+	},
+}
+
+// acquireCohereResponsesStreamState gets a Cohere responses stream state from the pool.
+func acquireCohereResponsesStreamState() *CohereResponsesStreamState {
+	state := cohereResponsesStreamStatePool.Get().(*CohereResponsesStreamState)
+	// Clear maps (they're already initialized from New or previous flush)
+	// Only initialize if nil (shouldn't happen, but defensive)
+	if state.ContentIndexToOutputIndex == nil {
+		state.ContentIndexToOutputIndex = make(map[int]int)
+	} else {
+		clear(state.ContentIndexToOutputIndex)
+	}
+	if state.ToolArgumentBuffers == nil {
+		state.ToolArgumentBuffers = make(map[int]string)
+	} else {
+		clear(state.ToolArgumentBuffers)
+	}
+	if state.ItemIDs == nil {
+		state.ItemIDs = make(map[int]string)
+	} else {
+		clear(state.ItemIDs)
+	}
+	// Reset other fields
+	state.CurrentOutputIndex = 0
+	state.MessageID = nil
+	state.Model = nil
+	state.CreatedAt = int(time.Now().Unix())
+	state.HasEmittedCreated = false
+	state.HasEmittedInProgress = false
+	state.ToolPlanOutputIndex = nil
+	return state
+}
+
+// releaseCohereResponsesStreamState returns a Cohere responses stream state to the pool.
+func releaseCohereResponsesStreamState(state *CohereResponsesStreamState) {
+	if state != nil {
+		state.flush() // Clean before returning to pool
+		cohereResponsesStreamStatePool.Put(state)
+	}
+}
+
+// flush resets the state of the stream state to its initial values
+func (state *CohereResponsesStreamState) flush() {
+	// Clear maps (reuse if already initialized, otherwise initialize)
+	if state.ContentIndexToOutputIndex == nil {
+		state.ContentIndexToOutputIndex = make(map[int]int)
+	} else {
+		clear(state.ContentIndexToOutputIndex)
+	}
+	if state.ToolArgumentBuffers == nil {
+		state.ToolArgumentBuffers = make(map[int]string)
+	} else {
+		clear(state.ToolArgumentBuffers)
+	}
+	if state.ItemIDs == nil {
+		state.ItemIDs = make(map[int]string)
+	} else {
+		clear(state.ItemIDs)
+	}
+	state.CurrentOutputIndex = 0
+	state.MessageID = nil
+	state.Model = nil
+	state.CreatedAt = int(time.Now().Unix())
+	state.HasEmittedCreated = false
+	state.HasEmittedInProgress = false
+	state.ToolPlanOutputIndex = nil
+}
+
+// getOrCreateOutputIndex returns the output index for a given content index, creating a new one if needed
+func (state *CohereResponsesStreamState) getOrCreateOutputIndex(contentIndex *int) int {
+	if contentIndex == nil {
+		// If no content index, create a new output index
+		outputIndex := state.CurrentOutputIndex
+		state.CurrentOutputIndex++
+		return outputIndex
+	}
+
+	if outputIndex, exists := state.ContentIndexToOutputIndex[*contentIndex]; exists {
+		return outputIndex
+	}
+
+	// Create new output index for this content index
+	outputIndex := state.CurrentOutputIndex
+	state.CurrentOutputIndex++
+	state.ContentIndexToOutputIndex[*contentIndex] = outputIndex
+	return outputIndex
+}
 
 // ToCohereResponsesRequest converts a BifrostRequest (Responses structure) to CohereChatRequest
 func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *CohereChatRequest {
@@ -436,105 +554,302 @@ func convertCohereContentBlockToBifrost(cohereBlock CohereContentBlock) schemas.
 	}
 }
 
-func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, state *CohereResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case StreamEventMessageStart:
-		messageType := schemas.ResponsesMessageTypeMessage
-		role := schemas.ResponsesInputMessageRoleAssistant
+		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
+		if chunk.ID != nil {
+			state.MessageID = chunk.ID
+			// Use the state's CreatedAt for consistency
+			if state.CreatedAt == 0 {
+				state.CreatedAt = int(time.Now().Unix())
+			}
 
-		item := &schemas.ResponsesMessage{
-			ID:   chunk.ID,
-			Type: &messageType,
-			Role: &role,
-			Content: &schemas.ResponsesMessageContent{
-				ContentStr: schemas.Ptr(""), // Empty content initially
-			},
+			var responses []*schemas.BifrostResponsesStreamResponse
+
+			// Emit response.created
+			if !state.HasEmittedCreated {
+				response := &schemas.BifrostResponsesResponse{
+					ID:        state.MessageID,
+					CreatedAt: state.CreatedAt,
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeCreated,
+					SequenceNumber: sequenceNumber,
+					Response:       response,
+				})
+				state.HasEmittedCreated = true
+			}
+
+			// Emit response.in_progress
+			if !state.HasEmittedInProgress {
+				response := &schemas.BifrostResponsesResponse{
+					ID:        state.MessageID,
+					CreatedAt: state.CreatedAt, // Use same timestamp
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeInProgress,
+					SequenceNumber: sequenceNumber + len(responses),
+					Response:       response,
+				})
+				state.HasEmittedInProgress = true
+			}
+
+			if len(responses) > 0 {
+				return responses, nil, false
+			}
+		}
+	case StreamEventContentStart:
+		// Content block start - emit output_item.added (OpenAI-style)
+		// First, close tool plan message item if it's still open
+		var responses []*schemas.BifrostResponsesStreamResponse
+		if state.ToolPlanOutputIndex != nil {
+			outputIndex := *state.ToolPlanOutputIndex
+			statusCompleted := "completed"
+			itemID := state.ItemIDs[outputIndex]
+			doneItem := &schemas.ResponsesMessage{
+				Status: &statusCompleted,
+			}
+			if itemID != "" {
+				doneItem.ID = &itemID
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   schemas.Ptr(0),
+				Item:           doneItem,
+			})
+			state.ToolPlanOutputIndex = nil // Mark as closed
 		}
 
-		return &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-			SequenceNumber: sequenceNumber,
-			OutputIndex:    schemas.Ptr(0),
-			Item:           item,
-		}, nil, false
-	case StreamEventContentStart:
-		// Content block start - create content part added event
 		if chunk.Delta != nil && chunk.Index != nil && chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil && chunk.Delta.Message.Content.CohereStreamContentObject != nil {
-			var contentType schemas.ResponsesMessageContentBlockType
-			var part *schemas.ResponsesMessageContentBlock
+			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 
 			switch chunk.Delta.Message.Content.CohereStreamContentObject.Type {
 			case CohereContentBlockTypeText:
-				contentType = schemas.ResponsesOutputMessageContentTypeText
-				part = &schemas.ResponsesMessageContentBlock{
-					Type: contentType,
-					Text: schemas.Ptr(""), // Empty text initially
-				}
-			case CohereContentBlockTypeThinking:
-				// This is a function call starting
-				contentType = schemas.ResponsesOutputMessageContentTypeReasoning // Will be updated to function call
-				part = &schemas.ResponsesMessageContentBlock{
-					Type: contentType,
-					Text: schemas.Ptr(""), // Will contain function call info
-				}
-			}
+				// Text block - emit output_item.added with type "message"
+				messageType := schemas.ResponsesMessageTypeMessage
+				role := schemas.ResponsesInputMessageRoleAssistant
 
-			if part != nil {
-				return &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+				// Generate stable ID for text item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("item_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
+				}
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("item_%d", outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
+					},
+				}
+
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
-					Part:           part,
-				}, nil, false
+					Item:           item,
+				})
+				return responses, nil, false
+			case CohereContentBlockTypeThinking:
+				// Thinking/reasoning content - emit as reasoning item
+				messageType := schemas.ResponsesMessageTypeReasoning
+				role := schemas.ResponsesInputMessageRoleAssistant
+
+				// Generate stable ID for reasoning item
+				itemID := fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					},
+				}
+
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				})
+				return responses, nil, false
 			}
+		}
+		if len(responses) > 0 {
+			return responses, nil, false
 		}
 	case StreamEventContentDelta:
 		if chunk.Index != nil && chunk.Delta != nil {
+			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+
 			// Handle text content delta
 			if chunk.Delta.Message != nil && chunk.Delta.Message.Content != nil && chunk.Delta.Message.Content.CohereStreamContentObject != nil && chunk.Delta.Message.Content.CohereStreamContentObject.Text != nil && *chunk.Delta.Message.Content.CohereStreamContentObject.Text != "" {
-				return &schemas.BifrostResponsesStreamResponse{
+				// Emit output_text.delta (not reasoning_summary_text.delta for regular text)
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					Delta:          chunk.Delta.Message.Content.CohereStreamContentObject.Text,
-				}, nil, false
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 			}
 		}
 		return nil, nil, false
 	case StreamEventContentEnd:
-		// Content block is complete
+		// Content block is complete - emit output_item.done (OpenAI-style)
 		if chunk.Index != nil {
-			return &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+			statusCompleted := "completed"
+			itemID := state.ItemIDs[outputIndex]
+			doneItem := &schemas.ResponsesMessage{
+				Status: &statusCompleted,
+			}
+			if itemID != "" {
+				doneItem.ID = &itemID
+			}
+			return []*schemas.BifrostResponsesStreamResponse{{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
 				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
+				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   chunk.Index,
-			}, nil, false
+				Item:           doneItem,
+			}}, nil, false
 		}
 	case StreamEventToolPlanDelta:
 		if chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolPlan != nil && *chunk.Delta.Message.ToolPlan != "" {
-			// Tool plan delta - map to reasoning summary text delta
-			return &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
+			// Tool plan delta - treat as normal text (Option A)
+			// Use output_index 0 for text message if it exists, otherwise create new
+			outputIndex := 0
+			var responses []*schemas.BifrostResponsesStreamResponse
+
+			if state.ToolPlanOutputIndex != nil {
+				outputIndex = *state.ToolPlanOutputIndex
+			} else {
+				// Create message item first if it doesn't exist
+				outputIndex = 0
+				state.ToolPlanOutputIndex = &outputIndex
+				state.ContentIndexToOutputIndex[0] = outputIndex
+
+				// Generate stable ID for text item
+				// Generate stable ID for text item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("item_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				messageType := schemas.ResponsesMessageTypeMessage
+				role := schemas.ResponsesInputMessageRoleAssistant
+
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					},
+				}
+
+				// Emit output_item.added for text message
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   schemas.Ptr(0),
+					Item:           item,
+				})
+			}
+
+			// Emit output_text.delta (not reasoning_summary_text.delta)
+			itemID := state.ItemIDs[outputIndex]
+			response := &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   schemas.Ptr(0), // Tool plan is typically at index 0
 				Delta:          chunk.Delta.Message.ToolPlan,
-			}, nil, false
+			}
+			if itemID != "" {
+				response.ItemID = &itemID
+			}
+			responses = append(responses, response)
+			return responses, nil, false
 		}
 		return nil, nil, false
 	case StreamEventToolCallStart:
+		// First, close tool plan message item if it's still open
+		var responses []*schemas.BifrostResponsesStreamResponse
+		if state.ToolPlanOutputIndex != nil {
+			outputIndex := *state.ToolPlanOutputIndex
+			statusCompleted := "completed"
+			itemID := state.ItemIDs[outputIndex]
+			doneItem := &schemas.ResponsesMessage{
+				Status: &statusCompleted,
+			}
+			if itemID != "" {
+				doneItem.ID = &itemID
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   schemas.Ptr(0),
+				Item:           doneItem,
+			})
+			state.ToolPlanOutputIndex = nil // Mark as closed
+		}
+
 		if chunk.Index != nil && chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolCalls != nil && chunk.Delta.Message.ToolCalls.CohereToolCallObject != nil {
-			// Tool call start - create function call message
+			// Tool call start - emit output_item.added with type "function_call" and status "in_progress"
 			toolCall := chunk.Delta.Message.ToolCalls.CohereToolCallObject
 			if toolCall.Function != nil && toolCall.Function.Name != nil {
-				messageType := schemas.ResponsesMessageTypeFunctionCall
+				// Always use a new output index for tool calls to avoid collision with text items
+				// Use output_index 1 (or next available) to avoid collision with text at index 0
+				outputIndex := state.CurrentOutputIndex
+				if outputIndex == 0 {
+					outputIndex = 1 // Skip 0 if it's used for text
+				}
+				state.CurrentOutputIndex = outputIndex + 1
+				// Optionally map the content index if provided
+				if chunk.Index != nil {
+					state.ContentIndexToOutputIndex[*chunk.Index] = outputIndex
+				}
+
+				statusInProgress := "in_progress"
+				itemID := ""
+				if toolCall.ID != nil {
+					itemID = *toolCall.ID
+					state.ItemIDs[outputIndex] = itemID
+				}
 
 				item := &schemas.ResponsesMessage{
-					ID:   toolCall.ID,
-					Type: &messageType,
+					ID:     toolCall.ID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					Status: &statusInProgress,
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID:    toolCall.ID,
 						Name:      toolCall.Function.Name,
@@ -542,13 +857,20 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 					},
 				}
 
-				return &schemas.BifrostResponsesStreamResponse{
+				// Initialize argument buffer for this tool call
+				state.ToolArgumentBuffers[outputIndex] = ""
+
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(0),
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					Item:           item,
-				}, nil, false
+				})
+				return responses, nil, false
 			}
+		}
+		if len(responses) > 0 {
+			return responses, nil, false
 		}
 		return nil, nil, false
 	case StreamEventToolCallDelta:
@@ -556,25 +878,72 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 			// Tool call delta - handle function arguments streaming
 			toolCall := chunk.Delta.Message.ToolCalls.CohereToolCallObject
 			if toolCall.Function != nil {
-				return &schemas.BifrostResponsesStreamResponse{
+				outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+
+				// Accumulate tool arguments in buffer
+				if _, exists := state.ToolArgumentBuffers[outputIndex]; !exists {
+					state.ToolArgumentBuffers[outputIndex] = ""
+				}
+				state.ToolArgumentBuffers[outputIndex] += toolCall.Function.Arguments
+
+				// Emit function_call_arguments.delta
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
 					SequenceNumber: sequenceNumber,
 					ContentIndex:   chunk.Index,
-					OutputIndex:    schemas.Ptr(0),
+					OutputIndex:    schemas.Ptr(outputIndex),
 					Delta:          schemas.Ptr(toolCall.Function.Arguments),
-				}, nil, false
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 			}
 		}
 		return nil, nil, false
 	case StreamEventToolCallEnd:
 		if chunk.Index != nil {
-			// Tool call end - indicate function call arguments are complete
-			return &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
+			// Tool call end - emit function_call_arguments.done then output_item.done
+			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+			var responses []*schemas.BifrostResponsesStreamResponse
+
+			// Emit function_call_arguments.done with full accumulated JSON
+			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs && accumulatedArgs != "" {
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Arguments:      &accumulatedArgs,
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				responses = append(responses, response)
+				// Clear the buffer
+				delete(state.ToolArgumentBuffers, outputIndex)
+			}
+
+			// Emit output_item.done for the function call
+			statusCompleted := "completed"
+			itemID := state.ItemIDs[outputIndex]
+			doneItem := &schemas.ResponsesMessage{
+				Status: &statusCompleted,
+			}
+			if itemID != "" {
+				doneItem.ID = &itemID
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   chunk.Index,
-			}, nil, false
+				Item:           doneItem,
+			})
+
+			return responses, nil, false
 		}
 		return nil, nil, false
 	case StreamEventCitationStart:
@@ -613,34 +982,46 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 				}
 			}
 
-			return &schemas.BifrostResponsesStreamResponse{
+			// Use output_index based on content index for citations (they're part of the text item)
+			outputIndex := 0
+			if citation.ContentIndex >= 0 {
+				contentIndexPtr := &citation.ContentIndex
+				outputIndex = state.getOrCreateOutputIndex(contentIndexPtr)
+			}
+
+			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
 				SequenceNumber:  sequenceNumber,
 				ContentIndex:    schemas.Ptr(citation.ContentIndex),
 				Annotation:      annotation,
-				OutputIndex:     schemas.Ptr(0),
+				OutputIndex:     schemas.Ptr(outputIndex),
 				AnnotationIndex: chunk.Index,
-			}, nil, false
+			}}, nil, false
 		}
 		return nil, nil, false
 	case StreamEventCitationEnd:
 		if chunk.Index != nil {
 			// Citation end - indicate annotation is complete
-			return &schemas.BifrostResponsesStreamResponse{
+			outputIndex := 0
+			if chunk.Index != nil {
+				outputIndex = state.getOrCreateOutputIndex(chunk.Index)
+			}
+			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationDone,
 				SequenceNumber:  sequenceNumber,
 				ContentIndex:    chunk.Index,
-				OutputIndex:     schemas.Ptr(0),
+				OutputIndex:     schemas.Ptr(outputIndex),
 				AnnotationIndex: chunk.Index,
-			}, nil, false
+			}}, nil, false
 		}
 		return nil, nil, false
 	case StreamEventMessageEnd:
-		response := &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeCompleted,
-			SequenceNumber: sequenceNumber,
-			OutputIndex:    schemas.Ptr(0),
-			Response:       &schemas.BifrostResponsesResponse{}, // Initialize Response field
+		// Message end - emit response.completed (OpenAI-style)
+		response := &schemas.BifrostResponsesResponse{
+			CreatedAt: state.CreatedAt,
+		}
+		if state.MessageID != nil {
+			response.ID = state.MessageID
 		}
 
 		if chunk.Delta != nil {
@@ -662,11 +1043,15 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int) (*s
 						CachedTokens: *chunk.Delta.Usage.CachedTokens,
 					}
 				}
-				response.Response.Usage = usage
+				response.Usage = usage
 			}
 		}
 
-		return response, nil, true
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: sequenceNumber,
+			Response:       response,
+		}}, nil, true
 	case StreamEventDebug:
 		return nil, nil, false
 	}

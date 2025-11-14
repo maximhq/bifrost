@@ -8,7 +8,7 @@ import (
 )
 
 // CalculateCost calculates the cost of a Bifrost response
-func (pm *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
+func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	if result == nil {
 		return 0.0
 	}
@@ -91,14 +91,14 @@ func (pm *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	cost := 0.0
 	if usage != nil || audioSeconds != nil || audioTokenDetails != nil {
 		extraFields := result.GetExtraFields()
-		cost = pm.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, usage, extraFields.RequestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
+		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, usage, extraFields.RequestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
 	}
 
 	return cost
 }
 
 // CalculateCostWithCacheDebug calculates the cost of a Bifrost response with cache debug information
-func (pm *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostResponse) float64 {
+func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostResponse) float64 {
 	if result == nil {
 		return 0.0
 	}
@@ -108,7 +108,7 @@ func (pm *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 			if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
 				return 0
 			} else if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				return pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
+				return mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
@@ -118,10 +118,10 @@ func (pm *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 			// Don't over-bill cache hits if fields are missing.
 			return 0
 		} else {
-			baseCost := pm.CalculateCost(result)
+			baseCost := mc.CalculateCost(result)
 			var semanticCacheCost float64
 			if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				semanticCacheCost = pm.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
+				semanticCacheCost = mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
@@ -132,11 +132,11 @@ func (pm *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 		}
 	}
 
-	return pm.CalculateCost(result)
+	return mc.CalculateCost(result)
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
-func (pm *ModelCatalog) CalculateCostFromUsage(provider string, model string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isCacheRead bool, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
+func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isCacheRead bool, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
 	// Allow audio-only flows by only returning early if we have no usage data at all
 	if usage == nil && audioSeconds == nil && audioTokenDetails == nil {
 		return 0.0
@@ -146,11 +146,11 @@ func (pm *ModelCatalog) CalculateCostFromUsage(provider string, model string, us
 		return usage.Cost.TotalCost
 	}
 
-	pm.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
+	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 	// Get pricing for the model
-	pricing, exists := pm.getPricing(model, provider, requestType)
+	pricing, exists := mc.getPricing(model, provider, requestType)
 	if !exists {
-		pm.logger.Debug("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, normalizeRequestType(requestType))
+		mc.logger.Debug("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, normalizeRequestType(requestType))
 		return 0.0
 	}
 
@@ -259,24 +259,24 @@ func (pm *ModelCatalog) CalculateCostFromUsage(provider string, model string, us
 }
 
 // getPricing returns pricing information for a model (thread-safe)
-func (pm *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
 
-	pricing, ok := pm.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
+	pricing, ok := mc.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
 	if !ok {
 		// Lookup in vertex if gemini not found
 		if provider == string(schemas.Gemini) {
-			pm.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-			pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
+			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
+			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
 			if ok {
 				return &pricing, true
 			}
 
 			// Lookup in chat if responses not found
 			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-				pm.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-				pricing, ok = pm.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
+				pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
 					return &pricing, true
 				}
@@ -287,16 +287,16 @@ func (pm *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			// Vertex models can be of the form "provider/model", so try to lookup the model without the provider prefix and keep the original provider
 			if strings.Contains(model, "/") {
 				modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
-				pm.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
-				pricing, ok = pm.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(requestType))]
+				mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
+				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(requestType))]
 				if ok {
 					return &pricing, true
 				}
 
 				// Lookup in chat if responses not found
 				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-					pm.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-					pricing, ok = pm.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+					mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
+					pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 					if ok {
 						return &pricing, true
 					}
@@ -306,8 +306,8 @@ func (pm *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 
 		// Lookup in chat if responses not found
 		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-			pm.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
-			pricing, ok = pm.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
+			pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
 				return &pricing, true
 			}

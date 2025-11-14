@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
+
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -21,7 +22,9 @@ type PostgresConfig struct {
 
 // newPostgresLogStore creates a new Postgres log store.
 func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger) (LogStore, error) {
-	db, err := gorm.Open(postgres.Open(fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host, config.Port, config.User, config.Password, config.DBName, config.SSLMode)), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host, config.Port, config.User, config.Password, config.DBName, config.SSLMode)), &gorm.Config{
+		Logger: newGormLogger(logger),
+	})
 	if err != nil {
 		return nil, err
 	}

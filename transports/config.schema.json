@@ -561,6 +561,18 @@
       },
       "additionalProperties": false
     },
+    "cluster_config": {
+      "$ref": "#/$defs/cluster_config"
+    },
+    "saml_config": {
+      "$ref": "#/$defs/saml_config"
+    },
+    "load_balancer_config": {
+      "$ref": "#/$defs/load_balancer_config"
+    },
+    "guardrails_config": {
+      "$ref": "#/$defs/guardrails_config"
+    },
     "plugins": {
       "type": "array",
       "description": "Plugins configuration",
@@ -1438,7 +1450,7 @@
       ],
       "additionalProperties": false
     },
-    "clusterConfig": {
+    "cluster_config": {
       "type": "object",
       "description": "Cluster mode configuration",
       "properties": {
@@ -1468,32 +1480,26 @@
               "type": "object",
               "description": "Gossip protocol settings",
               "properties": {
-                "livenessProbeEverySeconds": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "description": "Interval between liveness probes in seconds"
-                },
-                "timeoutSeconds": {
+                "timeout_seconds": {
                   "type": "integer",
                   "minimum": 1,
                   "description": "Timeout for operations in seconds"
                 },
-                "successThreshold": {
+                "success_threshold": {
                   "type": "integer",
                   "minimum": 1,
                   "description": "Number of successful probes required"
                 },
-                "failureThreshold": {
+                "failure_threshold": {
                   "type": "integer",
                   "minimum": 1,
                   "description": "Number of failed probes before marking as failed"
                 }
               },
               "required": [
-                "livenessProbeEverySeconds",
-                "timeoutSeconds",
-                "successThreshold",
-                "failureThreshold"
+                "timeout_seconds",
+                "success_threshold",
+                "failure_threshold"
               ],
               "additionalProperties": false
             }
@@ -1503,11 +1509,373 @@
             "config"
           ],
           "additionalProperties": false
+        },
+        "discovery": {
+          "type": "object",
+          "description": "Auto-discovery configuration for cluster nodes",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether auto-discovery is enabled"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "kubernetes",
+                "dns",
+                "udp",
+                "consul",
+                "etcd",
+                "mdns"
+              ],
+              "description": "Discovery mechanism type"
+            },
+            "allowed_address_space": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "CIDR notation for allowed address spaces (e.g., ['10.0.0.0/8', '192.168.0.0/16'])"
+            },
+            "k8s_namespace": {
+              "type": "string",
+              "description": "Kubernetes namespace for service discovery"
+            },
+            "k8s_label_selector": {
+              "type": "string",
+              "description": "Kubernetes label selector for filtering pods"
+            },
+            "dns_names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "DNS names to resolve for node discovery"
+            },
+            "udp_broadcast_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port for UDP broadcast discovery"
+            },
+            "consul_address": {
+              "type": "string",
+              "description": "Consul server address for service discovery"
+            },
+            "etcd_endpoints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Etcd endpoints for service discovery"
+            },
+            "mdns_service": {
+              "type": "string",
+              "description": "mDNS service name for local network discovery"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
         "enabled"
       ],
+      "additionalProperties": false
+    },
+    "saml_config": {
+      "type": "object",
+      "description": "SAML/SCIM (System for Cross-domain Identity Management) configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether SAML/SCIM authentication is enabled"
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "okta",
+            "entra"
+          ],
+          "description": "SCIM provider type"
+        },
+        "config": {
+          "type": "object",
+          "description": "Provider-specific configuration"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "okta"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/okta_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "entra"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/entra_config"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "okta_config": {
+      "type": "object",
+      "description": "Okta JWT authentication configuration",
+      "properties": {
+        "issuerUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Okta issuer URL (e.g., https://your-domain.okta.com/oauth2/default)"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Okta application client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Okta client secret (optional, required for token revocation)"
+        },
+        "audience": {
+          "type": "string",
+          "description": "JWT audience for validation (optional)"
+        },
+        "userIdField": {
+          "type": "string",
+          "description": "JWT claim field for user ID (default: 'sub')",
+          "default": "sub"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for roles (default: 'roles')",
+          "default": "roles"
+        }
+      },
+      "required": [
+        "issuerUrl",
+        "clientId"
+      ],
+      "additionalProperties": false
+    },
+    "entra_config": {
+      "type": "object",
+      "description": "Microsoft Entra ID (formerly Azure AD) JWT authentication configuration",
+      "properties": {
+        "tenantId": {
+          "type": "string",
+          "description": "Azure tenant ID or 'common' for multi-tenant applications"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Application (client) ID from Azure portal"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Client secret (optional, required for token revocation)"
+        },
+        "audience": {
+          "type": "string",
+          "description": "JWT audience for validation (default: clientId)"
+        },
+        "appIdUri": {
+          "type": "string",
+          "format": "uri",
+          "description": "App ID URI for v1.0 tokens (e.g., api://{clientId})"
+        },
+        "userIdField": {
+          "type": "string",
+          "description": "JWT claim field for user ID (default: 'oid')",
+          "default": "oid"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for roles (default: 'roles')",
+          "default": "roles"
+        }
+      },
+      "required": [
+        "tenantId",
+        "clientId"
+      ],
+      "additionalProperties": false
+    },
+    "load_balancer_config": {
+      "type": "object",
+      "description": "Load balancer configuration for intelligent request routing",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether load balancing is enabled"
+        },
+        "tracker_config": {
+          "type": "object",
+          "description": "Configuration for tracking route metrics and performance"
+        },
+        "bootstrap": {
+          "type": "object",
+          "description": "Bootstrap data for initializing load balancer with historical metrics",
+          "properties": {
+            "route_metrics": {
+              "type": "object",
+              "description": "Historical metrics per route"
+            },
+            "direction_metrics": {
+              "type": "object",
+              "description": "Historical metrics per direction"
+            },
+            "routes": {
+              "type": "object",
+              "description": "Known routes"
+            }
+          }
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "guardrails_config": {
+      "type": "object",
+      "description": "Guardrails configuration for content moderation and policy enforcement",
+      "properties": {
+        "guardrail_rules": {
+          "type": "array",
+          "description": "List of guardrail rules",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "description": "Unique identifier for the rule"
+              },
+              "name": {
+                "type": "string",
+                "description": "Name of the guardrail rule"
+              },
+              "description": {
+                "type": "string",
+                "description": "Description of what the rule does"
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether this rule is enabled"
+              },
+              "cel_expression": {
+                "type": "string",
+                "description": "CEL (Common Expression Language) expression for rule evaluation"
+              },
+              "apply_to": {
+                "type": "string",
+                "enum": [
+                  "input",
+                  "output",
+                  "both"
+                ],
+                "description": "When to apply the guardrail (input, output, or both)"
+              },
+              "sampling_rate": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Percentage of requests to apply this rule to (0-100)"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Timeout in milliseconds for rule execution"
+              },
+              "provider_config_ids": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "IDs of provider configurations to use with this rule"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "enabled",
+              "cel_expression",
+              "apply_to"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "guardrail_providers": {
+          "type": "array",
+          "description": "List of guardrail provider configurations",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "description": "Unique identifier for the provider config"
+              },
+              "provider_name": {
+                "type": "string",
+                "description": "Name of the guardrail provider (e.g., 'bedrock', 'azure')"
+              },
+              "policy_name": {
+                "type": "string",
+                "description": "Name of the specific policy to use"
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether this provider config is enabled"
+              },
+              "config": {
+                "type": "object",
+                "description": "Provider-specific configuration"
+              }
+            },
+            "required": [
+              "id",
+              "provider_name",
+              "policy_name",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
       "additionalProperties": false
     }
   }

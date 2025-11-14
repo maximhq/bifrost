@@ -22,19 +22,66 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'ui/package-lock.json'
+
       - name: Install dependencies
         run: |
-          for dir in core framework transports tests/core-providers tests/core-chatbot; do
+          for dir in core framework transports tests/core-chatbot; do
             if [ -f "$dir/go.mod" ]; then
               echo "Installing dependencies for $dir..."
               (cd "$dir" && go mod download)
             fi
           done
+          # Install dependencies for core test modules (adds coverage to core)
+          if [ -f "tests/core-providers/go.mod" ]; then
+            echo "Installing dependencies for tests/core-providers (core test coverage)..."
+            (cd tests/core-providers && go mod download)
+          fi
+
+      - name: Fix core-chatbot dependencies
+        run: |
+          echo "Running go mod tidy for core-chatbot..."
+          (cd tests/core-chatbot && go mod tidy)
+
+      - name: Build UI
+        run: |
+          echo "Building UI for embedding in transport..."
+          cd ui
+          npm ci
+          npm run build
+          npm run copy-build
+
+      - name: Start services for integration tests
+        run: |
+          echo "Starting Redis and Weaviate for vector store tests..."
+          cd framework
+          docker-compose up -d
+          # Wait for services to be healthy
+          echo "Waiting for services to be ready..."
+          timeout 60 bash -c 'until docker-compose ps | grep -q "healthy"; do sleep 2; done' || true
+          sleep 5
+
+      - name: Rebuild plugins
+        run: |
+          echo "Rebuilding example plugins..."
+          if [ -d "examples/plugins/hello-world" ]; then
+            cd examples/plugins/hello-world
+            # Clean old build
+            rm -rf build
+            mkdir -p build
+            # Rebuild plugin with current dependencies
+            go build -buildmode=plugin -o build/hello-world.so main.go || echo "Plugin build failed, tests will skip"
+          fi
 
       - name: Run tests
         run: |
           # Run tests for each module and combine coverage
-          for dir in core framework transports tests/core-providers tests/core-chatbot; do
+          for dir in core framework transports tests/core-chatbot; do
             if [ -f "$dir/go.mod" ]; then
               echo "Running tests for $dir..."
               dirname=$(echo $dir | sed 's/\//-/g')
@@ -42,9 +89,20 @@ jobs:
             fi
           done
           
+          # Run core test modules (adds coverage to core, not separate modules)
+          echo "Running tests/core-providers (adds coverage to core)..."
+          (cd tests/core-providers && GOWORK=off go test -coverprofile=../../coverage-core-providers.txt -coverpkg=github.com/maximhq/bifrost/core/...,github.com/maximhq/bifrost/framework/...,github.com/maximhq/bifrost/transports/... . || true)
+          
           # Combine coverage files
           echo "mode: atomic" > coverage.txt
           grep -h -v "^mode:" coverage-*.txt >> coverage.txt 2>/dev/null || true
+
+      - name: Stop services
+        if: always()
+        run: |
+          echo "Stopping docker services..."
+          cd framework
+          docker-compose down || true
 
       - name: Upload results to Codecov
         uses: codecov/codecov-action@v5

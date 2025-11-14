@@ -142,9 +142,10 @@ func (provider *ParasailProvider) Responses(ctx context.Context, key schemas.Key
 
 // ResponsesStream performs a streaming responses request to the Parasail API.
 func (provider *ParasailProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
-		providerUtils.GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner),
+		postHookRunner,
 		key,
 		request.ToChatRequest(),
 	)

@@ -235,6 +235,9 @@ func (provider *AnthropicProvider) ListModels(ctx context.Context, keys []schema
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
 	}
+	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
+		return provider.listModelsByKey(ctx, schemas.Key{}, request)
+	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
@@ -483,6 +486,7 @@ func HandleAnthropicChatCompletionStreaming(
 				fmt.Errorf("provider returned an empty response"),
 				providerType,
 			)
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 			return
 		}
@@ -590,6 +594,16 @@ func HandleAnthropicChatCompletionStreaming(
 			}
 
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream()
+			if bifrostErr != nil {
+				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.ChatCompletionStreamRequest,
+					Provider:       providerType,
+					ModelRequested: modelName,
+				}
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+				break
+			}
 			if response != nil {
 				response.ID = messageID
 				response.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -608,16 +622,6 @@ func HandleAnthropicChatCompletionStreaming(
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 			}
-			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					Provider:       providerType,
-					ModelRequested: modelName,
-				}
-
-				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
-				break
-			}
 
 			if isLastChunk {
 				break
@@ -635,7 +639,8 @@ func HandleAnthropicChatCompletionStreaming(
 		} else if ctx.Err() == nil {
 			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerType, modelName)
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), postHookRunner, responseChan)
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 		}
 	}()
 
@@ -782,6 +787,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 				fmt.Errorf("provider returned an empty response"),
 				provider.GetProviderKey(),
 			)
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 			return
 		}
@@ -824,9 +830,9 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 		// Track minimal state needed for response format
 		var usage *schemas.ResponsesResponseUsage
 
-		// Create stream accumulator for stateful conversions
-		accumulator := NewAnthropicStreamAccumulator()
-		defer accumulator.Flush()
+		// Create stream state for stateful conversions
+		streamState := acquireAnthropicResponsesStreamState()
+		defer releaseAnthropicResponsesStreamState(streamState)
 
 		// Track SSE event parsing state
 		var eventType string
@@ -866,11 +872,8 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 				continue
 			}
 
-			if chunkIndex == 0 {
-				providerUtils.SendCreatedEventResponsesChunk(ctx, postHookRunner, provider.GetProviderKey(), request.Model, startTime, responseChan)
-				providerUtils.SendInProgressEventResponsesChunk(ctx, postHookRunner, provider.GetProviderKey(), request.Model, startTime, responseChan)
-				chunkIndex = 2
-			}
+			// Note: response.created and response.in_progress are now emitted by ToBifrostResponsesStream
+			// from the message_start event, so we don't need to call them manually here
 
 			if event.Usage != nil {
 				usage = &schemas.ResponsesResponseUsage{
@@ -880,10 +883,19 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 				}
 			}
 
-			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(chunkIndex, accumulator)
-
+			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(chunkIndex, streamState)
+			if bifrostErr != nil {
+				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.ResponsesStreamRequest,
+					Provider:       provider.GetProviderKey(),
+					ModelRequested: request.Model,
+				}
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+				break
+			}
 			// Handle each response in the slice
-			for _, response := range responses {
+			for i, response := range responses {
 				if response != nil {
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ResponsesStreamRequest,
@@ -899,7 +911,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 						response.ExtraFields.RawResponse = eventData
 					}
 
-					if isLastChunk {
+					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
 							response.Response = &schemas.BifrostResponsesResponse{}
 						}
@@ -907,22 +919,12 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 							response.Response.Usage = usage
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-						providerUtils.HandleStreamEndWithSuccess(ctx, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), postHookRunner, responseChan)
+						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
 						return
 					}
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
 				}
-			}
-
-			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ResponsesStreamRequest,
-					Provider:       provider.GetProviderKey(),
-					ModelRequested: request.Model,
-				}
-
-				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-				break
 			}
 
 			// Reset for next event

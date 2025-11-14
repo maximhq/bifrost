@@ -21,7 +21,9 @@ type PostgresConfig struct {
 
 // newPostgresConfigStore creates a new Postgres config store.
 func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger) (ConfigStore, error) {
-	db, err := gorm.Open(postgres.Open(fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host, config.Port, config.User, config.Password, config.DBName, config.SSLMode)), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host, config.Port, config.User, config.Password, config.DBName, config.SSLMode)), &gorm.Config{
+		Logger: newGormLogger(logger),
+	})
 	if err != nil {
 		return nil, err
 	}

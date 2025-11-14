@@ -715,7 +715,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{
 									{
 										Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
-										ID:   chunk.ContentBlock.ToolUseID,
+										ID:   chunk.ContentBlock.ID,
 										Function: schemas.ChatAssistantMessageToolCallFunction{
 											Name:      chunk.ContentBlock.Name,
 											Arguments: "", // Empty arguments initially, will be filled by subsequent deltas

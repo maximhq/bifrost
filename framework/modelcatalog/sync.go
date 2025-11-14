@@ -132,7 +132,7 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 }
 
 // loadPricingFromURL loads pricing data from the remote URL
-func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (PricingData, error) {
+func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (map[string]PricingEntry, error) {
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -160,7 +160,7 @@ func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (PricingData, er
 	}
 
 	// Unmarshal JSON data
-	var pricingData PricingData
+	var pricingData map[string]PricingEntry
 	if err := json.Unmarshal(data, &pricingData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal pricing data: %w", err)
 	}

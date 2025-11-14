@@ -40,6 +40,7 @@ func TestGroq(t *testing.T) {
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
+			ToolCallsStreaming:    true,
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,

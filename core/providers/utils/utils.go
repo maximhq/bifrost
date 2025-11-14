@@ -712,17 +712,6 @@ func CreateBifrostChatCompletionChunkResponse(
 	return response
 }
 
-// HandleStreamEndWithSuccess handles the end of a stream with success.
-func HandleStreamEndWithSuccess(
-	ctx context.Context,
-	response *schemas.BifrostResponse,
-	postHookRunner schemas.PostHookRunner,
-	responseChan chan *schemas.BifrostStream,
-) {
-	ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-	ProcessAndSendResponse(ctx, postHookRunner, response, responseChan)
-}
-
 // HandleStreamControlSkip checks if the stream control should be skipped.
 func HandleStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
 	if bifrostErr == nil || bifrostErr.StreamControl == nil {
@@ -775,32 +764,6 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	default:
 		return false
 	}
-}
-
-// GetResponsesChunkConverterCombinedPostHookRunner gets a combined post hook runner that converts to responses stream, then runs the original post hooks.
-func GetResponsesChunkConverterCombinedPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
-	responsesChunkConverter := func(_ *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-		if result != nil {
-			if result.ChatResponse != nil {
-				result.ResponsesStreamResponse = result.ChatResponse.ToBifrostResponsesStreamResponse()
-				result.ChatResponse = nil
-			}
-		} else if err != nil {
-			// Ensure downstream knows this is a Responses stream even on errors
-			err.ExtraFields.RequestType = schemas.ResponsesStreamRequest
-		}
-		return result, err
-	}
-
-	// Create a combined post hook runner that first converts to responses stream, then runs the original post hooks
-	combinedPostHookRunner := func(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-		// First run the responses chunk converter
-		result, err = responsesChunkConverter(ctx, result, err)
-		// Then run the original post hook runner
-		return postHookRunner(ctx, result, err)
-	}
-
-	return combinedPostHookRunner
 }
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.

@@ -161,39 +161,43 @@ export function LogFilters({ filters, onFiltersChange }: LogFiltersProps) {
 						<CommandInput placeholder="Search filters..." />
 						<CommandList>
 							<CommandEmpty>No filters found.</CommandEmpty>
-							{Object.entries(FILTER_OPTIONS).map(([category, values]) => (
-								<CommandGroup key={category} heading={category}>
-									{values.map((value) => {
-										const selected = isSelected(category as keyof typeof FILTER_OPTIONS, value);
-										const isModelLoading = category === "Models" && value === "Loading models...";
-										const isProviderLoading = category === "Providers" && value === "Loading providers...";
-										const isLoading = isModelLoading || isProviderLoading;
-										return (
-											<CommandItem
-												key={value}
-												onSelect={() => !isLoading && handleFilterSelect(category as keyof typeof FILTER_OPTIONS, value)}
-												disabled={isLoading}
-											>
-												<div
-													className={cn(
-														"border-primary mr-2 flex h-4 w-4 items-center justify-center rounded-sm border",
-														selected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible",
-													)}
+							{Object.entries(FILTER_OPTIONS)
+								.filter(([_, values]) => values.length > 0)
+								.map(([category, values]) => (
+									<CommandGroup key={category} heading={category}>
+										{values.map((value) => {
+											const selected = isSelected(category as keyof typeof FILTER_OPTIONS, value);
+											const isLoading =
+												(category === "Providers" && providersLoading) ||
+												(category === "Models" && filterDataLoading) ||
+												(category === "Selected Keys" && filterDataLoading) ||
+												(category === "Virtual Keys" && filterDataLoading);
+											return (
+												<CommandItem
+													key={value}
+													onSelect={() => !isLoading && handleFilterSelect(category as keyof typeof FILTER_OPTIONS, value)}
+													disabled={isLoading}
 												>
-													{isLoading ? (
-														<div className="border-primary h-3 w-3 animate-spin rounded-full border border-t-transparent" />
-													) : (
-														<Check className="text-primary-foreground size-3" />
-													)}
-												</div>
-												<span className={cn("lowercase", isLoading && "text-muted-foreground")}>
-													{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] : value}
-												</span>
-											</CommandItem>
-										);
-									})}
-								</CommandGroup>
-							))}
+													<div
+														className={cn(
+															"border-primary mr-2 flex h-4 w-4 items-center justify-center rounded-sm border",
+															selected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible",
+														)}
+													>
+														{isLoading ? (
+															<div className="border-primary h-3 w-3 animate-spin rounded-full border border-t-transparent" />
+														) : (
+															<Check className="text-primary-foreground size-3" />
+														)}
+													</div>
+													<span className={cn("lowercase", isLoading && "text-muted-foreground")}>
+														{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] : value}
+													</span>
+												</CommandItem>
+											);
+										})}
+									</CommandGroup>
+								))}
 						</CommandList>
 					</Command>
 				</PopoverContent>
