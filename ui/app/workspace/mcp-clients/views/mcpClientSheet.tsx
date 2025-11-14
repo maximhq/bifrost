@@ -117,7 +117,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 							<div className="flex items-center justify-between">
 								<div className="space-y-2">
 									<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-										{mcpClient.name}
+										{mcpClient.config.name}
 										<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
 									</SheetTitle>
 									<SheetDescription>MCP client configuration and available tools</SheetDescription>

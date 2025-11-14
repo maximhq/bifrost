@@ -189,7 +189,8 @@ export default function MCPClientsTable({ mcpClients }: MCPClientsTableProps) {
 											<AlertDialogHeader>
 												<AlertDialogTitle>Remove MCP Client</AlertDialogTitle>
 												<AlertDialogDescription>
-													Are you sure you want to remove MCP client {c.name}? You will need to reconnect the client to continue using it.
+													Are you sure you want to remove MCP client {c.config.name}? You will need to reconnect the client to continue
+													using it.
 												</AlertDialogDescription>
 											</AlertDialogHeader>
 											<AlertDialogFooter>
