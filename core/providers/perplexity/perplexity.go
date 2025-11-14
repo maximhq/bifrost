@@ -189,6 +189,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx context.Context, po
 		customRequestConverter,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 

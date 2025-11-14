@@ -162,6 +162,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx context.Context, po
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 
@@ -203,6 +204,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 
@@ -240,6 +242,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx context.Context, postHoo
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 

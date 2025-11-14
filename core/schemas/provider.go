@@ -8,13 +8,14 @@ import (
 )
 
 const (
-	DefaultMaxRetries              = 0
-	DefaultRetryBackoffInitial     = 500 * time.Millisecond
-	DefaultRetryBackoffMax         = 5 * time.Second
-	DefaultRequestTimeoutInSeconds = 30
-	DefaultBufferSize              = 5000
-	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize        = 5000
+	DefaultMaxRetries                       = 0
+	DefaultRetryBackoffInitial              = 500 * time.Millisecond
+	DefaultRetryBackoffMax                  = 5 * time.Second
+	DefaultRequestTimeoutInSeconds          = 30
+	DefaultStreamInactivityTimeoutInSeconds = 60
+	DefaultBufferSize                       = 5000
+	DefaultConcurrency                      = 1000
+	DefaultStreamBufferSize                 = 5000
 )
 
 // Pre-defined errors for provider operations
@@ -35,20 +36,22 @@ const (
 // ExtraHeaders is automatically copied during provider initialization to prevent data races.
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
-	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
-	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
-	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration
-	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration
+	BaseURL                          string            `json:"base_url,omitempty"`                   // Base URL for the provider (optional)
+	ExtraHeaders                     map[string]string `json:"extra_headers,omitempty"`              // Additional headers to include in requests (optional)
+	DefaultRequestTimeoutInSeconds   int               `json:"default_request_timeout_in_seconds"`   // Default timeout for requests
+	StreamInactivityTimeoutInSeconds int               `json:"stream_inactivity_timeout_in_seconds"` // Timeout for streaming request inactivity (default: 60 seconds)
+	MaxRetries                       int               `json:"max_retries"`                          // Maximum number of retries
+	RetryBackoffInitial              time.Duration     `json:"retry_backoff_initial"`                // Initial backoff duration
+	RetryBackoffMax                  time.Duration     `json:"retry_backoff_max"`                    // Maximum backoff duration
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
 var DefaultNetworkConfig = NetworkConfig{
-	DefaultRequestTimeoutInSeconds: DefaultRequestTimeoutInSeconds,
-	MaxRetries:                     DefaultMaxRetries,
-	RetryBackoffInitial:            DefaultRetryBackoffInitial,
-	RetryBackoffMax:                DefaultRetryBackoffMax,
+	DefaultRequestTimeoutInSeconds:   DefaultRequestTimeoutInSeconds,
+	StreamInactivityTimeoutInSeconds: DefaultStreamInactivityTimeoutInSeconds,
+	MaxRetries:                       DefaultMaxRetries,
+	RetryBackoffInitial:              DefaultRetryBackoffInitial,
+	RetryBackoffMax:                  DefaultRetryBackoffMax,
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -179,6 +182,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.DefaultRequestTimeoutInSeconds == 0 {
 		config.NetworkConfig.DefaultRequestTimeoutInSeconds = DefaultRequestTimeoutInSeconds
+	}
+
+	if config.NetworkConfig.StreamInactivityTimeoutInSeconds == 0 {
+		config.NetworkConfig.StreamInactivityTimeoutInSeconds = DefaultStreamInactivityTimeoutInSeconds
 	}
 
 	if config.NetworkConfig.MaxRetries == 0 {

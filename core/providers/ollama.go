@@ -113,6 +113,7 @@ func (provider *OllamaProvider) TextCompletionStream(ctx context.Context, postHo
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 
@@ -150,6 +151,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 

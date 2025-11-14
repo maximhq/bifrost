@@ -25,7 +25,7 @@ type AzureModel struct {
 	LifecycleStatus string                 `json:"lifecycle_status"`
 	Deprecation     *AzureModelDeprecation `json:"deprecation,omitempty"`
 	ID              string                 `json:"id"`
-	CreatedAt       int64                    `json:"created_at"`
+	CreatedAt       int64                  `json:"created_at"`
 	Object          string                 `json:"object"`
 }
 

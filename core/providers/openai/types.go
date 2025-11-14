@@ -130,7 +130,7 @@ type OpenAIModel struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
 	OwnedBy string `json:"owned_by"`
-	Created *int64  `json:"created,omitempty"`
+	Created *int64 `json:"created,omitempty"`
 
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`

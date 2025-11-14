@@ -122,6 +122,7 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, post
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 

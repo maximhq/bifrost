@@ -180,6 +180,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postH
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamInactivityTimeoutInSeconds,
 	)
 }
 

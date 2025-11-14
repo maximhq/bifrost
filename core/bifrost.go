@@ -2063,115 +2063,151 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 	}()
 
-	for req := range queue {
-		_, model, _ := req.BifrostRequest.GetRequestFields()
-
-		var result *schemas.BifrostResponse
-		var stream chan *schemas.BifrostStream
-		var bifrostError *schemas.BifrostError
-		var err error
-
-		// Determine the base provider type for key requirement checks
-		baseProvider := provider.GetProviderKey()
-		if cfg := config.CustomProviderConfig; cfg != nil && cfg.BaseProviderType != "" {
-			baseProvider = cfg.BaseProviderType
-		}
-
-		key := schemas.Key{}
-		if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
-			// Use the custom provider name for actual key selection, but pass base provider type for key validation
-			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
-			if err != nil {
-				bifrost.logger.Warn("error selecting key for model %s: %v", model, err)
-				req.Err <- schemas.BifrostError{
+	for {
+		select {
+		case req, ok := <-queue:
+			if !ok {
+				// Queue closed, exit worker.
+				return
+			}
+			bifrost.processRequest(provider, config, req)
+		case <-bifrost.ctx.Done():
+			// Context cancelled, drain all remaining queue items until queue is closed.
+			// Use blocking receive to ensure we don't miss items enqueued between
+			// context cancellation and queue closure.
+			for {
+				req, ok := <-queue
+				if !ok {
+					// Queue closed, exit.
+					return
+				}
+				// Send cancellation error with timeout to prevent blocking.
+				select {
+				case req.Err <- schemas.BifrostError{
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
-						Message: err.Error(),
-						Error:   err,
+						Message: "bifrost context cancelled",
+						Error:   context.Canceled,
 					},
-				}
-				continue
-			}
-			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyID, key.ID)
-			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyName, key.Name)
-		}
-		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
-		var postHookRunner schemas.PostHookRunner
-		var pipeline *PluginPipeline
-		if IsStreamRequestType(req.RequestType) {
-			pipeline = bifrost.getPluginPipeline()
-			postHookRunner = func(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(*bifrost.plugins.Load()))
-				if bifrostErr != nil {
-					return nil, bifrostErr
-				}
-				return resp, nil
-			}
-		}
-
-		// Execute request with retries
-		if IsStreamRequestType(req.RequestType) {
-			stream, bifrostError = executeRequestWithRetries(&req.Context, config, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return bifrost.handleProviderStreamRequest(provider, req, key, postHookRunner)
-			}, req.RequestType, provider.GetProviderKey(), model)
-		} else {
-			result, bifrostError = executeRequestWithRetries(&req.Context, config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return bifrost.handleProviderRequest(provider, req, key)
-			}, req.RequestType, provider.GetProviderKey(), model)
-		}
-
-		if pipeline != nil {
-			bifrost.releasePluginPipeline(pipeline)
-		}
-
-		if bifrostError != nil {
-			bifrostError.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       provider.GetProviderKey(),
-				ModelRequested: model,
-				RequestType:    req.RequestType,
-			}
-
-			// Send error with context awareness to prevent deadlock
-			select {
-			case req.Err <- *bifrostError:
-				// Error sent successfully
-			case <-req.Context.Done():
-				// Client no longer listening, log and continue
-				bifrost.logger.Debug("Client context cancelled while sending error response")
-			case <-time.After(5 * time.Second):
-				// Timeout to prevent indefinite blocking
-				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
-			}
-		} else {
-			if IsStreamRequestType(req.RequestType) {
-				// Send stream with context awareness to prevent deadlock
-				select {
-				case req.ResponseStream <- stream:
-					// Stream sent successfully
+				}:
 				case <-req.Context.Done():
-					// Client no longer listening, log and continue
-					bifrost.logger.Debug("Client context cancelled while sending stream response")
-				case <-time.After(5 * time.Second):
-					// Timeout to prevent indefinite blocking
-					bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
-				}
-			} else {
-				// Send response with context awareness to prevent deadlock
-				select {
-				case req.Response <- result:
-					// Response sent successfully
-				case <-req.Context.Done():
-					// Client no longer listening, log and continue
-					bifrost.logger.Debug("Client context cancelled while sending response")
-				case <-time.After(5 * time.Second):
-					// Timeout to prevent indefinite blocking
-					bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
+					// Client context cancelled, skip.
+				case <-time.After(100 * time.Millisecond):
+					// Timeout sending error, continue draining.
 				}
 			}
 		}
 	}
+}
 
-	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
+// processRequest handles a single request from the queue.
+func (bifrost *Bifrost) processRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage) {
+	_, model, _ := req.BifrostRequest.GetRequestFields()
+
+	var result *schemas.BifrostResponse
+	var stream chan *schemas.BifrostStream
+	var bifrostError *schemas.BifrostError
+	var err error
+
+	// Determine the base provider type for key requirement checks.
+	baseProvider := provider.GetProviderKey()
+	if cfg := config.CustomProviderConfig; cfg != nil && cfg.BaseProviderType != "" {
+		baseProvider = cfg.BaseProviderType
+	}
+
+	key := schemas.Key{}
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		// Use the custom provider name for actual key selection, but pass base provider type for key validation.
+		key, err = bifrost.selectKeyFromProviderForModel(&req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
+		if err != nil {
+			bifrost.logger.Warn("error selecting key for model %s: %v", model, err)
+			req.Err <- schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: err.Error(),
+					Error:   err,
+				},
+			}
+			return
+		}
+		req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyID, key.ID)
+		req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyName, key.Name)
+	}
+	// Create plugin pipeline for streaming requests outside retry loop to prevent leaks.
+	// Do not release the pipeline for streaming requests to avoid data race with provider goroutines.
+	var postHookRunner schemas.PostHookRunner
+	var pipeline *PluginPipeline
+	if IsStreamRequestType(req.RequestType) {
+		pipeline = bifrost.getPluginPipeline()
+		postHookRunner = func(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(*bifrost.plugins.Load()))
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			return resp, nil
+		}
+	}
+
+	// Execute request with retries.
+	if IsStreamRequestType(req.RequestType) {
+		stream, bifrostError = executeRequestWithRetries(&req.Context, config, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			return bifrost.handleProviderStreamRequest(provider, req, key, postHookRunner)
+		}, req.RequestType, provider.GetProviderKey(), model)
+	} else {
+		result, bifrostError = executeRequestWithRetries(&req.Context, config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return bifrost.handleProviderRequest(provider, req, key)
+		}, req.RequestType, provider.GetProviderKey(), model)
+	}
+
+	// Do not release the pipeline for streaming requests to avoid data race.
+	// The pipeline will be garbage collected when no longer referenced.
+	// This is a trade-off: we avoid the data race but don't reuse pipelines for streaming requests.
+
+	if bifrostError != nil {
+		bifrostError.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       provider.GetProviderKey(),
+			ModelRequested: model,
+			RequestType:    req.RequestType,
+		}
+
+		// Send error with context awareness to prevent deadlock.
+		select {
+		case req.Err <- *bifrostError:
+			// Error sent successfully.
+		case <-req.Context.Done():
+			// Client no longer listening, log and continue.
+			bifrost.logger.Debug("Client context cancelled while sending error response")
+		case <-time.After(5 * time.Second):
+			// Timeout to prevent indefinite blocking.
+			bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
+		}
+	} else {
+		if IsStreamRequestType(req.RequestType) {
+			// Send stream with context awareness to prevent deadlock.
+			select {
+			case req.ResponseStream <- stream:
+				// Stream sent successfully.
+			case <-req.Context.Done():
+				// Client no longer listening, log and continue.
+				bifrost.logger.Debug("Client context cancelled while sending stream response")
+			case <-time.After(5 * time.Second):
+				// Timeout to prevent indefinite blocking.
+				bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
+			}
+		} else {
+			// Send response with context awareness to prevent deadlock.
+			select {
+			case req.Response <- result:
+				// Response sent successfully.
+			case <-req.Context.Done():
+				// Client no longer listening, log and continue.
+				bifrost.logger.Debug("Client context cancelled while sending response")
+			case <-time.After(5 * time.Second):
+				// Timeout to prevent indefinite blocking.
+				bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
+			}
+		}
+	}
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
@@ -2553,20 +2589,26 @@ func WeightedRandomKeySelector(ctx *context.Context, keys []schemas.Key, provide
 // It closes all request channels and waits for workers to exit.
 func (bifrost *Bifrost) Shutdown() {
 	bifrost.logger.Info("closing all request channels...")
-	// Check if the context is done
-	if bifrost.ctx.Err() != nil {
-		bifrost.logger.Warn("context already done, skipping cancel")
-		return
-	} else if bifrost.cancel != nil {
+
+	// Cancel the context if not already cancelled to signal provider goroutines to stop.
+	if bifrost.cancel != nil && bifrost.ctx.Err() == nil {
 		bifrost.cancel()
 	}
-	// Close all provider queues to signal workers to stop
+
+	// Close all provider queues to signal workers to stop.
+	// This must happen even if context is already cancelled - workers in drain mode need this signal.
 	bifrost.requestQueues.Range(func(key, value interface{}) bool {
-		close(value.(chan *ChannelMessage))
+		queue := value.(chan *ChannelMessage)
+		select {
+		case <-queue:
+			// Queue already closed.
+		default:
+			close(queue)
+		}
 		return true
 	})
 
-	// Wait for all workers to exit
+	// Wait for all workers to exit.
 	bifrost.waitGroups.Range(func(key, value interface{}) bool {
 		waitGroup := value.(*sync.WaitGroup)
 		waitGroup.Wait()
