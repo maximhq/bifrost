@@ -408,17 +408,6 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Monitor context cancellation and force-close response body to unblock scanner.
-		done := make(chan struct{})
-		defer close(done)
-		go func() {
-			select {
-			case <-ctx.Done():
-				resp.CloseBodyStream()
-			case <-done:
-			}
-		}()
-
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
@@ -631,17 +620,6 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	go func() {
 		defer close(responseChan)
 		defer providerUtils.ReleaseStreamingResponse(resp)
-
-		// Monitor context cancellation and force-close response body to unblock scanner.
-		done := make(chan struct{})
-		defer close(done)
-		go func() {
-			select {
-			case <-ctx.Done():
-				resp.CloseBodyStream()
-			case <-done:
-			}
-		}()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
