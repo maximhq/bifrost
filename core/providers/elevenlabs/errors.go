@@ -23,14 +23,14 @@ func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Res
 		)
 	}
 
-	if errorResp.Detail != nil && len(errorResp.Detail) > 0 {
+	if len(errorResp.Detail) > 0 {
 		var messages []string
 		for _, detail := range errorResp.Detail {
 			location := "unknown"
 			if len(detail.Loc) > 0 {
 				location = strings.Join(detail.Loc, ".")
 			}
-			messages = append(messages, fmt.Sprintf("[%s] %s (%s)", location, detail.Msg, detail.Type))
+			messages = append(messages, fmt.Sprintf("[%s] %s (%s)", location, *detail.Msg, *detail.Type))
 		}
 		errorMessage := strings.Join(messages, "; ")
 		return &schemas.BifrostError{
@@ -47,5 +47,5 @@ func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Res
 		return providerUtils.NewBifrostOperationError(fmt.Sprintf("Elevenlabs error: %v", rawResponse), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
 	}
 
-	return providerUtils.NewBifrostOperationError(fmt.Sprintf("Elevenlabs error: no response", rawResponse), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
+	return providerUtils.NewBifrostOperationError("Elevenlabs error: no response", fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
 }
