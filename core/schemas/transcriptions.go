@@ -36,7 +36,6 @@ type TranscriptionParameters struct {
 	Format         *string `json:"file_format,omitempty"`     // Type of file, not required in openai, but required in gemini
 
 	// Elevenlabs-specific fields
-	LanguageCode          *string                                    `json:"language_code,omitempty"`
 	TagAudioEvents        *bool                                      `json:"tag_audio_events,omitempty"`
 	NumSpeakers           *int                                       `json:"num_speakers,omitempty"`
 	TimestampsGranularity *BifrostTranscriptionTimestampsGranularity `json:"timestamps_granularity,omitempty"`

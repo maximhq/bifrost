@@ -27,11 +27,8 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 
 	params := bifrostReq.Params
 
-	if params.LanguageCode != nil {
-		trimmed := strings.TrimSpace(*params.LanguageCode)
-		if trimmed != "" {
-			req.LanguageCode = schemas.Ptr(trimmed)
-		}
+	if params.Language != nil {
+		req.LanguageCode = params.Language
 	}
 
 	if params.TagAudioEvents != nil {

@@ -28,6 +28,20 @@ type ElevenlabsSpeechRequest struct {
 	UsePVCAsIVC                     *bool                                      `json:"use_pvc_as_ivc,omitempty"` // deprecated
 }
 
+// ElevenlabsSpeechWithTimestampsResponse represents the response from the with-timestamps endpoint
+type ElevenlabsSpeechWithTimestampsResponse struct {
+	AudioBase64         string               `json:"audio_base64"`
+	Alignment           *ElevenlabsAlignment `json:"alignment,omitempty"`
+	NormalizedAlignment *ElevenlabsAlignment `json:"normalized_alignment,omitempty"`
+}
+
+// ElevenlabsAlignment represents character-level timing information
+type ElevenlabsAlignment struct {
+	CharStartTimesMs []float64 `json:"char_start_times_ms"`
+	CharEndTimesMs   []float64 `json:"char_end_times_ms"`
+	Characters       []string  `json:"characters"`
+}
+
 type ElevenlabsVoiceSettings struct {
 	Stability       float64 `json:"stability"`         // 0-1, default 0.5
 	UseSpeakerBoost bool    `json:"use_speaker_boost"` // default true

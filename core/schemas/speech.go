@@ -20,9 +20,19 @@ func (r *BifrostSpeechRequest) GetRawRequestBody() []byte {
 }
 
 type BifrostSpeechResponse struct {
-	Audio       []byte                     `json:"audio"`
-	Usage       *SpeechUsage               `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Audio               []byte                     `json:"audio"`
+	Usage               *SpeechUsage               `json:"usage"`
+	Alignment           *SpeechAlignment           `json:"alignment,omitempty"`            // Character-level timing information
+	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
+	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
+	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// SpeechAlignment represents character-level timing information for audio-text synchronization
+type SpeechAlignment struct {
+	CharStartTimesMs []float64 `json:"char_start_times_ms"` // Start time in milliseconds for each character
+	CharEndTimesMs   []float64 `json:"char_end_times_ms"`   // End time in milliseconds for each character
+	Characters       []string  `json:"characters"`          // Characters corresponding to timing info
 }
 
 // SpeechInput represents the input for a speech request.
@@ -41,8 +51,8 @@ type SpeechParameters struct {
 	UseSpeakerBoost                 *bool                                  `json:"use_speaker_boost,omitempty"`
 	SimilarityBoost                 *float64                               `json:"similarity_boost,omitempty"`
 	Style                           *float64                               `json:"style,omitempty"`
-	LanguageCode                    *string                                `json:"language_code,omitempty"`
 	Seed                            *int                                   `json:"seed,omitempty"`
+	LanguageCode                    *string                                `json:"language_code,omitempty"`
 	PronunciationDictionaryLocators []SpeechPronunciationDictionaryLocator `json:"pronunciation_dictionary_locators"`
 	PreviousText                    *string                                `json:"previous_text,omitempty"`
 	NextText                        *string                                `json:"next_text,omitempty"`
@@ -53,9 +63,9 @@ type SpeechParameters struct {
 	UsePVCAsIVC                     *bool                                  `json:"use_pvc_as_ivc,omitempty"`
 
 	// Elevenlabs-specific query parameters
-	EnableLogging            *bool               `json:"enable_logging,omitempty"`
-	OptimizeStreamingLatency *bool               `json:"optimize_streaming_latency,omitempty"`
-	OutputFormat             *SpeechOutputFormat `json:"output_format,omitempty"`
+	EnableLogging            *bool `json:"enable_logging,omitempty"`
+	OptimizeStreamingLatency *bool `json:"optimize_streaming_latency,omitempty"`
+	WithTimestamps           *bool `json:"with_timestamps,omitempty"` // Returns character-level timing information
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.

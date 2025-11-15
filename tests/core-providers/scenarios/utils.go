@@ -48,6 +48,17 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "achernar"
 		}
+	case schemas.Elevenlabs:
+		switch voiceType {
+		case "primary":
+			return "21m00Tcm4TlvDq8ikWAM"
+		case "secondary":
+			return "29vD33N1CtxCmqQRPOHJ"
+		case "tertiary":
+			return "2EiwWnXFnvU5JabPnv8n"
+		default:
+			return "21m00Tcm4TlvDq8ikWAM"
+		}
 	default:
 		// Default to OpenAI voices for other providers
 		switch voiceType {

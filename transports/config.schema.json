@@ -129,6 +129,9 @@
         "perplexity": {
           "$ref": "#/$defs/provider"
         },
+        "elevenlabs": {
+          "$ref": "#/$defs/provider"
+        },
         "cerebras": {
           "$ref": "#/$defs/provider"
         }

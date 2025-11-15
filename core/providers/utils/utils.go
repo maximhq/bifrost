@@ -28,6 +28,8 @@ func SetLogger(l schemas.Logger) {
 	logger = l
 }
 
+var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
+
 // MakeRequestWithContext makes a request with a context and returns the latency and error.
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
 // context is done. The fasthttp client call will continue in its goroutine until it completes
