@@ -730,10 +730,18 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	resp, bifrostErr := h.client.SpeechRequest(*bifrostCtx, bifrostSpeechReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
-		return
 	}
 
 	// Send successful response
+	// When with_timestamps is true, Elevenlabs returns base64 encoded audio
+	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps == true
+
+	if provider == "elevenlabs" && hasTimestamps {
+		ctx.Response.Header.Set("Content-Type", "application/json")
+		SendJSON(ctx, resp)
+		return
+	}
+
 	if resp.Audio == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Speech response is missing audio data")
 		return

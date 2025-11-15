@@ -1562,6 +1562,13 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
 		return nil, err
 	}
+
+	for _, model := range providerUtils.UnsupportedSpeechStreamModels {
+		if model == request.Model {
+			return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("model %s is not supported for speech synthesis", model), nil, provider.GetProviderKey())
+		}
+	}
+
 	providerName := provider.GetProviderKey()
 	// Use centralized converter
 	reqBody := ToOpenAISpeechRequest(request)

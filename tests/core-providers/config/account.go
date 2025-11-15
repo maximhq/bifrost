@@ -87,6 +87,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Groq,
 		schemas.SGL,
 		schemas.Parasail,
+		schemas.Elevenlabs,
 		schemas.Perplexity,
 		schemas.Cerebras,
 		schemas.Gemini,
@@ -225,6 +226,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("PARASAIL_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.Elevenlabs:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("ELEVENLABS_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -433,6 +442,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // Parasail can be variable
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Elevenlabs:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     5, // Elevenlabs can be variable
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
 			},
