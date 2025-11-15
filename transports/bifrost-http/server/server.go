@@ -43,6 +43,33 @@ const (
 	DefaultLogOutputStyle = string(schemas.LoggerOutputTypeJSON)
 )
 
+// ServerCallbacks is a interface that defines the callbacks for the server.
+type ServerCallbacks interface {
+	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
+	RemovePlugin(ctx context.Context, name string) error
+	GetPluginStatus(ctx context.Context) []schemas.PluginStatus
+	RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error
+	DeleteModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error
+	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
+	ReloadClientConfigFromConfigStore(ctx context.Context) error
+	ReloadPricingManager(ctx context.Context) error
+	UpdateDropExcessRequests(ctx context.Context, value bool)
+	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
+	RemoveTeam(ctx context.Context, id string) error
+	ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
+	RemoveCustomer(ctx context.Context, id string) error
+	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
+	RemoveVirtualKey(ctx context.Context, id string) error
+	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
+	RemoveMCPClient(ctx context.Context, id string) error
+	EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error
+}
+
+var (
+	BifrostContextKeyBudgetIDs schemas.BifrostContextKey = "budget_ids"
+	BifrostContextKeyBudgetID  schemas.BifrostContextKey = "budget_id"
+)
+
 // BifrostHTTPServer represents a HTTP server instance.
 type BifrostHTTPServer struct {
 	ctx    context.Context
@@ -410,8 +437,204 @@ func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (
 	return zero, fmt.Errorf("plugin %q not found", name)
 }
 
+// AddMCPClient adds a new MCP client to the in-memory store
+func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
+	return s.Config.AddMCPClient(ctx, clientConfig)
+}
+
+// RemoveMCPClient removes an MCP client from the in-memory store
+func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) error {
+	return s.Config.RemoveMCPClient(ctx, id)
+}
+
+// EditMCPClient edits an MCP client in the in-memory store
+func (s *BifrostHTTPServer) EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error {
+	return s.Config.EditMCPClient(ctx, id, updatedConfig)
+}
+
+// ReloadVirtualKey reloads a virtual key from the in-memory store
+func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
+	// Load relationships for response
+	preloadedVk, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
+	if err != nil {
+		logger.Error("failed to load relationships for created VK: %v", err)
+		return nil, err
+	}
+	governancePlugin, err := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if err != nil {
+		return nil, err
+	}
+	if governancePlugin == nil {
+		return nil, fmt.Errorf("governance plugin not found")
+	}
+	// Add to in-memory store
+	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(preloadedVk)
+	// If budget was created, add it to in-memory store
+	if preloadedVk.BudgetID != nil && preloadedVk.Budget != nil {
+		governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(preloadedVk.Budget)
+	}
+	// Add provider-level budgets to in-memory store
+	if preloadedVk.ProviderConfigs != nil {
+		for _, pc := range preloadedVk.ProviderConfigs {
+			if pc.BudgetID != nil && pc.Budget != nil {
+				governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(pc.Budget)
+			}
+		}
+	}
+	return preloadedVk, nil
+}
+
+// RemoveVirtualKey removes a virtual key from the in-memory store
+func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) error {
+	governancePlugin, err := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if err != nil {
+		return err
+	}
+	if governancePlugin == nil {
+		return fmt.Errorf("governance plugin not found")
+	}
+	preloadedVk, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
+	if err != nil {
+		if err != configstore.ErrNotFound {
+			return err
+		}
+	}
+	if preloadedVk == nil {
+		// This could be broadcast message from other server, so we will just clean up in-memory store
+		governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(id)
+		if budgetIDs, ok := ctx.Value(BifrostContextKeyBudgetIDs).([]string); ok {
+			for _, budgetID := range budgetIDs {
+				governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(budgetID)
+			}
+		}
+		return nil
+	}
+	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(id)
+	// If budget was created, delete it from in-memory store
+	if preloadedVk.BudgetID != nil && preloadedVk.Budget != nil {
+		governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*preloadedVk.BudgetID)
+	}
+	// Delete provider-level budgets from in-memory store
+	if preloadedVk.ProviderConfigs != nil {
+		for _, pc := range preloadedVk.ProviderConfigs {
+			if pc.BudgetID != nil && pc.Budget != nil {
+				governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*pc.BudgetID)
+			}
+		}
+	}
+	return nil
+}
+
+// ReloadTeam reloads a team from the in-memory store
+func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
+	// Load relationships for response
+	preloadedTeam, err := s.Config.ConfigStore.GetTeam(ctx, id)
+	if err != nil {
+		logger.Error("failed to load relationships for created team: %v", err)
+		return nil, err
+	}
+	governancePlugin, err := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if err != nil {
+		return nil, err
+	}
+	if governancePlugin == nil {
+		return nil, fmt.Errorf("governance plugin not found")
+	}
+	// Add to in-memory store
+	governancePlugin.GetGovernanceStore().UpdateTeamInMemory(preloadedTeam)
+	// If budget was created, add it to in-memory store
+	if preloadedTeam.BudgetID != nil && preloadedTeam.Budget != nil {
+		governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(preloadedTeam.Budget)
+	}
+	return preloadedTeam, nil
+}
+
+// RemoveTeam removes a team from the in-memory store
+func (s *BifrostHTTPServer) RemoveTeam(ctx context.Context, id string) error {
+	governancePlugin, err := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if err != nil {
+		return err
+	}
+	if governancePlugin == nil {
+		return fmt.Errorf("governance plugin not found")
+	}
+	preloadedTeam, err := s.Config.ConfigStore.GetTeam(ctx, id)
+	if err != nil {
+		if err != configstore.ErrNotFound {
+			return err
+		}
+	}
+	if preloadedTeam == nil {
+		// At-least deleting from in-memory store to avoid conflicts
+		governancePlugin.GetGovernanceStore().DeleteTeamInMemory(id)
+		if budgetID, ok := ctx.Value(BifrostContextKeyBudgetID).(string); ok {
+			governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(budgetID)
+		}
+		return nil
+	}
+	governancePlugin.GetGovernanceStore().DeleteTeamInMemory(id)
+	// If budget was created, delete it from in-memory store
+	if preloadedTeam.BudgetID != nil && preloadedTeam.Budget != nil {
+		governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*preloadedTeam.BudgetID)
+	}
+	return nil
+}
+
+// ReloadCustomer reloads a customer from the in-memory store
+func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
+	preloadedCustomer, err := s.Config.ConfigStore.GetCustomer(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	governancePlugin, err := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if err != nil {
+		return nil, err
+	}
+	if governancePlugin == nil {
+		return nil, fmt.Errorf("governance plugin not found")
+	}
+	// Add to in-memory store
+	governancePlugin.GetGovernanceStore().UpdateCustomerInMemory(preloadedCustomer)
+	// If budget was created, add it to in-memory store
+	if preloadedCustomer.BudgetID != nil && preloadedCustomer.Budget != nil {
+		governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(preloadedCustomer.Budget)
+	}
+	return preloadedCustomer, nil
+}
+
+// RemoveCustomer removes a customer from the in-memory store
+func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error {
+	governancePlugin, err := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if err != nil {
+		return err
+	}
+	if governancePlugin == nil {
+		return fmt.Errorf("governance plugin not found")
+	}
+	preloadedCustomer, err := s.Config.ConfigStore.GetCustomer(ctx, id)
+	if err != nil {
+		if err != configstore.ErrNotFound {
+			return err
+		}
+	}
+	if preloadedCustomer == nil {
+		// At-least deleting from in-memory store to avoid conflicts
+		governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(id)
+		if budgetID, ok := ctx.Value(BifrostContextKeyBudgetID).(string); ok {
+			governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(budgetID)
+		}
+		return nil
+	}
+	governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(id)
+	// If budget was created, delete it from in-memory store
+	if preloadedCustomer.BudgetID != nil && preloadedCustomer.Budget != nil {
+		governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*preloadedCustomer.BudgetID)
+	}
+	return nil
+}
+
 // ReloadClientConfigFromConfigStore reloads the client config from config store
-func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore() error {
+func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Context) error {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return fmt.Errorf("config store not found")
 	}
@@ -450,7 +673,7 @@ func (s *BifrostHTTPServer) UpdateAuthConfig(ctx context.Context, authConfig *co
 }
 
 // UpdateDropExcessRequests updates excess requests config
-func (s *BifrostHTTPServer) UpdateDropExcessRequests(value bool) {
+func (s *BifrostHTTPServer) UpdateDropExcessRequests(ctx context.Context, value bool) {
 	if s.Config == nil {
 		return
 	}
@@ -480,7 +703,7 @@ func (s *BifrostHTTPServer) UpdatePluginStatus(name string, status string, logs 
 }
 
 // GetPluginStatus returns the status of all plugins
-func (s *BifrostHTTPServer) GetPluginStatus() []schemas.PluginStatus {
+func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) []schemas.PluginStatus {
 	s.pluginStatusMutex.RLock()
 	defer s.pluginStatusMutex.RUnlock()
 	result := make([]schemas.PluginStatus, len(s.pluginStatus))
@@ -535,17 +758,17 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 }
 
 // ReloadPricingManager reloads the pricing manager
-func (s *BifrostHTTPServer) ReloadPricingManager() error {
+func (s *BifrostHTTPServer) ReloadPricingManager(ctx context.Context) error {
 	if s.Config == nil || s.Config.PricingManager == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
 	if s.Config.FrameworkConfig == nil || s.Config.FrameworkConfig.Pricing == nil {
 		return fmt.Errorf("framework config not found")
 	}
-	return s.Config.PricingManager.ReloadPricing(context.Background(), s.Config.FrameworkConfig.Pricing)
+	return s.Config.PricingManager.ReloadPricing(ctx, s.Config.FrameworkConfig.Pricing)
 }
 
-// RefetchModelsForProvider deletes existing models for a provider and refetches them from the provider
+// RefetchModelsForProvider deletes existing models for a provider and re-fetches them from the provider
 func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	if s.Config == nil || s.Config.PricingManager == nil {
 		return fmt.Errorf("pricing manager not found")
@@ -553,14 +776,12 @@ func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provid
 	if s.Client == nil {
 		return fmt.Errorf("bifrost client not found")
 	}
-
 	allModels, err := s.Client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{
 		Provider: provider,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(err))
 	}
-
 	s.Config.PricingManager.DeleteModelDataForProvider(provider)
 
 	s.Config.PricingManager.AddModelDataToPool(allModels)
@@ -569,7 +790,7 @@ func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provid
 }
 
 // DeleteModelsForProvider deletes all models for a specific provider from the model catalog
-func (s *BifrostHTTPServer) DeleteModelsForProvider(provider schemas.ModelProvider) error {
+func (s *BifrostHTTPServer) DeleteModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	if s.Config == nil || s.Config.PricingManager == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
@@ -627,7 +848,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 }
 
 // RegisterAPIRoutes initializes the routes for the Bifrost HTTP server.
-func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, middlewares ...lib.BifrostHTTPMiddleware) error {
+func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...lib.BifrostHTTPMiddleware) error {
 	var err error
 	// Initializing plugin specific handlers
 	var loggingHandler *handlers.LoggingHandler
@@ -638,7 +859,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, middlewares .
 	var governanceHandler *handlers.GovernanceHandler
 	governancePlugin, _ := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(governancePlugin, s.Config.ConfigStore)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
@@ -661,12 +882,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, middlewares .
 	// Adding telemetry middleware
 	// Chaining all middlewares
 	// lib.ChainMiddlewares chains multiple middlewares together
-	// Initialize
 	healthHandler := handlers.NewHealthHandler(s.Config)
-	providerHandler := handlers.NewProviderHandler(s, s.Config, s.Client)
-	mcpHandler := handlers.NewMCPHandler(s.Client, s.Config)
-	configHandler := handlers.NewConfigHandler(s, s.Config)
-	pluginsHandler := handlers.NewPluginsHandler(s, s.Config.ConfigStore)
+	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
+	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config)
+	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
+	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore)
 	// Going ahead with API handlers
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
@@ -836,7 +1056,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		apiMiddlewares = append(apiMiddlewares, handlers.AuthMiddleware(s.Config.ConfigStore))
 	}
 	// Register routes
-	err = s.RegisterAPIRoutes(s.ctx, apiMiddlewares...)
+	err = s.RegisterAPIRoutes(s.ctx, s, apiMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}

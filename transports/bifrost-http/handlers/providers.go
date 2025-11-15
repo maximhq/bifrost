@@ -23,7 +23,7 @@ import (
 // ModelsManager defines the interface for managing provider models
 type ModelsManager interface {
 	RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error
-	DeleteModelsForProvider(provider schemas.ModelProvider) error
+	DeleteModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -453,7 +453,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", provider, err))
 		}
 	} else {
-		if err := h.modelsManager.DeleteModelsForProvider(provider); err != nil {
+		if err := h.modelsManager.DeleteModelsForProvider(ctx, provider); err != nil {
 			logger.Warn(fmt.Sprintf("Failed to delete models for provider %s: %v", provider, err))
 		}
 	}
@@ -486,7 +486,7 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 
 	logger.Info(fmt.Sprintf("Provider %s removed successfully", provider))
 
-	if err := h.modelsManager.DeleteModelsForProvider(provider); err != nil {
+	if err := h.modelsManager.DeleteModelsForProvider(ctx, provider); err != nil {
 		logger.Warn(fmt.Sprintf("Failed to delete models for provider %s: %v", provider, err))
 	}
 

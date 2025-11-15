@@ -18,7 +18,7 @@ import (
 type PluginsLoader interface {
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	RemovePlugin(ctx context.Context, name string) error
-	GetPluginStatus() []schemas.PluginStatus
+	GetPluginStatus(ctx context.Context) []schemas.PluginStatus
 }
 
 // PluginsHandler is the handler for the plugins API
@@ -62,7 +62,7 @@ func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bif
 // getPlugins gets all plugins
 func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
-		pluginStatus := h.pluginsLoader.GetPluginStatus()
+		pluginStatus := h.pluginsLoader.GetPluginStatus(ctx)
 		finalPlugins := []struct {
 			Name     string               `json:"name"`
 			Enabled  bool                 `json:"enabled"`
@@ -101,7 +101,7 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Fetching status
-	pluginStatus := h.pluginsLoader.GetPluginStatus()
+	pluginStatus := h.pluginsLoader.GetPluginStatus(ctx)
 	// Creating ephemeral struct for the plugins
 	finalPlugins := []struct {
 		Name     string               `json:"name"`
@@ -149,7 +149,7 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 // getPlugin gets a plugin by name
 func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
-		pluginStatus := h.pluginsLoader.GetPluginStatus()
+		pluginStatus := h.pluginsLoader.GetPluginStatus(ctx)
 		pluginInfo := struct {
 			Name     string               `json:"name"`
 			Enabled  bool                 `json:"enabled"`

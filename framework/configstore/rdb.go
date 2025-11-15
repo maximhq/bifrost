@@ -1003,6 +1003,9 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 		Preload("Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
 		}).First(&virtualKey, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return &virtualKey, nil
@@ -1023,6 +1026,9 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 		Preload("Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
 		}).First(&virtualKey, "value = ?", value).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return &virtualKey, nil
@@ -1035,24 +1041,20 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	} else {
 		txDB = s.db
 	}
-
 	// Check if virtual key already exists with the same value or name
 	if err := txDB.WithContext(ctx).Where("value = ? OR name = ?", virtualKey.Value, virtualKey.Name).First(&tables.TableVirtualKey{}).Error; err == nil {
 		return fmt.Errorf("virtual key already exists with the same value or name")
 	}
-
 	// Create virtual key first
 	if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 		return err
 	}
-
 	// Create key associations after the virtual key has an ID
 	if len(virtualKey.Keys) > 0 {
 		if err := txDB.WithContext(ctx).Model(virtualKey).Association("Keys").Append(virtualKey.Keys); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -1073,10 +1075,8 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-
 	// Store the keys before Save() clears them
 	keysToAssociate := virtualKey.Keys
-
 	// Update virtual key first (this will clear the Keys field)
 	// Use Select() to explicitly update all fields, including nil pointer fields
 	// This ensures TeamID gets set to NULL when switching from team to customer association
@@ -1087,14 +1087,12 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 	if err := txDB.WithContext(ctx).Model(virtualKey).Association("Keys").Clear(); err != nil {
 		return err
 	}
-
 	// Create new key associations using the stored keys
 	if len(keysToAssociate) > 0 {
 		if err := txDB.WithContext(ctx).Model(virtualKey).Association("Keys").Append(keysToAssociate); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -1103,7 +1101,6 @@ func (s *RDBConfigStore) GetKeysByIDs(ctx context.Context, ids []string) ([]tabl
 	if len(ids) == 0 {
 		return []tables.TableKey{}, nil
 	}
-
 	var keys []tables.TableKey
 	if err := s.db.WithContext(ctx).Where("key_id IN ?", ids).Find(&keys).Error; err != nil {
 		return nil, err
@@ -1148,11 +1145,9 @@ func (s *RDBConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtu
 	if err := s.db.WithContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
 		return nil, err
 	}
-
 	if virtualKey.ID == "" {
 		return nil, nil
 	}
-
 	var providerConfigs []tables.TableVirtualKeyProviderConfig
 	if err := s.db.WithContext(ctx).Where("virtual_key_id = ?", virtualKey.ID).Find(&providerConfigs).Error; err != nil {
 		return nil, err
@@ -1199,11 +1194,9 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigs(ctx context.Context, virtualKey
 	if err := s.db.WithContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
 		return nil, err
 	}
-
 	if virtualKey.ID == "" {
 		return nil, nil
 	}
-
 	var mcpConfigs []tables.TableVirtualKeyMCPConfig
 	if err := s.db.WithContext(ctx).Where("virtual_key_id = ?", virtualKey.ID).Find(&mcpConfigs).Error; err != nil {
 		return nil, err
@@ -1248,14 +1241,15 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error) {
 	// Preload relationships for complete information
 	query := s.db.WithContext(ctx).Preload("Customer").Preload("Budget")
-
 	// Optional filtering by customer
 	if customerID != "" {
 		query = query.Where("customer_id = ?", customerID)
 	}
-
 	var teams []tables.TableTeam
 	if err := query.Find(&teams).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return teams, nil
@@ -1265,6 +1259,9 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
 	if err := s.db.WithContext(ctx).Preload("Customer").Preload("Budget").First(&team, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return &team, nil
@@ -1301,6 +1298,9 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustomer, error) {
 	var customers []tables.TableCustomer
 	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Find(&customers).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return customers, nil
@@ -1310,6 +1310,9 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer
 	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").First(&customer, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return &customer, nil
