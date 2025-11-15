@@ -24,74 +24,34 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 	t.Run("Transcription", func(t *testing.T) {
 		// First generate TTS audio for round-trip validation
-		var roundTripCases []struct {
+		roundTripCases := []struct {
 			name           string
 			text           string
 			voiceType      string
 			format         string
 			responseFormat *string
-		}
-
-		if testConfig.Provider == schemas.Elevenlabs {
-			roundTripCases = []struct {
-				name           string
-				text           string
-				voiceType      string
-				format         string
-				responseFormat *string
-			}{
-				{
-					name:           "RoundTrip_Basic_MP3",
-					text:           TTSTestTextBasic,
-					voiceType:      "primary",
-					format:         "mp3_44100_128",
-					responseFormat: bifrost.Ptr("json"),
-				},
-				{
-					name:           "RoundTrip_Medium_MP3",
-					text:           TTSTestTextMedium,
-					voiceType:      "secondary",
-					format:         "mp3_44100_128",
-					responseFormat: bifrost.Ptr("json"),
-				},
-				{
-					name:           "RoundTrip_Technical_MP3",
-					text:           TTSTestTextTechnical,
-					voiceType:      "tertiary",
-					format:         "mp3_44100_128",
-					responseFormat: bifrost.Ptr("json"),
-				},
-			}
-		} else {
-			roundTripCases = []struct {
-				name           string
-				text           string
-				voiceType      string
-				format         string
-				responseFormat *string
-			}{
-				{
-					name:           "RoundTrip_Basic_MP3",
-					text:           TTSTestTextBasic,
-					voiceType:      "primary",
-					format:         "mp3",
-					responseFormat: bifrost.Ptr("json"),
-				},
-				{
-					name:           "RoundTrip_Medium_MP3",
-					text:           TTSTestTextMedium,
-					voiceType:      "secondary",
-					format:         "mp3",
-					responseFormat: bifrost.Ptr("json"),
-				},
-				{
-					name:           "RoundTrip_Technical_MP3",
-					text:           TTSTestTextTechnical,
-					voiceType:      "tertiary",
-					format:         "mp3",
-					responseFormat: bifrost.Ptr("json"),
-				},
-			}
+		}{
+			{
+				name:           "RoundTrip_Basic_MP3",
+				text:           TTSTestTextBasic,
+				voiceType:      "primary",
+				format:         "mp3",
+				responseFormat: bifrost.Ptr("json"),
+			},
+			{
+				name:           "RoundTrip_Medium_MP3",
+				text:           TTSTestTextMedium,
+				voiceType:      "secondary",
+				format:         "mp3",
+				responseFormat: bifrost.Ptr("json"),
+			},
+			{
+				name:           "RoundTrip_Technical_MP3",
+				text:           TTSTestTextTechnical,
+				voiceType:      "tertiary",
+				format:         "mp3",
+				responseFormat: bifrost.Ptr("json"),
+			},
 		}
 
 		for _, tc := range roundTripCases {

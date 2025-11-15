@@ -3,7 +3,6 @@ package elevenlabs
 import (
 	"bytes"
 	"context"
-	// "encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -146,19 +145,7 @@ func (provider *ElevenlabsProvider) buildSpeechRequestURL(ctx context.Context, d
 			q.Set("enable_logging", strconv.FormatBool(*request.Params.EnableLogging))
 		}
 
-		var responseFormat string
-		switch request.Params.ResponseFormat {
-		case "", "mp3":
-			responseFormat = "mp3_44100_128"
-		case "opus":
-			responseFormat = "opus_48000_128"
-		case "wav":
-			responseFormat = "pcm_44100"
-		case "pcm":
-			responseFormat = "pcm_44100"
-		}
-
-		request.Params.ResponseFormat = responseFormat
+		request.Params.ResponseFormat = providerUtils.ConvertOpenAISpeechFormatToElevenlabsFormat(request.Params.ResponseFormat)
 
 		if request.Params.OptimizeStreamingLatency != nil {
 			q.Set("optimize_streaming_latency", strconv.FormatBool(*request.Params.OptimizeStreamingLatency))
@@ -182,57 +169,6 @@ func (provider *ElevenlabsProvider) buildTranscriptionRequestURL(ctx context.Con
 	parsedURL.Path = path.Join(parsedURL.Path, requestPath)
 
 	return parsedURL.String()
-}
-
-func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Response) *schemas.BifrostError {
-	body := resp.Body()
-
-	// Try to parse as Elevenlabs validation error first
-	var errorResp ElevenlabsValidationError
-	if err := sonic.Unmarshal(body, &errorResp); err == nil && errorResp.Detail != nil && len(errorResp.Detail) > 0 {
-		var messages []string
-		for _, detail := range errorResp.Detail {
-			location := "unknown"
-			if len(detail.Loc) > 0 {
-				location = strings.Join(detail.Loc, ".")
-			}
-			messages = append(messages, fmt.Sprintf("[%s] %s (%s)", location, detail.Msg, detail.Type))
-		}
-
-		errorMessage := strings.Join(messages, "; ")
-
-		bifrostErr := &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     schemas.Ptr(resp.StatusCode()),
-			Error: &schemas.ErrorField{
-				Code:    schemas.Ptr("validation_error"),
-				Message: fmt.Sprintf("Elevenlabs validation error: %s", errorMessage),
-			},
-		}
-		return bifrostErr
-	}
-
-	// Try to parse as generic Elevenlabs error
-	var genericError ElevenlabsGenericError
-	if err := sonic.Unmarshal(body, &genericError); err == nil && genericError.Detail.Message != "" {
-		bifrostErr := &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     schemas.Ptr(resp.StatusCode()),
-			Error: &schemas.ErrorField{
-				Code:    schemas.Ptr(genericError.Detail.Status),
-				Message: genericError.Detail.Message,
-			},
-		}
-		return bifrostErr
-	}
-
-	// Fallback to raw response parsing
-	var rawResponse map[string]interface{}
-	if err := sonic.Unmarshal(body, &rawResponse); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to parse error response", err, providerName)
-	}
-
-	return providerUtils.NewBifrostOperationError(fmt.Sprintf("Elevenlabs error: %v", rawResponse), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
 }
 
 // TextCompletion is not supported by the Elevenlabs provider
@@ -272,7 +208,7 @@ func (provider *ElevenlabsProvider) Embedding(ctx context.Context, key schemas.K
 
 // Speech performs a text to speech request
 func (provider *ElevenlabsProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
+	if err := providerUtils.CheckOperationAllowed(schemas.Elevenlabs, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
 		return nil, err
 	}
 
@@ -356,7 +292,6 @@ func (provider *ElevenlabsProvider) Speech(ctx context.Context, key schemas.Key,
 		},
 	}
 
-	fmt.Println("withTimestamps: ", withTimestamps)
 	if withTimestamps {
 		var timestampResponse ElevenlabsSpeechWithTimestampsResponse
 		if err := sonic.Unmarshal(body, &timestampResponse); err != nil {
@@ -596,35 +531,6 @@ func (provider *ElevenlabsProvider) Transcription(ctx context.Context, key schem
 	}
 
 	statusCode := resp.StatusCode()
-	if statusCode == fasthttp.StatusAccepted {
-		responseBody, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
-		}
-
-		var webhookResp ElevenlabsSpeechToTextWebhookResponse
-		if err := sonic.Unmarshal(responseBody, &webhookResp); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to parse async transcription response", err, providerName)
-		}
-
-		message := webhookResp.Message
-		if strings.TrimSpace(message) == "" {
-			message = "Elevenlabs transcription request accepted for asynchronous processing"
-		}
-
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     schemas.Ptr(statusCode),
-			Error: &schemas.ErrorField{
-				Message: message,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    providerName,
-				RequestType: schemas.TranscriptionRequest,
-			},
-		}
-	}
-
 	if statusCode != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, parseElevenlabsError(providerName, resp)
@@ -650,11 +556,6 @@ func (provider *ElevenlabsProvider) Transcription(ctx context.Context, key schem
 
 	text, words, logProbs, language, duration := convertChunksToBifrost(chunks)
 
-	modelRequested := ""
-	if request != nil {
-		modelRequested = request.Model
-	}
-
 	response := &schemas.BifrostTranscriptionResponse{
 		Text:     text,
 		Words:    words,
@@ -662,7 +563,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx context.Context, key schem
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.TranscriptionRequest,
 			Provider:       providerName,
-			ModelRequested: modelRequested,
+			ModelRequested: request.Model,
 			Latency:        latency.Milliseconds(),
 		},
 	}
@@ -769,8 +670,8 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 		}
 	}
 
-	if reqBody.Temparature != nil {
-		if err := writer.WriteField("temperature", strconv.FormatFloat(*reqBody.Temparature, 'f', -1, 64)); err != nil {
+	if reqBody.Temperature != nil {
+		if err := writer.WriteField("temperature", strconv.FormatFloat(*reqBody.Temperature, 'f', -1, 64)); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write temperature field", err, providerName)
 		}
 	}

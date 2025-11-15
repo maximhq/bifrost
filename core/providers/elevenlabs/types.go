@@ -1,16 +1,6 @@
 package elevenlabs
 
 // SPEECH TYPES
-type TextNormalization string
-
-const (
-	// TextNormalizationAuto corresponds to "auto"
-	TextNormalizationAuto TextNormalization = "auto"
-	// TextNormalizationOn corresponds to "on"
-	TextNormalizationOn TextNormalization = "on"
-	// TextNormalizationOff corresponds to "off"
-	TextNormalizationOff TextNormalization = "off"
-)
 
 type ElevenlabsSpeechRequest struct {
 	Text                            string                                     `json:"text"`
@@ -23,7 +13,7 @@ type ElevenlabsSpeechRequest struct {
 	NextText                        *string                                    `json:"next_text,omitempty"`
 	PreviousRequestIDs              []string                                   `json:"previous_request_ids"`
 	NextRequestIDs                  []string                                   `json:"next_request_ids"`
-	ApplyTextNormalization          *TextNormalization                         `json:"apply_text_normalization,omitempty"`
+	ApplyTextNormalization          *string                                    `json:"apply_text_normalization,omitempty"`
 	ApplyLanguageTextNormalization  *bool                                      `json:"apply_language_text_normalization,omitempty"`
 	UsePVCAsIVC                     *bool                                      `json:"use_pvc_as_ivc,omitempty"` // deprecated
 }
@@ -71,7 +61,7 @@ type ElevenlabsTranscriptionRequest struct {
 	CloudStorageURL       *string                          `json:"cloud_storage_url,omitempty"`
 	Webhook               *bool                            `json:"webhook,omitempty"`
 	WebhookID             *string                          `json:"webhook_id,omitempty"`
-	Temparature           *float64                         `json:"temperature,omitempty"`
+	Temperature           *float64                         `json:"temperature,omitempty"`
 	Seed                  *int                             `json:"seed,omitempty"`
 	UseMultiChannel       *bool                            `json:"use_multi_channel,omitempty"`
 	WebhookMetadata       interface{}                      `json:"webhook_metadata,omitempty"`
@@ -159,20 +149,11 @@ type ElevenlabsSpeechToTextWebhookResponse struct {
 }
 
 // ERROR TYPES
-// ElevenlabsValidationError represents the 422 validation error format
-type ElevenlabsValidationError struct {
+type ElevenlabsError struct {
 	Detail []struct {
-		Loc  []string `json:"loc"`
-		Msg  string   `json:"msg"`
-		Type string   `json:"type"`
-	} `json:"detail"`
-}
-
-// ElevenlabsGenericError represents other Elevenlabs error formats
-type ElevenlabsGenericError struct {
-	Detail struct {
-		Status  string `json:"status"`
-		Message string `json:"message"`
+		Loc  []string `json:"loc,omitempty"`
+		Msg  *string  `json:"msg,omitempty"`
+		Type *string  `json:"type,omitempty"`
 	} `json:"detail"`
 }
 

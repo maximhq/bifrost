@@ -26,83 +26,38 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Test with shared text constants for round-trip validation with transcription
-		var testCases []struct {
+		testCases := []struct {
 			name           string
 			text           string
 			voiceType      string
 			format         string
 			expectMinBytes int
 			saveForSST     bool // Whether to save this audio for SST round-trip testing
-		}
-
-		if testConfig.Provider == schemas.Elevenlabs {
-			testCases = []struct {
-				name           string
-				text           string
-				voiceType      string
-				format         string
-				expectMinBytes int
-				saveForSST     bool
-			}{
-				{
-					name:           "BasicText_Primary_MP3",
-					text:           TTSTestTextBasic,
-					voiceType:      "primary",
-					format:         "mp3_44100_128",
-					expectMinBytes: 1000,
-					saveForSST:     true,
-				},
-				{
-					name:           "MediumText_Secondary_MP3",
-					text:           TTSTestTextMedium,
-					voiceType:      "secondary",
-					format:         "mp3_44100_128",
-					expectMinBytes: 2000,
-					saveForSST:     true,
-				},
-				{
-					name:           "TechnicalText_Tertiary_MP3",
-					text:           TTSTestTextTechnical,
-					voiceType:      "tertiary",
-					format:         "mp3_44100_128",
-					expectMinBytes: 500,
-					saveForSST:     true,
-				},
-			}
-		} else {
-			testCases = []struct {
-				name           string
-				text           string
-				voiceType      string
-				format         string
-				expectMinBytes int
-				saveForSST     bool
-			}{
-				{
-					name:           "BasicText_Primary_MP3",
-					text:           TTSTestTextBasic,
-					voiceType:      "primary",
-					format:         "mp3",
-					expectMinBytes: 1000,
-					saveForSST:     true,
-				},
-				{
-					name:           "MediumText_Secondary_MP3",
-					text:           TTSTestTextMedium,
-					voiceType:      "secondary",
-					format:         "mp3",
-					expectMinBytes: 2000,
-					saveForSST:     true,
-				},
-				{
-					name:           "TechnicalText_Tertiary_MP3",
-					text:           TTSTestTextTechnical,
-					voiceType:      "tertiary",
-					format:         "mp3",
-					expectMinBytes: 500,
-					saveForSST:     true,
-				},
-			}
+		}{
+			{
+				name:           "BasicText_Primary_MP3",
+				text:           TTSTestTextBasic,
+				voiceType:      "primary",
+				format:         "mp3",
+				expectMinBytes: 1000,
+				saveForSST:     true,
+			},
+			{
+				name:           "MediumText_Secondary_MP3",
+				text:           TTSTestTextMedium,
+				voiceType:      "secondary",
+				format:         "mp3",
+				expectMinBytes: 2000,
+				saveForSST:     true,
+			},
+			{
+				name:           "TechnicalText_Tertiary_MP3",
+				text:           TTSTestTextTechnical,
+				voiceType:      "tertiary",
+				format:         "mp3",
+				expectMinBytes: 500,
+				saveForSST:     true,
+			},
 		}
 
 		for _, tc := range testCases {

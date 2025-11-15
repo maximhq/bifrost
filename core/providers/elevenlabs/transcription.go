@@ -31,25 +31,45 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 		req.LanguageCode = params.Language
 	}
 
-	if params.TagAudioEvents != nil {
-		req.TagAudioEvents = params.TagAudioEvents
-	}
-
-	if params.NumSpeakers != nil && *params.NumSpeakers > 0 {
-		req.NumSpeakers = params.NumSpeakers
-	}
-
-	if params.TimestampsGranularity != nil && *params.TimestampsGranularity != "" {
-		granularity := ElevenlabsTimestampsGranularity(*params.TimestampsGranularity)
-		req.TimestampsGranularity = &granularity
-	}
-
-	if params.Diarize != nil {
-		req.Diarize = params.Diarize
-	}
-
-	if params.DiarizationThreshold != nil && *params.DiarizationThreshold > 0 {
-		req.DiarizationThreshold = params.DiarizationThreshold
+	if params.ExtraParams != nil {
+		if tagAudioEvents, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["tag_audio_events"]); ok {
+			req.TagAudioEvents = tagAudioEvents
+		}
+		if numSpeakers, ok := schemas.SafeExtractIntPointer(params.ExtraParams["num_speakers"]); ok {
+			req.NumSpeakers = numSpeakers
+		}
+		if timestampsGranularity, ok := schemas.SafeExtractStringPointer(params.ExtraParams["timestamps_granularity"]); ok {
+			granularity := ElevenlabsTimestampsGranularity(*timestampsGranularity)
+			req.TimestampsGranularity = &granularity
+		}
+		if diarize, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["diarize"]); ok {
+			req.Diarize = diarize
+		}
+		if diarizationThreshold, ok := schemas.SafeExtractFloat64Pointer(params.ExtraParams["diarization_threshold"]); ok {
+			req.DiarizationThreshold = diarizationThreshold
+		}
+		if fileFormat, ok := schemas.SafeExtractStringPointer(params.ExtraParams["file_format"]); ok {
+			fileFormat := ElevenlabsFileFormat(*fileFormat)
+			req.FileFormat = &fileFormat
+		}
+		if cloudStorageURL, ok := schemas.SafeExtractStringPointer(params.ExtraParams["cloud_storage_url"]); ok {
+			req.CloudStorageURL = cloudStorageURL
+		}
+		if webhook, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["webhook"]); ok {
+			req.Webhook = webhook
+		}
+		if webhookID, ok := schemas.SafeExtractStringPointer(params.ExtraParams["webhook_id"]); ok {
+			req.WebhookID = webhookID
+		}
+		if temperature, ok := schemas.SafeExtractFloat64Pointer(params.ExtraParams["temperature"]); ok {
+			req.Temperature = temperature
+		}
+		if seed, ok := schemas.SafeExtractIntPointer(params.ExtraParams["seed"]); ok {
+			req.Seed = seed
+		}
+		if useMultiChannel, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["use_multi_channel"]); ok {
+			req.UseMultiChannel = useMultiChannel
+		}
 	}
 
 	if len(params.AdditionalFormats) > 0 {
@@ -62,41 +82,6 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 		if len(additionalFormats) > 0 {
 			req.AdditionalFormats = additionalFormats
 		}
-	}
-
-	if params.FileFormat != nil && *params.FileFormat != "" {
-		fileFormat := ElevenlabsFileFormat(*params.FileFormat)
-		req.FileFormat = &fileFormat
-	}
-
-	if params.CloudStorageURL != nil {
-		trimmed := strings.TrimSpace(*params.CloudStorageURL)
-		if trimmed != "" {
-			req.CloudStorageURL = schemas.Ptr(trimmed)
-		}
-	}
-
-	if params.Webhook != nil {
-		req.Webhook = params.Webhook
-	}
-
-	if params.WebhookID != nil {
-		trimmed := strings.TrimSpace(*params.WebhookID)
-		if trimmed != "" {
-			req.WebhookID = schemas.Ptr(trimmed)
-		}
-	}
-
-	if params.Temparature != nil {
-		req.Temparature = params.Temparature
-	}
-
-	if params.Seed != nil {
-		req.Seed = params.Seed
-	}
-
-	if params.UseMultiChannel != nil {
-		req.UseMultiChannel = params.UseMultiChannel
 	}
 
 	if params.WebhookMetadata != nil {
@@ -112,7 +97,7 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 	return req
 }
 
-func convertAdditionalFormat(format schemas.BifrostTranscriptionAdditionalFormat) (ElevenlabsAdditionalFormat, bool) {
+func convertAdditionalFormat(format schemas.TranscriptionAdditionalFormat) (ElevenlabsAdditionalFormat, bool) {
 	if format.Format == "" {
 		return ElevenlabsAdditionalFormat{}, false
 	}

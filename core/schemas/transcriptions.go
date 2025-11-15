@@ -36,60 +36,33 @@ type TranscriptionParameters struct {
 	Format         *string `json:"file_format,omitempty"`     // Type of file, not required in openai, but required in gemini
 
 	// Elevenlabs-specific fields
-	TagAudioEvents        *bool                                      `json:"tag_audio_events,omitempty"`
-	NumSpeakers           *int                                       `json:"num_speakers,omitempty"`
-	TimestampsGranularity *BifrostTranscriptionTimestampsGranularity `json:"timestamps_granularity,omitempty"`
-	Diarize               *bool                                      `json:"diarize,omitempty"`
-	DiarizationThreshold  *float64                                   `json:"diarization_threshold,omitempty"`
-	AdditionalFormats     []BifrostTranscriptionAdditionalFormat     `json:"additional_formats,omitempty"`
-	FileFormat            *BifrostTranscriptionFileFormat            `json:"elevenlabs_file_format,omitempty"`
-	CloudStorageURL       *string                                    `json:"cloud_storage_url,omitempty"`
-	Webhook               *bool                                      `json:"webhook,omitempty"`
-	WebhookID             *string                                    `json:"webhook_id,omitempty"`
-	Temparature           *float64                                   `json:"temperature,omitempty"`
-	Seed                  *int                                       `json:"seed,omitempty"`
-	UseMultiChannel       *bool                                      `json:"use_multichannel,omitempty"`
-	WebhookMetadata       interface{}                                `json:"webhook_metadata,omitempty"`
+	AdditionalFormats []TranscriptionAdditionalFormat `json:"additional_formats,omitempty"`
+	WebhookMetadata   interface{}                     `json:"webhook_metadata,omitempty"`
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
-type BifrostTranscriptionTimestampsGranularity string
-
-const (
-	BifrostTranscriptionTimestampsGranularityNone      BifrostTranscriptionTimestampsGranularity = "none"
-	BifrostTranscriptionTimestampsGranularityWord      BifrostTranscriptionTimestampsGranularity = "word"
-	BifrostTranscriptionTimestampsGranularityCharacter BifrostTranscriptionTimestampsGranularity = "character"
-)
-
-type BifrostTranscriptionFileFormat string
-
-const (
-	BifrostTranscriptionFileFormatPcmS16le16 BifrostTranscriptionFileFormat = "pcm_s16le_16"
-	BifrostTranscriptionFileFormatOther      BifrostTranscriptionFileFormat = "other"
-)
-
-type BifrostTranscriptionAdditionalFormat struct {
-	Format                      BifrostTranscriptionExportOptions `json:"format"`
-	IncludeSpeakers             *bool                             `json:"include_speakers,omitempty"`
-	IncludeTimestamps           *bool                             `json:"include_timestamps,omitempty"`
-	SegmentOnSilenceLongerThanS *float64                          `json:"segment_on_silence_longer_than_s,omitempty"`
-	MaxSegmentDurationS         *float64                          `json:"max_segment_duration_s,omitempty"`
-	MaxSegmentChars             *int                              `json:"max_segment_chars,omitempty"`
-	MaxCharactersPerLine        *int                              `json:"max_characters_per_line,omitempty"`
+type TranscriptionAdditionalFormat struct {
+	Format                      TranscriptionExportOptions `json:"format"`
+	IncludeSpeakers             *bool                      `json:"include_speakers,omitempty"`
+	IncludeTimestamps           *bool                      `json:"include_timestamps,omitempty"`
+	SegmentOnSilenceLongerThanS *float64                   `json:"segment_on_silence_longer_than_s,omitempty"`
+	MaxSegmentDurationS         *float64                   `json:"max_segment_duration_s,omitempty"`
+	MaxSegmentChars             *int                       `json:"max_segment_chars,omitempty"`
+	MaxCharactersPerLine        *int                       `json:"max_characters_per_line,omitempty"`
 }
 
-type BifrostTranscriptionExportOptions string
+type TranscriptionExportOptions string
 
 const (
-	BifrostTranscriptionExportOptionsSegmentedJson BifrostTranscriptionExportOptions = "segmented_json"
-	BifrostTranscriptionExportOptionsDocx          BifrostTranscriptionExportOptions = "docx"
-	BifrostTranscriptionExportOptionsPdf           BifrostTranscriptionExportOptions = "pdf"
-	BifrostTranscriptionExportOptionsTxt           BifrostTranscriptionExportOptions = "txt"
-	BifrostTranscriptionExportOptionsHtml          BifrostTranscriptionExportOptions = "html"
-	BifrostTranscriptionExportOptionsSrt           BifrostTranscriptionExportOptions = "srt"
+	TranscriptionExportOptionsSegmentedJson TranscriptionExportOptions = "segmented_json"
+	TranscriptionExportOptionsDocx          TranscriptionExportOptions = "docx"
+	TranscriptionExportOptionsPdf           TranscriptionExportOptions = "pdf"
+	TranscriptionExportOptionsTxt           TranscriptionExportOptions = "txt"
+	TranscriptionExportOptionsHtml          TranscriptionExportOptions = "html"
+	TranscriptionExportOptionsSrt           TranscriptionExportOptions = "srt"
 )
 
 // TranscriptionLogProb represents log probability information for transcription

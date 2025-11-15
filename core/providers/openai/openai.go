@@ -1476,7 +1476,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	for _, model := range providerUtils.UnsupportedSpeechStreamModels {
 		if model == request.Model {
-			return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("model %s is not supported for speech synthesis", model), nil, provider.GetProviderKey())
+			return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("model %s is not supported for streaming speech synthesis", model), nil, provider.GetProviderKey())
 		}
 	}
 
