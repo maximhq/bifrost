@@ -715,7 +715,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	// When with_timestamps is true, Elevenlabs returns base64 encoded audio
 	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps == true
 
-	if provider == "elevenlabs" && hasTimestamps {
+	if provider == schemas.Elevenlabs && hasTimestamps {
 		ctx.Response.Header.Set("Content-Type", "application/json")
 		SendJSON(ctx, resp)
 		return

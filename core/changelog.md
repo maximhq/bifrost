@@ -1,2 +1,2 @@
-- chore: Adds index to ChatAssistantMessageToolCall
-- fix: responses text output standardization to content blocks
+- feat: Support for Elevenlabs text-to-speech (with timestamps and streaming)
+- feat: Support for Elevenlabs speech-to-text (transcription)

@@ -22,32 +22,56 @@ func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Eleven
 			voiceSettings.Speed = *bifrostReq.Params.Speed
 			hasVoiceSettings = true
 		}
-		if bifrostReq.Params.Stability != nil {
-			voiceSettings.Stability = *bifrostReq.Params.Stability
-			hasVoiceSettings = true
+
+		if bifrostReq.Params.ExtraParams != nil {
+			if stability, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["stability"]); ok {
+				voiceSettings.Stability = *stability
+				hasVoiceSettings = true
+			}
+			if useSpeakerBoost, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["use_speaker_boost"]); ok {
+				voiceSettings.UseSpeakerBoost = *useSpeakerBoost
+				hasVoiceSettings = true
+			}
+			if similarityBoost, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["similarity_boost"]); ok {
+				voiceSettings.SimilarityBoost = *similarityBoost
+				hasVoiceSettings = true
+			}
+			if style, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["style"]); ok {
+				voiceSettings.Style = *style
+				hasVoiceSettings = true
+			}
+			if seed, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
+				elevenlabsReq.Seed = seed
+			}
+			if previousText, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["previous_text"]); ok {
+				elevenlabsReq.PreviousText = previousText
+			}
+			if nextText, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["next_text"]); ok {
+				elevenlabsReq.NextText = nextText
+			}
+			if previousRequestIDs, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["previous_request_ids"]); ok {
+				elevenlabsReq.PreviousRequestIDs = previousRequestIDs
+			}
+			if nextRequestIDs, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["next_request_ids"]); ok {
+				elevenlabsReq.NextRequestIDs = nextRequestIDs
+			}
+			if applyTextNormalization, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["apply_text_normalization"]); ok {
+				elevenlabsReq.ApplyTextNormalization = applyTextNormalization
+			}
+			if applyLanguageTextNormalization, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["apply_language_text_normalization"]); ok {
+				elevenlabsReq.ApplyLanguageTextNormalization = applyLanguageTextNormalization
+			}
+			if usePVCAsIVC, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["use_pvc_as_ivc"]); ok {
+				elevenlabsReq.UsePVCAsIVC = usePVCAsIVC
+			}
 		}
-		if bifrostReq.Params.UseSpeakerBoost != nil {
-			voiceSettings.UseSpeakerBoost = *bifrostReq.Params.UseSpeakerBoost
-			hasVoiceSettings = true
-		}
-		if bifrostReq.Params.SimilarityBoost != nil {
-			voiceSettings.SimilarityBoost = *bifrostReq.Params.SimilarityBoost
-			hasVoiceSettings = true
-		}
-		if bifrostReq.Params.Style != nil {
-			voiceSettings.Style = *bifrostReq.Params.Style
-			hasVoiceSettings = true
-		}
+
 		if hasVoiceSettings {
 			elevenlabsReq.VoiceSettings = &voiceSettings
 		}
 
 		if bifrostReq.Params.LanguageCode != nil {
 			elevenlabsReq.LanguageCode = bifrostReq.Params.LanguageCode
-		}
-
-		if bifrostReq.Params.Seed != nil {
-			elevenlabsReq.Seed = bifrostReq.Params.Seed
 		}
 
 		if len(bifrostReq.Params.PronunciationDictionaryLocators) > 0 {
@@ -58,35 +82,6 @@ func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Eleven
 					VersionID:                 locator.VersionID,
 				}
 			}
-		}
-
-		if bifrostReq.Params.PreviousText != nil {
-			elevenlabsReq.PreviousText = bifrostReq.Params.PreviousText
-		}
-
-		if bifrostReq.Params.NextText != nil {
-			elevenlabsReq.NextText = bifrostReq.Params.NextText
-		}
-
-		if bifrostReq.Params.PreviousRequestIDs != nil {
-			elevenlabsReq.PreviousRequestIDs = bifrostReq.Params.PreviousRequestIDs
-		}
-
-		if bifrostReq.Params.NextRequestIDs != nil {
-			elevenlabsReq.NextRequestIDs = bifrostReq.Params.NextRequestIDs
-		}
-
-		if bifrostReq.Params.ApplyTextNormalization != nil {
-			tn := TextNormalization(*bifrostReq.Params.ApplyTextNormalization)
-			elevenlabsReq.ApplyTextNormalization = &tn
-		}
-
-		if bifrostReq.Params.ApplyLanguageTextNormalization != nil {
-			elevenlabsReq.ApplyLanguageTextNormalization = bifrostReq.Params.ApplyLanguageTextNormalization
-		}
-
-		if bifrostReq.Params.UsePVCAsIVC != nil {
-			elevenlabsReq.UsePVCAsIVC = bifrostReq.Params.UsePVCAsIVC
 		}
 	}
 
