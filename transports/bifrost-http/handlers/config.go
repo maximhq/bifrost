@@ -22,9 +22,9 @@ import (
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
-	ReloadClientConfigFromConfigStore() error
-	ReloadPricingManager() error
-	UpdateDropExcessRequests(value bool)
+	ReloadClientConfigFromConfigStore(ctx context.Context) error
+	ReloadPricingManager(ctx context.Context) error
+	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 }
 
@@ -184,7 +184,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	shouldReloadTelemetryPlugin := false
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
-		h.configManager.UpdateDropExcessRequests(payload.ClientConfig.DropExcessRequests)
+		h.configManager.UpdateDropExcessRequests(ctx, payload.ClientConfig.DropExcessRequests)
 		updatedConfig.DropExcessRequests = payload.ClientConfig.DropExcessRequests
 	}
 
@@ -215,7 +215,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Reloading client config from config store
-	if err := h.configManager.ReloadClientConfigFromConfigStore(); err != nil {
+	if err := h.configManager.ReloadClientConfigFromConfigStore(ctx); err != nil {
 		logger.Warn(fmt.Sprintf("failed to reload client config from config store: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload client config from config store: %v", err))
 		return
@@ -289,7 +289,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Reloading pricing manager
-		h.configManager.ReloadPricingManager()
+		h.configManager.ReloadPricingManager(ctx)
 	}
 	if shouldReloadTelemetryPlugin {
 		//TODO: Reload telemetry plugin - solvable problem by having a reference modifier on the metrics handler, but that will lead to loss of data on update

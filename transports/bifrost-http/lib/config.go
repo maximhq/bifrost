@@ -1653,24 +1653,18 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
-
 	c.muMCP.Lock()
 	defer c.muMCP.Unlock()
-
 	if c.MCPConfig == nil {
 		c.MCPConfig = &schemas.MCPConfig{}
 	}
-
 	// Generate a unique ID for the client if not provided
 	if clientConfig.ID == "" {
 		clientConfig.ID = uuid.NewString()
 	}
-
 	// Track new environment variables
 	newEnvKeys := make(map[string]struct{})
-
 	c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs, clientConfig)
-
 	// Process environment variables in the new client config
 	if clientConfig.ConnectionString != nil {
 		processedValue, envVar, err := c.processEnvValue(*clientConfig.ConnectionString)
@@ -1711,7 +1705,6 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 			c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1].Headers[header] = newValue
 		}
 	}
-
 	// Config with processed env vars
 	if err := c.client.AddMCPClient(c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1]); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
@@ -1727,7 +1720,6 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
-
 	return nil
 }
 
@@ -1742,14 +1734,11 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
-
 	c.muMCP.Lock()
 	defer c.muMCP.Unlock()
-
 	if c.MCPConfig == nil {
 		return fmt.Errorf("no MCP config found")
 	}
-
 	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
 	if clients, err := c.client.GetMCPClients(); err == nil && len(clients) > 0 {
 		for _, client := range clients {
@@ -1761,16 +1750,13 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 			}
 		}
 	}
-
 	for i, clientConfig := range c.MCPConfig.ClientConfigs {
 		if clientConfig.ID == id {
 			c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs[:i], c.MCPConfig.ClientConfigs[i+1:]...)
 			break
 		}
 	}
-
 	c.cleanupEnvKeys("", id, nil)
-
 	if c.ConfigStore != nil {
 		if err := c.ConfigStore.DeleteMCPClientConfig(ctx, id); err != nil {
 			return fmt.Errorf("failed to delete MCP client config from store: %w", err)
@@ -1779,7 +1765,6 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
-
 	return nil
 }
 
@@ -1793,14 +1778,12 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
-
 	c.muMCP.Lock()
 	defer c.muMCP.Unlock()
 
 	if c.MCPConfig == nil {
 		return fmt.Errorf("no MCP config found")
 	}
-
 	// Find the existing client config
 	var oldConfig schemas.MCPClientConfig
 	var found bool
@@ -1813,21 +1796,16 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 			break
 		}
 	}
-
 	if !found {
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
-
 	// Track new environment variables being added
 	newEnvKeys := make(map[string]struct{})
-
 	// Create a copy of updatedConfig to process env vars
 	processedConfig := updatedConfig
-
 	// Process Headers if present
 	if processedConfig.Headers != nil {
 		processedHeaders := make(map[string]string)
-
 		// Track which headers are in the new config
 		newHeaders := make(map[string]bool)
 		for header := range processedConfig.Headers {
@@ -1842,7 +1820,6 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 				}
 			}
 		}
-
 		// Process each header value
 		for header, value := range processedConfig.Headers {
 			newValue, envVar, err := c.processEnvValue(value)
@@ -1900,7 +1877,6 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 			}
 		}
 	}
-
 	// Persist changes to config store
 	if c.ConfigStore != nil {
 		if err := c.ConfigStore.UpdateMCPClientConfig(ctx, id, updatedConfig, c.EnvKeys); err != nil {
@@ -1910,7 +1886,6 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
-
 	return nil
 }
 

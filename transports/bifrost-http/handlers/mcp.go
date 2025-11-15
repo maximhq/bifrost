@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -15,17 +16,25 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+type MCPManager interface {
+	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
+	RemoveMCPClient(ctx context.Context, id string) error
+	EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error
+}
+
 // MCPHandler manages HTTP requests for MCP tool operations
 type MCPHandler struct {
-	client *bifrost.Bifrost
-	store  *lib.Config
+	client     *bifrost.Bifrost
+	store      *lib.Config
+	mcpManager MCPManager
 }
 
 // NewMCPHandler creates a new MCP handler instance
-func NewMCPHandler(client *bifrost.Bifrost, store *lib.Config) *MCPHandler {
+func NewMCPHandler(mcpManager MCPManager, client *bifrost.Bifrost, store *lib.Config) *MCPHandler {
 	return &MCPHandler{
-		client: client,
-		store:  store,
+		client:     client,
+		store:      store,
+		mcpManager: mcpManager,
 	}
 }
 
@@ -176,17 +185,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
-
 	if err := validateToolsToExecute(req.ToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
 		return
 	}
-
-	if err := h.store.AddMCPClient(ctx, req); err != nil {
+	if err := h.mcpManager.AddMCPClient(ctx, req); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add MCP client: %v", err))
 		return
 	}
-
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client added successfully",
@@ -213,7 +219,7 @@ func (h *MCPHandler) editMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.store.EditMCPClient(ctx, id, req); err != nil {
+	if err := h.mcpManager.EditMCPClient(ctx, id, req); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to edit MCP client: %v", err))
 		return
 	}
@@ -231,12 +237,10 @@ func (h *MCPHandler) removeMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-
-	if err := h.store.RemoveMCPClient(ctx, id); err != nil {
+	if err := h.mcpManager.RemoveMCPClient(ctx, id); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove MCP client: %v", err))
 		return
 	}
-
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client removed successfully",

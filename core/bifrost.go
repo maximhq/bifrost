@@ -244,14 +244,14 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
-
+	// Preparing request
 	request := &schemas.BifrostListModelsRequest{
 		Provider:    req.Provider,
 		PageSize:    req.PageSize,
 		PageToken:   req.PageToken,
 		ExtraParams: req.ExtraParams,
 	}
-
+	// Getting provider from the memory
 	provider := bifrost.getProviderByKey(req.Provider)
 	if provider == nil {
 		return nil, &schemas.BifrostError{
@@ -1424,24 +1424,21 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 	if providers == nil {
 		return nil
 	}
-
+	// Checking if provider is in the memory
 	for _, provider := range *providers {
 		if provider.GetProviderKey() == providerKey {
 			return provider
 		}
 	}
-
 	// Could happen when provider is not initialized yet, check if provider config exists in account and if so, initialize it
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil || config == nil {
 		return nil
 	}
-
 	// Lock the provider mutex to avoid races
 	providerMutex := bifrost.getProviderMutex(providerKey)
 	providerMutex.Lock()
 	defer providerMutex.Unlock()
-
 	// Double-check after acquiring the lock
 	providers = bifrost.providers.Load()
 	if providers != nil {
@@ -1451,11 +1448,10 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 			}
 		}
 	}
-
+	// Preparing provider
 	if err := bifrost.prepareProvider(providerKey, config); err != nil {
 		return nil
 	}
-
 	// Return newly prepared provider without recursion
 	providers = bifrost.providers.Load()
 	if providers != nil {
