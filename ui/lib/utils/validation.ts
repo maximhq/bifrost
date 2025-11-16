@@ -371,7 +371,11 @@ function isValidWildcardOrigin(origin: string): boolean {
  * @returns Object with validation result and invalid origins
  */
 export function validateOrigins(origins: string[]): { isValid: boolean; invalidOrigins: string[] } {
-	const invalidOrigins = origins?.filter((origin) => !isValidOrigin(origin)) || [];
+	if (!origins || origins.length === 0) {
+		return { isValid: true, invalidOrigins: [] };
+	}
+
+	const invalidOrigins = origins.filter((origin) => !isValidOrigin(origin));
 
 	return {
 		isValid: invalidOrigins.length === 0,
