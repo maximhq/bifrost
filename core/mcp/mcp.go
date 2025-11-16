@@ -1,4 +1,4 @@
-package bifrost
+package mcp
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -47,12 +46,19 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx           context.Context
-	server        *server.MCPServer     // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap     map[string]*MCPClient // Map of MCP client names to their configurations
-	mu            sync.RWMutex          // Read-write mutex for thread-safe operations
-	serverRunning bool                  // Track whether local MCP server is running
-	logger        schemas.Logger        // Logger instance for structured logging
+	ctx                  context.Context
+	server               *server.MCPServer     // Local MCP server instance for hosting tools (STDIO-based)
+	clientMap            map[string]*MCPClient // Map of MCP client names to their configurations
+	mu                   sync.RWMutex          // Read-write mutex for thread-safe operations
+	serverRunning        bool                  // Track whether local MCP server is running
+	maxAgentDepth        int                   // Maximum depth of agent mode tool calls
+	toolExecutionTimeout time.Duration         // Timeout for individual tool execution
+
+	// Function to fetch a new request ID for each tool call result message in agent mode,
+	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
+	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
+	// If not provider, same request ID is used for all tool call result messages without any overrides.
+	fetchNewRequestIDFunc func(ctx context.Context) string
 }
 
 // MCPClient represents a connected MCP client with its configuration and tools.
@@ -80,7 +86,7 @@ type MCPToolHandler[T any] func(args T) (string, error)
 // CONSTRUCTOR AND INITIALIZATION
 // ============================================================================
 
-// newMCPManager creates and initializes a new MCP manager instance.
+// NewMCPManager creates and initializes a new MCP manager instance.
 //
 // Parameters:
 //   - config: MCP configuration including server port and client configs
@@ -89,20 +95,35 @@ type MCPToolHandler[T any] func(args T) (string, error)
 // Returns:
 //   - *MCPManager: Initialized manager instance
 //   - error: Any initialization error
-func newMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas.Logger) (*MCPManager, error) {
+func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas.Logger) (*MCPManager, error) {
+	// Set default values
+	maxAgentDepth := config.MaxAgentDepth
+	if maxAgentDepth <= 0 {
+		maxAgentDepth = 10 // Default max depth
+	}
+
+	toolExecutionTimeout := time.Duration(config.ToolExecutionTimeout) * time.Second
+	if toolExecutionTimeout <= 0 {
+		toolExecutionTimeout = 30 * time.Second // Default timeout
+	}
+
 	// Creating new instance
 	manager := &MCPManager{
-		ctx:       ctx,
-		clientMap: make(map[string]*MCPClient),
-		logger:    logger,
+		ctx:                   ctx,
+		clientMap:             make(map[string]*MCPClient),
+		maxAgentDepth:         maxAgentDepth,
+		toolExecutionTimeout:  toolExecutionTimeout,
+		fetchNewRequestIDFunc: config.FetchNewRequestIDFunc,
 	}
+	SetLogger(logger)
+
 	// Process client configs: create client map entries and establish connections
 	for _, clientConfig := range config.ClientConfigs {
 		if err := manager.AddClient(clientConfig); err != nil {
-			manager.logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
+			logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
 		}
 	}
-	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
+	logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager, nil
 }
 
@@ -206,7 +227,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 		return fmt.Errorf("client %s not found", id)
 	}
 
-	m.logger.Info(fmt.Sprintf("%s Disconnecting MCP client: %s", MCPLogPrefix, client.ExecutionConfig.Name))
+	logger.Info(fmt.Sprintf("%s Disconnecting MCP client: %s", MCPLogPrefix, client.ExecutionConfig.Name))
 
 	// Cancel SSE context if present (required for proper SSE cleanup)
 	if client.cancelFunc != nil {
@@ -218,7 +239,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	// This handles cleanup for all transport types (HTTP, STDIO, SSE)
 	if client.Conn != nil {
 		if err := client.Conn.Close(); err != nil {
-			m.logger.Error("%s Failed to close MCP client %s: %v", MCPLogPrefix, client.ExecutionConfig.Name, err)
+			logger.Error("%s Failed to close MCP client %s: %v", MCPLogPrefix, client.ExecutionConfig.Name, err)
 		}
 		client.Conn = nil
 	}
@@ -259,7 +280,7 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 	m.mu.Unlock()
 
 	// Retrieve tools with updated configuration
-	tools, err := m.retrieveExternalTools(m.ctx, client.Conn, config)
+	tools, err := retrieveExternalTools(m.ctx, client.Conn)
 
 	// Re-lock to update the tool map
 	m.mu.Lock()
@@ -282,49 +303,6 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 // ============================================================================
 // TOOL REGISTRATION AND DISCOVERY
 // ============================================================================
-
-// getAvailableTools returns all tools from connected MCP clients.
-// Applies client filtering if specified in the context.
-func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var includeClients []string
-
-	// Extract client filtering from request context
-	if existingIncludeClients, ok := ctx.Value(MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
-		includeClients = existingIncludeClients
-	}
-
-	tools := make([]schemas.ChatTool, 0)
-	for id, client := range m.clientMap {
-		// Apply client filtering logic
-		if !m.shouldIncludeClient(id, includeClients) {
-			m.logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, id))
-			continue
-		}
-
-		m.logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", id, client.ExecutionConfig.ToolsToExecute))
-
-		// Add all tools from this client
-		for toolName, tool := range client.ToolMap {
-			// Check if tool should be skipped based on client configuration
-			if m.shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
-				m.logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in tools to execute list", MCPLogPrefix, toolName))
-				continue
-			}
-
-			// Check if tool should be skipped based on request context
-			if m.shouldSkipToolForRequest(id, toolName, ctx) {
-				m.logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in include tools list", MCPLogPrefix, toolName))
-				continue
-			}
-
-			tools = append(tools, tool)
-		}
-	}
-	return tools
-}
 
 // registerTool registers a typed tool handler with the local MCP server.
 // This is a convenience function that handles the conversion between typed Go
@@ -352,7 +330,7 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 //	    func(args EchoArgs) (string, error) {
 //	        return args.Message, nil
 //	    }, toolSchema)
-func (m *MCPManager) registerTool(name, description string, handler MCPToolHandler[any], toolSchema schemas.ChatTool) error {
+func (m *MCPManager) RegisterTool(name, description string, handler MCPToolHandler[any], toolSchema schemas.ChatTool) error {
 	// Ensure local server is set up
 	if err := m.setupLocalHost(); err != nil {
 		return fmt.Errorf("failed to setup local host: %w", err)
@@ -371,7 +349,7 @@ func (m *MCPManager) registerTool(name, description string, handler MCPToolHandl
 		return fmt.Errorf("tool '%s' is already registered", name)
 	}
 
-	m.logger.Info(fmt.Sprintf("%s Registering typed tool: %s", MCPLogPrefix, name))
+	logger.Info(fmt.Sprintf("%s Registering typed tool: %s", MCPLogPrefix, name))
 
 	// Create MCP handler wrapper that converts between typed and MCP interfaces
 	mcpHandler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -395,6 +373,77 @@ func (m *MCPManager) registerTool(name, description string, handler MCPToolHandl
 
 	return nil
 }
+
+// executeTool executes a tool call and returns the result as a tool message.
+//
+// Parameters:
+//   - ctx: Execution context
+//   - toolCall: The tool call to execute (from assistant message)
+//
+// Returns:
+//   - schemas.ChatMessage: Tool message with execution result
+//   - error: Any execution error
+func (m *MCPManager) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+	if toolCall.Function.Name == nil {
+		return nil, fmt.Errorf("tool call missing function name")
+	}
+	toolName := *toolCall.Function.Name
+
+	// Parse tool arguments
+	var arguments map[string]interface{}
+	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+		return nil, fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+	}
+
+	// Find which client has this tool
+	client := m.findMCPClientForTool(toolName)
+	if client == nil {
+		return nil, fmt.Errorf("tool '%s' not found in any connected MCP client", toolName)
+	}
+
+	if client.Conn == nil {
+		return nil, fmt.Errorf("client '%s' has no active connection", client.ExecutionConfig.Name)
+	}
+
+	// Call the tool via MCP client -> MCP server
+	callRequest := mcp.CallToolRequest{
+		Request: mcp.Request{
+			Method: string(mcp.MethodToolsCall),
+		},
+		Params: mcp.CallToolParams{
+			Name:      toolName,
+			Arguments: arguments,
+		},
+	}
+
+	logger.Debug(fmt.Sprintf("%s Starting tool execution: %s via client: %s", MCPLogPrefix, toolName, client.ExecutionConfig.Name))
+
+	// Create timeout context for tool execution
+	toolCtx, cancel := context.WithTimeout(ctx, m.toolExecutionTimeout)
+	defer cancel()
+
+	toolResponse, callErr := client.Conn.CallTool(toolCtx, callRequest)
+	if callErr != nil {
+		// Check if it was a timeout error
+		if toolCtx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("MCP tool call timed out after %v: %s", m.toolExecutionTimeout, toolName)
+		}
+		logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
+		return nil, fmt.Errorf("MCP tool call failed: %v", callErr)
+	}
+
+	logger.Debug(fmt.Sprintf("%s Tool execution completed: %s", MCPLogPrefix, toolName))
+
+	// Extract text from MCP response
+	responseText := extractTextFromMCPResponse(toolResponse, toolName)
+
+	// Create tool response message
+	return createToolResponseMessage(toolCall, responseText), nil
+}
+
+// ============================================================================
+// LOCAL MCP SERVER AND CLIENT MANAGEMENT
+// ============================================================================
 
 // setupLocalHost initializes the local MCP server and client if not already running.
 // This creates a STDIO-based server for local tool hosting and a corresponding client.
@@ -520,67 +569,129 @@ func (m *MCPManager) startLocalMCPServer() error {
 	return nil
 }
 
-// executeTool executes a tool call and returns the result as a tool message.
+// ============================================================================
+// EXTERNAL MCP CONNECTION MANAGEMENT
+// ============================================================================
+
+// AddMCPToolsToBifrostRequest adds MCP tools to a Bifrost request.
 //
 // Parameters:
 //   - ctx: Execution context
-//   - toolCall: The tool call to execute (from assistant message)
+//   - req: Bifrost request
 //
 // Returns:
-//   - schemas.ChatMessage: Tool message with execution result
-//   - error: Any execution error
-func (m *MCPManager) executeTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	if toolCall.Function.Name == nil {
-		return nil, fmt.Errorf("tool call missing function name")
+//   - *schemas.BifrostRequest: Bifrost request with MCP tools added
+func (m *MCPManager) AddMCPToolsToBifrostRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+	mcpTools := m.getAvailableTools(ctx)
+	if len(mcpTools) > 0 {
+		logger.Debug(fmt.Sprintf("%s Adding %d MCP tools to request", MCPLogPrefix, len(mcpTools)))
+		switch req.RequestType {
+		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+			// Only allocate new Params if it's nil to preserve caller-supplied settings
+			if req.ChatRequest.Params == nil {
+				req.ChatRequest.Params = &schemas.ChatParameters{}
+			}
+
+			tools := req.ChatRequest.Params.Tools
+
+			// Create a map of existing tool names for O(1) lookup
+			existingToolsMap := make(map[string]bool)
+			for _, tool := range tools {
+				if tool.Function != nil && tool.Function.Name != "" {
+					existingToolsMap[tool.Function.Name] = true
+				}
+			}
+
+			// Add MCP tools that are not already present
+			for _, mcpTool := range mcpTools {
+				// Skip tools with nil Function or empty Name
+				if mcpTool.Function == nil || mcpTool.Function.Name == "" {
+					continue
+				}
+
+				if !existingToolsMap[mcpTool.Function.Name] {
+					tools = append(tools, mcpTool)
+					// Update the map to prevent duplicates within MCP tools as well
+					existingToolsMap[mcpTool.Function.Name] = true
+				}
+			}
+			req.ChatRequest.Params.Tools = tools
+		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+			// Only allocate new Params if it's nil to preserve caller-supplied settings
+			if req.ResponsesRequest.Params == nil {
+				req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
+			}
+
+			tools := req.ResponsesRequest.Params.Tools
+
+			// Create a map of existing tool names for O(1) lookup
+			existingToolsMap := make(map[string]bool)
+			for _, tool := range tools {
+				if tool.Name != nil {
+					existingToolsMap[*tool.Name] = true
+				}
+			}
+
+			// Add MCP tools that are not already present
+			for _, mcpTool := range mcpTools {
+				// Skip tools with nil Function or empty Name
+				if mcpTool.Function == nil || mcpTool.Function.Name == "" {
+					continue
+				}
+
+				if !existingToolsMap[mcpTool.Function.Name] {
+					responsesTool := mcpTool.ToResponsesTool()
+					// Skip if the converted tool has nil Name
+					if responsesTool.Name == nil {
+						continue
+					}
+
+					tools = append(tools, *responsesTool)
+					// Update the map to prevent duplicates within MCP tools as well
+					existingToolsMap[*responsesTool.Name] = true
+				}
+			}
+			req.ResponsesRequest.Params.Tools = tools
+		}
 	}
-	toolName := *toolCall.Function.Name
+	return req
+}
 
-	// Parse tool arguments
-	var arguments map[string]interface{}
-	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-		return nil, fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+// Cleanup performs cleanup of all MCP resources including clients and local server.
+// This function safely disconnects all MCP clients (HTTP, STDIO, and SSE) and
+// cleans up the local MCP server. It handles proper cancellation of SSE contexts
+// and closes all transport connections.
+//
+// Returns:
+//   - error: Always returns nil, but maintains error interface for consistency
+func (m *MCPManager) Cleanup() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Disconnect all external MCP clients
+	for id := range m.clientMap {
+		if err := m.removeClientUnsafe(id); err != nil {
+			logger.Error("%s Failed to remove MCP client %s: %v", MCPLogPrefix, id, err)
+		}
 	}
 
-	// Find which client has this tool
-	client := m.findMCPClientForTool(toolName)
-	if client == nil {
-		return nil, fmt.Errorf("tool '%s' not found in any connected MCP client", toolName)
+	// Clear the client map
+	m.clientMap = make(map[string]*MCPClient)
+
+	// Clear local server reference
+	// Note: mark3labs/mcp-go STDIO server cleanup is handled automatically
+	if m.server != nil {
+		logger.Info(MCPLogPrefix + " Clearing local MCP server reference")
+		m.server = nil
+		m.serverRunning = false
 	}
 
-	if client.Conn == nil {
-		return nil, fmt.Errorf("client '%s' has no active connection", client.ExecutionConfig.Name)
-	}
-
-	// Call the tool via MCP client -> MCP server
-	callRequest := mcp.CallToolRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodToolsCall),
-		},
-		Params: mcp.CallToolParams{
-			Name:      toolName,
-			Arguments: arguments,
-		},
-	}
-
-	m.logger.Debug(fmt.Sprintf("%s Starting tool execution: %s via client: %s", MCPLogPrefix, toolName, client.ExecutionConfig.Name))
-
-	toolResponse, callErr := client.Conn.CallTool(ctx, callRequest)
-	if callErr != nil {
-		m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
-		return nil, fmt.Errorf("MCP tool call failed: %v", callErr)
-	}
-
-	m.logger.Debug(fmt.Sprintf("%s Tool execution completed: %s", MCPLogPrefix, toolName))
-
-	// Extract text from MCP response
-	responseText := m.extractTextFromMCPResponse(toolResponse, toolName)
-
-	// Create tool response message
-	return m.createToolResponseMessage(toolCall, responseText), nil
+	logger.Info(MCPLogPrefix + " MCP cleanup completed")
+	return nil
 }
 
 // ============================================================================
-// EXTERNAL MCP CONNECTION MANAGEMENT
+// CONNECTION HELPER METHODS
 // ============================================================================
 
 // connectToMCPClient establishes a connection to an external MCP server and
@@ -679,9 +790,9 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	}
 
 	// Retrieve tools from the external server (this also requires network I/O)
-	tools, err := m.retrieveExternalTools(ctx, externalClient, config)
+	tools, err := retrieveExternalTools(ctx, externalClient)
 	if err != nil {
-		m.logger.Warn(fmt.Sprintf("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err))
+		logger.Warn(fmt.Sprintf("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err))
 		// Continue with connection even if tool retrieval fails
 		tools = make(map[string]schemas.ChatTool)
 	}
@@ -706,326 +817,12 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 			client.ToolMap[toolName] = tool
 		}
 
-		m.logger.Info(fmt.Sprintf("%s Connected to MCP client: %s", MCPLogPrefix, config.Name))
+		logger.Info(fmt.Sprintf("%s Connected to MCP client: %s", MCPLogPrefix, config.Name))
 	} else {
 		return fmt.Errorf("client %s was removed during connection setup", config.Name)
 	}
 
 	return nil
-}
-
-// retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
-func (m *MCPManager) retrieveExternalTools(ctx context.Context, client *client.Client, config schemas.MCPClientConfig) (map[string]schemas.ChatTool, error) {
-	// Get available tools from external server
-	listRequest := mcp.ListToolsRequest{
-		PaginatedRequest: mcp.PaginatedRequest{
-			Request: mcp.Request{
-				Method: string(mcp.MethodToolsList),
-			},
-		},
-	}
-
-	toolsResponse, err := client.ListTools(ctx, listRequest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list tools: %v", err)
-	}
-
-	if toolsResponse == nil {
-		return make(map[string]schemas.ChatTool), nil // No tools available
-	}
-
-	m.logger.Debug(fmt.Sprintf("%s Retrieved %d tools from %s", MCPLogPrefix, len(toolsResponse.Tools), config.Name))
-
-	tools := make(map[string]schemas.ChatTool)
-
-	// toolsResponse is already a ListToolsResult
-	for _, mcpTool := range toolsResponse.Tools {
-		// Convert MCP tool schema to Bifrost format
-		bifrostTool := m.convertMCPToolToBifrostSchema(&mcpTool)
-		tools[mcpTool.Name] = bifrostTool
-	}
-
-	return tools, nil
-}
-
-// shouldSkipToolForConfig checks if a tool should be skipped based on client configuration (without accessing clientMap).
-func (m *MCPManager) shouldSkipToolForConfig(toolName string, config schemas.MCPClientConfig) bool {
-	// If ToolsToExecute is specified (not nil), apply filtering
-	if config.ToolsToExecute != nil {
-		// Handle empty array [] - means no tools are allowed
-		if len(config.ToolsToExecute) == 0 {
-			return true // No tools allowed
-		}
-
-		// Handle wildcard "*" - if present, all tools are allowed
-		if slices.Contains(config.ToolsToExecute, "*") {
-			return false // All tools allowed
-		}
-
-		// Check if specific tool is in the allowed list
-		for _, allowedTool := range config.ToolsToExecute {
-			if allowedTool == toolName {
-				return false // Tool is allowed
-			}
-		}
-		return true // Tool not in allowed list
-	}
-
-	return true // Tool is skipped (nil is treated as [] - no tools)
-}
-
-// shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
-func (m *MCPManager) shouldSkipToolForRequest(clientID, toolName string, ctx context.Context) bool {
-	includeTools := ctx.Value(MCPContextKeyIncludeTools)
-
-	if includeTools != nil {
-		// Try []string first (preferred type)
-		if includeToolsList, ok := includeTools.([]string); ok {
-			// Handle empty array [] - means no tools are included
-			if len(includeToolsList) == 0 {
-				return true // No tools allowed
-			}
-
-			// Handle wildcard "clientName/*" - if present, all tools are included for this client
-			if slices.Contains(includeToolsList, fmt.Sprintf("%s/*", clientID)) {
-				return false // All tools allowed
-			}
-
-			// Check if specific tool is in the list (format: clientName/toolName)
-			fullToolName := fmt.Sprintf("%s/%s", clientID, toolName)
-			if slices.Contains(includeToolsList, fullToolName) {
-				return false // Tool is explicitly allowed
-			}
-
-			// If includeTools is specified but this tool is not in it, skip it
-			return true
-		}
-	}
-
-	return false // Tool is allowed (default when no filtering specified)
-}
-
-// convertMCPToolToBifrostSchema converts an MCP tool definition to Bifrost format.
-func (m *MCPManager) convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.ChatTool {
-	return schemas.ChatTool{
-		Type: schemas.ChatToolTypeFunction,
-		Function: &schemas.ChatToolFunction{
-			Name:        mcpTool.Name,
-			Description: Ptr(mcpTool.Description),
-			Parameters: &schemas.ToolFunctionParameters{
-				Type:       mcpTool.InputSchema.Type,
-				Properties: Ptr(mcpTool.InputSchema.Properties),
-				Required:   mcpTool.InputSchema.Required,
-			},
-		},
-	}
-}
-
-// extractTextFromMCPResponse extracts text content from an MCP tool response.
-func (m *MCPManager) extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName string) string {
-	if toolResponse == nil {
-		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
-	}
-
-	var result strings.Builder
-	for _, contentBlock := range toolResponse.Content {
-		// Handle typed content
-		switch content := contentBlock.(type) {
-		case mcp.TextContent:
-			result.WriteString(content.Text)
-		case mcp.ImageContent:
-			result.WriteString(fmt.Sprintf("[Image Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
-		case mcp.AudioContent:
-			result.WriteString(fmt.Sprintf("[Audio Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
-		case mcp.EmbeddedResource:
-			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
-		default:
-			// Fallback: try to extract from map structure
-			if jsonBytes, err := json.Marshal(contentBlock); err == nil {
-				var contentMap map[string]interface{}
-				if json.Unmarshal(jsonBytes, &contentMap) == nil {
-					if text, ok := contentMap["text"].(string); ok {
-						result.WriteString(fmt.Sprintf("[Text Response: %s]\n", text))
-						continue
-					}
-				}
-				// Final fallback: serialize as JSON
-				result.WriteString(string(jsonBytes))
-			}
-		}
-	}
-
-	if result.Len() > 0 {
-		return strings.TrimSpace(result.String())
-	}
-	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
-}
-
-// createToolResponseMessage creates a tool response message with the execution result.
-func (m *MCPManager) createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, responseText string) *schemas.ChatMessage {
-	return &schemas.ChatMessage{
-		Role: schemas.ChatMessageRoleTool,
-		Content: &schemas.ChatMessageContent{
-			ContentStr: &responseText,
-		},
-		ChatToolMessage: &schemas.ChatToolMessage{
-			ToolCallID: toolCall.ID,
-		},
-	}
-}
-
-func (m *MCPManager) addMCPToolsToBifrostRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
-	mcpTools := m.getAvailableTools(ctx)
-	if len(mcpTools) > 0 {
-		m.logger.Debug(fmt.Sprintf("%s Adding %d MCP tools to request", MCPLogPrefix, len(mcpTools)))
-		switch req.RequestType {
-		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
-			// Only allocate new Params if it's nil to preserve caller-supplied settings
-			if req.ChatRequest.Params == nil {
-				req.ChatRequest.Params = &schemas.ChatParameters{}
-			}
-
-			tools := req.ChatRequest.Params.Tools
-
-			// Create a map of existing tool names for O(1) lookup
-			existingToolsMap := make(map[string]bool)
-			for _, tool := range tools {
-				if tool.Function != nil && tool.Function.Name != "" {
-					existingToolsMap[tool.Function.Name] = true
-				}
-			}
-
-			// Add MCP tools that are not already present
-			for _, mcpTool := range mcpTools {
-				// Skip tools with nil Function or empty Name
-				if mcpTool.Function == nil || mcpTool.Function.Name == "" {
-					continue
-				}
-
-				if !existingToolsMap[mcpTool.Function.Name] {
-					tools = append(tools, mcpTool)
-					// Update the map to prevent duplicates within MCP tools as well
-					existingToolsMap[mcpTool.Function.Name] = true
-				}
-			}
-			req.ChatRequest.Params.Tools = tools
-		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
-			// Only allocate new Params if it's nil to preserve caller-supplied settings
-			if req.ResponsesRequest.Params == nil {
-				req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
-			}
-
-			tools := req.ResponsesRequest.Params.Tools
-
-			// Create a map of existing tool names for O(1) lookup
-			existingToolsMap := make(map[string]bool)
-			for _, tool := range tools {
-				if tool.Name != nil {
-					existingToolsMap[*tool.Name] = true
-				}
-			}
-
-			// Add MCP tools that are not already present
-			for _, mcpTool := range mcpTools {
-				// Skip tools with nil Function or empty Name
-				if mcpTool.Function == nil || mcpTool.Function.Name == "" {
-					continue
-				}
-
-				if !existingToolsMap[mcpTool.Function.Name] {
-					responsesTool := mcpTool.ToResponsesTool()
-					// Skip if the converted tool has nil Name
-					if responsesTool.Name == nil {
-						continue
-					}
-
-					tools = append(tools, *responsesTool)
-					// Update the map to prevent duplicates within MCP tools as well
-					existingToolsMap[*responsesTool.Name] = true
-				}
-			}
-			req.ResponsesRequest.Params.Tools = tools
-		}
-	}
-	return req
-}
-
-func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
-	if strings.TrimSpace(config.ID) == "" {
-		return fmt.Errorf("id is required for MCP client config")
-	}
-
-	if strings.TrimSpace(config.Name) == "" {
-		return fmt.Errorf("name is required for MCP client config")
-	}
-
-	if config.ConnectionType == "" {
-		return fmt.Errorf("connection type is required for MCP client config")
-	}
-
-	switch config.ConnectionType {
-	case schemas.MCPConnectionTypeHTTP:
-		if config.ConnectionString == nil {
-			return fmt.Errorf("ConnectionString is required for HTTP connection type in client '%s'", config.Name)
-		}
-	case schemas.MCPConnectionTypeSSE:
-		if config.ConnectionString == nil {
-			return fmt.Errorf("ConnectionString is required for SSE connection type in client '%s'", config.Name)
-		}
-	case schemas.MCPConnectionTypeSTDIO:
-		if config.StdioConfig == nil {
-			return fmt.Errorf("StdioConfig is required for STDIO connection type in client '%s'", config.Name)
-		}
-	case schemas.MCPConnectionTypeInProcess:
-		// InProcess requires a server instance to be provided programmatically
-		// This cannot be validated from JSON config - the server must be set when using the Go package
-		if config.InProcessServer == nil {
-			return fmt.Errorf("InProcessServer is required for InProcess connection type in client '%s' (Go package only)", config.Name)
-		}
-	default:
-		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
-	}
-
-	return nil
-}
-
-// ============================================================================
-// HELPER METHODS
-// ============================================================================
-
-// findMCPClientForTool safely finds a client that has the specified tool.
-func (m *MCPManager) findMCPClientForTool(toolName string) *MCPClient {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, client := range m.clientMap {
-		if _, exists := client.ToolMap[toolName]; exists {
-			return client
-		}
-	}
-	return nil
-}
-
-// shouldIncludeClient determines if a client should be included based on filtering rules.
-func (m *MCPManager) shouldIncludeClient(clientID string, includeClients []string) bool {
-	// If includeClients is specified (not nil), apply whitelist filtering
-	if includeClients != nil {
-		// Handle empty array [] - means no clients are included
-		if len(includeClients) == 0 {
-			return false // No clients allowed
-		}
-
-		// Handle wildcard "*" - if present, all clients are included
-		if slices.Contains(includeClients, "*") {
-			return true // All clients allowed
-		}
-
-		// Check if specific client is in the list
-		return slices.Contains(includeClients, clientID)
-	}
-
-	// Default: include all clients when no filtering specified (nil case)
-	return true
 }
 
 // createHTTPConnection creates an HTTP-based MCP client connection without holding locks.
@@ -1135,37 +932,4 @@ func (m *MCPManager) createInProcessConnection(config schemas.MCPClientConfig) (
 	}
 
 	return inProcessClient, connectionInfo, nil
-}
-
-// cleanup performs cleanup of all MCP resources including clients and local server.
-// This function safely disconnects all MCP clients (HTTP, STDIO, and SSE) and
-// cleans up the local MCP server. It handles proper cancellation of SSE contexts
-// and closes all transport connections.
-//
-// Returns:
-//   - error: Always returns nil, but maintains error interface for consistency
-func (m *MCPManager) cleanup() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Disconnect all external MCP clients
-	for id := range m.clientMap {
-		if err := m.removeClientUnsafe(id); err != nil {
-			m.logger.Error("%s Failed to remove MCP client %s: %v", MCPLogPrefix, id, err)
-		}
-	}
-
-	// Clear the client map
-	m.clientMap = make(map[string]*MCPClient)
-
-	// Clear local server reference
-	// Note: mark3labs/mcp-go STDIO server cleanup is handled automatically
-	if m.server != nil {
-		m.logger.Info(MCPLogPrefix + " Clearing local MCP server reference")
-		m.server = nil
-		m.serverRunning = false
-	}
-
-	m.logger.Info(MCPLogPrefix + " MCP cleanup completed")
-	return nil
 }

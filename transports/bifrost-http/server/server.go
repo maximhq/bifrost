@@ -17,6 +17,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -1042,6 +1043,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load plugins %v", err)
 	}
+	mcpConfig := s.Config.MCPConfig
+	if mcpConfig != nil {
+		mcpConfig.FetchNewRequestIDFunc = func(ctx context.Context) string {
+			return uuid.New().String()
+		}
+	}
 	// Initialize bifrost client
 	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
 	// The account interface now benefits from ultra-fast config access times via in-memory storage
@@ -1051,7 +1058,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
 		Plugins:            s.Plugins,
-		MCPConfig:          s.Config.MCPConfig,
+		MCPConfig:          mcpConfig,
 		Logger:             logger,
 	})
 	if err != nil {
