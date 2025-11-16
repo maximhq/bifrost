@@ -1820,6 +1820,8 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 	}
 
+	//TODO: add HandleProviderResponse here
+
 	// Parse raw response for RawResponse field
 	var rawResponse interface{}
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {

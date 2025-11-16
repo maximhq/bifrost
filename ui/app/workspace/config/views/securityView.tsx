@@ -173,7 +173,7 @@ export default function SecurityView() {
 					<h2 className="text-2xl font-semibold tracking-tight">Security Settings</h2>
 					<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
 				</div>
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess	}>
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>
