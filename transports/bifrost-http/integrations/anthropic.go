@@ -47,7 +47,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 }
 
 // createAnthropicMessagesRouteConfig creates a route configuration for the `/v1/messages` endpoint.
-func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
+func createAnthropicMessagesRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
 	for _, path := range []string{
 		"/v1/messages",
@@ -62,13 +62,39 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			},
 			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
-					return &schemas.BifrostRequest{
-						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(),
-					}, nil
+					provider, _ := schemas.ParseModelString(anthropicReq.Model, schemas.Anthropic)
+
+					if handlerStore != nil {
+						config, err := handlerStore.GetProviderConfig(provider)
+						if err != nil {
+							return nil, fmt.Errorf("failed to get config for provider %s: %w", provider, err)
+						}
+
+						if custom := config.CustomProviderConfig; custom != nil && custom.IsOperationAllowed != nil {
+							if custom.IsOperationAllowed(schemas.ResponsesRequest) {
+								return &schemas.BifrostRequest{ResponsesRequest: anthropicReq.ToBifrostResponsesRequest()}, nil
+							}
+							if custom.IsOperationAllowed(schemas.ChatCompletionRequest) {
+								return &schemas.BifrostRequest{ChatRequest: anthropicReq.ToBifrostChatRequest()}, nil
+							}
+						}
+					}
+
+					// For builtin providers without explicit overrides, use sane defaults.
+					if provider == schemas.Anthropic || provider == schemas.OpenAI {
+						return &schemas.BifrostRequest{ResponsesRequest: anthropicReq.ToBifrostResponsesRequest()}, nil
+					}
+
+					return &schemas.BifrostRequest{ChatRequest: anthropicReq.ToBifrostChatRequest()}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
+			ChatResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
+				// Convert chat response to Anthropic format
+				return anthropic.ToAnthropicChatCompletionResponse(resp), nil
+			},
 			ResponsesResponseConverter: func(resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+				// Only handles actual Responses API responses
 				if resp.ExtraFields.Provider == schemas.Anthropic {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -81,7 +107,12 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(resp *schemas.BifrostResponsesStreamResponse) (interface{}, error) {
+					// Only handles actual Responses API streaming responses
 					return anthropic.ToAnthropicResponsesStreamResponse(resp), nil
+				},
+				ChatStreamResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
+					// Convert chat stream response to Anthropic format
+					return anthropic.ToAnthropicChatCompletionStreamResponse(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
 					return anthropic.ToAnthropicResponsesStreamError(err)
@@ -94,10 +125,10 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 }
 
 // CreateAnthropicRouteConfigs creates route configurations for Anthropic endpoints.
-func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
+func CreateAnthropicRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return append([]RouteConfig{
 		createAnthropicCompleteRouteConfig(pathPrefix),
-	}, createAnthropicMessagesRouteConfig(pathPrefix)...)
+	}, createAnthropicMessagesRouteConfig(pathPrefix, handlerStore)...)
 }
 
 func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
@@ -209,6 +240,6 @@ func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *cont
 // NewAnthropicRouter creates a new AnthropicRouter with the given bifrost client.
 func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *AnthropicRouter {
 	return &AnthropicRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, append(CreateAnthropicRouteConfigs("/anthropic"), CreateAnthropicListModelsRouteConfigs("/anthropic", handlerStore)...), logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, append(CreateAnthropicRouteConfigs("/anthropic", handlerStore), CreateAnthropicListModelsRouteConfigs("/anthropic", handlerStore)...), logger),
 	}
 }

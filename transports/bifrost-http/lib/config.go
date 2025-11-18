@@ -35,6 +35,8 @@ import (
 type HandlerStore interface {
 	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
 	ShouldAllowDirectKeys() bool
+	// GetProviderConfig returns the provider configuration needed by integrations
+	GetProviderConfig(provider schemas.ModelProvider) (*schemas.ProviderConfig, error)
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -1041,6 +1043,46 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 // reads are atomic and won't cause panics.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// GetProviderConfig returns the processed provider configuration for integrations.
+// This mirrors BaseAccount.GetConfigForProvider so integrations can reason about
+// capabilities without reaching into the account directly.
+func (c *Config) GetProviderConfig(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if c == nil {
+		return nil, fmt.Errorf("config store not initialized")
+	}
+
+	config, err := c.GetProviderConfigRaw(provider)
+	if err != nil {
+		return nil, err
+	}
+
+	providerConfig := &schemas.ProviderConfig{}
+
+	if config.ProxyConfig != nil {
+		providerConfig.ProxyConfig = config.ProxyConfig
+	}
+
+	if config.NetworkConfig != nil {
+		providerConfig.NetworkConfig = *config.NetworkConfig
+	} else {
+		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
+	}
+
+	if config.ConcurrencyAndBufferSize != nil {
+		providerConfig.ConcurrencyAndBufferSize = *config.ConcurrencyAndBufferSize
+	} else {
+		providerConfig.ConcurrencyAndBufferSize = schemas.DefaultConcurrencyAndBufferSize
+	}
+
+	providerConfig.SendBackRawResponse = config.SendBackRawResponse
+
+	if config.CustomProviderConfig != nil {
+		providerConfig.CustomProviderConfig = config.CustomProviderConfig
+	}
+
+	return providerConfig, nil
 }
 
 // GetLoadedPlugins returns the current snapshot of loaded plugins.

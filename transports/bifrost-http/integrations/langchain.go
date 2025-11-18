@@ -22,7 +22,7 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateOpenAIRouteConfigs("/langchain", handlerStore)...)
 
 	// Add Anthropic routes to LangChain for Anthropic API compatibility
-	routes = append(routes, CreateAnthropicRouteConfigs("/langchain")...)
+	routes = append(routes, CreateAnthropicRouteConfigs("/langchain", handlerStore)...)
 
 	// Add GenAI routes to LangChain for Vertex AI compatibility
 	routes = append(routes, CreateGenAIRouteConfigs("/langchain")...)
