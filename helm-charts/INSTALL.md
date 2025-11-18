@@ -61,6 +61,17 @@ helm install bifrost bifrost/bifrost
 kubectl get pods -l app.kubernetes.io/name=bifrost
 ```
 
+### Method 2: Direct Install from GitHub Releases
+
+Install a specific version directly:
+
+```bash
+helm install bifrost \
+  https://github.com/maximhq/bifrost/releases/download/helm-chart-v1.3.5/bifrost-1.3.5.tgz
+```
+
+### Method 3: Install from Local Chart
+
 ### Method 2: From Source
 
 **Step 1:** Clone the repository
