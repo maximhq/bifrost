@@ -178,7 +178,7 @@ func TestCheckAndExecuteAgentMode(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := CheckAndExecuteAgentMode(&ctx, 10, originalReq, responseNoTools, llmCaller, nil, nil)
+	result, err := ExecuteAgent(&ctx, 10, originalReq, responseNoTools, llmCaller, nil, nil, nil)
 	if err != nil {
 		t.Errorf("Expected no error for response without tool calls, got: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestCheckAndExecuteAgentMode_MaxDepth(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute agent mode - should hit max depth and return error
-	result, err := CheckAndExecuteAgentMode(&ctx, maxDepth, originalReq, initialResponse, llmCaller, nil, nil)
+	result, err := ExecuteAgent(&ctx, maxDepth, originalReq, initialResponse, llmCaller, nil, nil, nil)
 
 	// Should return error when max depth is exceeded
 	if err == nil {

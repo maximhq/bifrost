@@ -76,6 +76,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationMissingProviderColumnInKeyTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddToolsToAutoExecuteJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddLogRetentionDaysColumn(ctx, db); err != nil {
 		return err
 	}
@@ -1039,6 +1042,40 @@ func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) 
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running add and fill provider column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddToolsToAutoExecuteJSONColumn adds the tools_to_auto_execute_json column to the mcp_client table
+func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_tools_to_auto_execute_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json"); err != nil {
+					return err
+				}
+				// Initialize existing rows with empty array
+				if err := tx.Exec("UPDATE config_mcp_clients SET tools_to_auto_execute_json = '[]' WHERE tools_to_auto_execute_json IS NULL OR tools_to_auto_execute_json = ''").Error; err != nil {
+					return fmt.Errorf("failed to initialize tools_to_auto_execute_json: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
 }

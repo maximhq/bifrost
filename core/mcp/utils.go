@@ -13,7 +13,7 @@ import (
 )
 
 // findMCPClientForTool safely finds a client that has the specified tool.
-func (m *MCPManager) findMCPClientForTool(toolName string) *MCPClient {
+func (m *MCPManager) findMCPClientForTool(toolName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -141,6 +141,33 @@ func shouldSkipToolForConfig(toolName string, config schemas.MCPClientConfig) bo
 	}
 
 	return true // Tool is skipped (nil is treated as [] - no tools)
+}
+
+// canAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
+// Returns true if the tool can be auto-executed, false otherwise.
+func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
+	// First check if tool is in ToolsToExecute (must be executable first)
+	if shouldSkipToolForConfig(toolName, config) {
+		return false // Tool is not in ToolsToExecute, so it cannot be auto-executed
+	}
+
+	// If ToolsToAutoExecute is specified (not nil), apply filtering
+	if config.ToolsToAutoExecute != nil {
+		// Handle empty array [] - means no tools are auto-executed
+		if len(config.ToolsToAutoExecute) == 0 {
+			return false // No tools auto-executed
+		}
+
+		// Handle wildcard "*" - if present, all tools are auto-executed
+		if slices.Contains(config.ToolsToAutoExecute, "*") {
+			return true // All tools auto-executed
+		}
+
+		// Check if specific tool is in the auto-execute list
+		return slices.Contains(config.ToolsToAutoExecute, toolName)
+	}
+
+	return false // Tool is not auto-executed (nil is treated as [] - no tools)
 }
 
 // shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
