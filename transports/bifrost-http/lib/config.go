@@ -2145,6 +2145,7 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 	c.MCPConfig.ClientConfigs[configIndex].Name = processedConfig.Name
 	c.MCPConfig.ClientConfigs[configIndex].Headers = processedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = processedConfig.ToolsToExecute
+	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = processedConfig.ToolsToAutoExecute
 
 	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
 	if clients, err := c.client.GetMCPClients(); err == nil && len(clients) > 0 {
@@ -2179,12 +2180,13 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 func (c *Config) RedactMCPClientConfig(config schemas.MCPClientConfig) schemas.MCPClientConfig {
 	// Create a copy with basic fields
 	configCopy := schemas.MCPClientConfig{
-		ID:               config.ID,
-		Name:             config.Name,
-		ConnectionType:   config.ConnectionType,
-		ConnectionString: config.ConnectionString,
-		StdioConfig:      config.StdioConfig,
-		ToolsToExecute:   append([]string{}, config.ToolsToExecute...),
+		ID:                 config.ID,
+		Name:               config.Name,
+		ConnectionType:     config.ConnectionType,
+		ConnectionString:   config.ConnectionString,
+		StdioConfig:        config.StdioConfig,
+		ToolsToExecute:     append([]string{}, config.ToolsToExecute...),
+		ToolsToAutoExecute: append([]string{}, config.ToolsToAutoExecute...),
 	}
 
 	// Handle connection string if present

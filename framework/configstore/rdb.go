@@ -156,7 +156,6 @@ func (s *RDBConfigStore) UpdateFrameworkConfig(ctx context.Context, config *tabl
 		}
 		return tx.Create(config).Error
 	})
-
 }
 
 // GetFrameworkConfig retrieves the framework configuration from the database.
@@ -666,13 +665,14 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		}
 
 		clientConfigs[i] = schemas.MCPClientConfig{
-			ID:               dbClient.ClientID,
-			Name:             dbClient.Name,
-			ConnectionType:   schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString: processedConnectionString,
-			StdioConfig:      dbClient.StdioConfig,
-			ToolsToExecute:   dbClient.ToolsToExecute,
-			Headers:          processedHeaders,
+			ID:                 dbClient.ClientID,
+			Name:               dbClient.Name,
+			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:   processedConnectionString,
+			StdioConfig:        dbClient.StdioConfig,
+			ToolsToExecute:     dbClient.ToolsToExecute,
+			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
+			Headers:            processedHeaders,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -706,13 +706,14 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 
 		// Create new client
 		dbClient := tables.TableMCPClient{
-			ClientID:         clientConfigCopy.ID,
-			Name:             clientConfigCopy.Name,
-			ConnectionType:   string(clientConfigCopy.ConnectionType),
-			ConnectionString: clientConfigCopy.ConnectionString,
-			StdioConfig:      clientConfigCopy.StdioConfig,
-			ToolsToExecute:   clientConfigCopy.ToolsToExecute,
-			Headers:          clientConfigCopy.Headers,
+			ClientID:           clientConfigCopy.ID,
+			Name:               clientConfigCopy.Name,
+			ConnectionType:     string(clientConfigCopy.ConnectionType),
+			ConnectionString:   clientConfigCopy.ConnectionString,
+			StdioConfig:        clientConfigCopy.StdioConfig,
+			ToolsToExecute:     clientConfigCopy.ToolsToExecute,
+			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
+			Headers:            clientConfigCopy.Headers,
 		}
 
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
@@ -749,6 +750,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		existingClient.ConnectionString = clientConfigCopy.ConnectionString
 		existingClient.StdioConfig = clientConfigCopy.StdioConfig
 		existingClient.ToolsToExecute = clientConfigCopy.ToolsToExecute
+		existingClient.ToolsToAutoExecute = clientConfigCopy.ToolsToAutoExecute
 		existingClient.Headers = clientConfigCopy.Headers
 
 		if err := tx.WithContext(ctx).Updates(&existingClient).Error; err != nil {
