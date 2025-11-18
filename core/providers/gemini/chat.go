@@ -14,8 +14,8 @@ func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostC
 	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	if provider == schemas.Vertex && !request.IsEmbedding {
-		// Add google/ prefix for Bifrost if not already present
-		if !strings.HasPrefix(model, "google/") {
+		// Add google/ prefix if not already present and model is not a custom fine-tuned model
+		if !schemas.IsAllDigitsASCII(model) && !strings.HasPrefix(model, "google/") {
 			model = "google/" + model
 		}
 	}
@@ -75,8 +75,8 @@ func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostC
 					}
 					toolCall := schemas.ChatAssistantMessageToolCall{
 						Index: uint16(len(toolCalls)),
-						ID:   schemas.Ptr(callID),
-						Type: schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
+						ID:    schemas.Ptr(callID),
+						Type:  schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
 						Function: schemas.ChatAssistantMessageToolCallFunction{
 							Name:      &name,
 							Arguments: string(jsonArgs),
