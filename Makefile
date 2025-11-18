@@ -10,7 +10,7 @@ LOG_LEVEL ?= info
 TEST_REPORTS_DIR ?= test-reports
 GOTESTSUM_FORMAT ?= testname
 LOCAL ?=
-\
+
 # Detect where 'go install' will place binaries. Prefer GOBIN, then GOPATH/bin, then default to $(shell go env GOBIN) or $(shell go env GOPATH)/bin
 # Set AIR_BIN to that path plus '/air' so make can invoke it directly without relying on PATH.
 GOBIN ?= $(shell go env GOBIN)

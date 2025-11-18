@@ -171,7 +171,7 @@ func (provider *HuggingFaceProvider) buildModelHubURL(request *schemas.BifrostLi
 		case int:
 			values.Set(key, strconv.Itoa(typed))
 		case float64:
-			values.Set(key, strconv.Itoa(int(typed)))
+			values.Set(key, strconv.FormatFloat(typed, 'f', -1, 64))
 		case bool:
 			values.Set(key, strconv.FormatBool(typed))
 		default:

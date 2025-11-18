@@ -15,20 +15,25 @@ func (provider *HuggingFaceProvider) Responses(ctx context.Context, key schemas.
 	}
 
 	// Resolve model alias if present on the key
-	effectiveRequest, _ := provider.prepareEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: request.Model}, key)
+	requestedModel := request.Model
+	effectiveRequest, _ := provider.prepareEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: requestedModel}, key)
 
-	// effectiveRequest is an embedding request clone, extract model
-	model := request.Model
-	if effectiveRequest != nil {
-		model = effectiveRequest.Model
+	// effectiveRequest is an embedding request clone, extract model actually used downstream
+	resolvedModel := requestedModel
+	if effectiveRequest != nil && effectiveRequest.Model != "" {
+		resolvedModel = effectiveRequest.Model
 	}
+
+	// Use a shallow copy so we don't mutate the caller's request
+	resolvedRequest := *request
+	resolvedRequest.Model = resolvedModel
 
 	// Use OpenAI-compatible Responses handler
 	response, bifrostErr := openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/responses", schemas.ResponsesRequest),
-		request,
+		&resolvedRequest,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.shouldSendRawResponse(ctx),
@@ -39,7 +44,7 @@ func (provider *HuggingFaceProvider) Responses(ctx context.Context, key schemas.
 		return nil, bifrostErr
 	}
 
-	provider.decorateResponseMetadata(&response.ExtraFields, request.Model, model)
+	provider.decorateResponseMetadata(&response.ExtraFields, requestedModel, resolvedModel)
 	return response, nil
 }
 
@@ -50,7 +55,14 @@ func (provider *HuggingFaceProvider) ResponsesStream(ctx context.Context, postHo
 	}
 
 	// Resolve model alias if present on the key
-	_, resolvedModel := provider.prepareEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: request.Model}, key)
+	requestedModel := request.Model
+	_, resolvedModel := provider.prepareEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: requestedModel}, key)
+
+	// Use a shallow copy so streaming uses the resolved model
+	resolvedRequest := *request
+	if resolvedModel != "" {
+		resolvedRequest.Model = resolvedModel
+	}
 
 	// Build auth header
 	var authHeader map[string]string
@@ -63,7 +75,7 @@ func (provider *HuggingFaceProvider) ResponsesStream(ctx context.Context, postHo
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/responses", schemas.ResponsesStreamRequest),
-		request,
+		&resolvedRequest,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		provider.shouldSendRawResponse(ctx),
