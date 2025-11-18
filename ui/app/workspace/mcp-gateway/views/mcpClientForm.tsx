@@ -6,6 +6,7 @@ import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
@@ -30,6 +31,7 @@ const emptyStdioConfig: MCPStdioConfig = {
 
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
+	is_code_mode_client: false,
 	connection_type: "http",
 	connection_string: "",
 	stdio_config: emptyStdioConfig,
@@ -57,7 +59,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		}
 	}, [open]);
 
-	const handleChange = (field: keyof CreateMCPClientRequest, value: string | string[] | MCPConnectionType | MCPStdioConfig | undefined) => {
+	const handleChange = (
+		field: keyof CreateMCPClientRequest,
+		value: string | string[] | boolean | MCPConnectionType | MCPStdioConfig | undefined,
+	) => {
 		setForm((prev) => ({ ...prev, [field]: value }));
 	};
 
@@ -95,10 +100,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	const validator = new Validator([
 		// Name validation
-		Validator.required(form.name?.trim(), "Client name is required"),
-		Validator.pattern(form.name || "", /^[a-zA-Z0-9-_]+$/, "Client name can only contain letters, numbers, hyphens and underscores"),
-		Validator.minLength(form.name || "", 3, "Client name must be at least 3 characters"),
-		Validator.maxLength(form.name || "", 50, "Client name cannot exceed 50 characters"),
+		Validator.required(form.name?.trim(), "Server name is required"),
+		Validator.pattern(form.name || "", /^[a-zA-Z0-9-_]+$/, "Server name can only contain letters, numbers, hyphens and underscores"),
+		Validator.minLength(form.name || "", 3, "Server name must be at least 3 characters"),
+		Validator.maxLength(form.name || "", 50, "Server name cannot exceed 50 characters"),
 
 		// Connection type specific validation
 		...(form.connection_type === "http" || form.connection_type === "sse"
@@ -156,7 +161,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setIsLoading(false);
 			toast({
 				title: "Success",
-				description: "Client created",
+				description: "Server created",
 			});
 			onSaved();
 			onClose();
@@ -170,7 +175,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		<Dialog open={open} onOpenChange={onClose}>
 			<DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
 				<DialogHeader>
-					<DialogTitle>New MCP Client</DialogTitle>
+					<DialogTitle>New MCP Server</DialogTitle>
 				</DialogHeader>
 				<div className="space-y-4">
 					<div className="space-y-2">
@@ -178,7 +183,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						<Input
 							value={form.name}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleChange("name", e.target.value)}
-							placeholder="Client name"
+							placeholder="Server name"
 							maxLength={50}
 						/>
 					</div>
@@ -195,6 +200,15 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 								<SelectItem value="stdio">STDIO</SelectItem>
 							</SelectContent>
 						</Select>
+					</div>
+
+					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<Label htmlFor="code-mode">Code Mode Client</Label>
+						<Switch
+							id="code-mode"
+							checked={form.is_code_mode_client || false}
+							onCheckedChange={(checked) => handleChange("is_code_mode_client", checked)}
+						/>
 					</div>
 
 					{(form.connection_type === "http" || form.connection_type === "sse") && (
@@ -275,7 +289,11 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<span>
-									<Button onClick={handleSubmit} disabled={!validator.isValid() || isLoading || !hasCreateMCPClientAccess} isLoading={isLoading}>
+									<Button
+										onClick={handleSubmit}
+										disabled={!validator.isValid() || isLoading || !hasCreateMCPClientAccess}
+										isLoading={isLoading}
+									>
 										Create
 									</Button>
 								</span>

@@ -4,16 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// findMCPClientForTool safely finds a client that has the specified tool.
-func (m *MCPManager) findMCPClientForTool(toolName string) *schemas.MCPClientState {
+// GetClientForTool safely finds a client that has the specified tool.
+func (m *MCPManager) GetClientForTool(toolName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -25,9 +27,15 @@ func (m *MCPManager) findMCPClientForTool(toolName string) *schemas.MCPClientSta
 	return nil
 }
 
-// getAvailableTools returns all tools from connected MCP clients.
+// GetToolPerClient returns all tools from connected MCP clients.
 // Applies client filtering if specified in the context.
-func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
+// Returns a map of client name to its available tools.
+// Parameters:
+//   - ctx: Execution context
+//
+// Returns:
+//   - map[string][]schemas.ChatTool: Map of client name to its available tools
+func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -38,15 +46,18 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 		includeClients = existingIncludeClients
 	}
 
-	tools := make([]schemas.ChatTool, 0)
-	for id, client := range m.clientMap {
+	tools := make(map[string][]schemas.ChatTool)
+	for _, client := range m.clientMap {
+		// Use client name as the key (not ID)
+		clientName := client.ExecutionConfig.Name
+
 		// Apply client filtering logic
-		if !shouldIncludeClient(id, includeClients) {
-			logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, id))
+		if !shouldIncludeClient(clientName, includeClients) {
+			logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName))
 			continue
 		}
 
-		logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", id, client.ExecutionConfig.ToolsToExecute))
+		logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", clientName, client.ExecutionConfig.ToolsToExecute))
 
 		// Add all tools from this client
 		for toolName, tool := range client.ToolMap {
@@ -57,15 +68,36 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 			}
 
 			// Check if tool should be skipped based on request context
-			if shouldSkipToolForRequest(id, toolName, ctx) {
+			if shouldSkipToolForRequest(ctx, clientName, toolName) {
 				logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in include tools list", MCPLogPrefix, toolName))
 				continue
 			}
 
-			tools = append(tools, tool)
+			tools[clientName] = append(tools[clientName], tool)
+		}
+		if len(tools[clientName]) > 0 {
+			logger.Debug(fmt.Sprintf("%s Added %d tools for MCP client %s", MCPLogPrefix, len(tools[clientName]), clientName))
 		}
 	}
 	return tools
+}
+
+// GetClientByName returns a client by name.
+//
+// Parameters:
+//   - clientName: Name of the client to get
+//
+// Returns:
+//   - *schemas.MCPClientState: Client state if found, nil otherwise
+func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, client := range m.clientMap {
+		if client.ExecutionConfig.Name == clientName {
+			return client
+		}
+	}
+	return nil
 }
 
 // retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
@@ -101,7 +133,7 @@ func retrieveExternalTools(ctx context.Context, client *client.Client) (map[stri
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.
-func shouldIncludeClient(clientID string, includeClients []string) bool {
+func shouldIncludeClient(clientName string, includeClients []string) bool {
 	// If includeClients is specified (not nil), apply whitelist filtering
 	if includeClients != nil {
 		// Handle empty array [] - means no clients are included
@@ -115,7 +147,7 @@ func shouldIncludeClient(clientID string, includeClients []string) bool {
 		}
 
 		// Check if specific client is in the list
-		return slices.Contains(includeClients, clientID)
+		return slices.Contains(includeClients, clientName)
 	}
 
 	// Default: include all clients when no filtering specified (nil case)
@@ -171,8 +203,10 @@ func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
 }
 
 // shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
-func shouldSkipToolForRequest(clientID, toolName string, ctx context.Context) bool {
+func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
 	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+
+	logger.Debug(fmt.Sprintf("%s Checking if tool %s should be skipped for request: %v", MCPLogPrefix, toolName, includeTools))
 
 	if includeTools != nil {
 		// Try []string first (preferred type)
@@ -183,12 +217,12 @@ func shouldSkipToolForRequest(clientID, toolName string, ctx context.Context) bo
 			}
 
 			// Handle wildcard "clientName/*" - if present, all tools are included for this client
-			if slices.Contains(includeToolsList, fmt.Sprintf("%s/*", clientID)) {
+			if slices.Contains(includeToolsList, fmt.Sprintf("%s/*", clientName)) {
 				return false // All tools allowed
 			}
 
 			// Check if specific tool is in the list (format: clientName/toolName)
-			fullToolName := fmt.Sprintf("%s/%s", clientID, toolName)
+			fullToolName := fmt.Sprintf("%s/%s", clientName, toolName)
 			if slices.Contains(includeToolsList, fullToolName) {
 				return false // Tool is explicitly allowed
 			}
@@ -308,4 +342,116 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	}
 
 	return nil
+}
+
+// parseToolName parses the tool name to be JavaScript-compatible.
+// It converts spaces to hyphens, removes invalid characters, and ensures
+// the name starts with a valid JavaScript identifier character.
+func parseToolName(toolName string) string {
+	if toolName == "" {
+		return ""
+	}
+
+	var result strings.Builder
+	runes := []rune(toolName)
+
+	// Process first character - must be letter, underscore, or dollar sign
+	if len(runes) > 0 {
+		first := runes[0]
+		if unicode.IsLetter(first) || first == '_' || first == '$' {
+			result.WriteRune(unicode.ToLower(first))
+		} else {
+			// If first char is invalid, prefix with underscore
+			result.WriteRune('_')
+			if unicode.IsDigit(first) {
+				result.WriteRune(first)
+			}
+		}
+	}
+
+	// Process remaining characters
+	for i := 1; i < len(runes); i++ {
+		r := runes[i]
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '$' {
+			result.WriteRune(unicode.ToLower(r))
+		} else if unicode.IsSpace(r) || r == '-' {
+			// Replace spaces and existing hyphens with single hyphen
+			// Avoid consecutive hyphens
+			if result.Len() > 0 && result.String()[result.Len()-1] != '-' {
+				result.WriteRune('-')
+			}
+		}
+		// Skip other invalid characters
+	}
+
+	parsed := result.String()
+
+	// Remove trailing hyphens
+	parsed = strings.TrimRight(parsed, "-")
+
+	// Ensure we have at least one character
+	// Should never happen, but just in case
+	if parsed == "" {
+		return "tool"
+	}
+
+	return parsed
+}
+
+// extractToolCallsFromCode extracts tool calls from TypeScript code
+// Tool calls are in the format: serverName.toolName(...) or await serverName.toolName(...)
+func extractToolCallsFromCode(code string) ([]toolCallInfo, error) {
+	toolCalls := []toolCallInfo{}
+
+	// Regex pattern to match tool calls:
+	// - Optional "await" keyword
+	// - Server name (identifier)
+	// - Dot
+	// - Tool name (identifier)
+	// - Opening parenthesis
+	// This pattern matches: await serverName.toolName( or serverName.toolName(
+	toolCallPattern := regexp.MustCompile(`(?:await\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\.\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(`)
+
+	// Find all matches
+	matches := toolCallPattern.FindAllStringSubmatch(code, -1)
+	for _, match := range matches {
+		if len(match) >= 3 {
+			serverName := match[1]
+			toolName := match[2]
+			toolCalls = append(toolCalls, toolCallInfo{
+				serverName: serverName,
+				toolName:   toolName,
+			})
+		}
+	}
+
+	return toolCalls, nil
+}
+
+// isToolCallAllowedForCodeMode checks if a tool call is allowed based on allowedAutoExecutionTools map
+func isToolCallAllowedForCodeMode(serverName, toolName string, allClientNames []string, allowedAutoExecutionTools map[string][]string) bool {
+	// Check if the server name is in the list of all client names
+	if !slices.Contains(allClientNames, serverName) {
+		// It can be a built-in JavaScript/TypeScript object, if not then downstream execution will fail with a runtime error.
+		return true
+	}
+
+	// Get allowed tools for this server
+	allowedTools, exists := allowedAutoExecutionTools[serverName]
+	if !exists {
+		// Server not in allowed list, return false to prevent downstream execution.
+		return false
+	}
+
+	// Check if wildcard "*" is present (all tools allowed)
+	if slices.Contains(allowedTools, "*") {
+		return true
+	}
+
+	// Check if specific tool is in the allowed list
+	if slices.Contains(allowedTools, toolName) {
+		return true
+	}
+
+	return false // Tool not in allowed list
 }

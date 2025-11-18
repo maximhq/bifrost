@@ -79,6 +79,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddToolsToAutoExecuteJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddIsCodeModeClientColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddLogRetentionDaysColumn(ctx, db); err != nil {
 		return err
 	}
@@ -1065,6 +1068,40 @@ func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB) 
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tools_to_auto_execute_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddIsCodeModeClientColumn adds the is_code_mode_client column to the config_mcp_clients table
+func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_is_code_mode_client_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "is_code_mode_client") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
+					return err
+				}
+				// Initialize existing rows with false (default value)
+				if err := tx.Exec("UPDATE config_mcp_clients SET is_code_mode_client = false WHERE is_code_mode_client IS NULL").Error; err != nil {
+					return fmt.Errorf("failed to initialize is_code_mode_client: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
 				return err
 			}
 			return nil

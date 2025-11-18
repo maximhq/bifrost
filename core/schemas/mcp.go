@@ -8,16 +8,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-type MCPToolHandler interface {
-	SetupCompleted() bool                                                                                                                                   // Returns true if the handler is fully setup and ready to use
-	ParseAndAddToolsToRequest(ctx context.Context, req *BifrostRequest) *BifrostRequest                                                                     // Parse the available tools and add them to the Bifrost request
-	ExecuteTool(ctx context.Context, toolCall ChatAssistantMessageToolCall) (*ChatMessage, error)                                                           // Execute a tool call and return the result as a tool message, It DOES NOT check if the tool is allowed to be executed by the client, so it is the responsibility of the caller to check if the tool is allowed to be executed by the client.
-	ExecuteAgent(ctx context.Context, req *BifrostChatRequest, resp *BifrostChatResponse, llmCaller BifrostLLMCaller) (*BifrostChatResponse, *BifrostError) // Execute an agent mode tool call and return the result as a chat response
-	SetToolsFetcherFunc(toolsFetcherFunc func(ctx context.Context) []ChatTool)                                                                              // Set the function to get the available tools
-	SetClientForToolFetcherFunc(clientForToolFetcherFunc func(toolName string) *MCPClientState)                                                             // Set the function to get the client for a tool
-	SetFetchNewRequestIDFunc(fetchNewRequestIDFunc func(ctx context.Context) string)                                                                        // Set the function to get a new request ID
-}
-
 // BifrostLLMCaller defines the interface for making LLM calls from the agent mode.
 // This interface allows the MCP manager to make chat completion requests during agent execution.
 type BifrostLLMCaller interface {
@@ -42,6 +32,7 @@ type MCPConfig struct {
 type MCPClientConfig struct {
 	ID               string            `json:"id"`                          // Client ID
 	Name             string            `json:"name"`                        // Client name
+	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString *string           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)

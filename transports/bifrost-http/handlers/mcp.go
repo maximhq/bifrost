@@ -194,12 +194,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := h.mcpManager.AddMCPClient(ctx, req); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add MCP client: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 		return
 	}
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
-		"message": "MCP client added successfully",
+		"message": "MCP client connected successfully",
 	})
 }
 

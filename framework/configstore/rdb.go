@@ -667,6 +667,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		clientConfigs[i] = schemas.MCPClientConfig{
 			ID:                 dbClient.ClientID,
 			Name:               dbClient.Name,
+			IsCodeModeClient:   dbClient.IsCodeModeClient,
 			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:   processedConnectionString,
 			StdioConfig:        dbClient.StdioConfig,
@@ -702,12 +703,14 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		}
 
 		// Substitute environment variables back to their original form
-		substituteMCPClientEnvVars(&clientConfigCopy, envKeys)
+		// For create operations, no existing headers to restore from
+		substituteMCPClientEnvVars(&clientConfigCopy, envKeys, nil)
 
 		// Create new client
 		dbClient := tables.TableMCPClient{
 			ClientID:           clientConfigCopy.ID,
 			Name:               clientConfigCopy.Name,
+			IsCodeModeClient:   clientConfigCopy.IsCodeModeClient,
 			ConnectionType:     string(clientConfigCopy.ConnectionType),
 			ConnectionString:   clientConfigCopy.ConnectionString,
 			StdioConfig:        clientConfigCopy.StdioConfig,
@@ -742,18 +745,20 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 
 		// Substitute environment variables back to their original form
-		substituteMCPClientEnvVars(&clientConfigCopy, envKeys)
+		// Pass existing headers to restore redacted plain values
+		substituteMCPClientEnvVars(&clientConfigCopy, envKeys, existingClient.Headers)
 
 		// Update existing client
 		existingClient.Name = clientConfigCopy.Name
-		existingClient.ConnectionType = string(clientConfigCopy.ConnectionType)
-		existingClient.ConnectionString = clientConfigCopy.ConnectionString
-		existingClient.StdioConfig = clientConfigCopy.StdioConfig
+		existingClient.IsCodeModeClient = clientConfigCopy.IsCodeModeClient
 		existingClient.ToolsToExecute = clientConfigCopy.ToolsToExecute
 		existingClient.ToolsToAutoExecute = clientConfigCopy.ToolsToAutoExecute
 		existingClient.Headers = clientConfigCopy.Headers
 
-		if err := tx.WithContext(ctx).Updates(&existingClient).Error; err != nil {
+		// Use Select to explicitly include IsCodeModeClient even when it's false (zero value)
+		// GORM's Updates() skips zero values by default, so we need to explicitly select fields
+		// Using struct field names - GORM will convert them to column names automatically
+		if err := tx.WithContext(ctx).Select("name", "is_code_mode_client", "tools_to_execute_json", "tools_to_auto_execute_json", "headers_json", "updated_at").Updates(&existingClient).Error; err != nil {
 			return s.parseGormError(err)
 		}
 		return nil

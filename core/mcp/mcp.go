@@ -17,11 +17,11 @@ import (
 
 const (
 	// MCP defaults and identifiers
-	BifrostMCPVersion                   = "1.0.0"            // Version identifier for Bifrost
-	BifrostMCPClientName                = "BifrostClient"    // Name for internal Bifrost MCP client
-	BifrostMCPClientKey                 = "bifrost-internal" // Key for internal Bifrost client in clientMap
-	MCPLogPrefix                        = "[Bifrost MCP]"    // Consistent logging prefix
-	MCPClientConnectionEstablishTimeout = 30 * time.Second   // Timeout for MCP client connection establishment
+	BifrostMCPVersion                   = "1.0.0"           // Version identifier for Bifrost
+	BifrostMCPClientName                = "BifrostClient"   // Name for internal Bifrost MCP client
+	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
+	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
+	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
 
 	// Context keys for client filtering in requests
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
@@ -40,7 +40,7 @@ const (
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
 	ctx                  context.Context
-	toolsHandler         schemas.MCPToolHandler             // Handler for MCP tools
+	toolsHandler         *ToolsHandler                      // Handler for MCP tools
 	server               *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
 	clientMap            map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
 	mu                   sync.RWMutex                       // Read-write mutex for thread-safe operations
@@ -91,16 +91,13 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 		toolExecutionTimeout:  toolExecutionTimeout,
 		fetchNewRequestIDFunc: config.FetchNewRequestIDFunc,
 	}
-	toolsHandler, err := NewDefaultToolsHandler(&DefaultHandlerConfig{
+	toolsHandler, err := NewToolsHandler(&ToolsHandlerConfig{
 		toolExecutionTimeout: toolExecutionTimeout,
 		maxAgentDepth:        maxAgentDepth,
-	})
+	}, manager)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create tools handler: %w", err)
 	}
-	toolsHandler.SetToolsFetcherFunc(manager.getAvailableTools)
-	toolsHandler.SetClientForToolFetcherFunc(manager.findMCPClientForTool)
-	toolsHandler.SetFetchNewRequestIDFunc(config.FetchNewRequestIDFunc)
 	manager.toolsHandler = toolsHandler
 	// Process client configs: create client map entries and establish connections
 	for _, clientConfig := range config.ClientConfigs {
@@ -113,51 +110,14 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 }
 
 func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
-	if !m.toolsHandler.SetupCompleted() {
-		logger.Error("%s Tools handler is not fully setup", MCPLogPrefix)
-		return req
-	}
 	return m.toolsHandler.ParseAndAddToolsToRequest(ctx, req)
 }
 
 func (m *MCPManager) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	if !m.toolsHandler.SetupCompleted() {
-		logger.Error("%s Tools handler is not fully setup", MCPLogPrefix)
-		return nil, fmt.Errorf("tools handler is not fully setup")
-	}
-	// Check if the user has permission to execute the tool call
-	availableTools := m.getAvailableTools(ctx)
-	toolName := toolCall.Function.Name
-	if toolName == nil {
-		return nil, fmt.Errorf("tool call missing function name")
-	}
-
-	// Check if the tool is available
-	toolFound := false
-	for _, mcpTool := range availableTools {
-		if mcpTool.Function != nil && mcpTool.Function.Name == *toolName {
-			toolFound = true
-			break
-		}
-	}
-
-	if !toolFound {
-		return nil, fmt.Errorf("tool '%s' is not available or not permitted", *toolName)
-	}
-
 	return m.toolsHandler.ExecuteTool(ctx, toolCall)
 }
 
 func (m *MCPManager) CheckAndExecuteAgent(ctx context.Context, req *schemas.BifrostChatRequest, response *schemas.BifrostChatResponse, llmCaller schemas.BifrostLLMCaller) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	if !m.toolsHandler.SetupCompleted() {
-		logger.Error("%s Tools handler is not fully setup", MCPLogPrefix)
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "tools handler is not fully setup",
-			},
-		}
-	}
 	if llmCaller == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,

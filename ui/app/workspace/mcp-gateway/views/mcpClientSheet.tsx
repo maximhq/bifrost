@@ -34,6 +34,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		mode: "onBlur",
 		defaultValues: {
 			name: mcpClient.config.name,
+			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -44,6 +45,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	useEffect(() => {
 		form.reset({
 			name: mcpClient.config.name,
+			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -56,6 +58,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				id: mcpClient.config.id,
 				data: {
 					name: data.name,
+					is_code_mode_client: data.is_code_mode_client,
 					headers: data.headers,
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
@@ -187,7 +190,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										{mcpClient.config.name}
 										<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
 									</SheetTitle>
-									<SheetDescription>MCP client configuration and available tools</SheetDescription>
+									<SheetDescription>MCP server configuration and available tools</SheetDescription>
 								</div>
 								<Button type="submit" disabled={isUpdating || !form.formState.isDirty || !hasUpdateMCPClientAccess} isLoading={isUpdating}>
 									Save Changes
@@ -211,6 +214,18 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 												</FormControl>
 												<FormMessage />
 											</div>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="is_code_mode_client"
+									render={({ field }) => (
+										<FormItem className="flex items-center justify-between rounded-lg border p-4">
+											<FormLabel>Code Mode Client</FormLabel>
+											<FormControl>
+												<Switch checked={field.value || false} onCheckedChange={field.onChange} />
+											</FormControl>
 										</FormItem>
 									)}
 								/>
@@ -315,8 +330,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											const isToolEnabled = currentTools?.includes("*") || currentTools?.includes(tool.name);
 											// If tools_to_auto_execute contains "*", all enabled tools are auto-executed
 											const isAutoExecuteEnabled =
-												(currentAutoExecute?.includes("*") && isToolEnabled) ||
-												(currentAutoExecute?.includes(tool.name) && isToolEnabled);
+												(currentAutoExecute?.includes("*") && isToolEnabled) || (currentAutoExecute?.includes(tool.name) && isToolEnabled);
 											// Disable auto-execute toggle if tool is not in tools_to_execute
 											const isAutoExecuteDisabled = !isToolEnabled;
 

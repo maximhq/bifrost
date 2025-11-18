@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/bytedance/sonic"
@@ -18,7 +19,7 @@ func ExecuteAgent(
 	llmCaller schemas.BifrostLLMCaller,
 	fetchNewRequestIDFunc func(ctx context.Context) string,
 	executeToolFunc func(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error),
-	clientForToolFetcherFunc func(toolName string) *schemas.MCPClientState, // Function to get the client for a tool
+	clientManager ClientManager,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	logger.Debug("Entering agent mode - detected tool calls in response")
 
@@ -60,9 +61,87 @@ func ExecuteAgent(
 			}
 
 			toolName := *toolCall.Function.Name
-			client := clientForToolFetcherFunc(toolName)
+			client := clientManager.GetClientForTool(toolName)
 			if client == nil {
-				// If client not found, treat as non-auto-executable
+				// Allow code mode list and read tool tools
+				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile {
+					autoExecutableTools = append(autoExecutableTools, toolCall)
+					logger.Debug(fmt.Sprintf("Tool %s can be auto-executed", toolName))
+					continue
+				} else if toolName == ToolTypeExecuteToolCode {
+					// Build allowed auto-execution tools map for code mode validation
+					allClientNames, allowedAutoExecutionTools := buildAllowedAutoExecutionTools(*ctx, clientManager)
+
+					// Parse tool arguments
+					var arguments map[string]interface{}
+					if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+						logger.Debug(fmt.Sprintf("%s Failed to parse tool arguments: %v", CodeModeLogPrefix, err))
+						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+						continue
+					}
+
+					code, ok := arguments["code"].(string)
+					if !ok || code == "" {
+						logger.Debug(fmt.Sprintf("%s Code parameter missing or empty", CodeModeLogPrefix))
+						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+						continue
+					}
+
+					// Step 1: Convert literal \n escape sequences to actual newlines for parsing
+					codeWithNewlines := strings.ReplaceAll(code, "\\n", "\n")
+					if len(codeWithNewlines) != len(code) {
+						logger.Debug(fmt.Sprintf("%s Converted literal \\n escape sequences to actual newlines", CodeModeLogPrefix))
+					}
+
+					// Step 2: Extract tool calls from code during AST formation
+					extractedToolCalls, err := extractToolCallsFromCode(codeWithNewlines)
+					if err != nil {
+						logger.Debug(fmt.Sprintf("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err))
+						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+						continue
+					}
+
+					logger.Debug(fmt.Sprintf("%s Extracted %d tool call(s) from code", CodeModeLogPrefix, len(extractedToolCalls)))
+
+					// Step 3: Validate all tool calls against allowedAutoExecutionTools
+					canAutoExecute := true
+					if len(extractedToolCalls) > 0 {
+						// If there are tool calls, we need allowedAutoExecutionTools to validate them
+						if len(allowedAutoExecutionTools) == 0 {
+							logger.Debug(fmt.Sprintf("%s Validation failed: no allowed auto-execution tools configured", CodeModeLogPrefix))
+							canAutoExecute = false
+						} else {
+							logger.Debug(fmt.Sprintf("%s Validating %d tool call(s) against %d allowed server(s)", CodeModeLogPrefix, len(extractedToolCalls), len(allowedAutoExecutionTools)))
+
+							// Validate each tool call
+							for _, extractedToolCall := range extractedToolCalls {
+								isAllowed := isToolCallAllowedForCodeMode(extractedToolCall.serverName, extractedToolCall.toolName, allClientNames, allowedAutoExecutionTools)
+								if !isAllowed {
+									logger.Debug(fmt.Sprintf("%s Tool call %s.%s: allowed=%v", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName, isAllowed))
+									logger.Debug(fmt.Sprintf("%s Validation failed: tool call %s.%s not in auto-execute list", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName))
+									canAutoExecute = false
+									break
+								}
+							}
+							if canAutoExecute {
+								logger.Debug(fmt.Sprintf("%s All tool calls validated successfully", CodeModeLogPrefix))
+							}
+						}
+					} else {
+						logger.Debug(fmt.Sprintf("%s No tool calls found in code, skipping validation", CodeModeLogPrefix))
+					}
+
+					// Add to appropriate list based on validation result
+					if canAutoExecute {
+						autoExecutableTools = append(autoExecutableTools, toolCall)
+						logger.Debug(fmt.Sprintf("Tool %s can be auto-executed (validation passed)", toolName))
+					} else {
+						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+						logger.Debug(fmt.Sprintf("Tool %s cannot be auto-executed (validation failed)", toolName))
+					}
+					continue
+				}
+				// Else, if client not found, treat as non-auto-executable
 				logger.Warn(fmt.Sprintf("Client not found for tool %s, treating as non-auto-executable", toolName))
 				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 				continue
@@ -77,6 +156,9 @@ func ExecuteAgent(
 				logger.Debug(fmt.Sprintf("Tool %s cannot be auto-executed", toolName))
 			}
 		}
+
+		logger.Debug(fmt.Sprintf("Auto-executable tools: %d", len(autoExecutableTools)))
+		logger.Debug(fmt.Sprintf("Non-auto-executable tools: %d", len(nonAutoExecutableTools)))
 
 		// Execute auto-executable tools first
 		var executedToolResults []*schemas.ChatMessage
@@ -189,6 +271,12 @@ func hasToolCalls(response *schemas.BifrostChatResponse) bool {
 	}
 
 	choice := response.Choices[0]
+
+	// If finish_reason is "stop", this indicates non-auto-executable tools that require user approval.
+	// Don't return true even if tool calls are present, as the agent loop should not process them.
+	if choice.FinishReason != nil && *choice.FinishReason == "stop" {
+		return false
+	}
 
 	// Check finish reason
 	if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
@@ -335,16 +423,16 @@ func createResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	}
 
 	// Determine finish reason
-	var finishReason *string
-	if len(nonAutoExecutableToolCalls) > 0 {
-		reason := "tool_calls"
-		finishReason = &reason
-	}
+	// Note: We set finish_reason to "stop" (not "tool_calls") for non-auto-executable tools
+	// to prevent the agent loop from retrying. The tool calls are still included in the response
+	// for the caller to handle, but setting finish_reason to "stop" ensures hasToolCalls returns false
+	// and the agent loop exits properly.
+	finishReason := "stop"
 
 	// Create a single choice with the formatted content and non-auto-executable tool calls
 	response.Choices = append(response.Choices, schemas.BifrostResponseChoice{
 		Index:        0,
-		FinishReason: finishReason,
+		FinishReason: &finishReason,
 		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 			Message: &schemas.ChatMessage{
 				Role:    schemas.ChatMessageRoleAssistant,
@@ -357,4 +445,53 @@ func createResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	})
 
 	return response
+}
+
+// buildAllowedAutoExecutionTools builds a map of client names to their auto-executable tools
+// Returns a map where keys are client names and values are lists of parsed tool names (as they appear in code)
+// Uses ToolsToAutoExecute field from client ExecutionConfig
+func buildAllowedAutoExecutionTools(ctx context.Context, clientManager ClientManager) ([]string, map[string][]string) {
+	allowedTools := make(map[string][]string)
+	availableToolsPerClient := clientManager.GetToolPerClient(ctx)
+	allClientNames := []string{}
+
+	for clientName := range availableToolsPerClient {
+		client := clientManager.GetClientByName(clientName)
+		if client == nil {
+			continue
+		}
+		allClientNames = append(allClientNames, clientName)
+
+		// Only include code mode clients
+		if !client.ExecutionConfig.IsCodeModeClient {
+			continue
+		}
+
+		// Get auto-executable tools from config
+		toolsToAutoExecute := client.ExecutionConfig.ToolsToAutoExecute
+		if len(toolsToAutoExecute) == 0 {
+			// No auto-executable tools configured for this client
+			continue
+		}
+
+		// Parse tool names (as they appear in JavaScript code)
+		autoExecutableTools := []string{}
+		for _, originalToolName := range toolsToAutoExecute {
+			// Handle wildcard "*" - means all tools are auto-executable
+			if originalToolName == "*" {
+				autoExecutableTools = append(autoExecutableTools, "*")
+				continue
+			}
+			// Use parsed tool name (as it appears in code)
+			parsedToolName := parseToolName(originalToolName)
+			autoExecutableTools = append(autoExecutableTools, parsedToolName)
+		}
+
+		// Add to map if there are auto-executable tools
+		if len(autoExecutableTools) > 0 {
+			allowedTools[clientName] = autoExecutableTools
+		}
+	}
+
+	return allClientNames, allowedTools
 }

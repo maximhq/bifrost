@@ -353,8 +353,8 @@ export default function AppSidebar() {
 			hasAccess: hasModelProvidersAccess,
 		},
 		{
-			title: "MCP Tools",
-			url: "/workspace/mcp-clients",
+			title: "MCP Gateway",
+			url: "/workspace/mcp-gateway",
 			icon: MCPIcon,
 			description: "MCP configuration",
 			hasAccess: hasMCPToolsAccess,

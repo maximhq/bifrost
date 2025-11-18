@@ -1125,7 +1125,6 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: err.Error(),
-				Error:   err,
 			},
 		}
 	}
@@ -1205,7 +1204,7 @@ func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
 		bifrost.mcpManager = mcpManager
 	}
 
-	return nil
+	return bifrost.mcpManager.AddClient(config)
 }
 
 // RemoveMCPClient removes an MCP client from the Bifrost instance.

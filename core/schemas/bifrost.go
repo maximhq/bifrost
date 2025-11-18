@@ -359,7 +359,7 @@ type BifrostError struct {
 	Error          *ErrorField             `json:"error"`
 	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
-	ExtraFields    BifrostErrorExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
 }
 
 // StreamControl represents stream control options.

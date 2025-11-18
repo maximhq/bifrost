@@ -149,6 +149,7 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 	// Update the client's execution config with new tool filters
 	config := client.ExecutionConfig
 	config.Name = updatedConfig.Name
+	config.IsCodeModeClient = updatedConfig.IsCodeModeClient
 	config.Headers = updatedConfig.Headers
 	config.ToolsToExecute = updatedConfig.ToolsToExecute
 	config.ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
@@ -557,7 +558,9 @@ func (m *MCPManager) createLocalMCPClient() (*schemas.MCPClientState, error) {
 	// after the server is ready using NewInProcessClient
 	return &schemas.MCPClientState{
 		ExecutionConfig: schemas.MCPClientConfig{
-			Name: BifrostMCPClientName,
+			ID:             BifrostMCPClientKey,
+			Name:           BifrostMCPClientName,
+			ToolsToExecute: []string{"*"}, // Allow all tools for internal client
 		},
 		ToolMap: make(map[string]schemas.ChatTool),
 		ConnectionInfo: schemas.MCPClientConnectionInfo{
