@@ -92,6 +92,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Cerebras,
 		schemas.Gemini,
 		schemas.OpenRouter,
+		schemas.Chutes,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -266,6 +267,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("OPENROUTER_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.Chutes:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("CHUTES_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -509,6 +518,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     4, // OpenRouter can be variable (proxy service)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Chutes:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     3, // Chutes.ai is generally stable
+				RetryBackoffInitial:            500 * time.Millisecond,
+				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -863,6 +885,37 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  schemas.Chutes,
+		ChatModel: "llama-3-8b-instruct",
+		TextModel: "llama-3-8b-instruct",
+		EmbeddingModel: "llama-3-8b-instruct",
+		Scenarios: TestScenarios{
+			TextCompletion:        true,
+			TextCompletionStream:  true,
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			ToolCallsStreaming:    true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              false,
+			ImageBase64:           false,
+			MultipleImages:        false,
+			CompleteEnd2End:       true,
+			SpeechSynthesis:       false,
+			SpeechSynthesisStream: false,
+			Transcription:         false,
+			TranscriptionStream:   false,
+			Embedding:             true,
+			ListModels:            true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Chutes, Model: "llama-3-70b-instruct"},
 		},
 	},
 }

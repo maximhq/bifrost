@@ -45,6 +45,7 @@ const (
 	Parasail   ModelProvider = "parasail"
 	Perplexity ModelProvider = "perplexity"
 	Cerebras   ModelProvider = "cerebras"
+	Chutes     ModelProvider = "chutes"
 	Gemini     ModelProvider = "gemini"
 	OpenRouter ModelProvider = "openrouter"
 	Elevenlabs ModelProvider = "elevenlabs"
@@ -65,6 +66,7 @@ var StandardProviders = []ModelProvider{
 	Azure,
 	Bedrock,
 	Cerebras,
+	Chutes,
 	Cohere,
 	Gemini,
 	Groq,
@@ -150,6 +152,9 @@ type BifrostRequest struct {
 	EmbeddingRequest      *BifrostEmbeddingRequest
 	SpeechRequest         *BifrostSpeechRequest
 	TranscriptionRequest  *BifrostTranscriptionRequest
+
+	// Context stores request-specific context data
+	Context context.Context
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.

@@ -1312,6 +1312,12 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return perplexity.NewPerplexityProvider(config, bifrost.logger)
 	case schemas.Cerebras:
 		return providers.NewCerebrasProvider(config, bifrost.logger)
+	case schemas.Chutes:
+		provider, err := providers.NewChutesProvider(config, bifrost.logger)
+		if err != nil {
+			return nil, err
+		}
+		return provider, nil
 	case schemas.Gemini:
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:
