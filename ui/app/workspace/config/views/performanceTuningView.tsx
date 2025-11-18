@@ -23,6 +23,8 @@ const defaultConfig: CoreConfig = {
 	enable_litellm_fallbacks: false,
 	disable_content_logging: false,
 	log_retention_days: 365,
+	mcp_agent_depth: 10,
+	mcp_tool_execution_timeout: 30,
 };
 
 export default function PerformanceTuningView() {
@@ -91,7 +93,11 @@ export default function PerformanceTuningView() {
 				return;
 			}
 
-			await updateCoreConfig({ ...bifrostConfig!, client_config: localConfig }).unwrap();
+			if (!bifrostConfig) {
+				toast.error("Configuration not loaded. Please refresh and try again.");
+				return;
+			}
+			await updateCoreConfig({ ...bifrostConfig, client_config: localConfig }).unwrap();
 			toast.success("Performance settings updated successfully.");
 		} catch (error) {
 			toast.error(getErrorMessage(error));

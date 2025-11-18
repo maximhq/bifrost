@@ -8,6 +8,7 @@ import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { getErrorMessage, useUpdateMCPClientMutation } from "@/lib/store";
@@ -34,6 +35,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		mode: "onBlur",
 		defaultValues: {
 			name: mcpClient.config.name,
+			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -44,6 +46,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	useEffect(() => {
 		form.reset({
 			name: mcpClient.config.name,
+			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -56,6 +59,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				id: mcpClient.config.id,
 				data: {
 					name: data.name,
+					is_code_mode_client: data.is_code_mode_client,
 					headers: data.headers,
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
@@ -121,9 +125,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					if (newTools.includes("*")) {
 						form.setValue("tools_to_auto_execute", ["*"], { shouldDirty: true });
 					} else {
-						// Switch to explicit list
-						const remainingTools = newTools.filter((tool) => currentAutoExecute.includes(tool) || currentAutoExecute.includes("*"));
-						form.setValue("tools_to_auto_execute", remainingTools, { shouldDirty: true });
+						// Switch to explicit list - when in wildcard mode, all remaining tools should be auto-execute
+						form.setValue("tools_to_auto_execute", newTools, { shouldDirty: true });
 					}
 				} else {
 					form.setValue("tools_to_auto_execute", newAutoExecute, { shouldDirty: true });
@@ -187,7 +190,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										{mcpClient.config.name}
 										<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
 									</SheetTitle>
-									<SheetDescription>MCP client configuration and available tools</SheetDescription>
+									<SheetDescription>MCP server configuration and available tools</SheetDescription>
 								</div>
 								<Button type="submit" disabled={isUpdating || !form.formState.isDirty || !hasUpdateMCPClientAccess} isLoading={isUpdating}>
 									Save Changes
@@ -211,6 +214,18 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 												</FormControl>
 												<FormMessage />
 											</div>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="is_code_mode_client"
+									render={({ field }) => (
+										<FormItem className="flex items-center justify-between rounded-lg border p-4">
+											<FormLabel>Code Mode Client</FormLabel>
+											<FormControl>
+												<Switch checked={field.value || false} onCheckedChange={field.onChange} />
+											</FormControl>
 										</FormItem>
 									)}
 								/>
@@ -272,9 +287,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											name="tools_to_execute"
 											render={({ field }) => {
 												const currentTools = form.watch("tools_to_execute") || [];
+												const allToolNames = mcpClient.tools?.map((tool) => tool.name) || [];
 												const isAllEnabled = currentTools.includes("*");
 												const isNoneEnabled = currentTools.length === 0;
-												const isSomeEnabled = currentTools.length > 0 && !isAllEnabled;
+
+												// Convert to explicit IDs for TriStateCheckbox
+												const selectedIds = isAllEnabled ? allToolNames : currentTools;
 
 												return (
 													<FormItem>
@@ -283,16 +301,20 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																<span className="text-muted-foreground text-sm">
 																	{isAllEnabled ? "All enabled" : isNoneEnabled ? "All disabled" : `${currentTools.length} enabled`}
 																</span>
-																<Switch
-																	size="md"
-																	checked={isAllEnabled || isSomeEnabled}
-																	onCheckedChange={(checked) => {
-																		if (checked) {
-																			// Enable all tools (wildcard)
+																<TriStateCheckbox
+																	allIds={allToolNames}
+																	selectedIds={selectedIds}
+																	onChange={(nextSelectedIds) => {
+																		// Convert back to wildcard format
+																		if (nextSelectedIds.length === 0) {
+																			// None selected
+																			form.setValue("tools_to_execute", [], { shouldDirty: true });
+																		} else if (nextSelectedIds.length === allToolNames.length) {
+																			// All selected - use wildcard
 																			form.setValue("tools_to_execute", ["*"], { shouldDirty: true });
 																		} else {
-																			// Disable all tools (empty array)
-																			form.setValue("tools_to_execute", [], { shouldDirty: true });
+																			// Some selected - use explicit list
+																			form.setValue("tools_to_execute", nextSelectedIds, { shouldDirty: true });
 																		}
 																	}}
 																/>
@@ -315,8 +337,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											const isToolEnabled = currentTools?.includes("*") || currentTools?.includes(tool.name);
 											// If tools_to_auto_execute contains "*", all enabled tools are auto-executed
 											const isAutoExecuteEnabled =
-												(currentAutoExecute?.includes("*") && isToolEnabled) ||
-												(currentAutoExecute?.includes(tool.name) && isToolEnabled);
+												(currentAutoExecute?.includes("*") && isToolEnabled) || (currentAutoExecute?.includes(tool.name) && isToolEnabled);
 											// Disable auto-execute toggle if tool is not in tools_to_execute
 											const isAutoExecuteDisabled = !isToolEnabled;
 
@@ -329,47 +350,48 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																<span className="text-sm font-medium">{tool.name}</span>
 																{tool.description && <p className="text-muted-foreground mt-1 text-xs">{tool.description}</p>}
 															</div>
-															<div className="flex items-center gap-4">
-																<div className="flex flex-col items-end gap-1">
-																	<span className="text-muted-foreground text-xs">Execute</span>
-																	<FormField
-																		control={form.control}
-																		name="tools_to_execute"
-																		render={({ field }) => (
-																			<FormItem>
-																				<FormControl>
-																					<Switch
-																						size="md"
-																						checked={isToolEnabled}
-																						onCheckedChange={(checked) => handleToolToggle(tool.name, checked)}
-																					/>
-																				</FormControl>
-																			</FormItem>
-																		)}
-																	/>
-																</div>
-																<div className="flex flex-col items-end gap-1">
-																	<span className="text-muted-foreground text-xs">Auto-execute</span>
-																	<FormField
-																		control={form.control}
-																		name="tools_to_auto_execute"
-																		render={({ field }) => (
-																			<FormItem>
-																				<FormControl>
-																					<Switch
-																						size="md"
-																						checked={isAutoExecuteEnabled}
-																						disabled={isAutoExecuteDisabled}
-																						onCheckedChange={(checked) => handleAutoExecuteToggle(tool.name, checked)}
-																					/>
-																				</FormControl>
-																			</FormItem>
-																		)}
-																	/>
-																</div>
+															<div className="flex flex-col items-end gap-1">
+																<span className="text-muted-foreground text-xs">Enabled</span>
+																<FormField
+																	control={form.control}
+																	name="tools_to_execute"
+																	render={({ field }) => (
+																		<FormItem>
+																			<FormControl>
+																				<Switch
+																					size="md"
+																					checked={isToolEnabled}
+																					onCheckedChange={(checked) => handleToolToggle(tool.name, checked)}
+																				/>
+																			</FormControl>
+																		</FormItem>
+																	)}
+																/>
 															</div>
 														</div>
 													</div>
+
+													{isToolEnabled && (
+														<div className="flex items-center justify-between gap-2 border-b px-6 py-2">
+															<span className="text-muted-foreground text-xs font-medium">Automatically execute tool</span>
+															<FormField
+																control={form.control}
+																name="tools_to_auto_execute"
+																render={({ field }) => (
+																	<FormItem>
+																		<FormControl>
+																			<Switch
+																				size="md"
+																				checked={isAutoExecuteEnabled}
+																				disabled={isAutoExecuteDisabled}
+																				onCheckedChange={(checked) => handleAutoExecuteToggle(tool.name, checked)}
+																			/>
+																		</FormControl>
+																	</FormItem>
+																)}
+															/>
+														</div>
+													)}
 
 													{/* Tool Parameters */}
 													{tool.parameters ? (

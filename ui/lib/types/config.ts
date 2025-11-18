@@ -259,6 +259,8 @@ export interface CoreConfig {
 	allowed_origins: string[];
 	max_request_body_size_mb: number;
 	enable_litellm_fallbacks: boolean;
+	mcp_agent_depth: number;
+	mcp_tool_execution_timeout: number;
 }
 
 // Semantic cache configuration types

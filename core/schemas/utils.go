@@ -702,6 +702,91 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 	return copy
 }
 
+// DeepCopyChatTool creates a deep copy of a ChatTool
+// to prevent shared data mutation between different plugin accumulators
+func DeepCopyChatTool(original ChatTool) ChatTool {
+	copyTool := ChatTool{
+		Type: original.Type,
+	}
+
+	// Deep copy Function if present
+	if original.Function != nil {
+		copyTool.Function = &ChatToolFunction{
+			Name: original.Function.Name,
+		}
+
+		if original.Function.Description != nil {
+			copyDescription := *original.Function.Description
+			copyTool.Function.Description = &copyDescription
+		}
+
+		if original.Function.Parameters != nil {
+			copyParams := &ToolFunctionParameters{
+				Type: original.Function.Parameters.Type,
+			}
+
+			if original.Function.Parameters.Description != nil {
+				copyParamDesc := *original.Function.Parameters.Description
+				copyParams.Description = &copyParamDesc
+			}
+
+			if original.Function.Parameters.Required != nil {
+				copyParams.Required = make([]string, len(original.Function.Parameters.Required))
+				copy(copyParams.Required, original.Function.Parameters.Required)
+			}
+
+			if original.Function.Parameters.Properties != nil {
+				// Deep copy the map
+				copyProps := make(map[string]interface{}, len(*original.Function.Parameters.Properties))
+				for k, v := range *original.Function.Parameters.Properties {
+					copyProps[k] = DeepCopy(v)
+				}
+				copyParams.Properties = &copyProps
+			}
+
+			if original.Function.Parameters.Enum != nil {
+				copyParams.Enum = make([]string, len(original.Function.Parameters.Enum))
+				copy(copyParams.Enum, original.Function.Parameters.Enum)
+			}
+
+			if original.Function.Parameters.AdditionalProperties != nil {
+				copyAdditionalProps := *original.Function.Parameters.AdditionalProperties
+				copyParams.AdditionalProperties = &copyAdditionalProps
+			}
+
+			copyTool.Function.Parameters = copyParams
+		}
+
+		if original.Function.Strict != nil {
+			copyStrict := *original.Function.Strict
+			copyTool.Function.Strict = &copyStrict
+		}
+	}
+
+	// Deep copy Custom if present
+	if original.Custom != nil {
+		copyTool.Custom = &ChatToolCustom{}
+
+		if original.Custom.Format != nil {
+			copyFormat := &ChatToolCustomFormat{
+				Type: original.Custom.Format.Type,
+			}
+
+			if original.Custom.Format.Grammar != nil {
+				copyGrammar := &ChatToolCustomGrammarFormat{
+					Definition: original.Custom.Format.Grammar.Definition,
+					Syntax:     original.Custom.Format.Grammar.Syntax,
+				}
+				copyFormat.Grammar = copyGrammar
+			}
+
+			copyTool.Custom.Format = copyFormat
+		}
+	}
+
+	return copyTool
+}
+
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
 // to prevent shared data mutation between different plugin accumulators
 func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {

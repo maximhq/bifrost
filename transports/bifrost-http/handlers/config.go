@@ -26,6 +26,7 @@ type ConfigManager interface {
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 }
 
@@ -162,7 +163,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validating framework config
-	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {		
+	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {
@@ -196,6 +197,39 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.DropExcessRequests = payload.ClientConfig.DropExcessRequests
 	}
 
+	// Validate MCP tool manager config values before updating
+	if payload.ClientConfig.MCPAgentDepth <= 0 {
+		logger.Warn("mcp_agent_depth must be greater than 0")
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_agent_depth must be greater than 0")
+		return
+	}
+
+	if payload.ClientConfig.MCPToolExecutionTimeout <= 0 {
+		logger.Warn("mcp_tool_execution_timeout must be greater than 0")
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_tool_execution_timeout must be greater than 0")
+		return
+	}
+
+	shouldReloadMCPToolManagerConfig := false
+
+	if payload.ClientConfig.MCPAgentDepth != currentConfig.MCPAgentDepth {
+		updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth
+		shouldReloadMCPToolManagerConfig = true
+	}
+
+	if payload.ClientConfig.MCPToolExecutionTimeout != currentConfig.MCPToolExecutionTimeout {
+		updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
+		shouldReloadMCPToolManagerConfig = true
+	}
+
+	if shouldReloadMCPToolManagerConfig {
+		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout); err != nil {
+			logger.Warn(fmt.Sprintf("failed to update mcp tool manager config: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp tool manager config: %v", err))
+			return
+		}
+	}
+
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
 		updatedConfig.PrometheusLabels = payload.ClientConfig.PrometheusLabels
 		shouldReloadTelemetryPlugin = true
@@ -213,7 +247,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 	updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 	updatedConfig.EnableLiteLLMFallbacks = payload.ClientConfig.EnableLiteLLMFallbacks
-
+	updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth
+	updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
 	// Validate LogRetentionDays
 	if payload.ClientConfig.LogRetentionDays < 1 {
 		logger.Warn("log_retention_days must be at least 1")
@@ -260,7 +295,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
-	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {				
+	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {

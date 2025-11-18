@@ -180,6 +180,8 @@ var DefaultClientConfig = configstore.ClientConfig{
 	AllowDirectKeys:         false,
 	AllowedOrigins:          []string{"*"},
 	MaxRequestBodySizeMB:    100,
+	MCPAgentDepth:           10,
+	MCPToolExecutionTimeout: 30,
 	EnableLiteLLMFallbacks:  false,
 }
 
@@ -608,7 +610,12 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if !config.ClientConfig.EnableLiteLLMFallbacks && configData.Client.EnableLiteLLMFallbacks {
 				config.ClientConfig.EnableLiteLLMFallbacks = configData.Client.EnableLiteLLMFallbacks
 			}
-
+			if config.ClientConfig.MCPAgentDepth == 0 && configData.Client.MCPAgentDepth != 0 {
+				config.ClientConfig.MCPAgentDepth = configData.Client.MCPAgentDepth
+			}
+			if config.ClientConfig.MCPToolExecutionTimeout == 0 && configData.Client.MCPToolExecutionTimeout != 0 {
+				config.ClientConfig.MCPToolExecutionTimeout = configData.Client.MCPToolExecutionTimeout
+			}
 			// Update store with merged config
 			if config.ConfigStore != nil {
 				logger.Debug("updating merged client config in store")
@@ -764,7 +771,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	if mcpConfig != nil {
 		config.MCPConfig = mcpConfig
-
 		// Merge with config file if present
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
 			logger.Debug("merging MCP config from config file with store")
@@ -1960,7 +1966,7 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 	if err := c.client.AddMCPClient(c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1]); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		c.cleanupEnvKeys("", clientConfig.ID, newEnvKeys)
-		return fmt.Errorf("failed to add MCP client: %w", err)
+		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}
 
 	if c.ConfigStore != nil {
@@ -2109,6 +2115,7 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 
 	// Update the in-memory config with the processed values
 	c.MCPConfig.ClientConfigs[configIndex].Name = processedConfig.Name
+	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = processedConfig.IsCodeModeClient
 	c.MCPConfig.ClientConfigs[configIndex].Headers = processedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = processedConfig.ToolsToExecute
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = processedConfig.ToolsToAutoExecute
@@ -2148,6 +2155,7 @@ func (c *Config) RedactMCPClientConfig(config schemas.MCPClientConfig) schemas.M
 	configCopy := schemas.MCPClientConfig{
 		ID:                 config.ID,
 		Name:               config.Name,
+		IsCodeModeClient:   config.IsCodeModeClient,
 		ConnectionType:     config.ConnectionType,
 		ConnectionString:   config.ConnectionString,
 		StdioConfig:        config.StdioConfig,

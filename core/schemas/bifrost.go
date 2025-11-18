@@ -106,17 +106,17 @@ const (
 	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                                       // string
 	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"                              // string
 	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"                               // Key struct
-	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                          // string (to store the selected key ID (set by bifrost))
-	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"                        // string (to store the selected key name (set by bifrost))
-	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"                        // int (to store the number of retries (set by bifrost))
-	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                           // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
-	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"                     // bool (set by bifrost)
+	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                          // string (to store the selected key ID (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"                        // string (to store the selected key name (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"                        // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                           // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"                     // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"                       // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                            // map[string]string
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                           // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"                     // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
-	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost)
+	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
 )
 
@@ -359,7 +359,7 @@ type BifrostError struct {
 	Error          *ErrorField             `json:"error"`
 	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
-	ExtraFields    BifrostErrorExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
 }
 
 // StreamControl represents stream control options.

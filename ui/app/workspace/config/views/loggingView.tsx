@@ -23,6 +23,8 @@ const defaultConfig: CoreConfig = {
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	enable_litellm_fallbacks: false,
+	mcp_agent_depth: 10,
+	mcp_tool_execution_timeout: 30,
 };
 
 export default function LoggingView() {
@@ -126,7 +128,8 @@ export default function LoggingView() {
 									Disable Content Logging
 								</label>
 								<p className="text-muted-foreground text-sm">
-									When enabled, only usage metadata (latency, cost, token count, etc.) will be logged. Request/response content will not be stored.
+									When enabled, only usage metadata (latency, cost, token count, etc.) will be logged. Request/response content will not be
+									stored.
 								</p>
 							</div>
 							<Switch
@@ -172,5 +175,3 @@ export default function LoggingView() {
 const RestartWarning = () => {
 	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
 };
-
-

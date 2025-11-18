@@ -431,6 +431,13 @@ export interface ResponsesMessage {
 	encrypted_content?: string;
 	// Additional tool-specific fields
 	[key: string]: any;
+	output?: string | ResponsesMessageContentBlock[] | ResponsesComputerToolCallOutputData;
+}
+
+export interface ResponsesComputerToolCallOutputData {
+	type: "computer_screenshot";
+	file_id?: string;
+	image_url?: string;
 }
 
 // Stream options for responses

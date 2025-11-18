@@ -17,11 +17,11 @@ import (
 
 const (
 	// MCP defaults and identifiers
-	BifrostMCPVersion                   = "1.0.0"            // Version identifier for Bifrost
-	BifrostMCPClientName                = "BifrostClient"    // Name for internal Bifrost MCP client
-	BifrostMCPClientKey                 = "bifrost-internal" // Key for internal Bifrost client in clientMap
-	MCPLogPrefix                        = "[Bifrost MCP]"    // Consistent logging prefix
-	MCPClientConnectionEstablishTimeout = 30 * time.Second   // Timeout for MCP client connection establishment
+	BifrostMCPVersion                   = "1.0.0"           // Version identifier for Bifrost
+	BifrostMCPClientName                = "BifrostClient"   // Name for internal Bifrost MCP client
+	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
+	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
+	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
 
 	// Context keys for client filtering in requests
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
@@ -39,20 +39,12 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx                  context.Context
-	toolsHandler         schemas.MCPToolHandler             // Handler for MCP tools
-	server               *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap            map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
-	mu                   sync.RWMutex                       // Read-write mutex for thread-safe operations
-	serverRunning        bool                               // Track whether local MCP server is running
-	maxAgentDepth        int                                // Maximum depth of agent mode tool calls
-	toolExecutionTimeout time.Duration                      // Timeout for individual tool execution
-
-	// Function to fetch a new request ID for each tool call result message in agent mode,
-	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
-	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
-	// If not provider, same request ID is used for all tool call result messages without any overrides.
-	fetchNewRequestIDFunc func(ctx context.Context) string
+	ctx           context.Context
+	toolsHandler  *ToolsManager                      // Handler for MCP tools
+	server        *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
+	clientMap     map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	mu            sync.RWMutex                       // Read-write mutex for thread-safe operations
+	serverRunning bool                               // Track whether local MCP server is running
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -72,36 +64,21 @@ type MCPToolFunction[T any] func(args T) (string, error)
 // Returns:
 //   - *MCPManager: Initialized manager instance
 //   - error: Any initialization error
-func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas.Logger) (*MCPManager, error) {
+func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas.Logger) *MCPManager {
 	SetLogger(logger)
 	// Set default values
-	maxAgentDepth := config.MaxAgentDepth
-	if maxAgentDepth <= 0 {
-		maxAgentDepth = 10 // Default max depth
-	}
-	toolExecutionTimeout := time.Duration(config.ToolExecutionTimeout) * time.Second
-	if toolExecutionTimeout <= 0 {
-		toolExecutionTimeout = 30 * time.Second // Default timeout
+	if config.ToolManagerConfig == nil {
+		config.ToolManagerConfig = &schemas.MCPToolManagerConfig{
+			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
+			MaxAgentDepth:        schemas.DefaultMaxAgentDepth,
+		}
 	}
 	// Creating new instance
 	manager := &MCPManager{
-		ctx:                   ctx,
-		clientMap:             make(map[string]*schemas.MCPClientState),
-		maxAgentDepth:         maxAgentDepth,
-		toolExecutionTimeout:  toolExecutionTimeout,
-		fetchNewRequestIDFunc: config.FetchNewRequestIDFunc,
+		ctx:       ctx,
+		clientMap: make(map[string]*schemas.MCPClientState),
 	}
-	toolsHandler, err := NewDefaultToolsHandler(&DefaultHandlerConfig{
-		toolExecutionTimeout: toolExecutionTimeout,
-		maxAgentDepth:        maxAgentDepth,
-	})
-	if err != nil {
-		return nil, err
-	}
-	toolsHandler.SetToolsFetcherFunc(manager.getAvailableTools)
-	toolsHandler.SetClientForToolFetcherFunc(manager.findMCPClientForTool)
-	toolsHandler.SetFetchNewRequestIDFunc(config.FetchNewRequestIDFunc)
-	manager.toolsHandler = toolsHandler
+	manager.toolsHandler = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc)
 	// Process client configs: create client map entries and establish connections
 	for _, clientConfig := range config.ClientConfigs {
 		if err := manager.AddClient(clientConfig); err != nil {
@@ -109,69 +86,116 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 		}
 	}
 	logger.Info(MCPLogPrefix + " MCP Manager initialized")
-	return manager, nil
+	return manager
 }
 
+// AddToolsToRequest parses available MCP tools from the context and adds them to the request.
+// It respects context-based filtering for clients and tools, and returns the modified request
+// with tools attached.
+//
+// Parameters:
+//   - ctx: Context containing optional client/tool filtering keys
+//   - req: The Bifrost request to add tools to
+//
+// Returns:
+//   - *schemas.BifrostRequest: The request with tools added
 func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
-	if !m.toolsHandler.SetupCompleted() {
-		logger.Error("%s Tools handler is not fully setup", MCPLogPrefix)
-		return req
-	}
 	return m.toolsHandler.ParseAndAddToolsToRequest(ctx, req)
 }
 
+// ExecuteTool executes a single tool call from a chat assistant message.
+// It handles tool execution, error handling, and returns the result as a chat message.
+//
+// Parameters:
+//   - ctx: Context for the tool execution
+//   - toolCall: The tool call to execute, containing tool name and arguments
+//
+// Returns:
+//   - *schemas.ChatMessage: The result message containing tool execution output
+//   - error: Any error that occurred during tool execution
 func (m *MCPManager) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	if !m.toolsHandler.SetupCompleted() {
-		logger.Error("%s Tools handler is not fully setup", MCPLogPrefix)
-		return nil, fmt.Errorf("tools handler is not fully setup")
-	}
-	// Check if the user has permission to execute the tool call
-	availableTools := m.getAvailableTools(ctx)
-	toolName := toolCall.Function.Name
-	if toolName == nil {
-		return nil, fmt.Errorf("tool call missing function name")
-	}
-
-	// Check if the tool is available
-	toolFound := false
-	for _, mcpTool := range availableTools {
-		if mcpTool.Function != nil && mcpTool.Function.Name == *toolName {
-			toolFound = true
-			break
-		}
-	}
-
-	if !toolFound {
-		return nil, fmt.Errorf("tool '%s' is not available or not permitted", *toolName)
-	}
-
 	return m.toolsHandler.ExecuteTool(ctx, toolCall)
 }
 
-func (m *MCPManager) CheckAndExecuteAgent(ctx context.Context, req *schemas.BifrostChatRequest, response *schemas.BifrostChatResponse, llmCaller schemas.BifrostLLMCaller) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	if !m.toolsHandler.SetupCompleted() {
-		logger.Error("%s Tools handler is not fully setup", MCPLogPrefix)
+// UpdateToolManagerConfig updates the configuration for the tool manager.
+// This allows runtime updates to settings like execution timeout and max agent depth.
+//
+// Parameters:
+//   - config: The new tool manager configuration to apply
+func (m *MCPManager) UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig) {
+	m.toolsHandler.UpdateConfig(config)
+}
+
+// CheckAndExecuteAgentForChatRequest checks if the chat response contains tool calls,
+// and if so, executes agent mode to handle the tool calls iteratively. If no tool calls
+// are present, it returns the original response unchanged.
+//
+// Parameters:
+//   - ctx: Context for the agent execution
+//   - req: The original chat request
+//   - response: The initial chat response that may contain tool calls
+//   - makeReq: Function to make subsequent chat requests during agent execution
+//
+// Returns:
+//   - *schemas.BifrostChatResponse: The final response after agent execution (or original if no tool calls)
+//   - *schemas.BifrostError: Any error that occurred during agent execution
+func (m *MCPManager) CheckAndExecuteAgentForChatRequest(
+	ctx *context.Context,
+	req *schemas.BifrostChatRequest,
+	response *schemas.BifrostChatResponse,
+	makeReq func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if makeReq == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "tools handler is not fully setup",
-			},
-		}
-	}
-	if llmCaller == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "llmCaller is required to execute agent mode",
+				Message: "makeReq is required to execute agent mode",
 			},
 		}
 	}
 	// Check if initial response has tool calls
-	if !hasToolCalls(response) {
+	if !hasToolCallsForChatResponse(response) {
 		logger.Debug("No tool calls detected, returning response")
 		return response, nil
 	}
-	return m.toolsHandler.ExecuteAgent(ctx, req, response, llmCaller)
+	// Execute agent mode
+	return m.toolsHandler.ExecuteAgentForChatRequest(ctx, req, response, makeReq)
+}
+
+// CheckAndExecuteAgentForResponsesRequest checks if the responses response contains tool calls,
+// and if so, executes agent mode to handle the tool calls iteratively. If no tool calls
+// are present, it returns the original response unchanged.
+//
+// Parameters:
+//   - ctx: Context for the agent execution
+//   - req: The original responses request
+//   - response: The initial responses response that may contain tool calls
+//   - makeReq: Function to make subsequent responses requests during agent execution
+//
+// Returns:
+//   - *schemas.BifrostResponsesResponse: The final response after agent execution (or original if no tool calls)
+//   - *schemas.BifrostError: Any error that occurred during agent execution
+func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
+	ctx *context.Context,
+	req *schemas.BifrostResponsesRequest,
+	response *schemas.BifrostResponsesResponse,
+	makeReq func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if makeReq == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "makeReq is required to execute agent mode",
+			},
+		}
+	}
+	// Check if initial response has tool calls
+	if !hasToolCallsForResponsesResponse(response) {
+		logger.Debug("No tool calls detected, returning response")
+		return response, nil
+	}
+	// Execute agent mode
+	return m.toolsHandler.ExecuteAgentForResponsesRequest(ctx, req, response, makeReq)
 }
 
 // Cleanup performs cleanup of all MCP resources including clients and local server.

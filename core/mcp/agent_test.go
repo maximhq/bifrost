@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -10,22 +9,39 @@ import (
 
 // MockLLMCaller implements schemas.BifrostLLMCaller for testing
 type MockLLMCaller struct {
-	responses []*schemas.BifrostChatResponse
-	callCount int
+	chatResponses      []*schemas.BifrostChatResponse
+	responsesResponses []*schemas.BifrostResponsesResponse
+	chatCallCount      int
+	responsesCallCount int
 }
 
 func (m *MockLLMCaller) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	if m.callCount >= len(m.responses) {
+	if m.chatCallCount >= len(m.chatResponses) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "no more mock responses available",
+				Message: "no more mock chat responses available",
 			},
 		}
 	}
 
-	response := m.responses[m.callCount]
-	m.callCount++
+	response := m.chatResponses[m.chatCallCount]
+	m.chatCallCount++
+	return response, nil
+}
+
+func (m *MockLLMCaller) ResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if m.responsesCallCount >= len(m.responsesResponses) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "no more mock responses api responses available",
+			},
+		}
+	}
+
+	response := m.responsesResponses[m.responsesCallCount]
+	m.responsesCallCount++
 	return response, nil
 }
 
@@ -40,9 +56,24 @@ func (m *MockLogger) Fatal(msg string, args ...any)                     {}
 func (m *MockLogger) SetLevel(level schemas.LogLevel)                   {}
 func (m *MockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
 
-func TestHasToolCalls(t *testing.T) {
+// MockClientManager implements ClientManager for testing
+type MockClientManager struct{}
+
+func (m *MockClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+	return nil // Return nil to simulate no client found
+}
+
+func (m *MockClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	return nil
+}
+
+func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
+	return make(map[string][]schemas.ChatTool)
+}
+
+func TestHasToolCallsForChatResponse(t *testing.T) {
 	// Test nil response
-	if hasToolCalls(nil) {
+	if hasToolCallsForChatResponse(nil) {
 		t.Error("Should return false for nil response")
 	}
 
@@ -50,7 +81,7 @@ func TestHasToolCalls(t *testing.T) {
 	emptyResponse := &schemas.BifrostChatResponse{
 		Choices: []schemas.BifrostResponseChoice{},
 	}
-	if hasToolCalls(emptyResponse) {
+	if hasToolCallsForChatResponse(emptyResponse) {
 		t.Error("Should return false for response with empty choices")
 	}
 
@@ -62,7 +93,7 @@ func TestHasToolCalls(t *testing.T) {
 			},
 		},
 	}
-	if !hasToolCalls(toolCallsResponse) {
+	if !hasToolCallsForChatResponse(toolCallsResponse) {
 		t.Error("Should return true for response with tool_calls finish reason")
 	}
 
@@ -86,8 +117,33 @@ func TestHasToolCalls(t *testing.T) {
 			},
 		},
 	}
-	if !hasToolCalls(responseWithToolCalls) {
+	if !hasToolCallsForChatResponse(responseWithToolCalls) {
 		t.Error("Should return true for response with tool calls in message")
+	}
+
+	// Test response with stop finish reason (should return false even with tool calls)
+	responseWithStopReason := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: schemas.Ptr("stop"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name: schemas.Ptr("test_tool"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if hasToolCallsForChatResponse(responseWithStopReason) {
+		t.Error("Should return false for response with stop finish reason even with tool calls")
 	}
 }
 
@@ -141,7 +197,7 @@ func TestExtractToolCalls(t *testing.T) {
 	}
 }
 
-func TestCheckAndExecuteAgentMode(t *testing.T) {
+func TestExecuteAgentForChatRequest(t *testing.T) {
 	// Set up logger for the test
 	SetLogger(&MockLogger{})
 
@@ -163,6 +219,9 @@ func TestCheckAndExecuteAgentMode(t *testing.T) {
 	}
 
 	llmCaller := &MockLLMCaller{}
+	makeReq := func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		return llmCaller.ChatCompletionRequest(ctx, req)
+	}
 	originalReq := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
@@ -178,7 +237,7 @@ func TestCheckAndExecuteAgentMode(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := ExecuteAgent(&ctx, 10, originalReq, responseNoTools, llmCaller, nil, nil, nil)
+	result, err := ExecuteAgentForChatRequest(&ctx, 10, originalReq, responseNoTools, makeReq, nil, nil, &MockClientManager{})
 	if err != nil {
 		t.Errorf("Expected no error for response without tool calls, got: %v", err)
 	}
@@ -187,29 +246,28 @@ func TestCheckAndExecuteAgentMode(t *testing.T) {
 	}
 }
 
-func TestCheckAndExecuteAgentMode_MaxDepth(t *testing.T) {
+func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
 	// Set up logger for the test
 	SetLogger(&MockLogger{})
 
-	maxDepth := 2
-
-	// Create a response with tool calls that will trigger agent mode
-	createToolCallResponse := func(toolID string) *schemas.BifrostChatResponse {
-		return &schemas.BifrostChatResponse{
-			Choices: []schemas.BifrostResponseChoice{
-				{
-					FinishReason: schemas.Ptr("tool_calls"),
-					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-						Message: &schemas.ChatMessage{
-							Role: schemas.ChatMessageRoleAssistant,
-							ChatAssistantMessage: &schemas.ChatAssistantMessage{
-								ToolCalls: []schemas.ChatAssistantMessageToolCall{
-									{
-										ID: schemas.Ptr(toolID),
-										Function: schemas.ChatAssistantMessageToolCallFunction{
-											Name:      schemas.Ptr("test_tool"),
-											Arguments: `{}`,
-										},
+	// Create a response with tool calls that will NOT be auto-executed
+	responseWithNonAutoTools := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: schemas.Ptr("tool_calls"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("I need to call a tool"),
+						},
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									ID: schemas.Ptr("call_123"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr("non_auto_executable_tool"),
+										Arguments: `{"param": "value"}`,
 									},
 								},
 							},
@@ -217,22 +275,13 @@ func TestCheckAndExecuteAgentMode_MaxDepth(t *testing.T) {
 					},
 				},
 			},
-		}
-	}
-
-	// Create mock LLM caller that always returns responses with tool calls
-	// This will cause the agent mode to loop until max depth is reached
-	initialResponse := createToolCallResponse("call_1")
-	response1 := createToolCallResponse("call_2")
-	response2 := createToolCallResponse("call_3") // This will be called but max depth will be exceeded
-
-	llmCaller := &MockLLMCaller{
-		responses: []*schemas.BifrostChatResponse{
-			response1, // First iteration after initial
-			response2, // Second iteration (will hit max depth)
 		},
 	}
 
+	llmCaller := &MockLLMCaller{}
+	makeReq := func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		return llmCaller.ChatCompletionRequest(ctx, req)
+	}
 	originalReq := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4",
@@ -248,32 +297,184 @@ func TestCheckAndExecuteAgentMode_MaxDepth(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Execute agent mode - should hit max depth and return error
-	result, err := ExecuteAgent(&ctx, maxDepth, originalReq, initialResponse, llmCaller, nil, nil, nil)
+	// Execute agent mode - should return immediately with non-auto-executable tools
+	result, err := ExecuteAgentForChatRequest(&ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
 
-	// Should return error when max depth is exceeded
-	if err == nil {
-		t.Error("Expected error when max depth is exceeded, got nil")
+	// Should not return error for non-auto-executable tools
+	if err != nil {
+		t.Errorf("Expected no error for non-auto-executable tools, got: %v", err)
 	}
 
-	if result != nil {
-		t.Error("Expected nil result when max depth is exceeded")
+	// Should return a response with the non-auto-executable tool calls
+	if result == nil {
+		t.Error("Expected result to be returned for non-auto-executable tools")
 	}
 
-	// Verify error message contains max depth information
-	if err != nil && (err.Error == nil || err.Error.Message == "") {
-		t.Error("Expected error message when max depth is exceeded")
+	// Verify that no LLM calls were made (since tools are non-auto-executable)
+	if llmCaller.chatCallCount != 0 {
+		t.Errorf("Expected 0 LLM calls for non-auto-executable tools, got %d", llmCaller.chatCallCount)
+	}
+}
+
+func TestHasToolCallsForResponsesResponse(t *testing.T) {
+	// Test nil response
+	if hasToolCallsForResponsesResponse(nil) {
+		t.Error("Should return false for nil response")
 	}
 
-	expectedErrorMsg := fmt.Sprintf("Agent mode exceeded maximum depth of %d", maxDepth)
-	if err.Error.Message != expectedErrorMsg {
-		t.Errorf("Expected error message '%s', got '%s'", expectedErrorMsg, err.Error.Message)
+	// Test empty output
+	emptyResponse := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{},
+	}
+	if hasToolCallsForResponsesResponse(emptyResponse) {
+		t.Error("Should return false for response with empty output")
 	}
 
-	// Verify that the LLM was called the expected number of times
-	// Initial response triggers agent mode, then we make maxDepth calls before hitting the limit
-	expectedCalls := maxDepth
-	if llmCaller.callCount != expectedCalls {
-		t.Errorf("Expected %d LLM calls before hitting max depth, got %d", expectedCalls, llmCaller.callCount)
+	// Test response with function call
+	responseWithFunctionCall := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_123"),
+					Name:   schemas.Ptr("test_tool"),
+				},
+			},
+		},
+	}
+	if !hasToolCallsForResponsesResponse(responseWithFunctionCall) {
+		t.Error("Should return true for response with function call")
+	}
+
+	// Test response with function call but no ResponsesToolMessage
+	responseWithoutToolMessage := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				// No ResponsesToolMessage
+			},
+		},
+	}
+	if hasToolCallsForResponsesResponse(responseWithoutToolMessage) {
+		t.Error("Should return false for response with function call type but no ResponsesToolMessage")
+	}
+
+	// Test response with regular message
+	responseWithRegularMessage := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Hello"),
+				},
+			},
+		},
+	}
+	if hasToolCallsForResponsesResponse(responseWithRegularMessage) {
+		t.Error("Should return false for response with regular message")
+	}
+}
+
+func TestExecuteAgentForResponsesRequest(t *testing.T) {
+	// Set up logger for the test
+	SetLogger(&MockLogger{})
+
+	// Test with response that has no tool calls - should return immediately
+	responseNoTools := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Hello, how can I help you?"),
+				},
+			},
+		},
+	}
+
+	llmCaller := &MockLLMCaller{}
+	makeReq := func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		return llmCaller.ResponsesRequest(ctx, req)
+	}
+	originalReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Hello"),
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+
+	result, err := ExecuteAgentForResponsesRequest(&ctx, 10, originalReq, responseNoTools, makeReq, nil, nil, &MockClientManager{})
+	if err != nil {
+		t.Errorf("Expected no error for response without tool calls, got: %v", err)
+	}
+	if result != responseNoTools {
+		t.Error("Expected same response to be returned for response without tool calls")
+	}
+}
+
+func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T) {
+	// Set up logger for the test
+	SetLogger(&MockLogger{})
+
+	// Create a response with tool calls that will NOT be auto-executed
+	responseWithNonAutoTools := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("call_123"),
+					Name:      schemas.Ptr("non_auto_executable_tool"),
+					Arguments: schemas.Ptr(`{"param": "value"}`),
+				},
+			},
+		},
+	}
+
+	llmCaller := &MockLLMCaller{}
+	makeReq := func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		return llmCaller.ResponsesRequest(ctx, req)
+	}
+	originalReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Test message"),
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+
+	// Execute agent mode - should return immediately with non-auto-executable tools
+	result, err := ExecuteAgentForResponsesRequest(&ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
+
+	// Should not return error for non-auto-executable tools
+	if err != nil {
+		t.Errorf("Expected no error for non-auto-executable tools, got: %v", err)
+	}
+
+	// Should return a response with the non-auto-executable tool calls
+	if result == nil {
+		t.Error("Expected result to be returned for non-auto-executable tools")
+	}
+
+	// Verify that no LLM calls were made (since tools are non-auto-executable)
+	if llmCaller.responsesCallCount != 0 {
+		t.Errorf("Expected 0 LLM calls for non-auto-executable tools, got %d", llmCaller.responsesCallCount)
 	}
 }

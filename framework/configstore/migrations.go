@@ -3,7 +3,10 @@ package configstore
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
+	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -79,10 +82,19 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddToolsToAutoExecuteJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddIsCodeModeClientColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddLogRetentionDaysColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddBatchAndCachePricingColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationNormalizeMCPClientNames(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationMoveKeysToProviderConfig(ctx, db); err != nil {
@@ -1080,6 +1092,40 @@ func migrationAddToolsToAutoExecuteJSONColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
+// migrationAddIsCodeModeClientColumn adds the is_code_mode_client column to the config_mcp_clients table
+func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_is_code_mode_client_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "is_code_mode_client") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
+					return err
+				}
+				// Initialize existing rows with false (default value)
+				if err := tx.Exec("UPDATE config_mcp_clients SET is_code_mode_client = false WHERE is_code_mode_client IS NULL").Error; err != nil {
+					return fmt.Errorf("failed to initialize is_code_mode_client: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "is_code_mode_client"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddLogRetentionDaysColumn adds the log_retention_days column to the client config table
 func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -1160,6 +1206,176 @@ func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB) e
 	return m.Migrate()
 }
 
+func migrationAddMCPAgentDepthAndMCPToolExecutionTimeoutColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_agent_depth_and_mcp_tool_execution_timeout_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "mcp_agent_depth") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "mcp_agent_depth"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "mcp_tool_execution_timeout") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "mcp_tool_execution_timeout"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_agent_depth"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_tool_execution_timeout"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// normalizeMCPClientName normalizes an MCP client name by:
+// 1. Replacing hyphens and spaces with underscores
+// 2. Removing leading digits
+// 3. Using a default name if the result is empty
+func normalizeMCPClientName(name string) string {
+	// Replace hyphens and spaces with underscores
+	normalized := strings.ReplaceAll(name, "-", "_")
+	normalized = strings.ReplaceAll(normalized, " ", "_")
+
+	// Remove leading digits
+	normalized = strings.TrimLeftFunc(normalized, func(r rune) bool {
+		return unicode.IsDigit(r)
+	})
+
+	// If name becomes empty after normalization, use a default name
+	if normalized == "" {
+		normalized = "mcp_client"
+	}
+
+	return normalized
+}
+
+// migrationNormalizeMCPClientNames normalizes MCP client names by:
+// 1. Replacing hyphens and spaces with underscores
+// 2. Removing leading digits
+// 3. Adding number suffix if name already exists
+func migrationNormalizeMCPClientNames(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "normalize_mcp_client_names",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Fetch all MCP clients
+			var mcpClients []tables.TableMCPClient
+			if err := tx.Find(&mcpClients).Error; err != nil {
+				return fmt.Errorf("failed to fetch MCP clients: %w", err)
+			}
+
+			// Track assigned names in memory to avoid transaction visibility issues
+			// and ensure we see all updates made during this migration
+			assignedNames := make(map[string]bool)
+
+			// Helper function to find a unique name
+			findUniqueName := func(baseName string, originalName string, excludeID uint, tx *gorm.DB, assignedNames map[string]bool) (string, error) {
+				// First check if base name is already assigned in this migration
+				if !assignedNames[baseName] {
+					// Also check database for existing names (excluding current client)
+					var existing tables.TableMCPClient
+					err := tx.Where("name = ? AND id != ?", baseName, excludeID).First(&existing).Error
+					if err == gorm.ErrRecordNotFound {
+						// Name is available
+						assignedNames[baseName] = true
+						// Log normalization even when no collision
+						if originalName != baseName {
+							log.Printf("MCP Client Name Normalized: '%s' -> '%s'", originalName, baseName)
+						}
+						return baseName, nil
+					} else if err != nil {
+						return "", fmt.Errorf("failed to check name availability: %w", err)
+					}
+				}
+
+				// Name exists (either assigned in this migration or in database), try with number suffix starting from 2
+				// (base name is conceptually "1", so collisions start from "2")
+				suffix := 2
+				const maxSuffix = 1000 // Safety limit to prevent infinite loops
+				for {
+					if suffix > maxSuffix {
+						return "", fmt.Errorf("could not find unique name after %d attempts for base name: %s", maxSuffix, baseName)
+					}
+					candidateName := baseName + strconv.Itoa(suffix)
+
+					// Check both in-memory map and database
+					if !assignedNames[candidateName] {
+						var existing tables.TableMCPClient
+						err := tx.Where("name = ? AND id != ?", candidateName, excludeID).First(&existing).Error
+						if err == gorm.ErrRecordNotFound {
+							// Found available name - log the transformation
+							assignedNames[candidateName] = true
+							log.Printf("MCP Client Name Normalized: '%s' -> '%s'", originalName, candidateName)
+							return candidateName, nil
+						} else if err != nil {
+							return "", fmt.Errorf("failed to check name availability: %w", err)
+						}
+					}
+					suffix++
+				}
+			}
+
+			// Process each client
+			for _, client := range mcpClients {
+				originalName := client.Name
+				needsUpdate := false
+
+				// Check if name needs normalization
+				if strings.Contains(originalName, "-") || strings.Contains(originalName, " ") {
+					needsUpdate = true
+				} else if len(originalName) > 0 && unicode.IsDigit(rune(originalName[0])) {
+					needsUpdate = true
+				}
+
+				if needsUpdate {
+					// Normalize the name
+					normalizedName := normalizeMCPClientName(originalName)
+
+					// Find a unique name (pass assignedNames map to track names in this migration)
+					uniqueName, err := findUniqueName(normalizedName, originalName, client.ID, tx, assignedNames)
+					if err != nil {
+						return fmt.Errorf("failed to find unique name for client %d (original: %s): %w", client.ID, originalName, err)
+					}
+
+					// Update the client name
+					if err := tx.Model(&client).Update("name", uniqueName).Error; err != nil {
+						return fmt.Errorf("failed to update MCP client %d name from %s to %s: %w", client.ID, originalName, uniqueName, err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is not possible as we don't store the original names
+			// This migration is one-way
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running MCP client name normalization migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationMoveKeysToProviderConfig migrates keys from virtual key level to provider config level
 func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -1168,18 +1384,18 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			gormMigrator := tx.Migrator()
 
-		// Step 1: Create the new join table for provider config -> keys relationship
-		// Setup the join table so GORM knows about the custom structure
-		if err := tx.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}); err != nil {
-			return fmt.Errorf("failed to setup join table for provider config keys: %w", err)
-		}
-
-		// Create the join table if it doesn't exist
-		if !gormMigrator.HasTable(&tables.TableVirtualKeyProviderConfigKey{}) {
-			if err := gormMigrator.CreateTable(&tables.TableVirtualKeyProviderConfigKey{}); err != nil {
-				return fmt.Errorf("failed to create join table for provider config keys: %w", err)
+			// Step 1: Create the new join table for provider config -> keys relationship
+			// Setup the join table so GORM knows about the custom structure
+			if err := tx.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}); err != nil {
+				return fmt.Errorf("failed to setup join table for provider config keys: %w", err)
 			}
-		}
+
+			// Create the join table if it doesn't exist
+			if !gormMigrator.HasTable(&tables.TableVirtualKeyProviderConfigKey{}) {
+				if err := gormMigrator.CreateTable(&tables.TableVirtualKeyProviderConfigKey{}); err != nil {
+					return fmt.Errorf("failed to create join table for provider config keys: %w", err)
+				}
+			}
 
 			// Step 2: Migrate existing key associations from virtual key to provider config level
 			// Check if old join table exists

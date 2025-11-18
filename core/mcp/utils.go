@@ -4,30 +4,44 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// findMCPClientForTool safely finds a client that has the specified tool.
-func (m *MCPManager) findMCPClientForTool(toolName string) *schemas.MCPClientState {
+// GetClientForTool safely finds a client that has the specified tool.
+// Returns a copy of the client state to avoid data races. Callers should be aware
+// that fields like Conn and ToolMap are still shared references and may be modified
+// by other goroutines, but the struct itself is safe from concurrent modification.
+func (m *MCPManager) GetClientForTool(toolName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	for _, client := range m.clientMap {
 		if _, exists := client.ToolMap[toolName]; exists {
-			return client
+			// Return a copy to prevent TOCTOU race conditions
+			// The caller receives a snapshot of the client state at this point in time
+			clientCopy := *client
+			return &clientCopy
 		}
 	}
 	return nil
 }
 
-// getAvailableTools returns all tools from connected MCP clients.
+// GetToolPerClient returns all tools from connected MCP clients.
 // Applies client filtering if specified in the context.
-func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
+// Returns a map of client name to its available tools.
+// Parameters:
+//   - ctx: Execution context
+//
+// Returns:
+//   - map[string][]schemas.ChatTool: Map of client name to its available tools
+func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -38,15 +52,18 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 		includeClients = existingIncludeClients
 	}
 
-	tools := make([]schemas.ChatTool, 0)
-	for id, client := range m.clientMap {
+	tools := make(map[string][]schemas.ChatTool)
+	for _, client := range m.clientMap {
+		// Use client name as the key (not ID)
+		clientName := client.ExecutionConfig.Name
+
 		// Apply client filtering logic
-		if !shouldIncludeClient(id, includeClients) {
-			logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, id))
+		if !shouldIncludeClient(clientName, includeClients) {
+			logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName))
 			continue
 		}
 
-		logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", id, client.ExecutionConfig.ToolsToExecute))
+		logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", clientName, client.ExecutionConfig.ToolsToExecute))
 
 		// Add all tools from this client
 		for toolName, tool := range client.ToolMap {
@@ -57,19 +74,43 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 			}
 
 			// Check if tool should be skipped based on request context
-			if shouldSkipToolForRequest(id, toolName, ctx) {
+			if shouldSkipToolForRequest(ctx, clientName, toolName) {
 				logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in include tools list", MCPLogPrefix, toolName))
 				continue
 			}
 
-			tools = append(tools, tool)
+			tools[clientName] = append(tools[clientName], tool)
+		}
+		if len(tools[clientName]) > 0 {
+			logger.Debug(fmt.Sprintf("%s Added %d tools for MCP client %s", MCPLogPrefix, len(tools[clientName]), clientName))
 		}
 	}
 	return tools
 }
 
+// GetClientByName returns a client by name.
+//
+// Parameters:
+//   - clientName: Name of the client to get
+//
+// Returns:
+//   - *schemas.MCPClientState: Client state if found, nil otherwise
+func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, client := range m.clientMap {
+		if client.ExecutionConfig.Name == clientName {
+			// Return a copy to prevent TOCTOU race conditions
+			// The caller receives a snapshot of the client state at this point in time
+			clientCopy := *client
+			return &clientCopy
+		}
+	}
+	return nil
+}
+
 // retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
-func retrieveExternalTools(ctx context.Context, client *client.Client) (map[string]schemas.ChatTool, error) {
+func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string) (map[string]schemas.ChatTool, error) {
 	// Get available tools from external server
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
@@ -94,14 +135,20 @@ func retrieveExternalTools(ctx context.Context, client *client.Client) (map[stri
 	for _, mcpTool := range toolsResponse.Tools {
 		// Convert MCP tool schema to Bifrost format
 		bifrostTool := convertMCPToolToBifrostSchema(&mcpTool)
-		tools[mcpTool.Name] = bifrostTool
+		// Prefix tool name with client name to make it permanent
+		prefixedToolName := fmt.Sprintf("%s_%s", clientName, mcpTool.Name)
+		// Update the tool's function name to match the prefixed name
+		if bifrostTool.Function != nil {
+			bifrostTool.Function.Name = prefixedToolName
+		}
+		tools[prefixedToolName] = bifrostTool
 	}
 
 	return tools, nil
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.
-func shouldIncludeClient(clientID string, includeClients []string) bool {
+func shouldIncludeClient(clientName string, includeClients []string) bool {
 	// If includeClients is specified (not nil), apply whitelist filtering
 	if includeClients != nil {
 		// Handle empty array [] - means no clients are included
@@ -115,7 +162,7 @@ func shouldIncludeClient(clientID string, includeClients []string) bool {
 		}
 
 		// Check if specific client is in the list
-		return slices.Contains(includeClients, clientID)
+		return slices.Contains(includeClients, clientName)
 	}
 
 	// Default: include all clients when no filtering specified (nil case)
@@ -171,8 +218,10 @@ func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
 }
 
 // shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
-func shouldSkipToolForRequest(clientID, toolName string, ctx context.Context) bool {
+func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
 	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+
+	logger.Debug(fmt.Sprintf("%s Checking if tool %s should be skipped for request: %v", MCPLogPrefix, toolName, includeTools))
 
 	if includeTools != nil {
 		// Try []string first (preferred type)
@@ -183,12 +232,12 @@ func shouldSkipToolForRequest(clientID, toolName string, ctx context.Context) bo
 			}
 
 			// Handle wildcard "clientName/*" - if present, all tools are included for this client
-			if slices.Contains(includeToolsList, fmt.Sprintf("%s/*", clientID)) {
+			if slices.Contains(includeToolsList, fmt.Sprintf("%s/*", clientName)) {
 				return false // All tools allowed
 			}
 
 			// Check if specific tool is in the list (format: clientName/toolName)
-			fullToolName := fmt.Sprintf("%s/%s", clientID, toolName)
+			fullToolName := fmt.Sprintf("%s/%s", clientName, toolName)
 			if slices.Contains(includeToolsList, fullToolName) {
 				return false // Tool is explicitly allowed
 			}
@@ -275,15 +324,12 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	if strings.TrimSpace(config.ID) == "" {
 		return fmt.Errorf("id is required for MCP client config")
 	}
-
-	if strings.TrimSpace(config.Name) == "" {
-		return fmt.Errorf("name is required for MCP client config")
+	if err := validateMCPClientName(config.Name); err != nil {
+		return fmt.Errorf("invalid name for MCP client: %w", err)
 	}
-
 	if config.ConnectionType == "" {
 		return fmt.Errorf("connection type is required for MCP client config")
 	}
-
 	switch config.ConnectionType {
 	case schemas.MCPConnectionTypeHTTP:
 		if config.ConnectionString == nil {
@@ -306,6 +352,211 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
 	}
-
 	return nil
+}
+
+func validateMCPClientName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("name is required for MCP client")
+	}
+	for _, r := range name {
+		if r > 127 { // non-ASCII
+			return fmt.Errorf("name must contain only ASCII characters")
+		}
+	}
+	if strings.Contains(name, "-") {
+		return fmt.Errorf("name cannot contain hyphens")
+	}
+	if strings.Contains(name, " ") {
+		return fmt.Errorf("name cannot contain spaces")
+	}
+	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+		return fmt.Errorf("name cannot start with a number")
+	}
+	return nil
+}
+
+// parseToolName parses the tool name to be JavaScript-compatible.
+// It converts spaces and hyphens to underscores, removes invalid characters, and ensures
+// the name starts with a valid JavaScript identifier character.
+func parseToolName(toolName string) string {
+	if toolName == "" {
+		return ""
+	}
+
+	var result strings.Builder
+	runes := []rune(toolName)
+
+	// Process first character - must be letter, underscore, or dollar sign
+	if len(runes) > 0 {
+		first := runes[0]
+		if unicode.IsLetter(first) || first == '_' || first == '$' {
+			result.WriteRune(unicode.ToLower(first))
+		} else {
+			// If first char is invalid, prefix with underscore
+			result.WriteRune('_')
+			if unicode.IsDigit(first) {
+				result.WriteRune(first)
+			}
+		}
+	}
+
+	// Process remaining characters
+	for i := 1; i < len(runes); i++ {
+		r := runes[i]
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '$' {
+			result.WriteRune(unicode.ToLower(r))
+		} else if unicode.IsSpace(r) || r == '-' {
+			// Replace spaces and hyphens with single underscore
+			// Avoid consecutive underscores
+			if result.Len() > 0 && result.String()[result.Len()-1] != '_' {
+				result.WriteRune('_')
+			}
+		}
+		// Skip other invalid characters
+	}
+
+	parsed := result.String()
+
+	// Remove trailing underscores
+	parsed = strings.TrimRight(parsed, "_")
+
+	// Ensure we have at least one character
+	// Should never happen, but just in case
+	if parsed == "" {
+		return "tool"
+	}
+
+	return parsed
+}
+
+// extractToolCallsFromCode extracts tool calls from TypeScript code
+// Tool calls are in the format: serverName.toolName(...) or await serverName.toolName(...)
+func extractToolCallsFromCode(code string) ([]toolCallInfo, error) {
+	toolCalls := []toolCallInfo{}
+
+	// Regex pattern to match tool calls:
+	// - Optional "await" keyword
+	// - Server name (identifier)
+	// - Dot
+	// - Tool name (identifier)
+	// - Opening parenthesis
+	// This pattern matches: await serverName.toolName( or serverName.toolName(
+	toolCallPattern := regexp.MustCompile(`(?:await\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\.\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(`)
+
+	// Find all matches
+	matches := toolCallPattern.FindAllStringSubmatch(code, -1)
+	for _, match := range matches {
+		if len(match) >= 3 {
+			serverName := match[1]
+			toolName := match[2]
+			toolCalls = append(toolCalls, toolCallInfo{
+				serverName: serverName,
+				toolName:   toolName,
+			})
+		}
+	}
+
+	return toolCalls, nil
+}
+
+// isToolCallAllowedForCodeMode checks if a tool call is allowed based on allowedAutoExecutionTools map
+func isToolCallAllowedForCodeMode(serverName, toolName string, allClientNames []string, allowedAutoExecutionTools map[string][]string) bool {
+	// Check if the server name is in the list of all client names
+	if !slices.Contains(allClientNames, serverName) {
+		// It can be a built-in JavaScript/TypeScript object, if not then downstream execution will fail with a runtime error.
+		return true
+	}
+
+	// Get allowed tools for this server
+	allowedTools, exists := allowedAutoExecutionTools[serverName]
+	if !exists {
+		// Server not in allowed list, return false to prevent downstream execution.
+		return false
+	}
+
+	// Check if wildcard "*" is present (all tools allowed)
+	if slices.Contains(allowedTools, "*") {
+		return true
+	}
+
+	// Check if specific tool is in the allowed list
+	if slices.Contains(allowedTools, toolName) {
+		return true
+	}
+
+	return false // Tool not in allowed list
+}
+
+// hasToolCalls checks if a chat response contains tool calls that need to be executed
+func hasToolCallsForChatResponse(response *schemas.BifrostChatResponse) bool {
+	if response == nil || len(response.Choices) == 0 {
+		return false
+	}
+
+	choice := response.Choices[0]
+
+	// If finish_reason is "stop", this indicates non-auto-executable tools that require user approval.
+	// Don't return true even if tool calls are present, as the agent loop should not process them.
+	if choice.FinishReason != nil && *choice.FinishReason == "stop" {
+		return false
+	}
+
+	// Check finish reason
+	if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
+		return true
+	}
+
+	// Check if message has tool calls
+	if choice.ChatNonStreamResponseChoice != nil &&
+		choice.ChatNonStreamResponseChoice.Message != nil &&
+		choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
+		len(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls) > 0 {
+		return true
+	}
+
+	return false
+}
+
+func hasToolCallsForResponsesResponse(response *schemas.BifrostResponsesResponse) bool {
+	if response == nil || len(response.Output) == 0 {
+		return false
+	}
+
+	// Check if any output message is a tool call
+	for _, output := range response.Output {
+		if output.Type == nil {
+			continue
+		}
+
+		// Check for tool call types
+		switch *output.Type {
+		case schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesMessageTypeCustomToolCall:
+			// Verify that ResponsesToolMessage is actually set
+			if output.ResponsesToolMessage != nil {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// stripClientPrefix removes the client name prefix from a tool name.
+// Tool names are stored with format "{clientName}_{toolName}", but when calling
+// the MCP server, we need the original tool name without the prefix.
+//
+// Parameters:
+//   - prefixedToolName: Tool name with client prefix (e.g., "calculator_add")
+//   - clientName: Client name to strip (e.g., "calculator")
+//
+// Returns:
+//   - string: Original tool name without prefix (e.g., "add")
+func stripClientPrefix(prefixedToolName, clientName string) string {
+	prefix := clientName + "_"
+	if strings.HasPrefix(prefixedToolName, prefix) {
+		return strings.TrimPrefix(prefixedToolName, prefix)
+	}
+	// If prefix doesn't match, return as-is (shouldn't happen, but be safe)
+	return prefixedToolName
 }

@@ -15,6 +15,8 @@ import ObservabilityView from "./views/observabilityView";
 import PerformanceTuningView from "./views/performanceTuningView";
 import PricingConfigView from "./views/pricingConfigView";
 import SecurityView from "./views/securityView";
+import { MCPIcon } from "@/components/ui/icons";
+import MCPView from "./views/mcpView";
 
 const tabs = [
 	{
@@ -36,6 +38,11 @@ const tabs = [
 		id: "governance",
 		label: "Governance",
 		icon: <Landmark className="size-4" />,
+	},
+	{
+		id: "mcp",
+		label: "MCP Server",
+		icon: <MCPIcon className="size-4" />,
 	},
 	{
 		id: "caching",
@@ -79,7 +86,7 @@ export default function ConfigPage() {
 	}
 
 	return (
-		<div className="flex w-full flex-row gap-4 max-w-7xl mx-auto">
+		<div className="mx-auto flex w-full max-w-7xl flex-row gap-4">
 			<div className="flex min-w-[250px] flex-col gap-1 rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
 				{tabs.map((tab) => (
 					<button
@@ -103,6 +110,7 @@ export default function ConfigPage() {
 				{activeTab === "pricing-config" && <PricingConfigView />}
 				{activeTab === "logging" && <LoggingView />}
 				{activeTab === "governance" && <GovernanceView />}
+				{activeTab === "mcp" && <MCPView />}
 				{activeTab === "caching" && <CachingView />}
 				{activeTab === "observability" && <ObservabilityView />}
 				{activeTab === "security" && <SecurityView />}

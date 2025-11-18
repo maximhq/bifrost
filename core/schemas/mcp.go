@@ -3,33 +3,17 @@ package schemas
 
 import (
 	"context"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-type MCPToolHandler interface {
-	SetupCompleted() bool                                                                                                                                   // Returns true if the handler is fully setup and ready to use
-	ParseAndAddToolsToRequest(ctx context.Context, req *BifrostRequest) *BifrostRequest                                                                     // Parse the available tools and add them to the Bifrost request
-	ExecuteTool(ctx context.Context, toolCall ChatAssistantMessageToolCall) (*ChatMessage, error)                                                           // Execute a tool call and return the result as a tool message, It DOES NOT check if the tool is allowed to be executed by the client, so it is the responsibility of the caller to check if the tool is allowed to be executed by the client.
-	ExecuteAgent(ctx context.Context, req *BifrostChatRequest, resp *BifrostChatResponse, llmCaller BifrostLLMCaller) (*BifrostChatResponse, *BifrostError) // Execute an agent mode tool call and return the result as a chat response
-	SetToolsFetcherFunc(toolsFetcherFunc func(ctx context.Context) []ChatTool)                                                                              // Set the function to get the available tools
-	SetClientForToolFetcherFunc(clientForToolFetcherFunc func(toolName string) *MCPClientState)                                                             // Set the function to get the client for a tool
-	SetFetchNewRequestIDFunc(fetchNewRequestIDFunc func(ctx context.Context) string)                                                                        // Set the function to get a new request ID
-}
-
-// BifrostLLMCaller defines the interface for making LLM calls from the agent mode.
-// This interface allows the MCP manager to make chat completion requests during agent execution.
-type BifrostLLMCaller interface {
-	ChatCompletionRequest(ctx context.Context, req *BifrostChatRequest) (*BifrostChatResponse, *BifrostError)
-}
-
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
 type MCPConfig struct {
-	ClientConfigs        []MCPClientConfig `json:"client_configs,omitempty"`         // Per-client execution configurations
-	MaxAgentDepth        int               `json:"max_agent_depth,omitempty"`        // Maximum depth for agent mode tool execution (default: 10)
-	ToolExecutionTimeout int               `json:"tool_execution_timeout,omitempty"` // Timeout for individual tool execution in seconds (default: 30)
+	ClientConfigs     []MCPClientConfig     `json:"client_configs,omitempty"`      // Per-client execution configurations
+	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 
 	// Function to fetch a new request ID for each tool call result message in agent mode,
 	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
@@ -38,10 +22,21 @@ type MCPConfig struct {
 	FetchNewRequestIDFunc func(ctx context.Context) string `json:"-"`
 }
 
+type MCPToolManagerConfig struct {
+	ToolExecutionTimeout time.Duration `json:"tool_execution_timeout"`
+	MaxAgentDepth        int           `json:"max_agent_depth"`
+}
+
+const (
+	DefaultMaxAgentDepth        = 10
+	DefaultToolExecutionTimeout = 30 * time.Second
+)
+
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
 	ID               string            `json:"id"`                          // Client ID
 	Name             string            `json:"name"`                        // Client name
+	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString *string           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)

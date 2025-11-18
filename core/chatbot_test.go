@@ -515,7 +515,7 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 	s.history = append(s.history, *assistantMessage)
 
 	// Check if assistant wants to use tools
-	if assistantMessage.ToolCalls != nil && len(assistantMessage.ToolCalls) > 0 {
+	if len(assistantMessage.ToolCalls) > 0 {
 		return s.handleToolCalls(*assistantMessage)
 	}
 
@@ -523,7 +523,7 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 	var responseText string
 	if assistantMessage.Content.ContentStr != nil {
 		responseText = *assistantMessage.Content.ContentStr
-	} else if assistantMessage.Content.ContentBlocks != nil && len(assistantMessage.Content.ContentBlocks) > 0 {
+	} else if len(assistantMessage.Content.ContentBlocks) > 0 {
 		var textParts []string
 		for _, block := range assistantMessage.Content.ContentBlocks {
 			if block.Text != nil {
@@ -633,7 +633,7 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 	synthesisRequest := &schemas.BifrostChatRequest{
 		Provider: s.config.Provider,
 		Model:    s.config.Model,
-		Input: conversationWithSynthesis,
+		Input:    conversationWithSynthesis,
 		Params: &schemas.ChatParameters{
 			Temperature:         s.config.Temperature,
 			MaxCompletionTokens: s.config.MaxTokens,

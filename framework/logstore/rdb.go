@@ -257,7 +257,7 @@ func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 		return false, err
-	}	
+	}
 	return true, nil
 }
 

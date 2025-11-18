@@ -21,6 +21,8 @@ const defaultConfig: CoreConfig = {
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	enable_litellm_fallbacks: false,
+	mcp_agent_depth: 10,
+	mcp_tool_execution_timeout: 30,
 };
 
 export default function GovernanceView() {
@@ -101,5 +103,3 @@ export default function GovernanceView() {
 const RestartWarning = () => {
 	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
 };
-
-

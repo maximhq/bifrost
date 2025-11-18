@@ -343,6 +343,9 @@
             "$ref": "#/$defs/mcp_client_config"
           },
           "description": "MCP client configurations"
+        },
+        "tool_manager_config": {
+          "$ref": "#/$defs/mcp_tool_manager_config"
         }
       },
       "additionalProperties": false
@@ -1406,6 +1409,23 @@
           ]
         }
       ]
+    },
+    "mcp_tool_manager_config": {
+      "type": "object",
+      "properties": {
+        "tool_execution_timeout": {
+          "type": "integer",
+          "description": "Tool execution timeout in seconds",
+          "minimum": 1,
+          "default": 30
+        },
+        "max_agent_depth": {
+          "type": "integer",
+          "description": "Max agent depth",
+          "minimum": 1,
+          "default": 10
+        }
+      }
     },
     "weaviate_config": {
       "type": "object",

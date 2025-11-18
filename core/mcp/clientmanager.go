@@ -24,26 +24,38 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 
 	clients := make([]schemas.MCPClientState, 0, len(m.clientMap))
 	for _, client := range m.clientMap {
-		clients = append(clients, *client)
+		snapshot := *client
+		if client.ToolMap != nil {
+			snapshot.ToolMap = make(map[string]schemas.ChatTool, len(client.ToolMap))
+			maps.Copy(snapshot.ToolMap, client.ToolMap)
+		}
+		clients = append(clients, snapshot)
 	}
 
 	return clients
 }
 
 // ReconnectClient attempts to reconnect an MCP client if it is disconnected.
+// It validates that the client exists and then establishes a new connection using
+// the client's existing configuration.
+//
+// Parameters:
+//   - id: ID of the client to reconnect
+//
+// Returns:
+//   - error: Any error that occurred during reconnection
 func (m *MCPManager) ReconnectClient(id string) error {
 	m.mu.Lock()
-
 	client, ok := m.clientMap[id]
 	if !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s not found", id)
 	}
-
+	config := client.ExecutionConfig
 	m.mu.Unlock()
 
 	// connectToMCPClient handles locking internally
-	err := m.connectToMCPClient(client.ExecutionConfig)
+	err := m.connectToMCPClient(config)
 	if err != nil {
 		return fmt.Errorf("failed to connect to MCP client %s: %w", id, err)
 	}
@@ -53,11 +65,13 @@ func (m *MCPManager) ReconnectClient(id string) error {
 
 // AddClient adds a new MCP client to the manager.
 // It validates the client configuration and establishes a connection.
+// If connection fails, the client entry is automatically cleaned up.
 //
 // Parameters:
 //   - config: MCP client configuration
 //
 // Returns:
+//   - error: Any error that occurred during client addition or connection
 func (m *MCPManager) AddClient(config schemas.MCPClientConfig) error {
 	if err := validateMCPClientConfig(&config); err != nil {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
@@ -107,6 +121,16 @@ func (m *MCPManager) RemoveClient(id string) error {
 	return m.removeClientUnsafe(id)
 }
 
+// removeClientUnsafe removes an MCP client from the manager without acquiring locks.
+// This is an internal method that should only be called when the caller already holds
+// the appropriate lock. It handles cleanup for all transport types including cancellation
+// of SSE contexts and closing of transport connections.
+//
+// Parameters:
+//   - id: ID of the client to remove
+//
+// Returns:
+//   - error: Any error that occurred during client removal
 func (m *MCPManager) removeClientUnsafe(id string) error {
 	client, ok := m.clientMap[id]
 	if !ok {
@@ -137,6 +161,18 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	return nil
 }
 
+// EditClient updates an existing MCP client's configuration and refreshes its tool list.
+// It updates the client's execution config with new settings and retrieves updated tools
+// from the MCP server if the client is connected.
+// This method does not refresh the client's tool list.
+// To refresh the client's tool list, use the ReconnectClient method.
+//
+// Parameters:
+//   - id: ID of the client to edit
+//   - updatedConfig: Updated client configuration with new settings
+//
+// Returns:
+//   - error: Any error that occurred during client update or tool retrieval
 func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -146,44 +182,20 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 		return fmt.Errorf("client %s not found", id)
 	}
 
+	if err := validateMCPClientName(updatedConfig.Name); err != nil {
+		return fmt.Errorf("invalid MCP client configuration: %w", err)
+	}
+
 	// Update the client's execution config with new tool filters
 	config := client.ExecutionConfig
 	config.Name = updatedConfig.Name
+	config.IsCodeModeClient = updatedConfig.IsCodeModeClient
 	config.Headers = updatedConfig.Headers
 	config.ToolsToExecute = updatedConfig.ToolsToExecute
 	config.ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
 
 	// Store the updated config
 	client.ExecutionConfig = config
-
-	if client.Conn == nil {
-		return nil // Client is not connected, so no tools to update
-	}
-
-	// Clear current tool map
-	client.ToolMap = make(map[string]schemas.ChatTool)
-
-	// Temporarily unlock for the network call
-	m.mu.Unlock()
-
-	// Retrieve tools with updated configuration
-	tools, err := retrieveExternalTools(m.ctx, client.Conn)
-
-	// Re-lock to update the tool map
-	m.mu.Lock()
-
-	// Verify client still exists
-	if _, ok := m.clientMap[id]; !ok {
-		return fmt.Errorf("client %s was removed during tool update", id)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to retrieve external tools: %w", err)
-	}
-
-	// Store discovered tools
-	maps.Copy(client.ToolMap, tools)
-
 	return nil
 }
 
@@ -219,16 +231,31 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 		return fmt.Errorf("failed to setup local host: %w", err)
 	}
 
-	// Verify internal client exists
-	if _, ok := m.clientMap[BifrostMCPClientKey]; !ok {
-		return fmt.Errorf("bifrost client not found")
+	// Validate tool name
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("tool name is required")
+	}
+	if strings.Contains(name, "-") {
+		return fmt.Errorf("tool name cannot contain hyphens")
+	}
+	if strings.Contains(name, " ") {
+		return fmt.Errorf("tool name cannot contain spaces")
+	}
+	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+		return fmt.Errorf("tool name cannot start with a number")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Verify internal client exists
+	internalClient, ok := m.clientMap[BifrostMCPClientKey]
+	if !ok {
+		return fmt.Errorf("bifrost client not found")
+	}
+
 	// Check if tool name already exists to prevent silent overwrites
-	if _, exists := m.clientMap[BifrostMCPClientKey].ToolMap[name]; exists {
+	if _, exists := internalClient.ToolMap[name]; exists {
 		return fmt.Errorf("tool '%s' is already registered", name)
 	}
 
@@ -252,7 +279,7 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 	}
 
 	// Store tool definition for Bifrost integration
-	m.clientMap[BifrostMCPClientKey].ToolMap[name] = toolSchema
+	internalClient.ToolMap[name] = toolSchema
 
 	return nil
 }
@@ -357,7 +384,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	}
 
 	// Retrieve tools from the external server (this also requires network I/O)
-	tools, err := retrieveExternalTools(ctx, externalClient)
+	tools, err := retrieveExternalTools(ctx, externalClient, config.Name)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err))
 		// Continue with connection even if tool retrieval fails
@@ -386,6 +413,17 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 
 		logger.Info(fmt.Sprintf("%s Connected to MCP client: %s", MCPLogPrefix, config.Name))
 	} else {
+		// Clean up resources before returning error: client was removed during connection setup
+		// Cancel SSE context if it was created
+		if config.ConnectionType == schemas.MCPConnectionTypeSSE && cancel != nil {
+			cancel()
+		}
+		// Close external client connection to prevent transport/goroutine leaks
+		if externalClient != nil {
+			if err := externalClient.Close(); err != nil {
+				logger.Warn(fmt.Sprintf("%s Failed to close external client during cleanup: %v", MCPLogPrefix, err))
+			}
+		}
 		return fmt.Errorf("client %s was removed during connection setup", config.Name)
 	}
 
@@ -506,26 +544,41 @@ func (m *MCPManager) createInProcessConnection(config schemas.MCPClientConfig) (
 // Returns:
 //   - error: Any setup error
 func (m *MCPManager) setupLocalHost() error {
-	// Check if server is already running
+	// First check: fast path if already initialized
+	m.mu.Lock()
 	if m.server != nil && m.serverRunning {
+		m.mu.Unlock()
 		return nil
 	}
+	m.mu.Unlock()
 
-	// Create and configure local MCP server (STDIO-based)
+	// Create server and client into local variables (outside lock to avoid
+	// holding lock during object creation, even though it's lightweight)
 	server, err := m.createLocalMCPServer()
 	if err != nil {
 		return fmt.Errorf("failed to create local MCP server: %w", err)
 	}
-	m.server = server
 
-	// Create and configure local MCP client (STDIO-based)
 	client, err := m.createLocalMCPClient()
 	if err != nil {
 		return fmt.Errorf("failed to create local MCP client: %w", err)
 	}
+
+	// Second check and assignment: hold lock for atomic check-and-set
+	m.mu.Lock()
+	// Double-check: another goroutine might have initialized while we were creating
+	if m.server != nil && m.serverRunning {
+		m.mu.Unlock()
+		return nil
+	}
+
+	// Assign server and client atomically while holding the lock
+	m.server = server
 	m.clientMap[BifrostMCPClientKey] = client
+	m.mu.Unlock()
 
 	// Start the server and initialize client connection
+	// (startLocalMCPServer already locks internally)
 	return m.startLocalMCPServer()
 }
 
@@ -557,7 +610,9 @@ func (m *MCPManager) createLocalMCPClient() (*schemas.MCPClientState, error) {
 	// after the server is ready using NewInProcessClient
 	return &schemas.MCPClientState{
 		ExecutionConfig: schemas.MCPClientConfig{
-			Name: BifrostMCPClientName,
+			ID:             BifrostMCPClientKey,
+			Name:           BifrostMCPClientName,
+			ToolsToExecute: []string{"*"}, // Allow all tools for internal client
 		},
 		ToolMap: make(map[string]schemas.ChatTool),
 		ConnectionInfo: schemas.MCPClientConnectionInfo{
