@@ -205,7 +205,7 @@ func (p *OtelPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) 
 	if bifrost.IsStreamRequestType(req.RequestType) {
 		p.accumulator.CreateStreamAccumulator(traceID, createdTimestamp)
 	}
-	p.ongoingSpans.Set(traceID, createResourceSpan(traceID, spanID, time.Now(), req, p.bifrostVersion))
+	p.ongoingSpans.Set(traceID, p.createResourceSpan(traceID, spanID, time.Now(), req))
 	return req, nil, nil
 }
 
@@ -248,6 +248,17 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 		requestType, _, _ := bifrost.GetResponseFields(resp, bifrostErr)
 		if span, ok := span.(*ResourceSpan); ok {
 			// We handle streaming responses differently, we will use the accumulator to process the response and then emit the final response
+			// Attaching virtual keys as resource attributes
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("virtual_key_id", virtualKeyID))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("virtual_key_name", virtualKeyName))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("selected_key_id", selectedKeyID))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("selected_key_name", selectedKeyName))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("team_id", teamID))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("team_name", teamName))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("customer_id", customerID))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvStr("customer_name", customerName))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvInt("number_of_retries", int64(numberOfRetries)))
+			span.Resource.Attributes = append(span.Resource.Attributes, kvInt("fallback_index", int64(fallbackIndex)))
 			if bifrost.IsStreamRequestType(requestType) {
 				streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, resp, bifrostErr)
 				if err != nil {

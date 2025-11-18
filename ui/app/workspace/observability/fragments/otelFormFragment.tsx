@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -90,6 +90,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 							render={({ field }) => (
 								<FormItem className="w-full">
 									<FormLabel>Service Name</FormLabel>
+									<FormDescription>If kept empty, the service name will be set to "bifrost"</FormDescription>
 									<FormControl>
 										<Input placeholder="bifrost" {...field} />
 									</FormControl>

@@ -368,7 +368,7 @@ func getResponsesRequestParams(req *schemas.BifrostResponsesRequest) []*KeyValue
 }
 
 // createResourceSpan creates a new resource span for a Bifrost request
-func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest, bifrostVersion string) *ResourceSpan {
+func (p *OtelPlugin) createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
 	provider, model, _ := req.GetRequestFields()
 
 	// preparing parameters
@@ -401,8 +401,8 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
 			Attributes: []*commonpb.KeyValue{
-				kvStr("service.name", "bifrost"),
-				kvStr("service.version", bifrostVersion),
+				kvStr("service.name", p.serviceName),
+				kvStr("service.version", p.bifrostVersion),
 			},
 		},
 		ScopeSpans: []*ScopeSpan{
