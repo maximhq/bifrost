@@ -1,0 +1,24 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") .Values.vectorStore.weaviate.enabled (not .Values.vectorStore.weaviate.external.enabled) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bifrost.fullname" . }}-weaviate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vectorstore
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 50051
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "bifrost.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: vectorstore
+{{- end }}

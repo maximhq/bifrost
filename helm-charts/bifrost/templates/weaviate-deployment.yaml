@@ -1,0 +1,69 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") .Values.vectorStore.weaviate.enabled (not .Values.vectorStore.weaviate.external.enabled) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bifrost.fullname" . }}-weaviate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vectorstore
+spec:
+  replicas: {{ .Values.vectorStore.weaviate.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "bifrost.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: vectorstore
+  template:
+    metadata:
+      labels:
+        {{- include "bifrost.labels" . | nindent 8 }}
+        app.kubernetes.io/component: vectorstore
+    spec:
+      containers:
+        - name: weaviate
+          image: "{{ .Values.vectorStore.weaviate.image.repository }}:{{ .Values.vectorStore.weaviate.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.vectorStore.weaviate.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /v1/.well-known/live
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /v1/.well-known/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.vectorStore.weaviate.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/weaviate
+      volumes:
+        - name: data
+          {{- if .Values.vectorStore.weaviate.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "bifrost.fullname" . }}-weaviate
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}
