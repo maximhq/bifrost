@@ -205,7 +205,7 @@ func (p *OtelPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) 
 	if bifrost.IsStreamRequestType(req.RequestType) {
 		p.accumulator.CreateStreamAccumulator(traceID, createdTimestamp)
 	}
-	p.ongoingSpans.Set(traceID, createResourceSpan(traceID, spanID, time.Now(), req, p.bifrostVersion))
+	p.ongoingSpans.Set(traceID, p.createResourceSpan(traceID, spanID, time.Now(), req))
 	return req, nil, nil
 }
 
